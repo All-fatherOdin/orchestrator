@@ -107,7 +107,7 @@ type Run = {
 const MODEL_IDS: Record<Model, string> = {
   luna: "gpt-5.6-luna",
   terra: "gpt-5.6-terra",
-  sol: "gpt-5.6",
+  sol: "gpt-5.6-sol",
 };
 const runsDirectory = resolve(".orchestrator", "runs");
 const settingsFile = resolve(".orchestrator", "settings.json");
