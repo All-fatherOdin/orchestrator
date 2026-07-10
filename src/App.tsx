@@ -1039,13 +1039,13 @@ export function App() {
               </dd>
               <dt>Таймаут</dt>
               <dd>
-                {current.timeoutMinutes ?? run?.limits.taskTimeoutMinutes ?? 30}{" "}
+                {current.timeoutMinutes ?? run?.limits?.taskTimeoutMinutes ?? 30}{" "}
                 min
               </dd>
               <dt>Executor</dt>
               <dd>
                 {current.executionAttempts ?? 0} /{" "}
-                {(current.maxRetries ?? run?.limits.maxTaskRetries ?? 1) + 1}
+                {(current.maxRetries ?? run?.limits?.maxTaskRetries ?? 1) + 1}
               </dd>
               <dt>Files</dt>
               <dd>{current.changedFiles?.length ?? "—"}</dd>
