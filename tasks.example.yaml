@@ -1,0 +1,14 @@
+project:
+  name: My project
+  path: D:\\work\\my-project
+tasks:
+  - title: Fix TypeScript errors
+    prompt: Fix TypeScript errors in the notifications module and run the relevant checks.
+    model: terra
+    effort: medium
+    allowedPaths: [src/notifications]
+  - title: Add reconnect logic
+    prompt: Add WebSocket reconnection with exponential backoff and tests.
+    model: sol
+    effort: medium
+    allowedPaths: [src/websocket]
