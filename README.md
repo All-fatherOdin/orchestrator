@@ -23,3 +23,7 @@ The target repository's `AGENTS.md` and `.codex/config.toml` remain the source o
 See [tasks.example.yaml](tasks.example.yaml). Models are intentionally restricted to `luna`, `terra`, and `sol`; effort is `light`, `medium`, or `high`. The MVP refuses `sol` with `high` effort to control spend.
 
 Run history and logs are written to `.orchestrator/runs/` beside this repository. No commits are made automatically.
+
+## Codex CLI on Windows
+
+The runner automatically prefers the Codex Desktop CLI matching the installed app. To select another binary, set `CODEX_BIN` to its absolute path before starting the orchestrator.

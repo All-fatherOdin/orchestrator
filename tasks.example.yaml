@@ -1,11 +1,21 @@
 project:
   name: My project
   path: D:\\work\\my-project
+limits:
+  taskTimeoutMinutes: 30
+  reviewerTimeoutMinutes: 10
+  maxTaskRetries: 1
+git:
+  # Creates a checkpoint commit after each reviewer-approved task.
+  checkpointCommits: false
 tasks:
   - title: Fix TypeScript errors
     prompt: Fix TypeScript errors in the notifications module and run the relevant checks.
     model: terra
     effort: medium
+    # Optional per-task overrides:
+    # timeoutMinutes: 45
+    # maxRetries: 2
     allowedPaths: [src/notifications]
   - title: Add reconnect logic
     prompt: Add WebSocket reconnection with exponential backoff and tests.
