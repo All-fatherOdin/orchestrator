@@ -1,0 +1,7 @@
+# Sequential execution plan for existing task queues.
+# Every `file` must point to a YAML task queue. Paths may be absolute or
+# relative to the directory from which the orchestrator server is started.
+queues:
+  - file: fs_02_tasks.yaml
+  - file: fs_03_tasks.yaml
+  - file: fs_04_tasks.yaml

@@ -8,11 +8,13 @@ type Status =
   | "failed"
   | "timed_out"
   | "cancelled"
-  | "skipped";
+  | "skipped"
+  | "blocked";
 type Limits = {
   taskTimeoutMinutes: number;
   reviewerTimeoutMinutes: number;
   maxTaskRetries: number;
+  maxParallelTasks: number;
 };
 type GitSettings = { checkpointCommits: boolean };
 type ProjectProfile = {
@@ -27,12 +29,17 @@ type ProjectProfile = {
 type Checkpoint = { hash: string; message: string; createdAt: string };
 type Task = {
   id: string;
+  key?: string;
+  dependsOn?: string[];
+  resources?: string[];
   title: string;
   prompt: string;
   allowedPaths?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
   model: "luna" | "terra" | "sol";
+  requestedModel: "auto" | "luna" | "terra" | "sol";
+  modelSelectionReason: string;
   effort: "light" | "medium" | "high";
   status: Status;
   startedAt?: string;
@@ -64,14 +71,34 @@ type Run = {
   finishedAt?: string;
   pausedAt?: string;
   pauseRequested?: boolean;
+  pipeline?: { id: string; file: string; index: number; total: number };
   limits: Limits;
   git: GitSettings;
   tasks: Task[];
 };
+type PipelineView = {
+  id: string;
+  currentIndex: number;
+  status: Run["status"];
+  queues: Array<{
+    index: number;
+    file: string;
+    name: string;
+    state: "completed" | "current" | "pending";
+  }>;
+};
+type RunSummary = Pick<
+  Run,
+  "id" | "project" | "status" | "startedAt" | "finishedAt"
+> & { taskCount: number };
 type DraftTask = {
+  key?: string;
+  dependsOn?: string[];
+  resources?: string[];
   title: string;
   prompt: string;
-  model?: "luna" | "terra" | "sol";
+  model?: "auto" | "luna" | "terra" | "sol";
+  minModel?: "luna" | "terra" | "sol";
   effort?: "light" | "medium" | "high";
   allowedPaths?: string[];
   timeoutMinutes?: number;
@@ -100,6 +127,7 @@ const statusLabel: Record<Status, string> = {
   timed_out: "Время истекло",
   cancelled: "Отменено",
   skipped: "Пропущено",
+  blocked: "Заблокировано",
 };
 const statusSymbol: Record<Exclude<Status, "running">, string> = {
   pending: "○",
@@ -108,6 +136,7 @@ const statusSymbol: Record<Exclude<Status, "running">, string> = {
   timed_out: "⌛",
   cancelled: "×",
   skipped: "→",
+  blocked: "⊘",
 };
 const runStatusLabel: Record<Run["status"], string> = {
   idle: "Ожидание",
@@ -118,7 +147,33 @@ const runStatusLabel: Record<Run["status"], string> = {
   timed_out: "Время истекло",
   cancelled: "Отменено",
 };
-const emptyQueue = `project:\n  name: My project\n  path: D:\\\\work\\\\my-project\nlimits:\n  taskTimeoutMinutes: 30\n  reviewerTimeoutMinutes: 10\n  maxTaskRetries: 1\ntasks:\n  - title: Fix TypeScript errors\n    prompt: Fix TypeScript errors in the notifications module and run checks.\n    model: terra\n    effort: medium\n    allowedPaths: [src/notifications]`;
+const emptyQueue = `project:\n  name: My project\n  path: D:\\\\work\\\\my-project\nlimits:\n  taskTimeoutMinutes: 30\n  reviewerTimeoutMinutes: 10\n  maxTaskRetries: 1\n  maxParallelTasks: 1\ntasks:\n  - key: notifications-types\n    title: Fix TypeScript errors\n    prompt: Fix TypeScript errors in the notifications module and run checks.\n    model: terra\n    effort: medium\n    allowedPaths: [src/notifications]`;
+
+function runSummary(run: Run): RunSummary {
+  return {
+    id: run.id,
+    project: run.project,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    taskCount: run.tasks.length,
+  };
+}
+
+async function parseJsonResponse<T>(response: Response, context: string): Promise<T> {
+  const body = await response.text();
+  if (!body.trim())
+    throw new Error(
+      `${context}: сервер вернул пустой ответ (HTTP ${response.status || "нет статуса"}). Повторите запрос; если ошибка сохранится, проверьте backend.`,
+    );
+  try {
+    return JSON.parse(body) as T;
+  } catch {
+    throw new Error(
+      `${context}: сервер вернул некорректный JSON (HTTP ${response.status}).`,
+    );
+  }
+}
 
 function duration(start?: string, end?: string) {
   if (!start) return "—";
@@ -163,8 +218,19 @@ export function App() {
   const [run, setRun] = useState<Run | null>(null);
   const [queue, setQueue] = useState(emptyQueue);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [isStarting, setIsStarting] = useState(false);
+  const [isRunLoading, setIsRunLoading] = useState(true);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+  const [isProjectsLoading, setIsProjectsLoading] = useState(true);
+  const [isPipelineLoading, setIsPipelineLoading] = useState(false);
   const [clock, setClock] = useState(Date.now());
-  const [history, setHistory] = useState<Run[]>([]);
+  const [history, setHistory] = useState<RunSummary[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [runToDelete, setRunToDelete] = useState<RunSummary | null>(null);
+  const [isDeletingRun, setIsDeletingRun] = useState(false);
+  const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [projects, setProjects] = useState<ProjectProfile[]>([]);
@@ -187,6 +253,14 @@ export function App() {
     run?.tasks.at(-1);
   const completed =
     run?.tasks.filter((task) => task.status === "completed").length ?? 0;
+  const runningCount =
+    run?.tasks.filter((task) => task.status === "running").length ?? 0;
+  const maxParallelTasks = run?.limits.maxParallelTasks ?? 1;
+  const availableSlots = Math.max(0, maxParallelTasks - runningCount);
+  const taskByKey = useMemo(
+    () => new Map((run?.tasks ?? []).flatMap((task) => (task.key ? [[task.key, task] as const] : []))),
+    [run?.tasks],
+  );
   const distribution = useMemo(
     () =>
       Object.entries(
@@ -213,34 +287,80 @@ export function App() {
       ),
     [current?.log, logFilters, logSearch],
   );
+  function taskStateDetail(task: Task) {
+    if (task.status === "running") return "Выполнение и проверки";
+    if (task.status === "blocked")
+      return task.log.find((line) => line.startsWith("Blocked:")) ?? "Заблокировано";
+    if (task.status === "pending") {
+      const unmet = (task.dependsOn ?? []).filter(
+        (key) => taskByKey.get(key)?.status !== "completed",
+      );
+      return unmet.length ? `Ожидает: ${unmet.join(", ")}` : "Готова к запуску";
+    }
+    return `${task.model} · ${task.effort} effort`;
+  }
 
   useEffect(() => {
-    void Promise.all([
-      fetch("/api/run").then((response) => response.json()),
-      fetch("/api/runs").then((response) => response.json()),
-      fetch("/api/projects").then((response) => response.json()),
-    ])
-      .then(([active, runs, profiles]) => {
+    void fetch("/api/run")
+      .then((response) => response.json())
+      .then((active) => {
         setRun(active);
-        setHistory(runs);
-        setProjects(profiles);
+        if (active?.pipeline) void refreshPipeline(active.pipeline.id);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => setIsRunLoading(false));
+    void Promise.all([
+      fetch("/api/projects").then((response) => response.json()),
+      fetch("/api/pipeline").then((response) => response.json()),
+    ])
+      .then(([profiles, currentPipeline]) => {
+        setProjects(profiles);
+        setPipeline(currentPipeline);
+      })
+      .catch(() => undefined)
+      .finally(() => setIsProjectsLoading(false));
+    void refreshHistory(0);
     const events = new EventSource("/api/events");
     events.addEventListener("run", (event) => {
       const next = JSON.parse((event as MessageEvent).data) as Run;
       setRun(next);
-      setHistory((previous) => [
-        next,
-        ...previous.filter((item) => item.id !== next.id),
-      ]);
     });
     return () => events.close();
   }, []);
   useEffect(() => {
+    if (run?.pipeline) void refreshPipeline(run.pipeline.id);
+  }, [run?.pipeline?.id, run?.pipeline?.index, run?.pipeline?.total]);
+  useEffect(() => {
     const interval = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, []);
+  useEffect(() => {
+    if (
+      !run ||
+      !["idle", "running", "paused"].includes(run.status)
+    )
+      return;
+    let disposed = false;
+    const synchronize = async () => {
+      try {
+        const response = await fetch("/api/run", { cache: "no-store" });
+        if (!response.ok) return;
+        const active = await parseJsonResponse<Run | null>(
+          response,
+          "Синхронизация запуска",
+        );
+        if (!disposed && active?.id === run.id) setRun(active);
+      } catch {
+        // SSE remains the primary transport; the next polling tick will retry.
+      }
+    };
+    void synchronize();
+    const interval = window.setInterval(() => void synchronize(), 1_500);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [run?.id, run?.status]);
   useEffect(() => {
     if (!run || !current?.changedFiles?.length) {
       setTaskDiff("");
@@ -254,8 +374,83 @@ export function App() {
       .then((value) => setTaskDiff(value.diff ?? ""))
       .catch(() => setTaskDiff(""));
   }, [run?.id, current?.id, selectedDiffFile]);
+  useEffect(() => {
+    if (!error && !notice) return;
+    const timer = window.setTimeout(() => {
+      setError("");
+      setNotice("");
+    }, 5_000);
+    return () => window.clearTimeout(timer);
+  }, [error, notice]);
+  async function refreshHistory(offset = historyOffset) {
+    setIsHistoryLoading(true);
+    try {
+      const response = await fetch(`/api/runs?offset=${offset}&limit=5`);
+      if (!response.ok) throw new Error("Could not load run history.");
+      const value = (await response.json()) as {
+        total: number;
+        runs: RunSummary[];
+      };
+      setHistory(value.runs);
+      setHistoryTotal(value.total);
+      setHistoryOffset(offset);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Could not load run history.",
+      );
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }
+  async function refreshPipeline(pipelineId?: string) {
+    setIsPipelineLoading(true);
+    try {
+      const response = await fetch(
+        pipelineId ? `/api/pipeline/${pipelineId}` : "/api/pipeline",
+      );
+      if (!response.ok) throw new Error("Could not load pipeline.");
+      setPipeline((await response.json()) as PipelineView | null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load pipeline.");
+    } finally {
+      setIsPipelineLoading(false);
+    }
+  }
+  async function openHistoryRun(id: string) {
+    try {
+      const response = await fetch(`/api/runs/${id}`);
+      if (!response.ok) throw new Error("Could not load run details.");
+      const details = (await response.json()) as Run;
+      setRun(details);
+      if (details.pipeline) await refreshPipeline(details.pipeline.id);
+      setShowHistory(false);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Could not load run details.",
+      );
+    }
+  }
+  async function deleteHistoryRun(id: string) {
+    setIsDeletingRun(true);
+    try {
+      const response = await fetch(`/api/runs/${id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const value = (await response.json()) as { error?: string };
+        throw new Error(value.error ?? "Could not delete run.");
+      }
+      const nextOffset =
+        history.length === 1 && historyOffset > 0 ? historyOffset - 5 : historyOffset;
+      await refreshHistory(nextOffset);
+      setRunToDelete(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not delete run.");
+    } finally {
+      setIsDeletingRun(false);
+    }
+  }
   async function start() {
     setError("");
+    setIsStarting(true);
     try {
       const preflight = await fetch("/api/preflight", {
         method: "POST",
@@ -263,10 +458,10 @@ export function App() {
         body: queue,
       }).then(
         (response) =>
-          response.json() as Promise<{
+          parseJsonResponse<{
             ok: boolean;
             checks: { name: string; ok: boolean; detail: string }[];
-          }>,
+          }>(response, "Проверка очереди"),
       );
       if (!preflight.ok)
         throw new Error(
@@ -280,22 +475,43 @@ export function App() {
         headers: { "Content-Type": "text/yaml" },
         body: queue,
       }).then(async (response) => {
-        const value = await response.json();
-        if (!response.ok) throw new Error(value.error);
-        return value;
+        const value = await parseJsonResponse<Run | { error?: string }>(
+          response,
+          "Запуск очереди",
+        );
+        if (!response.ok)
+          throw new Error("error" in value ? value.error : "Не удалось запустить очередь.");
+        return value as Run;
       });
       setRun(parsed);
+      setHistory((previous) => [
+        runSummary(parsed),
+        ...previous.filter((item) => item.id !== parsed.id),
+      ].slice(0, 5));
+      setHistoryTotal((total) => total + 1);
+      void refreshPipeline();
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Could not start run.",
       );
+    } finally {
+      setIsStarting(false);
     }
   }
   async function cancel() {
     await fetch("/api/cancel", { method: "POST" });
   }
-  async function skip() {
-    await fetch("/api/skip", { method: "POST" });
+  async function skip(task: Task) {
+    const response = await fetch("/api/skip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskId: task.id }),
+    });
+    if (!response.ok)
+      setError(
+        ((await response.json()) as { error?: string }).error ??
+          "Could not skip task.",
+      );
   }
   async function pause() {
     const response = await fetch("/api/pause", { method: "POST" });
@@ -320,7 +536,10 @@ export function App() {
     );
     const next = (await response.json()) as Run | { error: string };
     if ("error" in next) setError(next.error);
-    else setRun(next);
+    else {
+      setRun(next);
+      if (next.pipeline) void refreshPipeline(next.pipeline.id);
+    }
   }
   async function resume() {
     const response = await fetch(`/api/runs/${run?.id}/resume`, {
@@ -330,6 +549,11 @@ export function App() {
     if ("error" in next) setError(next.error);
     else {
       setRun(next);
+      setHistory((previous) => [
+        runSummary(next),
+        ...previous.filter((item) => item.id !== next.id),
+      ].slice(0, 5));
+      if (next.pipeline) void refreshPipeline(next.pipeline.id);
       setShowHistory(false);
     }
   }
@@ -370,7 +594,7 @@ export function App() {
       );
       return;
     }
-    setError(`Откат выполнен к ${task.checkpoint.hash.slice(0, 8)}.`);
+    setNotice(`Откат выполнен к ${task.checkpoint.hash.slice(0, 8)}.`);
   }
   function toggleLogFilter(filter: LogFilter) {
     setLogFilters((currentFilters) => {
@@ -382,7 +606,60 @@ export function App() {
   }
   function loadFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
-    if (file) void file.text().then(setQueue);
+    event.target.value = "";
+    if (!file) return;
+    void file.text().then((source) => {
+      setQueue(source);
+      setRun(null);
+      setError("");
+    });
+  }
+  function appendFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    void (async () => {
+      setError("");
+      try {
+        const source = await file.text();
+        const response = await fetch("/api/pipeline/append", {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/yaml",
+            "X-Queue-Filename": file.name,
+          },
+          body: source,
+        });
+        const value = (await response.json()) as {
+          error?: string;
+          position?: number;
+          pipeline?: PipelineView;
+        };
+        if (!response.ok) throw new Error(value.error ?? "Could not append queue.");
+        setNotice(`Очередь добавлена после текущей (позиция ${value.position}).`);
+        if (value.pipeline) setPipeline(value.pipeline);
+        else await refreshPipeline(run?.pipeline?.id);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Не удалось добавить очередь.");
+      }
+    })();
+  }
+  async function removeQueuedFile(index: number) {
+    try {
+      const response = await fetch(`/api/pipeline/queues/${index}`, {
+        method: "DELETE",
+      });
+      const value = (await response.json()) as PipelineView | { error?: string };
+      if (!response.ok)
+        throw new Error(
+          "error" in value ? value.error : "Could not remove queued file.",
+        );
+      setPipeline(value as PipelineView);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Could not remove queued file.",
+      );
+    }
   }
   function changeTasks(change: (tasks: DraftTask[]) => DraftTask[]) {
     if (!draft?.tasks) {
@@ -401,6 +678,7 @@ export function App() {
           taskTimeoutMinutes: 30,
           reviewerTimeoutMinutes: 10,
           maxTaskRetries: 1,
+          maxParallelTasks: 1,
           ...draft.limits,
           ...patch,
         },
@@ -487,7 +765,7 @@ export function App() {
     <main className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brandMark">◉</span> Orchestrator
+          <BrandIcon /> Orchestrator
         </div>
         <div className="navTitle">WORKSPACE</div>
         <div className="projectName">
@@ -509,9 +787,10 @@ export function App() {
             onClick={() => {
               setShowHistory(true);
               setShowProjects(false);
+              void refreshHistory(0);
             }}
           >
-            Запуски <em>{history.length}</em>
+            Запуски <em>{historyTotal}</em>
           </button>
           <button
             className={showProjects ? "active" : ""}
@@ -522,9 +801,6 @@ export function App() {
           >
             Проекты <em>{projects.length}</em>
           </button>
-          <a>Архив</a>
-          <a>Модели</a>
-          <a>Настройки</a>
         </nav>
         <div className="sidebarFoot">
           v0.1.0 · local
@@ -536,9 +812,11 @@ export function App() {
         <header>
           <div>
             <h1>
-              <span className="projectFolder">▱</span>
-              {run?.project.name ?? "Новый запуск"}
-              <span className="localChip">Локальный</span>
+              <FolderIcon />
+              <span className="projectTitle">
+                {run?.project.name ?? "Новый запуск"}
+                <span className="localChip">Локальный</span>
+              </span>
             </h1>
             <p>
               {run
@@ -547,19 +825,22 @@ export function App() {
             </p>
           </div>
           <div className="headerActions">
-            <label className="upload">
+            <label
+              className={`upload ${isStarting || run?.status === "running" || run?.status === "paused" ? "disabled" : ""}`}
+            >
               Загрузить YAML
-              <input type="file" accept=".yml,.yaml" onChange={loadFile} />
+              <input
+                type="file"
+                accept=".yml,.yaml"
+                onChange={loadFile}
+                disabled={isStarting || run?.status === "running" || run?.status === "paused"}
+              />
             </label>
-            {run?.status === "running" && (
-              <button
-                className="pause"
-                onClick={() => void pause()}
-                disabled={run.pauseRequested}
-              >
-                ⏸{" "}
-                {run.pauseRequested ? "Пауза запрошена" : "Пауза после задачи"}
-              </button>
+            {(run?.status === "running" || run?.status === "paused") && (
+              <label className="upload">
+                Добавить YAML после текущей
+                <input type="file" accept=".yml,.yaml" onChange={appendFile} />
+              </label>
             )}
             {run?.status === "paused" && (
               <button className="primary" onClick={() => void continueRun()}>
@@ -569,12 +850,30 @@ export function App() {
             <button
               className="primary"
               onClick={start}
-              disabled={run?.status === "running" || run?.status === "paused"}
+              disabled={isStarting || run?.status === "running" || run?.status === "paused"}
             >
-              ▶ Запустить
+              {isStarting ? "Проверка и запуск…" : "▶ Запустить"}
             </button>
           </div>
         </header>
+        {(error || notice) && (
+          <Toast
+            message={error || notice}
+            tone={error ? "error" : "success"}
+            onClose={() => {
+              setError("");
+              setNotice("");
+            }}
+          />
+        )}
+        {runToDelete && (
+          <DeleteRunModal
+            run={runToDelete}
+            isDeleting={isDeletingRun}
+            onCancel={() => setRunToDelete(null)}
+            onConfirm={() => void deleteHistoryRun(runToDelete.id)}
+          />
+        )}
         {showProjects ? (
           <section className="projectsPanel">
             <div className="sectionHeading">
@@ -644,6 +943,9 @@ export function App() {
                 Сохранить проект
               </button>
             </div>
+            {isProjectsLoading ? (
+              <LoadingState label="Загружаем сохранённые проекты…" />
+            ) : (
             <div className="projectList">
               {projects.map((profile) => (
                 <article key={profile.id}>
@@ -671,41 +973,65 @@ export function App() {
                 </article>
               ))}
             </div>
+            )}
           </section>
         ) : showHistory ? (
           <section className="historyPanel">
             <div className="sectionHeading">
               <h2>История запусков</h2>
-              <span>{history.length} сохранено</span>
+              <span>{historyTotal} сохранено</span>
             </div>
-            {history.map((item) => (
-              <button
+            {isHistoryLoading ? (
+              <LoadingState label="Загружаем историю запусков…" />
+            ) : history.length ? history.map((item) => (
+              <article
                 className="runRow"
                 key={item.id}
-                onClick={() => {
-                  setRun(item);
-                  setShowHistory(false);
-                }}
               >
-                <span className={`runDot ${item.status}`} />
-                <span className="runInfo">
-                  <b>{item.project.name}</b>
-                  <small>
-                    {item.tasks.length} задач · {runStatusLabel[item.status]} ·{" "}
-                    {duration(item.startedAt, item.finishedAt)}
-                  </small>
-                </span>
-                <time>
-                  {item.startedAt
-                    ? new Date(item.startedAt).toLocaleString()
-                    : ""}
-                </time>
+                <button className="runOpen" onClick={() => void openHistoryRun(item.id)}>
+                  <span className={`runDot ${item.status}`} />
+                  <span className="runInfo">
+                    <b>{item.project.name}</b>
+                    <small>
+                      {item.taskCount} задач · {runStatusLabel[item.status]} ·{" "}
+                      {duration(item.startedAt, item.finishedAt)}
+                    </small>
+                  </span>
+                  <time>
+                    {item.startedAt
+                      ? new Date(item.startedAt).toLocaleString()
+                      : ""}
+                  </time>
+                </button>
+                <button
+                  className="removeTask"
+                  onClick={() => setRunToDelete(item)}
+                  title="Удалить запуск"
+                >
+                  ×
+                </button>
+              </article>
+            )) : <p className="empty">Запусков пока нет.</p>}
+            {!isHistoryLoading && <div className="historyPagination">
+              <button
+                onClick={() => void refreshHistory(Math.max(0, historyOffset - 5))}
+                disabled={historyOffset === 0}
+              >
+                Назад
               </button>
-            ))}
+              <span>{historyOffset + 1}–{Math.min(historyOffset + 5, historyTotal)} из {historyTotal}</span>
+              <button
+                onClick={() => void refreshHistory(historyOffset + 5)}
+                disabled={historyOffset + 5 >= historyTotal}
+              >
+                Далее
+              </button>
+            </div>}
           </section>
         ) : (
           <>
-            {!run && (
+            {isRunLoading && <LoadingState label="Загружаем активную очередь…" />}
+            {!run && !isRunLoading && (
               <section className="queueEditor">
                 <div>
                   <h2>Описание очереди</h2>
@@ -716,7 +1042,6 @@ export function App() {
                   onChange={(event) => setQueue(event.target.value)}
                   spellCheck={false}
                 />
-                {error && <div className="error">{error}</div>}
                 <div className="rules">
                   <b>Ограничения</b>
                   <span>Модели: Luna, Terra, Sol</span>
@@ -768,6 +1093,20 @@ export function App() {
                         }
                       />
                     </label>
+                    <label>
+                      Параллельных задач
+                      <input
+                        type="number"
+                        min="1"
+                        max="4"
+                        value={draft.limits?.maxParallelTasks ?? 1}
+                        onChange={(event) =>
+                          updateLimits({
+                            maxParallelTasks: Number(event.target.value),
+                          })
+                        }
+                      />
+                    </label>
                     <label className="checkpointToggle">
                       <input
                         type="checkbox"
@@ -791,7 +1130,7 @@ export function App() {
                             {
                               title: "Новая задача",
                               prompt: "Опишите работу, которую нужно выполнить.",
-                              model: "terra",
+                              model: "auto",
                               effort: "medium",
                               allowedPaths: [],
                             },
@@ -831,7 +1170,7 @@ export function App() {
                           <label>
                             Model
                             <select
-                              value={task.model ?? "terra"}
+                              value={task.model ?? "auto"}
                               onChange={(event) =>
                                 updateTask(index, {
                                   model: event.target
@@ -839,6 +1178,7 @@ export function App() {
                                 })
                               }
                             >
+                              <option value="auto">Auto</option>
                               <option value="luna">Luna</option>
                               <option value="terra">Terra</option>
                               <option value="sol">Sol</option>
@@ -896,6 +1236,42 @@ export function App() {
                           </label>
                           <input
                             className="paths"
+                            value={task.key ?? ""}
+                            placeholder="key (уникальный идентификатор)"
+                            onChange={(event) =>
+                              updateTask(index, {
+                                key: event.target.value || undefined,
+                              })
+                            }
+                          />
+                          <input
+                            className="paths"
+                            value={(task.dependsOn ?? []).join(", ")}
+                            placeholder="dependsOn через запятую"
+                            onChange={(event) =>
+                              updateTask(index, {
+                                dependsOn: event.target.value
+                                  .split(",")
+                                  .map((key) => key.trim())
+                                  .filter(Boolean),
+                              })
+                            }
+                          />
+                          <input
+                            className="paths"
+                            value={(task.resources ?? []).join(", ")}
+                            placeholder="resources через запятую"
+                            onChange={(event) =>
+                              updateTask(index, {
+                                resources: event.target.value
+                                  .split(",")
+                                  .map((resource) => resource.trim())
+                                  .filter(Boolean),
+                              })
+                            }
+                          />
+                          <input
+                            className="paths"
                             value={(task.allowedPaths ?? []).join(", ")}
                             placeholder="allowedPaths через запятую"
                             onChange={(event) =>
@@ -935,7 +1311,16 @@ export function App() {
                     label="Общее время"
                     value={duration(run.startedAt, run.finishedAt)}
                   />
-                  <Metric label="Статус" value={runStatusLabel[run.status]} />
+                  <Metric
+                    label="Статус"
+                    value={runStatusLabel[run.status]}
+                    status={run.status}
+                  />
+                  <Metric
+                    label="Параллельные задачи"
+                    value={`${runningCount} / ${maxParallelTasks}`}
+                    detail={`${availableSlots} свободно`}
+                  />
                   <div className="metric distribution">
                     <span>Распределение моделей</span>
                     {distribution.map(([model, count]) => (
@@ -960,10 +1345,50 @@ export function App() {
                     </span>
                   </div>
                 )}
+                {isPipelineLoading && run.pipeline && (
+                  <LoadingState label="Загружаем очереди pipeline…" />
+                )}
+                {pipeline && (
+                  <section className="pipelinePanel">
+                    <div className="sectionHeading">
+                      <h2>Очереди pipeline</h2>
+                      <span>{pipeline.queues.length} файлов</span>
+                    </div>
+                    <ol>
+                      {pipeline.queues.map((entry) => (
+                        <li className={`pipelineQueue ${entry.state}`} key={entry.file}>
+                          <span>{String(entry.index + 1).padStart(2, "0")}</span>
+                          <div>
+                            <b>{entry.name}</b>
+                            <small>
+                              {entry.state === "completed"
+                                ? "Выполнено"
+                                : entry.state === "current"
+                                  ? "Текущая очередь"
+                                  : "Ожидает запуска"}
+                            </small>
+                          </div>
+                          {entry.state === "pending" &&
+                            (run.status === "running" || run.status === "paused") && (
+                              <button
+                                className="removeTask"
+                                onClick={() => void removeQueuedFile(entry.index)}
+                                title="Удалить из очереди"
+                              >
+                                ×
+                              </button>
+                            )}
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                )}
                 <section className="queue">
                   <div className="sectionHeading">
                     <h2>Очередь выполнения</h2>
-                    <span>{run.tasks.length} задач · последовательно</span>
+                    <span>
+                      {run.tasks.length} задач · до {maxParallelTasks} параллельно
+                    </span>
                   </div>
                   {run.tasks.map((task, index) => (
                     <article className={`task ${task.status}`} key={task.id}>
@@ -983,13 +1408,17 @@ export function App() {
                       </div>
                       <div className="taskBody">
                         <h3 title={task.title}>{task.title}</h3>
-                        <code>{task.allowedPaths?.[0] ?? "Весь проект"}</code>
+                        <code>
+                          {[
+                            task.key && `#${task.key}`,
+                            task.allowedPaths?.[0] ?? "Весь проект",
+                            task.resources?.length && `ресурсы: ${task.resources.join(", ")}`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </code>
                         <small>
-                          {task.status === "pending"
-                            ? `Позиция в очереди: ${index + 1}`
-                            : task.status === "running"
-                              ? "Выполнение и проверки"
-                              : `${task.model} · ${task.effort} effort`}
+                          {taskStateDetail(task)}
                         </small>
                       </div>
                       <div className="taskMeta">
@@ -1017,11 +1446,12 @@ export function App() {
       </section>
       <aside className="inspector">
         <div className="inspectorTop">
-          <span>LIVE INSPECTOR</span>
+          <span>ИНСПЕКТОР</span>
           <i className={run?.status === "running" ? "pulse" : ""}>●</i>
         </div>
         {current ? (
           <>
+            <div className="inspectorBody">
             <h2>{current.title}</h2>
             <span className={`status ${current.status}`}>
               {statusLabel[current.status]}
@@ -1031,9 +1461,9 @@ export function App() {
               <dd>{current.model}</dd>
               <dt>Усилие</dt>
               <dd>{current.effort}</dd>
-              <dt>Started</dt>
+              <dt>Запущено</dt>
               <dd>{time(current.startedAt)}</dd>
-              <dt>Elapsed</dt>
+              <dt>Прошло времени</dt>
               <dd className="timer">
                 {duration(current.startedAt, current.finishedAt)}
               </dd>
@@ -1042,32 +1472,26 @@ export function App() {
                 {current.timeoutMinutes ?? run?.limits?.taskTimeoutMinutes ?? 30}{" "}
                 min
               </dd>
-              <dt>Executor</dt>
+              <dt>Запуски исполнителя</dt>
               <dd>
                 {current.executionAttempts ?? 0} /{" "}
                 {(current.maxRetries ?? run?.limits?.maxTaskRetries ?? 1) + 1}
               </dd>
-              <dt>Files</dt>
+              <dt>Файлы</dt>
               <dd>{current.changedFiles?.length ?? "—"}</dd>
-              <dt>Review</dt>
+              <dt>Проверка</dt>
               <dd>{current.reviewStatus ?? "—"}</dd>
-              <dt>Attempts</dt>
+              <dt>Итерации проверки</dt>
               <dd>{current.attempts ?? 0} / 2</dd>
               {current.checkpoint ? (
                 <>
-                  <dt>Checkpoint</dt>
+                  <dt>Контрольная точка</dt>
                   <dd>{current.checkpoint.hash.slice(0, 8)}</dd>
                 </>
               ) : null}
             </dl>
             <div className="logHeading">
               <h3>Активность</h3>
-              <button
-                className="downloadReport"
-                onClick={() => void downloadReport()}
-              >
-                ↓ Отчёт
-              </button>
             </div>
             <div className="logControls">
               <input
@@ -1130,9 +1554,26 @@ export function App() {
                 <pre>{current.reviewOutput}</pre>
               </details>
             ) : null}
+            </div>
+            <div className="inspectorActions">
+            <button
+              className="downloadReport"
+              onClick={() => void downloadReport()}
+            >
+              ↓ Скачать отчёт
+            </button>
             {run?.status === "running" && (
               <>
-                <button onClick={skip}>Пропустить задачу</button>
+                <button
+                  className="pause"
+                  onClick={() => void pause()}
+                  disabled={run.pauseRequested}
+                >
+                  ⏸ {run.pauseRequested ? "Пауза запрошена" : "Пауза"}
+                </button>
+                {current.status === "running" && (
+                  <button onClick={() => void skip(current)}>Пропустить задачу</button>
+                )}
                 <button className="danger" onClick={cancel}>
                   Отменить запуск
                 </button>
@@ -1157,11 +1598,12 @@ export function App() {
             {(current.status === "failed" ||
               current.status === "timed_out" ||
               current.status === "cancelled") && (
-              <button onClick={() => void retry(current)}>Retry task</button>
+              <button onClick={() => void retry(current)}>Повторить задачу</button>
             )}
+            </div>
           </>
         ) : (
-          <div className="empty">
+          <div className="empty inspectorBody">
             The selected task will show its live details and event output here.
           </div>
         )}
@@ -1169,11 +1611,124 @@ export function App() {
     </main>
   );
 }
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  detail,
+  status,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  status?: Run["status"];
+}) {
   return (
-    <div className="metric">
+    <div className={`metric ${status ? "statusMetric" : ""}`}>
       <span>{label}</span>
-      <strong>{value}</strong>
+      {status ? (
+        <strong className={`runStateValue ${status}`}>
+          <i aria-hidden="true" />
+          {value}
+        </strong>
+      ) : (
+        <strong>{value}</strong>
+      )}
+      {detail ? <small>{detail}</small> : null}
     </div>
   );
+}
+
+function LoadingState({ label }: { label: string }) {
+  return (
+    <div className="loadingState" role="status" aria-live="polite">
+      <i />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function Toast({
+  message,
+  tone,
+  onClose,
+}: {
+  message: string;
+  tone: "error" | "success";
+  onClose: () => void;
+}) {
+  return (
+    <div className={`toast ${tone}`} role="alert" aria-live="assertive">
+      <span>{tone === "error" ? "!" : "✓"}</span>
+      <p>{message}</p>
+      <button onClick={onClose} aria-label="Закрыть уведомление">×</button>
+    </div>
+  );
+}
+
+function DeleteRunModal({
+  run,
+  isDeleting,
+  onCancel,
+  onConfirm,
+}: {
+  run: RunSummary;
+  isDeleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isDeleting) onCancel();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [isDeleting, onCancel]);
+
+  return (
+    <div
+      className="modalBackdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !isDeleting) onCancel();
+      }}
+    >
+      <section
+        className="modalDialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delete-run-title"
+      >
+        <button
+          className="modalClose"
+          onClick={onCancel}
+          disabled={isDeleting}
+          aria-label="Закрыть окно"
+        >
+          ×
+        </button>
+        <span className="modalIcon" aria-hidden="true">!</span>
+        <h2 id="delete-run-title">Удалить запуск?</h2>
+        <p>
+          <b>{run.project.name}</b>
+          <small>{run.id}</small>
+        </p>
+        <p className="modalHint">
+          Запись запуска, локальные логи и результаты задач будут удалены без возможности восстановления.
+        </p>
+        <div className="modalActions">
+          <button onClick={onCancel} disabled={isDeleting}>Отмена</button>
+          <button className="modalDelete" onClick={onConfirm} disabled={isDeleting}>
+            {isDeleting ? "Удаляем…" : "Удалить запуск"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BrandIcon() {
+  return <svg className="brandMark" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2.75 27.5 9.35v13.3L16 29.25 4.5 22.65V9.35Z"/><circle cx="16" cy="16" r="5.1"/></svg>;
+}
+
+function FolderIcon() {
+  return <svg className="projectFolder" viewBox="0 0 32 32" aria-hidden="true"><path d="M3.5 9.25h8.1l2.5 3.1h14.4v11.9a3 3 0 0 1-3 3H6.5a3 3 0 0 1-3-3Z"/><path d="M3.5 12.35h25"/></svg>;
 }

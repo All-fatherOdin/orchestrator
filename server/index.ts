@@ -6,13 +6,16 @@ import {
   open,
   readFile,
   readdir,
+  rename,
+  rm,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parse } from "yaml";
 
 type Model = "luna" | "terra" | "sol";
+type RequestedModel = Model | "auto";
 type Effort = "light" | "medium" | "high";
 type Status =
   | "pending"
@@ -21,11 +24,13 @@ type Status =
   | "failed"
   | "timed_out"
   | "cancelled"
-  | "skipped";
+  | "skipped"
+  | "blocked";
 type Limits = {
   taskTimeoutMinutes: number;
   reviewerTimeoutMinutes: number;
   maxTaskRetries: number;
+  maxParallelTasks: number;
 };
 type GitSettings = { checkpointCommits: boolean };
 type Checkpoint = { hash: string; message: string; createdAt: string };
@@ -47,13 +52,28 @@ type ProjectProfile = {
   allowedModels: Model[];
 };
 type TaskInput = {
+  /** Stable YAML identifier used to declare dependencies. */
+  key?: string;
+  /** YAML task keys that must complete before this task may start. */
+  dependsOn?: string[];
+  /** Named exclusive resources; tasks sharing one must not run concurrently. */
+  resources?: string[];
   title: string;
   prompt: string;
-  model?: Model;
+  /** `auto` lets the orchestrator choose a model before the run begins. */
+  model?: RequestedModel;
+  /** Do not route this task below this model when `model: auto` is used. */
+  minModel?: Model;
   effort?: Effort;
   allowedPaths?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
+};
+type ResolvedTask = Omit<TaskInput, "model" | "effort"> & {
+  model: Model;
+  effort: Effort;
+  requestedModel: RequestedModel;
+  modelSelectionReason: string;
 };
 type ReviewStatus =
   "pending" | "approved" | "changes_requested" | "unavailable" | "timed_out";
@@ -63,9 +83,11 @@ type ReviewSettings = {
   effort: Effort;
   maxCorrections: number;
 };
-type Task = TaskInput & {
+type Task = ResolvedTask & {
   id: string;
   model: Model;
+  requestedModel: RequestedModel;
+  modelSelectionReason: string;
   effort: Effort;
   status: Status;
   startedAt?: string;
@@ -102,15 +124,65 @@ type Run = {
   limits: Limits;
   git: GitSettings;
   lock?: ProjectLock;
+  pipeline?: { id: string; file: string; index: number; total: number };
 };
+type PipelineInput = { queues: Array<{ file: string }> };
+type LoadedPipeline = {
+  id: string;
+  queues: Array<{ file: string; queue: ReturnType<typeof validateQueue> }>;
+  currentIndex: number;
+  currentRunId?: string;
+  status: Run["status"];
+};
+type PipelineView = {
+  id: string;
+  currentIndex: number;
+  status: Run["status"];
+  queues: Array<{ index: number; file: string; name: string; state: "completed" | "current" | "pending" }>;
+};
+type RunSummary = Pick<
+  Run,
+  "id" | "project" | "status" | "startedAt" | "finishedAt"
+> & { taskCount: number };
 
 const MODEL_IDS: Record<Model, string> = {
   luna: "gpt-5.6-luna",
   terra: "gpt-5.6-terra",
   sol: "gpt-5.6-sol",
 };
+const MODEL_RANK: Record<Model, number> = { luna: 0, terra: 1, sol: 2 };
+
+function autoModelRecommendation(task: TaskInput): {
+  model: Model;
+  reason: string;
+} {
+  const text = `${task.title} ${task.prompt}`.toLowerCase();
+  if (/\b(security|auth(?:entication|orization)?|migration|architecture|incident|production|payment|billing|concurrency|distributed)\b/.test(text))
+    return { model: "sol", reason: "high-risk or cross-cutting task" };
+  if (/\b(integration|debug|refactor|test|api|database|multiple files)\b/.test(text))
+    return { model: "terra", reason: "implementation or verification task" };
+  return { model: "luna", reason: "contained task" };
+}
+
+function resolveTaskModel(task: TaskInput, project: ProjectSettings) {
+  const requestedModel = task.model ?? project.defaultModel ?? "terra";
+  if (requestedModel !== "auto")
+    return { model: requestedModel, requestedModel, reason: "explicit task or project default" };
+
+  const recommendation = autoModelRecommendation(task);
+  const minimum = task.minModel ?? "luna";
+  const available = (project.allowedModels?.length ? project.allowedModels : Object.keys(MODEL_IDS) as Model[])
+    .filter((model) => MODEL_RANK[model] >= MODEL_RANK[minimum])
+    .filter((model) => !(model === "sol" && task.effort === "high"));
+  if (!available.length)
+    throw new Error("No enabled model satisfies this task's minModel and effort.");
+  const model = [...available]
+    .filter((candidate) => MODEL_RANK[candidate] <= MODEL_RANK[recommendation.model])
+    .at(-1) ?? available[0];
+  return { model, requestedModel, reason: `auto: ${recommendation.reason}` };
+}
 const runsDirectory = resolve(".orchestrator", "runs");
-const settingsFile = resolve(".orchestrator", "settings.json");
+const pipelinesDirectory = resolve(".orchestrator", "plans");
 const projectsFile = resolve(".orchestrator", "projects.json");
 const defaultReviewSettings: ReviewSettings = {
   enabled: true,
@@ -122,9 +194,9 @@ const defaultLimits: Limits = {
   taskTimeoutMinutes: 30,
   reviewerTimeoutMinutes: 10,
   maxTaskRetries: 1,
+  maxParallelTasks: 1,
 };
 const defaultGitSettings: GitSettings = { checkpointCommits: false };
-let reviewSettings: ReviewSettings = defaultReviewSettings;
 let savedProjects: ProjectProfile[] = [];
 const windowsCodexBin = join(
   process.env.LOCALAPPDATA || "",
@@ -135,10 +207,13 @@ const windowsCodexBin = join(
   "codex-x86_64-pc-windows-msvc.exe",
 );
 let activeRun: Run | undefined;
-let activeProcess: ReturnType<typeof spawn> | undefined;
-let skippedTaskId: string | undefined;
+let activePipeline: LoadedPipeline | undefined;
+const activeProcesses = new Map<string, ReturnType<typeof spawn>>();
+const skippedTaskIds = new Set<string>();
 let resumePausedRun: (() => void) | undefined;
 const subscribers = new Set<express.Response>();
+const jsonWriteChains = new Map<string, Promise<void>>();
+let codexCliCheck: Promise<boolean> | undefined;
 
 const timestamp = () => new Date().toISOString();
 const identifier = () =>
@@ -176,11 +251,35 @@ function publish(event: string, data: unknown) {
   subscribers.forEach((response) => response.write(message));
 }
 
-async function persist(run: Run) {
-  await mkdir(join(runsDirectory, run.id), { recursive: true });
-  await writeFile(
-    join(runsDirectory, run.id, "run.json"),
-    JSON.stringify(run, null, 2),
+function writeJsonAtomically(file: string, value: unknown) {
+  const content = JSON.stringify(value, null, 2);
+  const previous = jsonWriteChains.get(file) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      await mkdir(dirname(file), { recursive: true });
+      const temporary = `${file}.${process.pid}.${identifier()}.tmp`;
+      try {
+        await writeFile(temporary, content);
+        await rename(temporary, file);
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
+    });
+  jsonWriteChains.set(file, next);
+  void next.finally(() => {
+    if (jsonWriteChains.get(file) === next) jsonWriteChains.delete(file);
+  });
+  return next;
+}
+
+function persist(run: Run) {
+  return Promise.all([
+    writeJsonAtomically(join(runsDirectory, run.id, "run.json"), run),
+    writeJsonAtomically(join(runsDirectory, run.id, "summary.json"), runSummary(run)),
+  ]).then(
+    () => undefined,
   );
 }
 function processIsAlive(pid: number) {
@@ -249,17 +348,6 @@ export async function releaseProjectLock(run: Run) {
   }
   run.lock = undefined;
 }
-async function loadSettings() {
-  if (existsSync(settingsFile))
-    reviewSettings = {
-      ...defaultReviewSettings,
-      ...JSON.parse(await readFile(settingsFile, "utf8")),
-    };
-}
-async function persistSettings() {
-  await mkdir(resolve(".orchestrator"), { recursive: true });
-  await writeFile(settingsFile, JSON.stringify(reviewSettings, null, 2));
-}
 async function loadProjects() {
   if (existsSync(projectsFile))
     savedProjects = JSON.parse(
@@ -293,6 +381,9 @@ async function recoverInterruptedRuns() {
     try {
       await acquireProjectLock(run);
       activeRun = run;
+      activePipeline = run.pipeline
+        ? await loadPersistedPipeline(run.pipeline.id)
+        : undefined;
       break;
     } catch {
       /* another orchestrator owns this project */
@@ -306,16 +397,27 @@ async function loadRun(id: string) {
   return JSON.parse(await readFile(file, "utf8")) as Run;
 }
 
+async function loadRunSummary(id: string): Promise<RunSummary | undefined> {
+  const file = join(runsDirectory, id, "summary.json");
+  if (existsSync(file))
+    return JSON.parse(await readFile(file, "utf8")) as RunSummary;
+  const run = await loadRun(id);
+  if (!run) return undefined;
+  const summary = runSummary(run);
+  void writeJsonAtomically(file, summary);
+  return summary;
+}
+
 async function listRuns() {
   if (!existsSync(runsDirectory)) return [];
   const entries = await readdir(runsDirectory, { withFileTypes: true });
   const runs = await Promise.all(
     entries
       .filter((entry) => entry.isDirectory())
-      .map((entry) => loadRun(entry.name)),
+      .map((entry) => loadRunSummary(entry.name).catch(() => undefined)),
   );
   return runs
-    .filter((run): run is Run => Boolean(run))
+    .filter((run): run is RunSummary => Boolean(run))
     .sort((left, right) =>
       (right.startedAt || "").localeCompare(left.startedAt || ""),
     );
@@ -389,6 +491,7 @@ function markdownReport(run: Run) {
       const meta = [
         `Status: **${task.status}**`,
         `Model: ${task.model}`,
+        `Model selection: ${task.requestedModel} (${task.modelSelectionReason})`,
         `Effort: ${task.effort}`,
         `Executor attempts: ${task.executionAttempts ?? 0}/${(task.maxRetries ?? limits.maxTaskRetries) + 1}`,
         `Timeout: ${task.timeoutMinutes ?? limits.taskTimeoutMinutes} min`,
@@ -425,7 +528,7 @@ export function outsideAllowedPaths(
 
 export function validateQueue(value: unknown): {
   project: { name: string; path: string } & ProjectSettings;
-  tasks: TaskInput[];
+  tasks: ResolvedTask[];
   limits: Limits;
   git: GitSettings;
 } {
@@ -469,18 +572,59 @@ export function validateQueue(value: unknown): {
   )
     throw new Error("limits.maxTaskRetries must be an integer from 0 to 3.");
   if (
+    !Number.isInteger(limits.maxParallelTasks) ||
+    limits.maxParallelTasks < 1 ||
+    limits.maxParallelTasks > 4
+  )
+    throw new Error(
+      "limits.maxParallelTasks must be an integer from 1 to 4.",
+    );
+  if (
     queue.git?.checkpointCommits !== undefined &&
     typeof queue.git.checkpointCommits !== "boolean"
   )
     throw new Error("git.checkpointCommits must be true or false.");
   const tasks = queue.tasks.map((candidate, index) => {
     const task = candidate as TaskInput;
-    const model = task.model ?? project.defaultModel ?? "terra";
     const effort = task.effort ?? project.defaultEffort ?? "medium";
     if (!task.title || !task.prompt)
       throw new Error(`Task ${index + 1} needs title and prompt.`);
-    if (!Object.hasOwn(MODEL_IDS, model))
+    if (
+      task.key !== undefined &&
+      (typeof task.key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(task.key))
+    )
+      throw new Error(
+        `Task ${index + 1}: key must use letters, numbers, hyphens, or underscores.`,
+      );
+    if (
+      task.dependsOn !== undefined &&
+      (!Array.isArray(task.dependsOn) ||
+        task.dependsOn.some((dependency) => typeof dependency !== "string"))
+    )
+      throw new Error(`Task ${index + 1}: dependsOn must be a list of task keys.`);
+    if (
+      task.resources !== undefined &&
+      (!Array.isArray(task.resources) ||
+        task.resources.some(
+          (resource) =>
+            typeof resource !== "string" ||
+            !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(resource),
+        ))
+    )
+      throw new Error(
+        `Task ${index + 1}: resources must use letters, numbers, dots, hyphens, or underscores.`,
+      );
+    if (
+      task.resources &&
+      new Set(task.resources).size !== task.resources.length
+    )
+      throw new Error(`Task ${index + 1}: resources must not contain duplicates.`);
+    if (task.model !== undefined && task.model !== "auto" && !Object.hasOwn(MODEL_IDS, task.model))
       throw new Error(`Task ${index + 1}: unsupported model.`);
+    if (task.minModel !== undefined && !Object.hasOwn(MODEL_IDS, task.minModel))
+      throw new Error(`Task ${index +1}: unsupported minModel.`);
+    const selection = resolveTaskModel({ ...task, effort }, project);
+    const model = selection.model;
     if (project.allowedModels?.length && !project.allowedModels.includes(model))
       throw new Error(
         `Task ${index + 1}: model is not enabled for this project.`,
@@ -509,8 +653,44 @@ export function validateQueue(value: unknown): {
       throw new Error(
         `Task ${index + 1}: maxRetries must be an integer from 0 to 3.`,
       );
-    return { ...task, model, effort };
+    return { ...task, model, effort, requestedModel: selection.requestedModel, modelSelectionReason: selection.reason };
   });
+  const taskKeys = new Set<string>();
+  tasks.forEach((task, index) => {
+    if (!task.key) return;
+    if (taskKeys.has(task.key))
+      throw new Error(`Task ${index + 1}: duplicate task key \"${task.key}\".`);
+    taskKeys.add(task.key);
+  });
+  const dependencies = new Map<string, string[]>();
+  tasks.forEach((task, index) => {
+    if (!task.dependsOn?.length) return;
+    if (!task.key)
+      throw new Error(`Task ${index + 1}: key is required when dependsOn is used.`);
+    if (new Set(task.dependsOn).size !== task.dependsOn.length)
+      throw new Error(`Task ${index + 1}: dependsOn must not contain duplicates.`);
+    task.dependsOn.forEach((dependency) => {
+      if (!taskKeys.has(dependency))
+        throw new Error(
+          `Task ${index + 1}: dependsOn references unknown task key \"${dependency}\".`,
+        );
+      if (dependency === task.key)
+        throw new Error(`Task ${index + 1}: a task cannot depend on itself.`);
+    });
+    dependencies.set(task.key, task.dependsOn);
+  });
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (key: string): void => {
+    if (visiting.has(key))
+      throw new Error(`Task dependencies contain a cycle involving \"${key}\".`);
+    if (visited.has(key)) return;
+    visiting.add(key);
+    dependencies.get(key)?.forEach(visit);
+    visiting.delete(key);
+    visited.add(key);
+  };
+  taskKeys.forEach(visit);
   const verificationCommands =
     project.verificationCommands?.filter(Boolean) ?? [];
   return {
@@ -548,10 +728,327 @@ export function resolveTaskStatus({
   return exitCode === 0 && violations.length === 0 ? "completed" : "failed";
 }
 
+async function ensureRunSummaries() {
+  if (!existsSync(runsDirectory)) return;
+  const entries = await readdir(runsDirectory, { withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => loadRunSummary(entry.name).catch(() => undefined)),
+  );
+}
+
+function runSummary(run: Run): RunSummary {
+  return {
+    id: run.id,
+    project: run.project,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    taskCount: run.tasks.length,
+  };
+}
+
+function pipelineFile(pipeline: LoadedPipeline) {
+  return join(pipelinesDirectory, pipeline.id, "plan.json");
+}
+
+function persistPipeline(pipeline: LoadedPipeline) {
+  const file = pipelineFile(pipeline);
+  return writeJsonAtomically(file, pipeline);
+}
+
+async function loadPersistedPipeline(id: string): Promise<LoadedPipeline | undefined> {
+  const file = join(pipelinesDirectory, id, "plan.json");
+  if (!existsSync(file)) return undefined;
+  const pipeline = JSON.parse(await readFile(file, "utf8")) as LoadedPipeline;
+  if (
+    pipeline.id !== id ||
+    !Array.isArray(pipeline.queues) ||
+    !Number.isInteger(pipeline.currentIndex) ||
+    pipeline.currentIndex < 0 ||
+    pipeline.currentIndex >= pipeline.queues.length
+  )
+    throw new Error(`Saved pipeline ${id} is invalid.`);
+  return pipeline;
+}
+
+function pipelineView(pipeline: LoadedPipeline): PipelineView {
+  return {
+    id: pipeline.id,
+    currentIndex: pipeline.currentIndex,
+    status: pipeline.status,
+    queues: pipeline.queues.map((entry, index) => ({
+      index,
+      file: entry.file,
+      name: entry.file === "(current queue)" ? "Текущая очередь" : basename(entry.file),
+      state:
+        index < pipeline.currentIndex
+          ? "completed"
+          : index === pipeline.currentIndex
+            ? "current"
+            : "pending",
+    })),
+  };
+}
+
+export function resolveReviewedTaskStatus(
+  status: Status,
+  reviewStatus?: ReviewStatus,
+): Status {
+  if (status !== "completed") return status;
+  if (reviewStatus === "timed_out") return "timed_out";
+  if (reviewStatus === "changes_requested") return "failed";
+  return "completed";
+}
+
+function pathsOverlap(left: string, right: string) {
+  return (
+    left === right ||
+    left.startsWith(`${right}/`) ||
+    right.startsWith(`${left}/`)
+  );
+}
+
+export function tasksConflict(left: Task, right: Task) {
+  const leftResources = new Set(left.resources ?? []);
+  if ((right.resources ?? []).some((resource) => leftResources.has(resource)))
+    return true;
+  if (!left.allowedPaths?.length || !right.allowedPaths?.length) return true;
+  return left.allowedPaths.some((leftPath) =>
+    right.allowedPaths!.some((rightPath) => pathsOverlap(leftPath, rightPath)),
+  );
+}
+
+export function blockTasksWithFailedDependencies(tasks: Task[]) {
+  const byKey = new Map(
+    tasks.flatMap((task) => (task.key ? [[task.key, task] as const] : [])),
+  );
+  let changed = false;
+  for (const task of tasks) {
+    if (task.status !== "pending" || !task.dependsOn?.length) continue;
+    const failedDependency = task.dependsOn.find((key) => {
+      const status = byKey.get(key)?.status;
+      return (
+        status === "failed" ||
+        status === "timed_out" ||
+        status === "cancelled" ||
+        status === "skipped" ||
+        status === "blocked"
+      );
+    });
+    if (!failedDependency) continue;
+    task.status = "blocked";
+    task.finishedAt = timestamp();
+    task.log.push(`Blocked: dependency \"${failedDependency}\" did not complete.`);
+    changed = true;
+  }
+  return changed;
+}
+
+export function selectRunnableTasks(
+  tasks: Task[],
+  maxTasks: number,
+  runningTasks: Task[] = [],
+) {
+  const byKey = new Map(
+    tasks.flatMap((task) => (task.key ? [[task.key, task] as const] : [])),
+  );
+  const selected: Task[] = [];
+  for (const task of tasks) {
+    if (selected.length >= maxTasks || task.status !== "pending") continue;
+    if (
+      task.dependsOn?.some(
+        (dependency) => byKey.get(dependency)?.status !== "completed",
+      )
+    )
+      continue;
+    if ([...runningTasks, ...selected].some((other) => tasksConflict(task, other)))
+      continue;
+    selected.push(task);
+  }
+  return selected;
+}
+
+export function schedulerSnapshot(run: Run) {
+  const runningTasks = run.tasks.filter((task) => task.status === "running");
+  const availableSlots = Math.max(
+    0,
+    run.limits.maxParallelTasks - runningTasks.length,
+  );
+  const readyTasks = selectRunnableTasks(
+    run.tasks,
+    availableSlots,
+    runningTasks,
+  );
+  return {
+    maxParallelTasks: run.limits.maxParallelTasks,
+    runningTaskIds: runningTasks.map((task) => task.id),
+    availableSlots,
+    readyTaskKeys: readyTasks.map((task) => task.key ?? task.id),
+    waitingTaskKeys: run.tasks
+      .filter((task) => task.status === "pending" && !readyTasks.includes(task))
+      .map((task) => task.key ?? task.id),
+  };
+}
+
+function isPipeline(value: unknown): value is PipelineInput {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "queues" in value &&
+      Array.isArray((value as PipelineInput).queues),
+  );
+}
+
+/** Read every queue before work begins, so a later invalid file cannot leave a partial plan running. */
+export async function loadPipeline(value: unknown): Promise<LoadedPipeline> {
+  if (!isPipeline(value) || value.queues.length === 0)
+    throw new Error("Pipeline must include at least one queue file.");
+  const queues = await Promise.all(
+    value.queues.map(async (entry, index) => {
+      if (!entry || typeof entry.file !== "string" || !entry.file.trim())
+        throw new Error(`Pipeline queue ${index + 1} must include a file path.`);
+      const file = resolve(entry.file);
+      if (!existsSync(file))
+        throw new Error(`Pipeline queue ${index + 1} file does not exist: ${file}`);
+      let source: string;
+      try {
+        source = await readFile(file, "utf8");
+      } catch {
+        throw new Error(`Pipeline queue ${index + 1} could not be read: ${file}`);
+      }
+      try {
+        return { file, queue: validateQueue(parse(source)) };
+      } catch (error) {
+        throw new Error(
+          `Pipeline queue ${index + 1} is invalid (${file}): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }),
+  );
+  return { id: identifier(), queues, currentIndex: 0, status: "running" };
+}
+
+function createRun(
+  queue: ReturnType<typeof validateQueue>,
+  pipeline?: Run["pipeline"],
+): Run {
+  return {
+    id: identifier(),
+    project: queue.project,
+    status: "idle",
+    review: { ...defaultReviewSettings },
+    limits: queue.limits,
+    git: queue.git,
+    pipeline,
+    tasks: queue.tasks.map((task) => ({
+      ...task,
+      id: identifier(),
+      status: "pending",
+      log: [],
+    })),
+  };
+}
+
+function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
+  return {
+    project: run.project,
+    limits: run.limits,
+    git: run.git,
+    tasks: run.tasks.map((task) => ({
+      key: task.key,
+      dependsOn: task.dependsOn,
+      resources: task.resources,
+      title: task.title,
+      prompt: task.prompt,
+      model: task.model,
+      minModel: task.minModel,
+      effort: task.effort,
+      allowedPaths: task.allowedPaths,
+      timeoutMinutes: task.timeoutMinutes,
+      maxRetries: task.maxRetries,
+      requestedModel: task.requestedModel,
+      modelSelectionReason: task.modelSelectionReason,
+    })),
+  };
+}
+
+async function activePipelineForAppend() {
+  if (!activeRun || (activeRun.status !== "running" && activeRun.status !== "paused"))
+    throw new Error("No active queue to append to.");
+  if (activePipeline) return activePipeline;
+  const pipeline: LoadedPipeline = {
+    id: identifier(),
+    queues: [{ file: "(current queue)", queue: queueFromRun(activeRun) }],
+    currentIndex: 0,
+    currentRunId: activeRun.id,
+    status: activeRun.status,
+  };
+  activePipeline = pipeline;
+  activeRun.pipeline = { id: pipeline.id, file: "(current queue)", index: 1, total: 1 };
+  await persistPipeline(pipeline);
+  return pipeline;
+}
+
+async function appendPipelineQueue(source: string, filename: string) {
+  const pipeline = await activePipelineForAppend();
+  let queue: ReturnType<typeof validateQueue>;
+  try {
+    queue = validateQueue(parse(source));
+  } catch (error) {
+    throw new Error(
+      `Invalid appended YAML: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const safeName = basename(filename || "queue.yaml").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const file = join(pipelinesDirectory, pipeline.id, "queues", `${identifier()}-${safeName}`);
+  await mkdir(join(pipelinesDirectory, pipeline.id, "queues"), { recursive: true });
+  await writeFile(file, source, "utf8");
+  pipeline.queues.push({ file, queue });
+  activeRun!.pipeline = {
+    id: pipeline.id,
+    file: activeRun!.pipeline?.file ?? "(current queue)",
+    index: pipeline.currentIndex + 1,
+    total: pipeline.queues.length,
+  };
+  await Promise.all([persistPipeline(pipeline), persist(activeRun!)]);
+  publish("run", activeRun);
+  return {
+    position: pipeline.queues.length,
+    total: pipeline.queues.length,
+    file,
+    pipeline: pipelineView(pipeline),
+  };
+}
+
+async function removePipelineQueue(index: number) {
+  const pipeline = activePipeline;
+  if (!pipeline) throw new Error("No active pipeline.");
+  if (!Number.isInteger(index) || index <= pipeline.currentIndex)
+    throw new Error("Only queued files after the current queue can be removed.");
+  const entry = pipeline.queues[index];
+  if (!entry) throw new Error("Queued file not found.");
+  pipeline.queues.splice(index, 1);
+  if (activeRun?.pipeline) activeRun.pipeline.total = pipeline.queues.length;
+  const ownedQueueDirectory = resolve(pipelinesDirectory, pipeline.id, "queues");
+  const file = resolve(entry.file);
+  if (file.startsWith(`${ownedQueueDirectory}${process.platform === "win32" ? "\\" : "/"}`))
+    await unlink(file).catch(() => undefined);
+  await Promise.all([
+    persistPipeline(pipeline),
+    activeRun ? persist(activeRun) : Promise.resolve(),
+  ]);
+  if (activeRun) publish("run", activeRun);
+  return pipelineView(pipeline);
+}
+
 export function recoverRun(run: Run) {
   if (run.status !== "running") return run;
-  const task = run.tasks.find((candidate) => candidate.status === "running");
-  if (task) {
+  const runningTasks = run.tasks.filter(
+    (candidate) => candidate.status === "running",
+  );
+  for (const task of runningTasks) {
     task.status = "failed";
     task.finishedAt = timestamp();
     task.exitCode = 1;
@@ -564,45 +1061,68 @@ export function recoverRun(run: Run) {
   return run;
 }
 
+function resetTaskForRun(task: Task, sourceRunId: string) {
+  return {
+    ...task,
+    id: identifier(),
+    status: "pending" as Status,
+    log: [`Restarted from run ${sourceRunId}`],
+    startedAt: undefined,
+    finishedAt: undefined,
+    exitCode: undefined,
+    timedOut: undefined,
+    changedFiles: undefined,
+    diff: undefined,
+    finalOutput: undefined,
+    reviewStatus: undefined,
+    reviewOutput: undefined,
+    attempts: undefined,
+    executionAttempts: undefined,
+    checkpoint: undefined,
+  };
+}
+
+function dependentTaskKeys(tasks: Task[], rootKey?: string) {
+  if (!rootKey) return new Set<string>();
+  const keys = new Set([rootKey]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const task of tasks) {
+      if (
+        task.key &&
+        !keys.has(task.key) &&
+        task.dependsOn?.some((dependency) => keys.has(dependency))
+      ) {
+        keys.add(task.key);
+        changed = true;
+      }
+    }
+  }
+  return keys;
+}
+
 export function retryRun(source: Run, task: Task): Run {
+  const retryKeys = dependentTaskKeys(source.tasks, task.key);
   return {
     id: identifier(),
     project: source.project,
     status: "idle",
-    review: { ...reviewSettings },
+    review: { ...defaultReviewSettings },
     limits: source.limits ?? defaultLimits,
     git: source.git ?? defaultGitSettings,
-    tasks: [
-      {
-        ...task,
-        id: identifier(),
-        status: "pending",
-        log: [],
-        startedAt: undefined,
-        finishedAt: undefined,
-        exitCode: undefined,
-        timedOut: undefined,
-        changedFiles: undefined,
-        diff: undefined,
-        finalOutput: undefined,
-        reviewStatus: undefined,
-        reviewOutput: undefined,
-        attempts: undefined,
-        executionAttempts: undefined,
-        checkpoint: undefined,
-      },
-    ],
+    tasks: source.tasks.map((candidate) =>
+      candidate.id === task.id || (candidate.key && retryKeys.has(candidate.key))
+        ? resetTaskForRun(candidate, source.id)
+        : { ...candidate, id: identifier() },
+    ),
   };
 }
 
 export function resumeRun(source: Run): Run | undefined {
-  const firstIncomplete = source.tasks.findIndex(
-    (task) => task.status !== "completed",
-  );
-  if (firstIncomplete < 0) return undefined;
+  if (source.tasks.every((task) => task.status === "completed")) return undefined;
   const remaining = source.tasks
-    .slice(firstIncomplete)
-    .map((task) => ({
+    .map((task) => task.status === "completed" ? { ...task, id: identifier() } : ({
       ...task,
       id: identifier(),
       status: "pending" as Status,
@@ -624,7 +1144,7 @@ export function resumeRun(source: Run): Run | undefined {
     id: identifier(),
     project: source.project,
     status: "idle",
-    review: { ...reviewSettings },
+    review: { ...defaultReviewSettings },
     limits: source.limits ?? defaultLimits,
     git: source.git ?? defaultGitSettings,
     tasks: remaining,
@@ -666,6 +1186,11 @@ async function commandSucceeds(command: string, args: string[], cwd?: string) {
     child.on("close", (code) => done(code === 0));
     child.on("error", () => done(false));
   });
+}
+
+function codexCliAvailable() {
+  codexCliCheck ??= commandSucceeds(codexBin(), ["exec", "--help"]);
+  return codexCliCheck;
 }
 
 async function runGit(cwd: string, args: string[]) {
@@ -753,22 +1278,24 @@ async function readGitDiff(cwd: string, paths: string[]) {
 }
 
 async function preflight(value: unknown) {
-  const queue = validateQueue(value);
-  const cli = await commandSucceeds(codexBin(), ["exec", "--help"]);
-  const git = await commandSucceeds(
-    "git",
-    ["rev-parse", "--is-inside-work-tree"],
-    queue.project.path,
-  );
+  const pipeline = isPipeline(value) ? await loadPipeline(value) : undefined;
+  const queue = pipeline?.queues[0].queue ?? validateQueue(value);
   const agentsPath = join(queue.project.path, "AGENTS.md");
   const packageFile = join(queue.project.path, "package.json");
-  const scripts = existsSync(packageFile)
-    ? ((
-        JSON.parse(await readFile(packageFile, "utf8")) as {
-          scripts?: Record<string, string>;
-        }
-      ).scripts ?? {})
-    : {};
+  const [cli, git, scripts] = await Promise.all([
+    codexCliAvailable(),
+    commandSucceeds(
+      "git",
+      ["rev-parse", "--is-inside-work-tree"],
+      queue.project.path,
+    ),
+    existsSync(packageFile)
+      ? readFile(packageFile, "utf8").then(
+          (source) =>
+            (JSON.parse(source) as { scripts?: Record<string, string> }).scripts ?? {},
+        )
+      : Promise.resolve({}),
+  ]);
   const checks = queue.tasks.flatMap((task, index) => {
     const modelOk = Object.hasOwn(MODEL_IDS, task.model ?? "terra");
     return [
@@ -800,6 +1327,15 @@ async function preflight(value: unknown) {
           "No package scripts found",
       },
       ...checks,
+      ...(pipeline
+        ? [
+            {
+              name: "Pipeline files",
+              ok: true,
+              detail: `${pipeline.queues.length} queues validated`,
+            },
+          ]
+        : []),
     ],
   };
   return result;
@@ -925,7 +1461,7 @@ async function correctTask(run: Run, task: Task) {
     );
     return { code: 1, timedOut: false };
   }
-  activeProcess = child;
+  activeProcesses.set(task.id, child);
   const { exitCode: code, timedOut } = await waitForProcess(
     child,
     task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
@@ -934,7 +1470,7 @@ async function correctTask(run: Run, task: Task) {
         `Автоисправление превысило лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин. и было остановлено.`,
       ),
   );
-  activeProcess = undefined;
+  activeProcesses.delete(task.id);
   if (existsSync(outputFile))
     task.finalOutput = (await readFile(outputFile, "utf8")).slice(0, 24_000);
   task.log.push(
@@ -958,17 +1494,7 @@ async function pauseBeforeNextTask(run: Run) {
   await resumed;
 }
 
-async function executeQueue(run: Run) {
-  run.status = "running";
-  run.startedAt ??= timestamp();
-  run.pausedAt = undefined;
-  await persist(run);
-  publish("run", run);
-  for (const task of run.tasks) {
-    if (isCancelled(run)) break;
-    await pauseBeforeNextTask(run);
-    if (isCancelled(run)) break;
-    if (task.status !== "pending") continue;
+async function executeTask(run: Run, task: Task): Promise<Status> {
     const baseline = await readGitStatus(run.project.path);
     task.status = "running";
     task.startedAt = timestamp();
@@ -1013,7 +1539,7 @@ async function executeQueue(run: Run) {
         );
         break;
       }
-      activeProcess = child;
+      activeProcesses.set(task.id, child);
       const consume = (chunk: Buffer) => {
         const text = chunk.toString();
         for (const line of text.split(/\r?\n/)) {
@@ -1036,10 +1562,10 @@ async function executeQueue(run: Run) {
             `Задача превысила лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин. и была остановлена.`,
           ),
       );
-      activeProcess = undefined;
+      activeProcesses.delete(task.id);
       task.exitCode = result.exitCode;
       task.timedOut ||= result.timedOut;
-      if (task.exitCode === 0 || isCancelled(run) || skippedTaskId === task.id)
+      if (task.exitCode === 0 || isCancelled(run) || skippedTaskIds.has(task.id))
         break;
       if (attempt <= maxRetries)
         task.log.push(
@@ -1062,14 +1588,14 @@ async function executeQueue(run: Run) {
       );
     task.status = resolveTaskStatus({
       cancelled: isCancelled(run),
-      skipped: skippedTaskId === task.id,
+      skipped: skippedTaskIds.has(task.id),
       exitCode: task.exitCode ?? 1,
       timedOut: Boolean(task.timedOut),
       violations,
     });
     if (task.status === "skipped") {
       task.log.push("Пропущено пользователем");
-      skippedTaskId = undefined;
+      skippedTaskIds.delete(task.id);
     }
     if (task.status === "completed") {
       await reviewTask(run, task);
@@ -1083,22 +1609,88 @@ async function executeQueue(run: Run) {
         else if (fixResult.code === 0 && !isCancelled(run))
           await reviewTask(run, task);
       }
-      if (task.reviewStatus === "timed_out") task.status = "timed_out";
-      else if (
-        task.reviewStatus === "changes_requested" ||
-        task.reviewStatus === "unavailable"
-      )
-        task.status = "failed";
+      task.status = resolveReviewedTaskStatus(task.status, task.reviewStatus);
+      if (task.reviewStatus === "unavailable")
+        task.log.push("Reviewer unavailable: task result retained without reviewer approval.");
     }
     if (task.status === "completed") await createCheckpoint(run, task);
     await persist(run);
     publish("run", run);
-    if (task.status === "failed" || task.status === "timed_out") {
-      run.status = task.status === "timed_out" ? "timed_out" : "failed";
-      break;
+    return task.status;
+}
+
+async function executeQueue(run: Run) {
+  run.status = "running";
+  run.startedAt ??= timestamp();
+  run.pausedAt = undefined;
+  await persist(run);
+  publish("run", run);
+  const running = new Map<string, Promise<{ id: string; status: Status }>>();
+  const startTask = (task: Task) => {
+    const execution = executeTask(run, task)
+      .then((status) => ({ id: task.id, status }))
+      .catch(async (error) => {
+        task.status = "failed";
+        task.finishedAt = timestamp();
+        task.exitCode ??= 1;
+        task.log.push(
+          `Task execution failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        await persist(run);
+        publish("run", run);
+        return { id: task.id, status: task.status };
+      });
+    running.set(task.id, execution);
+  };
+
+  while (true) {
+    const blocked = blockTasksWithFailedDependencies(run.tasks);
+    if (blocked) {
+      await persist(run);
+      publish("run", run);
     }
+    if (run.pauseRequested && running.size === 0 && !isCancelled(run)) {
+      await pauseBeforeNextTask(run);
+      continue;
+    }
+    if (!isCancelled(run) && !run.pauseRequested) {
+      const ready = selectRunnableTasks(
+        run.tasks,
+        run.limits.maxParallelTasks - running.size,
+        run.tasks.filter((task) => task.status === "running"),
+      );
+      ready.forEach(startTask);
+    }
+    if (running.size) {
+      const settled = await Promise.race(running.values());
+      running.delete(settled.id);
+      continue;
+    }
+    if (isCancelled(run) || !run.tasks.some((task) => task.status === "pending"))
+      break;
+
+    // A validated acyclic graph cannot normally reach this branch. Preserve a
+    // terminal record instead of leaving an unreachable task pending forever.
+    for (const task of run.tasks.filter((task) => task.status === "pending")) {
+      task.status = "blocked";
+      task.finishedAt = timestamp();
+      task.log.push("Blocked: no runnable dependency path remains.");
+    }
+    await persist(run);
+    publish("run", run);
+    break;
   }
-  if (run.status === "running") run.status = "completed";
+  if (!isCancelled(run)) {
+    if (run.tasks.some((task) => task.status === "timed_out"))
+      run.status = "timed_out";
+    else if (
+      run.tasks.some(
+        (task) => task.status === "failed" || task.status === "blocked",
+      )
+    )
+      run.status = "failed";
+    else run.status = "completed";
+  }
   run.finishedAt = timestamp();
   await persist(run);
   publish("run", run);
@@ -1109,6 +1701,54 @@ async function execute(run: Run) {
     await executeQueue(run);
   } finally {
     await releaseProjectLock(run);
+    await persist(run);
+    publish("run", run);
+    await continuePipeline(run);
+  }
+}
+
+async function startPipelineQueue(pipeline: LoadedPipeline) {
+  const entry = pipeline.queues[pipeline.currentIndex];
+  if (!entry) return;
+  const run = createRun(entry.queue, {
+    id: pipeline.id,
+    file: entry.file,
+    index: pipeline.currentIndex + 1,
+    total: pipeline.queues.length,
+  });
+  await acquireProjectLock(run);
+  pipeline.currentRunId = run.id;
+  activeRun = run;
+  // A run must be durable before its executor starts. Besides making it visible
+  // to the history endpoint immediately, this keeps a launch from disappearing
+  // if the process exits while the executor is being scheduled.
+  await Promise.all([persistPipeline(pipeline), persist(run)]);
+  publish("run", run);
+  void execute(run);
+}
+
+async function continuePipeline(run: Run) {
+  const pipeline = activePipeline;
+  if (!pipeline || pipeline.currentRunId !== run.id) return;
+  if (run.status !== "completed") {
+    pipeline.status = run.status;
+    await persistPipeline(pipeline);
+    return;
+  }
+  pipeline.currentIndex += 1;
+  if (pipeline.currentIndex >= pipeline.queues.length) {
+    pipeline.status = "completed";
+    await persistPipeline(pipeline);
+    return;
+  }
+  try {
+    await startPipelineQueue(pipeline);
+  } catch (error) {
+    pipeline.status = "failed";
+    await persistPipeline(pipeline);
+    lastSettledTask(run)?.log.push(
+      `Pipeline could not start the next queue: ${error instanceof Error ? error.message : String(error)}`,
+    );
     await persist(run);
     publish("run", run);
   }
@@ -1159,6 +1799,24 @@ app.get("/api/health", (_, response) =>
   response.json({ ok: true, codexBin: codexBin(), cliModelIds: MODEL_IDS }),
 );
 app.get("/api/run", (_, response) => response.json(activeRun ?? null));
+app.get("/api/run/scheduler", (_, response) =>
+  response.json(activeRun ? schedulerSnapshot(activeRun) : null),
+);
+app.get("/api/pipeline", (_, response) =>
+  response.json(activePipeline ? pipelineView(activePipeline) : null),
+);
+app.get("/api/pipeline/:id", async (request, response) => {
+  try {
+    const pipeline = await loadPersistedPipeline(request.params.id);
+    return pipeline
+      ? response.json(pipelineView(pipeline))
+      : response.status(404).json({ error: "Pipeline not found." });
+  } catch (error) {
+    return response.status(500).json({
+      error: error instanceof Error ? error.message : "Could not load pipeline.",
+    });
+  }
+});
 app.get("/api/projects", (_, response) => response.json(savedProjects));
 app.post("/api/projects", async (request, response) => {
   try {
@@ -1205,29 +1863,30 @@ app.delete("/api/projects/:id", async (request, response) => {
   await persistProjects();
   return response.status(204).end();
 });
-app.get("/api/settings", (_, response) => response.json(reviewSettings));
-app.put("/api/settings", async (request, response) => {
-  const next = request.body as Partial<ReviewSettings>;
-  if (
-    !Object.hasOwn(MODEL_IDS, next.model ?? reviewSettings.model) ||
-    !["light", "medium", "high"].includes(
-      next.effort ?? reviewSettings.effort,
-    ) ||
-    !Number.isInteger(next.maxCorrections ?? reviewSettings.maxCorrections) ||
-    (next.maxCorrections ?? reviewSettings.maxCorrections) < 0 ||
-    (next.maxCorrections ?? reviewSettings.maxCorrections) > 3
-  )
-    return response.status(400).json({ error: "Invalid reviewer settings." });
-  reviewSettings = { ...reviewSettings, ...next };
-  await persistSettings();
-  return response.json(reviewSettings);
+app.get("/api/runs", async (request, response) => {
+  const offset = Math.max(0, Number.parseInt(String(request.query.offset ?? "0"), 10) || 0);
+  const limit = Math.min(
+    50,
+    Math.max(1, Number.parseInt(String(request.query.limit ?? "5"), 10) || 5),
+  );
+  const runs = await listRuns();
+  return response.json({ total: runs.length, runs: runs.slice(offset, offset + limit) });
 });
-app.get("/api/runs", async (_, response) => response.json(await listRuns()));
 app.get("/api/runs/:id", async (request, response) => {
   const run = await loadRun(request.params.id);
   return run
     ? response.json(run)
     : response.status(404).json({ error: "Run not found." });
+});
+app.delete("/api/runs/:id", async (request, response) => {
+  if (activeRun?.id === request.params.id)
+    return response.status(409).json({ error: "The active run cannot be deleted." });
+  const run = await loadRun(request.params.id);
+  if (!run) return response.status(404).json({ error: "Run not found." });
+  if (run.status === "running" || run.status === "paused")
+    return response.status(409).json({ error: "Only finished runs can be deleted." });
+  await rm(join(runsDirectory, run.id), { recursive: true, force: true });
+  return response.status(204).end();
 });
 app.get("/api/runs/:id/report", async (request, response) => {
   const run =
@@ -1333,25 +1992,21 @@ app.post("/api/runs", async (request, response) => {
   try {
     if (activeRun?.status === "running" || activeRun?.status === "paused")
       return response.status(409).json({ error: "A run is already active." });
-    const queue = validateQueue(
-      typeof request.body === "string" ? parse(request.body) : request.body,
-    );
-    const run: Run = {
-      id: identifier(),
-      project: queue.project,
-      status: "idle",
-      review: { ...reviewSettings },
-      limits: queue.limits,
-      git: queue.git,
-      tasks: queue.tasks.map((task) => ({
-        ...task,
-        model: task.model!,
-        effort: task.effort!,
-        id: identifier(),
-        status: "pending",
-        log: [],
-      })),
-    };
+    const value =
+      typeof request.body === "string" ? parse(request.body) : request.body;
+    if (isPipeline(value)) {
+      const pipeline = await loadPipeline(value);
+      activePipeline = pipeline;
+      try {
+        await startPipelineQueue(pipeline);
+        return response.status(201).json(activeRun);
+      } catch (error) {
+        activePipeline = undefined;
+        throw error;
+      }
+    }
+    activePipeline = undefined;
+    const run = createRun(validateQueue(value));
     try {
       await acquireProjectLock(run);
     } catch (error) {
@@ -1362,6 +2017,7 @@ app.post("/api/runs", async (request, response) => {
         });
     }
     activeRun = run;
+    await persist(run);
     void execute(run);
     response.status(201).json(run);
   } catch (error) {
@@ -1372,14 +2028,42 @@ app.post("/api/runs", async (request, response) => {
       });
   }
 });
+app.post("/api/pipeline/append", async (request, response) => {
+  try {
+    if (typeof request.body !== "string")
+      throw new Error("Appended queue must be sent as YAML text.");
+    const result = await appendPipelineQueue(
+      request.body,
+      request.header("X-Queue-Filename") ?? "queue.yaml",
+    );
+    return response.status(201).json(result);
+  } catch (error) {
+    return response.status(400).json({
+      error: error instanceof Error ? error.message : "Could not append queue.",
+    });
+  }
+});
+app.delete("/api/pipeline/queues/:index", async (request, response) => {
+  try {
+    return response.json(await removePipelineQueue(Number(request.params.index)));
+  } catch (error) {
+    return response.status(400).json({
+      error: error instanceof Error ? error.message : "Could not remove queued file.",
+    });
+  }
+});
 app.post("/api/pause", async (_, response) => {
   if (!activeRun || activeRun.status !== "running")
     return response.status(409).json({ error: "No running queue to pause." });
   activeRun.pauseRequested = true;
-  const task =
-    activeRun.tasks.find((candidate) => candidate.status === "running") ??
-    lastSettledTask(activeRun);
-  task?.log.push(
+  const runningTasks = activeRun.tasks.filter(
+    (candidate) => candidate.status === "running",
+  );
+  const pauseLogTarget = runningTasks[0] ?? lastSettledTask(activeRun);
+  runningTasks.slice(1).forEach((task) =>
+    task.log.push("Pause requested: no new tasks will start after active work settles."),
+  );
+  pauseLogTarget?.log.push(
     "Пауза запрошена: текущая задача завершится, затем очередь остановится.",
   );
   await persist(activeRun);
@@ -1392,6 +2076,10 @@ app.post("/api/continue", async (_, response) => {
   activeRun.status = "running";
   activeRun.pauseRequested = false;
   activeRun.pausedAt = undefined;
+  if (activePipeline) {
+    activePipeline.status = "running";
+    await persistPipeline(activePipeline);
+  }
   lastSettledTask(activeRun)?.log.push("Очередь продолжена.");
   const resume = resumePausedRun;
   resumePausedRun = undefined;
@@ -1408,38 +2096,43 @@ app.post("/api/cancel", async (_, response) => {
   )
     return response.status(409).json({ error: "No active run." });
   activeRun.status = "cancelled";
+  if (activePipeline?.currentRunId === activeRun.id)
+    activePipeline.status = "cancelled";
   activeRun.pauseRequested = false;
-  const task = activeRun.tasks.find(
+  const tasks = activeRun.tasks.filter(
     (candidate) => candidate.status === "running",
   );
-  if (task) {
+  for (const task of tasks) {
     task.status = "cancelled";
     task.finishedAt = timestamp();
     task.log.push("Отменено пользователем");
   }
-  activeProcess?.kill();
+  activeProcesses.forEach((process) => process.kill());
   const resume = resumePausedRun;
   resumePausedRun = undefined;
   await persist(activeRun);
+  if (activePipeline?.currentRunId === activeRun.id)
+    await persistPipeline(activePipeline);
   publish("run", activeRun);
   resume?.();
   response.json(activeRun);
 });
-app.post("/api/skip", async (_, response) => {
-  if (!activeRun || activeRun.status !== "running" || !activeProcess)
+app.post("/api/skip", async (request, response) => {
+  if (!activeRun || activeRun.status !== "running" || !activeProcesses.size)
     return response
       .status(409)
       .json({ error: "No task is currently running." });
-  const task = activeRun.tasks.find(
-    (candidate) => candidate.status === "running",
-  );
-  if (!task)
+  const taskId = (request.body as { taskId?: unknown })?.taskId;
+  if (typeof taskId !== "string")
+    return response.status(400).json({ error: "taskId is required." });
+  const task = activeRun.tasks.find((candidate) => candidate.id === taskId);
+  if (!task || task.status !== "running" || !activeProcesses.has(task.id))
     return response
       .status(409)
-      .json({ error: "No task is currently running." });
-  skippedTaskId = task.id;
+      .json({ error: "The selected task is not currently running." });
+  skippedTaskIds.add(task.id);
   task.log.push("Запрошен пропуск задачи");
-  activeProcess.kill();
+  activeProcesses.get(task.id)?.kill();
   await persist(activeRun);
   publish("run", activeRun);
   return response.json(activeRun);
@@ -1464,6 +2157,7 @@ app.post("/api/runs/:runId/tasks/:taskId/retry", async (request, response) => {
       });
   }
   activeRun = retry;
+  await persist(retry);
   void execute(retry);
   return response.status(201).json(retry);
 });
@@ -1477,7 +2171,18 @@ app.post("/api/runs/:id/resume", async (request, response) => {
     return response
       .status(409)
       .json({ error: "All tasks in this run are already complete." });
+  let pipeline: LoadedPipeline | undefined;
   try {
+    if (source.pipeline) {
+      pipeline = await loadPersistedPipeline(source.pipeline.id);
+      if (!pipeline) throw new Error("Saved pipeline was not found.");
+      pipeline.currentRunId = resumed.id;
+      pipeline.status = "running";
+      resumed.pipeline = {
+        ...source.pipeline,
+        total: pipeline.queues.length,
+      };
+    }
     await acquireProjectLock(resumed);
   } catch (error) {
     return response
@@ -1487,6 +2192,11 @@ app.post("/api/runs/:id/resume", async (request, response) => {
       });
   }
   activeRun = resumed;
+  activePipeline = pipeline;
+  await Promise.all([
+    persist(resumed),
+    pipeline ? persistPipeline(pipeline) : Promise.resolve(),
+  ]);
   void execute(resumed);
   return response.status(201).json(resumed);
 });
@@ -1499,11 +2209,8 @@ app.get("/{*splat}", async (_, response) => {
 
 const port = Number(process.env.PORT || 4318);
 if (process.env.ORCHESTRATOR_TEST !== "1") {
-  void Promise.all([
-    recoverInterruptedRuns(),
-    loadSettings(),
-    loadProjects(),
-  ]).then(() =>
+  void codexCliAvailable();
+  void Promise.all([recoverInterruptedRuns(), ensureRunSummaries(), loadProjects()]).then(() =>
     app.listen(port, () => {
       const url = `http://localhost:${port}`;
       console.log(`Orchestrator on ${url}`);

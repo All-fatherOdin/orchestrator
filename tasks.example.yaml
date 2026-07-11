@@ -5,20 +5,40 @@ limits:
   taskTimeoutMinutes: 30
   reviewerTimeoutMinutes: 10
   maxTaskRetries: 1
+  # A dependency-aware scheduler may run up to this many safe tasks.
+  # Default 1 retains sequential execution.
+  maxParallelTasks: 3
 git:
   # Creates a checkpoint commit after each reviewer-approved task.
   checkpointCommits: false
 tasks:
-  - title: Fix TypeScript errors
+  # Stable `key` values let the orchestrator construct a dependency graph.
+  # Tasks with no unmet dependsOn entries may run in parallel.
+  - key: typecheck-fixes
+    title: Fix TypeScript errors
     prompt: Fix TypeScript errors in the notifications module and run the relevant checks.
-    model: terra
+    # The orchestrator resolves Auto before the run and records the result.
+    model: auto
     effort: medium
     # Optional per-task overrides:
     # timeoutMinutes: 45
     # maxRetries: 2
     allowedPaths: [src/notifications]
-  - title: Add reconnect logic
+    # Named resources are exclusive across concurrently running tasks.
+    resources: [typescript-check]
+  - key: reconnect-logic
+    title: Add reconnect logic
     prompt: Add WebSocket reconnection with exponential backoff and tests.
-    model: sol
+    model: auto
+    minModel: terra
     effort: medium
     allowedPaths: [src/websocket]
+    resources: [websocket-test-server]
+  - key: integration-tests
+    title: Add integration coverage
+    prompt: Add integration tests for the TypeScript fixes and WebSocket reconnect behavior.
+    model: terra
+    effort: medium
+    # This task waits for both independent implementation branches.
+    dependsOn: [typecheck-fixes, reconnect-logic]
+    allowedPaths: [tests/integration]
