@@ -1,0 +1,180 @@
+project:
+  name: AI Stock Analyst
+  path: D:\\pet-projects\\ai-stock-analyst
+  defaultModel: terra
+  defaultEffort: medium
+  allowedModels: [terra, sol]
+  verificationCommands:
+    - .venv\\Scripts\\python.exe scripts\\documentation_harness.py --format markdown
+    - .venv\\Scripts\\python.exe scripts\\architecture_lint.py
+    - git diff --check
+
+limits:
+  taskTimeoutMinutes: 120
+  reviewerTimeoutMinutes: 20
+  maxTaskRetries: 1
+  maxParallelTasks: 1
+
+git:
+  checkpointCommits: true
+
+tasks:
+  - key: fs30-t01
+    title: FS30-T01 discovery contract and frozen universe schema
+    prompt: >-
+      Implement exactly FS30-T01 from
+      docs/owner_only/plans/fs_30_asset_discovery_and_entry_candidate_queue_2026_07_14.md.
+      Define and validate machine-readable local contracts for the universe
+      snapshot, eligibility result, hard-gate receipt, ranking record, and
+      terminal reason-coded projection. Freeze the initial admitted TQBR
+      ordinary-share and depositary-receipt cohort rules, official-source
+      allowlist, missing-data behavior, threshold placeholders, explicit
+      budget-cap requirement, research-exposed evidence labels, and denied
+      authority flags. Add focused positive and negative tests and update the
+      queue/status navigation. Do not retrieve network data, read credentials,
+      call a broker or LLM, evaluate a strategy, modify FS-29 evidence, or add
+      any order path. Preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+
+  - key: fs30-t02
+    title: FS30-T02 official MOEX universe snapshot and quality report
+    prompt: >-
+      Implement exactly FS30-T02 from
+      docs/owner_only/plans/fs_30_asset_discovery_and_entry_candidate_queue_2026_07_14.md
+      using the completed FS30-T01 contracts. The owner authorized bounded
+      read-only retrieval from official MOEX sources for the initial admitted
+      TQBR ordinary-share and depositary-receipt cohort only. Materialize a
+      reproducible snapshot, source provenance, manifest and digests, then emit
+      reason-coded identity, eligibility, and data-quality gaps without any
+      strategy ranking. Exclude ETFs and every unsupported instrument class.
+      Do not read credentials, call a broker or LLM, choose a trade, mutate
+      FS-29, or add order/account methods. Add focused deterministic tests,
+      update status records, and stop after the quality report; FS30-T03 still
+      requires owner cohort selection. Preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs30-t01]
+    allowedPaths: [AGENTS.md, docs, data, src, scripts, tests]
+    resources: [ai-stock-repository, moex-iss]
+    timeoutMinutes: 180
+
+  - key: fs36-t01
+    title: FS36-T01 competency authority and threat-model contract
+    prompt: >-
+      Implement exactly FS36-T01 from
+      docs/owner_only/plans/fs_36_bounded_llm_trading_decision_experiment_queue_2026_07_14.md.
+      Create machine-readable local skill manifests and contracts for the
+      instruction hierarchy, closed action spaces, mandatory abstention,
+      prompt-injection and data-leakage threats, secret boundaries,
+      deterministic fallback, and no-order reachability. Prove denied authority
+      with static and negative tests. This is local fixture/contract work only:
+      do not read LLM_TOKEN or any secret, call a provider, run an LLM decision,
+      call a broker, or create an order path. Update queue/status records and
+      preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs30-t01]
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+
+  - key: fs36-t02
+    title: FS36-T02 source registry and causal evidence packet
+    prompt: >-
+      Implement exactly FS36-T02 from the active FS-36 queue. Build the local
+      allowlisted source registry and immutable causal as-of evidence-packet
+      schema with mandatory provenance, timestamps, cutoffs, freshness, units,
+      versions and digests. Reject future/outcome fields, raw external
+      instructions, secrets and unbounded sources. Add focused positive and
+      adversarial tests and update status records. Do not retrieve new data,
+      read tokens, call an LLM or broker, or create any executable order path.
+      Preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs36-t01]
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+
+  - key: fs36-t03
+    title: FS36-T03 versioned strategy-execution skill package
+    prompt: >-
+      Implement exactly FS36-T03 from the active FS-36 queue for one already
+      accepted frozen deterministic long baseline. First verify and record the
+      prerequisite from repository evidence; fail closed if it is absent.
+      Package one narrow versioned strategy_execution skill that can evaluate
+      only a mechanically generated signal, with positive, negative, ambiguous,
+      missing-data and mandatory-abstention fixtures and tests. It must not
+      invent signals, change parameters or risk, read a secret, invoke a model,
+      call a broker, or reach an order path. Update status records and preserve
+      unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs36-t02]
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+
+  - key: fs36-t04
+    title: FS36-T04 strict decision validator and replay record
+    prompt: >-
+      Implement exactly FS36-T04 from the active FS-36 queue. Add closed JSON
+      decision schemas, reason/evidence validation, snapshot/skill/prompt/model
+      digest binding, unsupported-claim and unknown-field rejection,
+      deterministic ABSTAIN fallback, immutable replay keys, redaction and
+      sanitized audit receipts. Cover malformed, missing, contradictory and
+      injection-shaped inputs with focused tests. Do not call an LLM or broker,
+      read secrets, mutate strategy/risk state, or create an executable order
+      path. Update status records and preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs36-t03]
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+
+  - key: fs36-t05
+    title: FS36-T05 hybrid no-write orchestrator and token controls
+    prompt: >-
+      Implement exactly the local, provider-free portion of FS36-T05. Keep
+      scanning, calculations, eligibility, risk, cost and simulation
+      deterministic; implement a no-write invocation boundary with cache rules,
+      prompt-size ceilings, per-run call/token/cost caps, timeout/rate-limit
+      fallback and deterministic preprocessing. Tests must use local fakes only
+      and prove that every failure becomes ABSTAIN without altering robot or
+      risk state. Do not read LLM_TOKEN, make a provider/network call, call a
+      broker, or create an order payload or submit path. Update status records
+      and preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs36-t04]
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+
+  - key: fs36-t06
+    title: FS36-T06 common-basis robot agent comparator
+    prompt: >-
+      Implement exactly FS36-T06 from the active FS-36 queue. First verify and
+      record accepted deterministic robot baseline evidence; fail closed if the
+      prerequisite is absent. Build a local paired comparator with identical
+      episodes, risk, capital, cost and execution assumptions, development and
+      untouched separation, uncertainty intervals, repeat agreement, and
+      missing/failure denominators. Report long and short separately and do not
+      infer short readiness from long. Use fixtures only: no token read, LLM
+      provider call, broker call, live decision, scheduler change or order path.
+      Add focused tests, update status records, and stop before FS36-T07, which
+      still requires a provider-cost cap, secret-boundary approval and separate
+      authorization. Preserve unrelated user changes.
+    model: auto
+    minModel: terra
+    effort: medium
+    dependsOn: [fs36-t05]
+    allowedPaths: [AGENTS.md, docs, src, scripts, tests]
+    resources: [ai-stock-repository]
+    timeoutMinutes: 180
