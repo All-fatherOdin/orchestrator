@@ -1,0 +1,288 @@
+# FS-15 local development queue for ai-stock-analyst.
+#
+# FS15-T01 automates selection of an exact non-real-money MVP contour for
+# read-only and verified sandbox/test work. Its virtual capital and risk limits
+# must never be transferred to a real account by inference. Public/authenticated
+# read-only APIs and verified sandbox/test APIs are allowed. Production order
+# writes and real-money trading are denied.
+project:
+  name: ai-stock-analyst — FS-15 trader productization and data readiness
+  path: D:\pet-projects\ai-stock-analyst
+
+limits:
+  taskTimeoutMinutes: 90
+  reviewerTimeoutMinutes: 20
+  maxTaskRetries: 1
+  # The repository protocol requires one run to complete one queue task.
+  maxParallelTasks: 1
+
+git:
+  # Repository task prompts perform their own intentional commit and push.
+  checkpointCommits: false
+
+tasks:
+  - key: fs15-t00-queue-bootstrap
+    title: FS15-T00 — Create the canonical repository queue
+    prompt: |
+      Work only in D:\pet-projects\ai-stock-analyst. Read AGENTS.md,
+      docs/NEXT_STEPS.md, docs/source_of_truth_hierarchy.md,
+      docs/context_packs/current_status.md, and
+      docs/owner_only/plans/codex_task_queue_automated_development_rules_2026_07_09.md
+      completely before acting.
+
+      Create the canonical repository queue document
+      docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md.
+      It must record FS15-T01 as an automated non-real-money contour-selection
+      task and normalize FS15-T01 through FS15-T06 to match this YAML, including
+      dependencies, artifacts, acceptance checks, stop conditions and commit
+      messages. State that virtual/test capital and risk values apply only to
+      read-only replay and a verified sandbox/test environment and grant no
+      real-account defaults. State that this queue denies real-money trading.
+      Record the owner-approved authority boundary:
+      public or authenticated read-only provider/broker APIs, verified isolated
+      sandbox/test APIs, and bounded read-only/test scheduling are allowed.
+      Credentials may be read only from the repository's approved environment
+      or secret boundary and must never be printed, persisted, committed or
+      copied into artifacts. Production write endpoints, real-money order
+      submit/cancel/replace, broker-account mutation, readiness approval, live
+      pilot authority and AI decisions for real orders remain denied.
+
+      Validate documentation formatting and git diff --check. Self-review the
+      scope, mark only FS15-T00 done in the canonical queue, commit with message
+      "docs: create FS-15 data readiness queue", push the current branch, and
+      stop. Do not implement later tasks in this run.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 45
+    allowedPaths:
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+    resources: [fs15-queue-state]
+
+  - key: fs15-t01-non-real-mvp-contour
+    title: FS15-T01 — Select the exact read-only and sandbox/test MVP contour
+    dependsOn: [fs15-t00-queue-bootstrap]
+    prompt: |
+      Execute only FS15-T01 from the canonical FS-15 queue in
+      D:\pet-projects\ai-stock-analyst. Read AGENTS.md, docs/NEXT_STEPS.md,
+      docs/source_of_truth_hierarchy.md, docs/context_packs/current_status.md,
+      the automated-development protocol, canonical FS-15 queue, final-product
+      implementation plan, and current FS08/FS11 readiness decisions first.
+
+      Select and document one exact minimal MVP contour for development,
+      backtest, read-only forward observation and verified sandbox/test API use.
+      Use current repository evidence to choose explicit values for: market and
+      instrument allowlist; data timeframe and session boundary; long/short
+      scope; deterministic candidate-strategy role; benchmark; test order types;
+      virtual capital; maximum virtual position, order, gross exposure,
+      daily-loss and drawdown limits; data freshness; bounded scheduler cadence,
+      tick budget and expiry; stop-latch and no-auto-resume rules; permitted
+      read-only and sandbox/test environments; evidence and reconciliation
+      requirements. Prefer the smallest contour that can exercise the existing
+      system end to end. Explain each selected value and mark unsupported
+      capabilities explicitly rather than inventing evidence.
+
+      The contour must state that all capital and risk values are virtual/test
+      values only. It must deny production write endpoints, real-money
+      submit/cancel/replace, broker-account mutation and automatic transfer of
+      sandbox results to live authority. Credentials may be consumed only from
+      the approved environment/secret boundary and may never appear in output.
+      Produce
+      docs/owner_only/plans/fs_15_non_real_money_mvp_contour_2026_07_13.md.
+
+      Run documentation checks and git diff --check, self-review, update only
+      FS15-T01 in the canonical queue, commit with message
+      "docs: select FS-15 non-real-money MVP contour", push the current branch,
+      and stop. Do not implement data-pipeline tasks in this run.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 60
+    allowedPaths:
+      - docs/owner_only/plans/fs_15_non_real_money_mvp_contour_2026_07_13.md
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+    resources: [fs15-queue-state]
+
+  - key: fs15-t02-capability-matrix
+    title: FS15-T02 — Audit current capabilities and data gaps
+    dependsOn: [fs15-t01-non-real-mvp-contour]
+    prompt: |
+      Execute only FS15-T02 from the canonical FS-15 queue in
+      D:\pet-projects\ai-stock-analyst. Read the required startup set, the
+      automated-development protocol and the canonical FS-15 queue first.
+
+      Perform a read-only evidence-backed audit of the current repository and
+      classify each trader completion-oracle capability as implemented runtime,
+      local fixture, docs-only contract, missing, or blocked. Inspect the actual
+      SQLite data read-only and record table counts, coverage, freshness and
+      empty evidence classes. Reconcile this with current FS08/FS11/FS12/FS13/
+      FS14 decisions and the rejected replay-admission result. Produce
+      docs/owner_only/evidence/fs_15_current_capability_and_data_gap_matrix_2026_07_13.md.
+
+      Do not change runtime code or databases and do not infer readiness. Run
+      documentation checks and git diff --check, self-review, update only the
+      FS15-T02 status in the canonical queue, commit with message
+      "docs: audit FS-15 trader data readiness", push the current branch, and
+      stop.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 60
+    allowedPaths:
+      - docs/owner_only/evidence/fs_15_current_capability_and_data_gap_matrix_2026_07_13.md
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+    resources: [fs15-queue-state]
+
+  - key: fs15-t03-local-data-pipeline
+    title: FS15-T03 — Productize a deterministic local data preparation pipeline
+    dependsOn: [fs15-t02-capability-matrix]
+    prompt: |
+      Execute only FS15-T03 from the canonical FS-15 queue in
+      D:\pet-projects\ai-stock-analyst. Read the startup set, protocol, queue
+      and FS15-T02 audit before implementation.
+
+      Build a deterministic bounded market-data preparation entrypoint
+      by reusing the existing loaders, candle storage, data-quality modules and
+      owner-only deterministic OHLCV components. It must accept explicit local
+      input/database paths and an as-of timestamp, produce sanitized local
+      outputs, preserve provenance, and fail closed on absent, unreadable,
+      malformed or stale inputs. It may refresh data through public or
+      authenticated read-only provider/broker APIs and may use a verified
+      isolated sandbox/test API. Reuse the repository's approved environment or
+      secret boundary for credentials; never print, persist, commit or include
+      raw secrets in artifacts. Enforce endpoint/environment classification and
+      stop before any ambiguous or production write-capable route. Mutating
+      data/local_mvp.sqlite3, production submit/cancel/replace, real-money
+      trading and broker-account mutation are forbidden. A bounded scheduler is
+      allowed only for read-only refresh or verified sandbox/test activity and
+      must have explicit expiry, tick budget, stop latch and no auto-resume.
+      Prefer extending existing modules rather than duplicating them. Add a CLI
+      and focused unit and CLI tests.
+
+      Run all focused tests plus the repository-required checks proportional to
+      the change and git diff --check. Self-review, update only FS15-T03 in the
+      canonical queue, commit with message
+      "feat: add FS-15 local market data preparation pipeline", push the current
+      branch, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/data_loader.py
+      - src/data_quality.py
+      - src/services/market_data_service.py
+      - src/storage/candles.py
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs15
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_15_local_market_data_preparation_pipeline_2026_07_13.md
+    resources: [fs15-queue-state, market-data-contract]
+
+  - key: fs15-t04-data-quality-gates
+    title: FS15-T04 — Add fail-closed dataset quality gates
+    dependsOn: [fs15-t03-local-data-pipeline]
+    prompt: |
+      Execute only FS15-T04 from the canonical FS-15 queue in
+      D:\pet-projects\ai-stock-analyst. Read the required context and inspect
+      the completed FS15-T03 implementation and tests.
+
+      Implement deterministic quality gates for prepared OHLCV datasets:
+      schema and numeric validity; duplicate instrument/timestamp rows; strict
+      ordering; OHLC invariants; nonnegative volume; coverage per instrument;
+      unexpected gaps against the declared trading-calendar policy; timezone
+      and session metadata; explicit freshness; and explicit corporate-action
+      adjustment policy. Unknown calendar or adjustment state must be reported
+      as unknown/blocked, not silently treated as valid. Emit stable reason
+      codes and a sanitized machine-readable quality report. Add boundary and
+      malformed-input tests and CLI coverage. Read-only API and verified
+      sandbox/test inputs are allowed under the FS15-T03 credential and
+      endpoint safeguards. Production writes and real-money trades remain
+      denied.
+
+      Run focused and required checks, self-review, update only FS15-T04 in the
+      canonical queue, commit with message
+      "feat: add FS-15 market data quality gates", push the current branch, and
+      stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/data_quality.py
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_15_market_data_quality_gates_2026_07_13.md
+    resources: [fs15-queue-state, market-data-contract]
+
+  - key: fs15-t05-dataset-manifest
+    title: FS15-T05 — Create a frozen dataset manifest and provenance contract
+    dependsOn: [fs15-t04-data-quality-gates]
+    prompt: |
+      Execute only FS15-T05 from the canonical FS-15 queue in
+      D:\pet-projects\ai-stock-analyst. Read the required context and completed
+      FS15-T03/T04 artifacts first.
+
+      Add a deterministic dataset-manifest builder for local prepared OHLCV
+      inputs. The manifest must bind schema version, source/provenance refs,
+      instrument allowlist, actual period and row counts, timeframe, timezone,
+      trading-calendar policy, corporate-action policy, quality-report digest,
+      input/output file digests, generated-at/as-of timestamps and freshness
+      outcome. Reject path escapes, mutable or missing evidence, digest
+      mismatches, unknown required policy and failed quality gates. Provide a
+      CLI, sanitized JSON fixture, focused unit tests and CLI tests. Do not copy
+      or commit raw market datasets. Network/provider credentials may be used
+      only through the approved environment or secret boundary and must never
+      appear in the manifest, logs, fixtures, commits or error text.
+
+      Run focused and required checks, self-review, update only FS15-T05 in the
+      canonical queue, commit with message
+      "feat: add FS-15 frozen dataset manifest", push the current branch, and
+      stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_15_frozen_dataset_manifest_2026_07_13.md
+    resources: [fs15-queue-state, market-data-contract]
+
+  - key: fs15-t06-local-readiness-packet
+    title: FS15-T06 — Evaluate the current local dataset without claiming readiness
+    dependsOn: [fs15-t05-dataset-manifest]
+    prompt: |
+      Execute only FS15-T06 from the canonical FS-15 queue in
+      D:\pet-projects\ai-stock-analyst. Read all required context and the
+      completed FS15-T02 through FS15-T05 artifacts.
+
+      Run the completed preparation, quality and manifest paths. Treat
+      data/local_mvp.sqlite3 as strictly read-only, but use an allowed public or
+      authenticated read-only source to refresh a separate bounded FS-15 cache
+      under data/processed/fs15 when available. A verified isolated sandbox/test
+      API may also be used; fail closed unless its non-production identity is
+      proven. Create sanitized evidence at
+      docs/owner_only/evidence/fs_15_local_dataset_readiness_packet_2026_07_13.md
+      and a paired JSON record. Record actual coverage, row/instrument counts,
+      data age, quality reasons, missing policies/evidence and the exact dataset
+      manifest digest. The outcome may PASS_DATASET_GATES,
+      BLOCKED_STALE_DATA, or another fail-closed state. Do not fabricate
+      freshness, weaken a gate, expose credentials, contact a production write
+      endpoint, place a real order or infer strategy/runtime/readiness approval.
+      Record any remaining owner inputs needed for later trader readiness.
+
+      Run focused tests and all required validation checks, self-review, update
+      only FS15-T06 and the final queue status, commit with message
+      "docs: evaluate FS-15 local dataset readiness", push the current branch,
+      and stop. No later FS-16 work is in scope.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 75
+    allowedPaths:
+      - docs/owner_only/evidence/fs_15_local_dataset_readiness_packet_2026_07_13.md
+      - docs/owner_only/evidence/fs_15_local_dataset_readiness_packet_2026_07_13.json
+      - data/processed/fs15
+      - docs/owner_only/plans/fs_15_trader_productization_data_readiness_queue_2026_07_13.md
+    resources: [fs15-queue-state, market-data-contract]

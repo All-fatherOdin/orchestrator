@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse, stringify } from "yaml";
+import { UsagePage } from "./UsagePage";
 
 type Status =
   | "pending"
@@ -130,9 +131,9 @@ const statusLabel: Record<Status, string> = {
   blocked: "Заблокировано",
 };
 const statusSymbol: Record<Exclude<Status, "running">, string> = {
-  pending: "○",
+  pending: "…",
   completed: "✓",
-  failed: "!",
+  failed: "×",
   timed_out: "⌛",
   cancelled: "×",
   skipped: "→",
@@ -233,6 +234,7 @@ export function App() {
   const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
   const [projects, setProjects] = useState<ProjectProfile[]>([]);
   const [projectForm, setProjectForm] = useState({
     name: "",
@@ -774,10 +776,11 @@ export function App() {
         </div>
         <nav>
           <button
-            className={!showHistory && !showProjects ? "active" : ""}
+            className={!showHistory && !showProjects && !showUsage ? "active" : ""}
             onClick={() => {
               setShowHistory(false);
               setShowProjects(false);
+              setShowUsage(false);
             }}
           >
             Очередь
@@ -787,6 +790,7 @@ export function App() {
             onClick={() => {
               setShowHistory(true);
               setShowProjects(false);
+              setShowUsage(false);
               void refreshHistory(0);
             }}
           >
@@ -797,9 +801,20 @@ export function App() {
             onClick={() => {
               setShowProjects(true);
               setShowHistory(false);
+              setShowUsage(false);
             }}
           >
             Проекты <em>{projects.length}</em>
+          </button>
+          <button
+            className={showUsage ? "active" : ""}
+            onClick={() => {
+              setShowUsage(true);
+              setShowHistory(false);
+              setShowProjects(false);
+            }}
+          >
+            Расход
           </button>
         </nav>
         <div className="sidebarFoot">
@@ -809,7 +824,7 @@ export function App() {
         </div>
       </aside>
       <section className="workspace">
-        <header>
+        {!showUsage && <header>
           <div>
             <h1>
               <FolderIcon />
@@ -855,7 +870,7 @@ export function App() {
               {isStarting ? "Проверка и запуск…" : "▶ Запустить"}
             </button>
           </div>
-        </header>
+        </header>}
         {(error || notice) && (
           <Toast
             message={error || notice}
@@ -874,7 +889,7 @@ export function App() {
             onConfirm={() => void deleteHistoryRun(runToDelete.id)}
           />
         )}
-        {showProjects ? (
+        {showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
           <section className="projectsPanel">
             <div className="sectionHeading">
               <h2>Сохранённые проекты</h2>

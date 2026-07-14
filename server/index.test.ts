@@ -19,9 +19,19 @@ const {
   selectRunnableTasks,
   resumeRun,
   retryRun,
+  usageFromEvent,
   loadPipeline,
   validateQueue,
 } = await import("./index.ts");
+
+test("reads machine-readable token usage from completed Codex turns", () => {
+  assert.deepEqual(
+    usageFromEvent('{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":45,"cached_input_tokens":80}}'),
+    { inputTokens: 120, outputTokens: 45, cachedInputTokens: 80 },
+  );
+  assert.equal(usageFromEvent('{"type":"turn.started"}'), undefined);
+  assert.equal(usageFromEvent("not json"), undefined);
+});
 
 function task(id: string, status: string): any {
   return {

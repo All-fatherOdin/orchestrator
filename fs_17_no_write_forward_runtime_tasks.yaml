@@ -1,0 +1,396 @@
+# FS-17 deterministic long-only no-write forward runtime queue.
+#
+# Owner-approved scope:
+# - MOEX read-only is the primary market-data source;
+# - T-Invest read-only is the secondary source;
+# - verified isolated sandbox/test order APIs are allowed;
+# - automatic shadow-to-sandbox transition is allowed after 10 clean sessions;
+# - final forward evaluation requires at least 60 trading sessions;
+# - production order writes and all real-money trading remain forbidden.
+project:
+  name: ai-stock-analyst — FS-17 no-write forward runtime
+  path: D:\pet-projects\ai-stock-analyst
+
+limits:
+  taskTimeoutMinutes: 120
+  reviewerTimeoutMinutes: 25
+  maxTaskRetries: 1
+  maxParallelTasks: 1
+
+git:
+  checkpointCommits: false
+
+tasks:
+  - key: fs17-t00-queue-bootstrap
+    title: FS17-T00 — Create the canonical forward-runtime queue
+    prompt: |
+      Work only in D:\pet-projects\ai-stock-analyst. Read AGENTS.md,
+      docs/NEXT_STEPS.md, docs/source_of_truth_hierarchy.md,
+      docs/context_packs/current_status.md, the automated-development protocol,
+      the final-product plan, completed FS-15/FS-16 queues and their final
+      evidence. Create
+      docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      matching this YAML with FS17-T00 through FS17-T13, dependencies, outputs,
+      checks, stop conditions and commit messages.
+
+      Encode the owner decisions exactly: MOEX read-only primary, T-Invest
+      read-only secondary, verified sandbox/test API allowed, automatic
+      shadow-to-sandbox transition after 10 clean sessions, and final evaluation
+      only after at least 60 trading sessions. Production write endpoints,
+      real-money submit/cancel/replace, real-account mutation and inference of
+      live readiness are denied. Credentials must remain in approved secret/
+      environment boundaries. Require an unexpired FS16
+      ADMIT_NO_WRITE_SANDBOX decision before runnable strategy work.
+
+      Run documentation checks and git diff --check, self-review, mark only
+      FS17-T00 done, commit "docs: create FS-17 forward runtime queue", push the
+      current branch, and stop.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 50
+    allowedPaths:
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+    resources: [fs17-queue-state]
+
+  - key: fs17-t01-runtime-contract
+    title: FS17-T01 — Freeze the forward-runtime and campaign contract
+    dependsOn: [fs17-t00-queue-bootstrap]
+    prompt: |
+      Execute only FS17-T01. Read the required startup context, FS16 admission
+      and runtime handoff. Stop if no valid ADMIT_NO_WRITE_SANDBOX configuration
+      exists. Freeze the exact strategy/config/dataset/cost digests; source
+      priority; completed-bar trigger; configurable post-bar delay; one decision
+      per instrument/bar; virtual limits; freshness and cross-source tolerance;
+      90-day scheduler expiry; tick budget; stop latch; no auto-resume; 10-clean-
+      session sandbox gate; and final minimum of 60 trading sessions. Define
+      clean-session, actionable-signal and unresolved-reconciliation semantics.
+      Pre-register outcomes PASS_TEST_RUNTIME, DEFER_MORE_FORWARD_EVIDENCE and
+      REJECT_FORWARD_RUNTIME. Do not invent a strategy if FS16 deferred.
+
+      Produce
+      docs/owner_only/plans/fs_17_forward_runtime_contract_2026_07_13.md. Run
+      documentation checks, self-review, update only FS17-T01, commit
+      "docs: freeze FS-17 forward runtime contract", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 70
+    allowedPaths:
+      - docs/owner_only/plans/fs_17_forward_runtime_contract_2026_07_13.md
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime-contract]
+
+  - key: fs17-t02-read-only-provider-aggregation
+    title: FS17-T02 — Implement MOEX-primary and T-Invest-secondary read-only data
+    dependsOn: [fs17-t01-runtime-contract]
+    prompt: |
+      Execute only FS17-T02. Reuse existing MOEX and T-Invest read-only adapters.
+      Implement bounded provider aggregation with MOEX read-only primary and
+      T-Invest read-only secondary. Normalize completed candles, provenance,
+      timestamps and instrument identities; enforce freshness and the frozen
+      cross-source tolerance. A secondary source may confirm or block but must
+      not silently overwrite a disagreement. Cache only sanitized market data
+      and digests. Load credentials only through approved environment/secret
+      boundaries and redact every error. Hard-block any write-capable or
+      ambiguous production route. Add deterministic mocked tests and optional
+      bounded read-only integration smoke behavior.
+
+      Run focused and required checks, self-review, update only FS17-T02, commit
+      "feat: add FS-17 read-only provider aggregation", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/services/market_data_service.py
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs17
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_read_only_provider_aggregation_2026_07_13.md
+    resources: [fs17-queue-state, forward-market-data]
+
+  - key: fs17-t03-decision-tick
+    title: FS17-T03 — Implement the deterministic completed-bar decision tick
+    dependsOn: [fs17-t02-read-only-provider-aggregation]
+    prompt: |
+      Execute only FS17-T03. Implement one bounded deterministic decision tick
+      that consumes the admitted FS16 configuration and one validated completed
+      market bar, restores prior state, calculates the signal causally, and emits
+      a sanitized virtual order intent or an explicit no-action/block reason.
+      Bind run, strategy, configuration, dataset, cost, bar and source digests.
+      Prevent processing an incomplete bar and prevent more than one decision per
+      instrument/bar. No LLM decision, short position or real order is allowed.
+      Add unit/CLI tests for action, no-action, stale, mismatch and replay cases.
+
+      Run required checks, self-review, update only FS17-T03, commit
+      "feat: add FS-17 deterministic decision tick", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_deterministic_decision_tick_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime]
+
+  - key: fs17-t04-risk-stop-integration
+    title: FS17-T04 — Integrate risk gates and latched stops
+    dependsOn: [fs17-t03-decision-tick]
+    prompt: |
+      Execute only FS17-T04. Connect the decision tick to existing FS09/FS10
+      risk, stale-data, duplicate-intent, virtual exposure, daily-loss, drawdown,
+      denylist and emergency-stop contracts. Every intent must receive a stable
+      allow/block reason and immutable audit correlation. One integrity mismatch,
+      unknown environment, production-write attempt or unreconciled test state
+      must latch stop immediately. Repeated provider failures must follow the
+      frozen contract. No auto-resume is allowed; reset requires explicit
+      owner-reviewed evidence. Add boundary, latch persistence and restart tests.
+
+      Run required checks, self-review, update only FS17-T04, commit
+      "feat: integrate FS-17 risk and stop gates", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_risk_stop_integration_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime]
+
+  - key: fs17-t05-persistence-recovery
+    title: FS17-T05 — Add persistence, idempotency and restart recovery
+    dependsOn: [fs17-t04-risk-stop-integration]
+    prompt: |
+      Execute only FS17-T05. Persist sanitized market snapshots, decision ticks,
+      signals, virtual intents, risk decisions, stop state and correlation ids in
+      the owner-only sandbox store. Make writes transactional and idempotent.
+      Recovery must never repeat a completed decision or lose a latched stop;
+      incomplete/ambiguous work must reconcile or block. Add crash-point,
+      duplicate, corruption and restart tests. Do not mutate real broker state.
+
+      Run required checks, self-review, update only FS17-T05, commit
+      "feat: add FS-17 runtime persistence and recovery", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_persistence_recovery_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime-store]
+
+  - key: fs17-t06-bounded-scheduler
+    title: FS17-T06 — Implement the expiring bounded scheduler
+    dependsOn: [fs17-t05-persistence-recovery]
+    prompt: |
+      Execute only FS17-T06. Implement a scheduler/controller that triggers only
+      after a validated completed bar plus the configured delay, runs at most one
+      decision per instrument/bar, enforces the frozen tick budget and 90-day
+      expiry, and terminates on stop latch or unknown state. It may schedule
+      read-only provider calls and verified sandbox/test activity only. It must
+      refuse production writes, real-money trading, expired configuration and
+      auto-resume. Provide dry-run, bounded foreground and install/uninstall
+      preparation paths with sanitized receipts; do not activate a persistent
+      campaign in this task. Add clock, expiry, duplicate and stop tests.
+
+      Run required checks, self-review, update only FS17-T06, commit
+      "feat: add FS-17 bounded forward scheduler", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_bounded_scheduler_2026_07_13.md
+    resources: [fs17-queue-state, forward-scheduler]
+
+  - key: fs17-t07-sandbox-test-adapter
+    title: FS17-T07 — Implement the verified sandbox/test execution adapter
+    dependsOn: [fs17-t06-bounded-scheduler]
+    prompt: |
+      Execute only FS17-T07. Implement an adapter boundary that permits virtual
+      intent submission only to a cryptographically/configurationally proven
+      isolated sandbox/test environment. Environment identity, endpoint family,
+      account/test marker and non-real-funds status must be verified before any
+      test write. Ambiguous or production routing must stop. Implement idempotency,
+      accepted/rejected/partial/full/cancelled/expired/unknown test states and
+      sanitized receipts using mocked transport plus an optional bounded test API
+      proof when credentials exist. Never call a production write endpoint.
+
+      Run required checks, self-review, update only FS17-T07, commit
+      "feat: add FS-17 verified sandbox adapter", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_verified_sandbox_adapter_2026_07_13.md
+    resources: [fs17-queue-state, sandbox-test-api]
+
+  - key: fs17-t08-monitoring-reconciliation
+    title: FS17-T08 — Add monitoring, drift detection and test reconciliation
+    dependsOn: [fs17-t07-sandbox-test-adapter]
+    prompt: |
+      Execute only FS17-T08. Add heartbeat, provider latency/freshness, source
+      disagreement, decision drift, risk-block, stop-latch and sandbox/test order
+      lifecycle monitoring. Reconcile every sandbox intent with test order/fill/
+      cancel state; unknown or conflicting state blocks new test intents. Emit
+      sanitized machine-readable status and operator-readable evidence without
+      secrets or raw account identifiers. Add failure and recovery tests.
+
+      Run required checks, self-review, update only FS17-T08, commit
+      "feat: add FS-17 monitoring and reconciliation", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_monitoring_reconciliation_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime-store]
+
+  - key: fs17-t09-shadow-sandbox-gate
+    title: FS17-T09 — Implement the automatic ten-clean-session sandbox gate
+    dependsOn: [fs17-t08-monitoring-reconciliation]
+    prompt: |
+      Execute only FS17-T09. Implement the owner-approved automatic transition
+      gate from READ_ONLY_SHADOW to VERIFIED_SANDBOX_TEST after at least 10
+      consecutive clean trading sessions. Require valid strategy/config/data
+      digests, fresh aligned sources, deterministic replay match, no duplicate
+      intents, successful restart/recovery evidence, no unresolved reconciliation
+      and inactive stop latch. Any failure resets or blocks the clean-session
+      sequence according to the frozen contract. The gate may never select or
+      contact production order writes and grants no real-money authority.
+
+      Add tampering, boundary, reset and false-environment tests. Run checks,
+      self-review, update only FS17-T09, commit
+      "feat: add FS-17 shadow to sandbox gate", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_shadow_sandbox_gate_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime]
+
+  - key: fs17-t10-forward-evidence-collector
+    title: FS17-T10 — Build the 60-session forward evidence collector
+    dependsOn: [fs17-t09-shadow-sandbox-gate]
+    prompt: |
+      Execute only FS17-T10. Implement an append-only forward campaign evidence
+      collector over trading sessions. Track session count, clean-session streak,
+      market regime context, decision/actionable-signal counts, virtual/test
+      outcomes, costs, drawdown, provider failures, risk blocks, stop events and
+      reconciliation completeness. Require at least 60 distinct valid trading
+      sessions for final evaluation and never backfill a session as if observed
+      live. Produce checkpoint reports that return COLLECTING or DEFER when the
+      minimum is not met. Add duplicate-session, late-data and tamper tests.
+
+      Run required checks, self-review, update only FS17-T10, commit
+      "feat: add FS-17 forward evidence collector", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs17
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_forward_evidence_collector_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime-store]
+
+  - key: fs17-t11-backtest-forward-comparison
+    title: FS17-T11 — Implement backtest-versus-forward comparison
+    dependsOn: [fs17-t10-forward-evidence-collector]
+    prompt: |
+      Execute only FS17-T11. Implement a common-basis comparison between frozen
+      FS16 backtest expectations and FS17 forward evidence: signal frequency,
+      trade/action frequency, after-cost return, drawdown, turnover, provider and
+      reconciliation failure rates, regime behavior and execution-cost drift.
+      Final PASS evaluation must refuse fewer than 60 sessions; interim reports
+      must clearly say COLLECTING_FORWARD_EVIDENCE or DEFER. Do not change FS16
+      thresholds after observing forward results. Add incomplete, drift and
+      reproducibility tests.
+
+      Run required checks, self-review, update only FS17-T11, commit
+      "feat: compare FS-17 backtest and forward evidence", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_17_backtest_forward_comparison_2026_07_13.md
+    resources: [fs17-queue-state, forward-runtime-store]
+
+  - key: fs17-t12-campaign-activation
+    title: FS17-T12 — Activate the bounded read-only/sandbox campaign
+    dependsOn: [fs17-t11-backtest-forward-comparison]
+    prompt: |
+      Execute only FS17-T12. Run the complete local validation suite and a
+      foreground end-to-end rehearsal. If every prerequisite passes, activate
+      the owner-approved bounded 90-day scheduler campaign using MOEX read-only
+      primary and T-Invest read-only secondary. Start in READ_ONLY_SHADOW and
+      permit only the FS17-T09 automatic transition to a proven isolated
+      sandbox/test environment. Record scheduler identity, expiry, tick budget,
+      strategy/config digests, stop/uninstall procedure and sanitized activation
+      receipt. If persistent scheduling cannot be safely installed, emit BLOCKED
+      with an exact manual activation command; do not weaken safeguards.
+
+      Never configure or call a production write endpoint or real-money account.
+      Run required checks, self-review, update only FS17-T12, commit
+      "ops: activate bounded FS-17 test campaign", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 120
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs17
+      - docs/owner_only/evidence/fs_17_campaign_activation_receipt_2026_07_13.md
+      - docs/owner_only/evidence/fs_17_campaign_activation_receipt_2026_07_13.json
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+    resources: [fs17-queue-state, forward-scheduler, sandbox-test-api]
+
+  - key: fs17-t13-status-and-handoff
+    title: FS17-T13 — Record campaign status and next review handoff
+    dependsOn: [fs17-t12-campaign-activation]
+    prompt: |
+      Execute only FS17-T13. Read the activation receipt and current accumulated
+      evidence. Produce a deterministic current decision: PASS_TEST_RUNTIME only
+      if at least 60 valid trading sessions and every frozen gate pass;
+      REJECT_FORWARD_RUNTIME on a hard failure; otherwise
+      DEFER_MORE_FORWARD_EVIDENCE with campaign status COLLECTING when safely
+      active. Do not wait or fabricate future sessions inside this task.
+
+      Produce
+      docs/owner_only/evidence/fs_17_current_forward_runtime_decision_2026_07_13.md
+      and paired JSON, plus a handoff defining the later 60-session review and
+      operator-UI/read-model integration. Mark FS-17 implementation complete but
+      distinguish it from completion of the time-dependent campaign. Real-money
+      trading remains forbidden regardless of outcome. Run checks, self-review,
+      update FS17-T13 and final queue state, commit
+      "docs: record FS-17 campaign status and handoff", push, and stop.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 75
+    allowedPaths:
+      - docs/owner_only/evidence/fs_17_current_forward_runtime_decision_2026_07_13.md
+      - docs/owner_only/evidence/fs_17_current_forward_runtime_decision_2026_07_13.json
+      - docs/owner_only/plans/fs_17_forward_campaign_review_handoff_2026_07_13.md
+      - docs/owner_only/plans/fs_17_no_write_forward_runtime_queue_2026_07_13.md
+    resources: [fs17-queue-state, forward-scheduler]

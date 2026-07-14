@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently -k \"tsx watch server/index.ts\" \"vite --open\"",
     "build": "tsc -b && vite build",
+    "desktop:bundle": "npm run build && node scripts/generate-icon.mjs && esbuild server/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=build/server.cjs",
+    "desktop:dist": "npm run desktop:bundle && electron-builder --win",
     "start": "npm run build && tsx server/index.ts",
     "check": "tsc -b --pretty false",
     "test": "tsx --test server/index.test.ts"
@@ -24,7 +27,28 @@
     "tsx": "^4.19.3",
     "typescript": "^5.8.3",
     "vite": "^6.3.3",
+    "electron": "35.7.5",
+    "electron-builder": "26.0.12",
+    "esbuild": "^0.28.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
+  },
+  "build": {
+    "appId": "com.codex.orchestrator",
+    "productName": "Orchestrator",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "electron/**/*", "package.json"],
+    "extraResources": [
+      { "from": "dist", "to": "dist" },
+      { "from": "build/server.cjs", "to": "server.cjs" },
+      { "from": "build/icon.ico", "to": "icon.ico" }
+    ],
+    "win": { "target": "nsis", "icon": "build/icon.ico" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }

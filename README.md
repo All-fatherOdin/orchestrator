@@ -65,6 +65,10 @@ When composing a YAML queue, apply these rules:
 
 Run history and logs are written to `.orchestrator/runs/` beside this repository. No commits are made automatically.
 
+## Token usage
+
+For new runs, the runner records the final `turn.completed.usage` event from Codex CLI for every executor, reviewer, and correction call. Records are stored with each task in `.orchestrator/runs/<run-id>/run.json` as `usage` entries (`inputTokens`, `outputTokens`, `cachedInputTokens`, phase, attempt, and timestamp), so both the application and automation can read them without parsing logs. Open **Расход** in the sidebar to choose a current or historical run and, optionally, one task; the page shows token totals, a task comparison chart, and detailed call counts. Provider prices are not guessed because the CLI event does not include a tariff.
+
 ## Codex CLI on Windows
 
 The runner automatically prefers the Codex Desktop CLI matching the installed app. To select another binary, set `CODEX_BIN` to its absolute path before starting the orchestrator.

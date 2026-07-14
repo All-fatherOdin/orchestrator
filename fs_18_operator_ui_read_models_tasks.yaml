@@ -1,0 +1,416 @@
+# FS-18 local owner-only operator UI and real read-model integration queue.
+#
+# Owner-approved UI controls:
+# - start, pause and stop the bounded test campaign;
+# - execute one manual no-write tick;
+# - cancel an order only in a verified sandbox/test environment;
+# - run bounded backtests and choose their test period;
+# - reset a stop latch only with typed confirmation and review evidence.
+#
+# The UI is loopback-only. UI notifications and local logs are sufficient for
+# this queue. Production endpoints and all real-money trading remain forbidden.
+project:
+  name: ai-stock-analyst — FS-18 operator UI and read models
+  path: D:\pet-projects\ai-stock-analyst
+
+limits:
+  taskTimeoutMinutes: 120
+  reviewerTimeoutMinutes: 25
+  maxTaskRetries: 1
+  maxParallelTasks: 1
+
+git:
+  checkpointCommits: false
+
+tasks:
+  - key: fs18-t00-queue-bootstrap
+    title: FS18-T00 — Create the canonical operator UI queue
+    prompt: |
+      Work only in D:\pet-projects\ai-stock-analyst. Read AGENTS.md,
+      docs/NEXT_STEPS.md, docs/source_of_truth_hierarchy.md,
+      docs/context_packs/current_status.md, the automated-development protocol,
+      completed FS-06/FS-07 read-model and UI queues, the current frontend/API,
+      and completed FS-16/FS-17 contracts and evidence.
+
+      Create
+      docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+      matching this YAML with FS18-T00 through FS18-T14, dependencies, outputs,
+      checks, stop conditions and commit messages. Encode owner decisions:
+      loopback-only; real local read models; UI and local-log notifications;
+      bounded backtest period selection; start/pause/stop/manual no-write tick;
+      sandbox-only cancel; typed-confirmed stop-latch reset. Fixtures are allowed
+      only in development/tests, never as runtime evidence.
+
+      The browser must never receive tokens, raw account ids, raw broker payloads
+      or production endpoint controls. No manual order-entry form, production
+      submit/cancel/replace, real-account mutation or real-money authority may be
+      added. Run documentation checks and git diff --check, self-review, mark
+      only FS18-T00 done, commit "docs: create FS-18 operator UI queue", push the
+      current branch, and stop.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 50
+    allowedPaths:
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state]
+
+  - key: fs18-t01-design-system-visual-reference
+    title: FS18-T01 — Freeze the Discloser-derived design system and visual reference
+    dependsOn: [fs18-t00-queue-bootstrap]
+    prompt: |
+      Execute only FS18-T01. Before any FS-18 frontend implementation, inspect
+      D:\pet-projects\discloser\frontend as the owner-selected visual source and
+      the existing ai-stock-analyst frontend. Create frontend/DESIGN.md as the
+      canonical machine-readable visual contract for FS-18 and later operator
+      UI work. Record the exact source files and freeze a local, independently
+      named "Discloser Operator Dark" preset: palette, typography, spacing,
+      radii, borders, shadows, focus, motion, density, icon rules, chart palette,
+      responsive behavior and semantic states including ok, warning, blocked,
+      stale, unknown, sandbox and production-denied.
+
+      Replace the current light placeholder token layer with local dark/mint
+      design tokens derived from Discloser without importing its components,
+      routes, business entities or runtime code. Define the required AppShell,
+      Panel, Metric, Table, Form, Dialog, Status and Chart primitive contracts.
+      Add a dev/test-only design specimen route or component that demonstrates
+      all primitives and states using synthetic data and is absent or unreachable
+      in the production build. Capture local reference screenshots or equivalent
+      repository-owned visual fixtures and write a fidelity checklist for later
+      browser acceptance. Do not install PrimeVue, Vuetify or another UI framework
+      unless a separately recorded owner decision authorizes it.
+
+      Run frontend lint, typecheck, build and focused tests plus git diff --check.
+      Self-review contrast, keyboard focus, reduced motion, desktop/laptop/mobile
+      behavior and production exclusion of the specimen. Update only FS18-T01,
+      commit "feat: freeze FS-18 operator design system", push, and stop.
+    model: terra
+    effort: high
+    timeoutMinutes: 100
+    allowedPaths:
+      - frontend/DESIGN.md
+      - frontend/src/styles
+      - frontend/src/components
+      - frontend/src/router
+      - frontend/src/design-system
+      - frontend/tests
+      - frontend/package.json
+      - frontend/package-lock.json
+      - frontend/vite.config.ts
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+      - docs/owner_only/evidence/fs_18_design_reference
+    resources: [fs18-queue-state, frontend-app, ui-design-system]
+
+  - key: fs18-t02-ui-read-model-contract
+    title: FS18-T02 — Freeze UI read models and local control contracts
+    dependsOn: [fs18-t01-design-system-visual-reference]
+    prompt: |
+      Execute only FS18-T02. Reconcile existing FS-06/FS-07 contracts with the
+      actual FS-16/FS-17 stores and receipts. Freeze versioned UI-safe schemas
+      for trading state, admitted strategy/config, provider freshness, scheduler,
+      forward campaign, risk/stop, sandbox lifecycle/reconciliation, backtest
+      jobs, comparison results, notifications and evidence artifacts. Define
+      local control commands and their preconditions, idempotency, confirmation,
+      audit receipt and error reason codes. The UI is never source of truth.
+
+      Define redaction, freshness, unknown/blocked rendering and fixture-only
+      development behavior. Produce
+      docs/owner_only/plans/fs_18_ui_read_model_control_contract_2026_07_13.md.
+      Run docs checks, self-review, update only FS18-T02, commit
+      "docs: freeze FS-18 UI read model contracts", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 75
+    allowedPaths:
+      - docs/owner_only/plans/fs_18_ui_read_model_control_contract_2026_07_13.md
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, ui-contract]
+
+  - key: fs18-t03-runtime-read-model-api
+    title: FS18-T03 — Connect the dashboard API to real runtime read models
+    dependsOn: [fs18-t02-ui-read-model-contract]
+    prompt: |
+      Execute only FS18-T03. Extend the existing dashboard API/selectors to read
+      actual sanitized FS-16/FS-17 local stores and evidence. Implement the frozen
+      schemas, stable status/reason codes, freshness and provenance. Runtime API
+      responses must fail closed on absent, stale, corrupt or inconsistent data
+      and must never substitute fixture records. Preserve fixtures only through
+      explicit test/development adapters. Never expose secrets, raw account ids,
+      raw broker payloads or filesystem paths outside the allowed evidence root.
+      Add selector/API tests for pass, collecting, blocked, stale and corrupted
+      states.
+
+      Run focused and required checks, self-review, update only FS18-T03, commit
+      "feat: connect FS-18 runtime read models", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/dashboard_api
+      - src/owner_only_sandbox
+      - tests
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_18_runtime_read_model_api_2026_07_13.md
+    resources: [fs18-queue-state, dashboard-api]
+
+  - key: fs18-t04-local-control-api
+    title: FS18-T04 — Add loopback-only test campaign control API
+    dependsOn: [fs18-t03-runtime-read-model-api]
+    prompt: |
+      Execute only FS18-T04. Add authenticated local-owner, same-origin,
+      loopback-only control endpoints for bounded backtest start, test-period
+      selection, campaign start/pause/stop, one manual no-write tick, verified
+      sandbox-only cancel and typed-confirmed stop-latch reset. Enforce command
+      preconditions from FS18-T02, idempotency, CSRF/origin protection, audit
+      receipts and rate limits. Reset must require the exact typed phrase plus
+      reviewed stop evidence; cancel must prove non-production sandbox identity.
+      No endpoint may accept a free-form broker URL, account id, token, order
+      payload or production operation. Add authorization, origin, replay,
+      environment-confusion and negative tests.
+
+      Run required checks, self-review, update only FS18-T04, commit
+      "feat: add FS-18 local test control API", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/dashboard_api
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_18_local_control_api_2026_07_13.md
+    resources: [fs18-queue-state, dashboard-api, test-control-api]
+
+  - key: fs18-t05-frontend-data-layer
+    title: FS18-T05 — Replace runtime fixtures with the real frontend data layer
+    dependsOn: [fs18-t04-local-control-api]
+    prompt: |
+      Execute only FS18-T05. Build typed frontend API clients, adapters and Pinia
+      state for the frozen FS18 read/control models. Runtime mode must use the
+      loopback API; fixture selection must be available only in explicit dev/test
+      builds and visually marked. Implement loading, stale, collecting, blocked,
+      empty and error states without converting unknown values into green/pass.
+      Add polling with bounded backoff and cancellation. The browser must not
+      access environment secrets or infer API endpoints from user input.
+
+      Add unit tests and run frontend lint, typecheck and build. Self-review,
+      update only FS18-T05, commit "feat: connect FS-18 frontend data layer",
+      push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+      - docs/owner_only/plans/fs_18_frontend_data_layer_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t06-app-shell-status
+    title: FS18-T06 — Build the operator shell and global safety status
+    dependsOn: [fs18-t05-frontend-data-layer]
+    prompt: |
+      Execute only FS18-T06. Refine the existing Vue 3 operator shell using the
+      FS18-T01 DESIGN.md and Discloser Operator Dark preset. Add clear navigation, campaign mode,
+      data freshness, provider health, scheduler state, sandbox/production safety
+      identity and global stop-latch banner. Production and unknown environments
+      must render as blocked with no control actions. Preserve keyboard access,
+      responsive layout and reduced-motion behavior. Do not copy components from
+      the style-source repository; transfer tokens and visual principles only.
+
+      Add component tests and run frontend checks. Self-review, update only
+      FS18-T06, commit "feat: add FS-18 operator safety shell", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t07-trading-state-dashboard
+    title: FS18-T07 — Implement the real trading-state dashboard
+    dependsOn: [fs18-t06-app-shell-status]
+    prompt: |
+      Execute only FS18-T07. Connect Trading State Dashboard to real read models.
+      Show admitted deterministic strategy/config, latest completed bars,
+      decisions, signals, virtual/test intents, positions, costs, campaign/session
+      progress, clean-session streak and provenance. Clearly distinguish
+      no-action, risk-blocked, stopped, collecting and sandbox-test states. Add
+      bounded start/pause/stop and manual no-write tick controls with confirmation
+      and receipt feedback. Never provide arbitrary order entry or real trading.
+
+      Add component tests and run frontend checks. Self-review, update only
+      FS18-T07, commit "feat: build FS-18 trading state dashboard", push, and
+      stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t08-risk-readiness-view
+    title: FS18-T08 — Implement risk, stop and readiness review
+    dependsOn: [fs18-t07-trading-state-dashboard]
+    prompt: |
+      Execute only FS18-T08. Connect Risk/Readiness view to real risk decisions,
+      virtual exposure, daily loss/drawdown limits, provider failures, duplicate
+      intent state, stop latch and forward evidence gates. Render reason codes and
+      evidence freshness. Implement typed-confirmation stop reset only when the
+      backend reports eligible reviewed evidence; show the immutable receipt and
+      never optimistically clear the UI before backend confirmation. Readiness
+      must remain test/no-write and may not imply live approval.
+
+      Add component tests and run frontend checks. Self-review, update only
+      FS18-T08, commit "feat: build FS-18 risk and stop review", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t09-campaign-provider-view
+    title: FS18-T09 — Implement provider, scheduler and campaign monitoring
+    dependsOn: [fs18-t08-risk-readiness-view]
+    prompt: |
+      Execute only FS18-T09. Add operator views for MOEX-primary and T-Invest-
+      secondary freshness/alignment, scheduler expiry/tick budget/next eligible
+      bar, 10-clean-session shadow gate, 60-session campaign progress, heartbeat,
+      drift and provider errors. Provide bounded campaign start/pause/stop
+      controls and show receipts. Do not hardcode exchange hours; display the
+      completed-bar contract and server-derived timestamps.
+
+      Add charts only where they clarify drift/progress, using ECharts and
+      accessible tabular alternatives. Run frontend checks, self-review, update
+      only FS18-T09, commit "feat: add FS-18 campaign monitoring", push, and
+      stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t10-sandbox-reconciliation-view
+    title: FS18-T10 — Implement sandbox lifecycle and reconciliation review
+    dependsOn: [fs18-t09-campaign-provider-view]
+    prompt: |
+      Execute only FS18-T10. Display verified sandbox identity, virtual intent,
+      test order state, fills, costs, cancel state and reconciliation outcome.
+      Implement cancel only when the backend proves the exact order belongs to a
+      verified isolated sandbox/test environment and is cancellable. Unknown,
+      stale or production-shaped state disables the action and shows a blocking
+      reason. Require confirmation and show the backend receipt. No production
+      order identifiers or payloads may reach the browser.
+
+      Add component and negative tests, run frontend checks, self-review, update
+      only FS18-T10, commit "feat: add FS-18 sandbox reconciliation UI", push,
+      and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t11-backtest-comparison-view
+    title: FS18-T11 — Implement bounded backtest and strategy comparison UI
+    dependsOn: [fs18-t10-sandbox-reconciliation-view]
+    prompt: |
+      Execute only FS18-T11. Connect Backtest/Replay and Strategy Comparison
+      views to real FS-16 data. Allow selection only within the validated dataset
+      period and registered deterministic configurations. Start bounded jobs,
+      show progress/cancel where supported, and display gross/net return,
+      drawdown, costs, turnover, trade count, holdout/walk-forward, robustness,
+      parameter combinations and benchmark deltas. The UI must preserve rejected
+      candidates and the frozen lexicographic decision rule. No LLM or short
+      result may appear as tested until its later evidence exists.
+
+      Add component tests and run frontend checks. Self-review, update only
+      FS18-T11, commit "feat: add FS-18 backtest comparison UI", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, frontend-app]
+
+  - key: fs18-t12-evidence-browser
+    title: FS18-T12 — Connect the evidence browser and sanitized export
+    dependsOn: [fs18-t11-backtest-comparison-view]
+    prompt: |
+      Execute only FS18-T12. Connect Evidence Browser to the backend evidence
+      index. Support filtering by queue/task/artifact/status/date, freshness and
+      digest verification. Preview only allowlisted sanitized text/JSON evidence;
+      block path traversal, raw databases, credentials and unknown file types.
+      Add a sanitized export action with manifest/digest and visible redaction
+      status. Never expose arbitrary filesystem browsing.
+
+      Add API/frontend security and component tests, run required checks,
+      self-review, update only FS18-T12, commit
+      "feat: connect FS-18 evidence browser", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/dashboard_api
+      - tests
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, dashboard-api, frontend-app]
+
+  - key: fs18-t13-local-notifications
+    title: FS18-T13 — Add local operator notifications and audit feedback
+    dependsOn: [fs18-t12-evidence-browser]
+    prompt: |
+      Execute only FS18-T13. Add in-UI notifications and a local sanitized event
+      journal for stop latch, stale/misaligned data, scheduler expiry, campaign
+      transition, sandbox reconciliation failure, backtest completion and command
+      results. Deduplicate events, preserve severity and correlation, and require
+      acknowledgement for critical states without hiding the underlying banner.
+      No Telegram, email, external webhook or browser notification permission is
+      in scope. Add tests for deduplication, stale events and redaction.
+
+      Run API/frontend checks, self-review, update only FS18-T13, commit
+      "feat: add FS-18 local operator notifications", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/dashboard_api
+      - src/owner_only_sandbox
+      - tests
+      - frontend
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, dashboard-api, frontend-app]
+
+  - key: fs18-t14-access-e2e-handoff
+    title: FS18-T14 — Verify loopback access, end-to-end controls and handoff
+    dependsOn: [fs18-t13-local-notifications]
+    prompt: |
+      Execute only FS18-T14. Run backend regression, frontend lint/typecheck/
+      production build, and loopback browser end-to-end tests covering real read
+      models, start/pause/stop, manual no-write tick, typed stop reset, bounded
+      backtest, evidence export and verified sandbox cancel. Prove non-loopback
+      binding is rejected, cross-origin controls fail, fixture runtime mode is
+      absent from production build, secrets are not browser-visible, production
+      endpoints cannot be selected and no real order path exists.
+
+      Produce
+      docs/owner_only/evidence/fs_18_operator_ui_acceptance_2026_07_13.md and a
+      handoff schema for later deterministic-short and separate LLM-comparison
+      results. Record PASS_TEST_UI or BLOCKED with exact reasons; never infer live
+      readiness. Compare the final production UI against FS18-T01 reference
+      screenshots and record a fidelity ledger covering layout, typography,
+      palette, components, charts, responsive behavior and semantic states.
+      Update FS18-T14/final queue state, commit
+      "test: accept FS-18 local operator UI", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 120
+    allowedPaths:
+      - src/dashboard_api
+      - tests
+      - frontend
+      - docs/owner_only/evidence/fs_18_operator_ui_acceptance_2026_07_13.md
+      - docs/owner_only/plans/fs_18_future_strategy_comparison_ui_handoff_2026_07_13.md
+      - docs/owner_only/plans/fs_18_operator_ui_read_models_queue_2026_07_13.md
+    resources: [fs18-queue-state, dashboard-api, frontend-app, loopback-ui]

@@ -1,0 +1,464 @@
+# FS-20 isolated DeepSeek frontier-model strategy research queue.
+#
+# Owner-approved scope:
+# - numeric SBER snapshots only; no news, filings, web search or future data;
+# - evaluate ALLOW/BLOCK first, then regime classification, then separately
+#   LONG/SHORT/FLAT research output;
+# - use DeepSeek frontier API models through the existing environment secret;
+# - repeat selected snapshots three times to measure consistency;
+# - every output is schema-validated and passes deterministic risk/fallback;
+# - LLM output may never directly submit a real or sandbox order;
+# - define future real-trade log evaluation, but grant no live-trading authority.
+project:
+  name: ai-stock-analyst — FS-20 DeepSeek LLM strategy research
+  path: D:\pet-projects\ai-stock-analyst
+
+limits:
+  taskTimeoutMinutes: 150
+  reviewerTimeoutMinutes: 30
+  maxTaskRetries: 1
+  maxParallelTasks: 1
+
+git:
+  checkpointCommits: false
+
+tasks:
+  - key: fs20-t00-queue-bootstrap
+    title: FS20-T00 — Create the canonical isolated DeepSeek research queue
+    prompt: |
+      Work only in D:\pet-projects\ai-stock-analyst. Read AGENTS.md,
+      docs/NEXT_STEPS.md, docs/source_of_truth_hierarchy.md,
+      docs/context_packs/current_status.md, the automated-development protocol,
+      the final-product plan and FS-15 through FS-19 queues/evidence. Create
+      docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+      matching this YAML with FS20-T00 through FS20-T14, dependencies, outputs,
+      checks, stop conditions and commit messages.
+
+      Encode owner decisions: SBER numeric snapshots only; ALLOW/BLOCK first;
+      regime classification and LONG/SHORT/FLAT are mandatory later experiments;
+      DeepSeek frontier models; three repeated calls for selected snapshots;
+      deterministic validation/risk/fallback; no direct order submission. Future
+      real-trade logs may later evaluate LLM behavior, but this queue neither
+      starts real trading nor expands LLM authority. Credentials must remain in
+      the approved secret boundary. Paid batch calls require an explicit positive
+      FS20_MAX_API_COST_USD environment cap and deterministic preflight estimate.
+
+      Run documentation checks and git diff --check, self-review, mark only
+      FS20-T00 done, commit "docs: create FS-20 DeepSeek research queue", push,
+      and stop.
+    model: auto
+    minModel: terra
+    effort: medium
+    timeoutMinutes: 55
+    allowedPaths:
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state]
+
+  - key: fs20-t01-experiment-cost-contract
+    title: FS20-T01 — Pre-register the LLM experiment, gates and spend boundary
+    dependsOn: [fs20-t00-queue-bootstrap]
+    prompt: |
+      Execute only FS20-T01. Freeze the common SBER dataset snapshots, causal
+      feature cutoff, development/holdout/walk-forward periods, deterministic
+      long/short baselines, costs, risk limits, benchmarks and metrics. Define
+      three isolated roles in fixed order: ALLOW_BLOCK_FILTER,
+      MARKET_REGIME_CLASSIFIER and DIRECT_LONG_SHORT_FLAT_RESEARCH. All three
+      must eventually be evaluated even if the first role fails, but results
+      must never be pooled across roles.
+
+      Define call/sample budgets, three-repeat consistency sampling, token and
+      latency accounting, invalid-output limits, minimum sample/trade rules and
+      outcomes ADMIT_LLM_RESEARCH_SANDBOX, DEFER_LLM_EVIDENCE and
+      REJECT_LLM_RESEARCH. Paid calls must stop before execution if the estimated
+      worst-case charge exceeds FS20_MAX_API_COST_USD or the cap is absent.
+      Produce
+      docs/owner_only/plans/fs_20_llm_experiment_and_cost_contract_2026_07_13.md.
+      Run docs checks, self-review, update only FS20-T01, commit
+      "docs: freeze FS-20 LLM experiment contract", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 75
+    allowedPaths:
+      - docs/owner_only/plans/fs_20_llm_experiment_and_cost_contract_2026_07_13.md
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-experiment-contract]
+
+  - key: fs20-t02-deepseek-frontier-adapter
+    title: FS20-T02 — Implement the bounded DeepSeek V4 frontier adapter
+    dependsOn: [fs20-t01-experiment-cost-contract]
+    prompt: |
+      Execute only FS20-T02. Verify current official DeepSeek API documentation
+      before coding. Implement a provider adapter using base URL
+      https://api.deepseek.com and the existing DEEPSEEK_API_KEY environment
+      secret. Discover available models through the read-only models endpoint
+      and support the current explicit frontier identifiers deepseek-v4-pro and
+      deepseek-v4-flash, with thinking enabled/disabled where supported. Do not
+      use deprecated deepseek-chat or deepseek-reasoner aliases. Freeze requested
+      model, returned model, thinking mode, reasoning effort, system fingerprint,
+      request time, usage and provider-contract version in sanitized metadata.
+
+      Add timeouts, bounded retries only for safe transport failures, rate-limit
+      handling, redaction and a no-network mocked test path. Never print/store the
+      key. Do not persist raw reasoning_content; record only allowed final output,
+      usage metadata and digests. A single bounded model-list/readiness probe is
+      allowed; no research batch in this task. Run tests, self-review, update
+      only FS20-T02, commit "feat: add FS-20 DeepSeek frontier adapter", push,
+      and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/services
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_20_deepseek_adapter_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_deepseek_model_readiness_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api]
+
+  - key: fs20-t03-causal-numeric-snapshots
+    title: FS20-T03 — Build causal numeric-only LLM input snapshots
+    dependsOn: [fs20-t02-deepseek-frontier-adapter]
+    prompt: |
+      Execute only FS20-T03. Build immutable SBER input snapshots from the same
+      validated data available to deterministic strategies: completed OHLCV,
+      preregistered derived features, current virtual/test position, risk state,
+      deterministic signal context and evidence timestamps. Exclude future bars,
+      labels, realized trade outcomes, news, filings, web content, narrative
+      analyst text and hidden holdout selection information. Use canonical field
+      order, explicit units, missing-value encoding, schema/version and digest.
+
+      Add leakage tests, cutoff tests, repeated serialization tests and a
+      machine-readable manifest. Holdout snapshots must remain sealed until the
+      frozen development prompt/configuration is selected. Run checks,
+      self-review, update only FS20-T03, commit
+      "feat: build FS-20 causal LLM snapshots", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/plans/fs_20_causal_numeric_snapshot_contract_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_snapshot_manifest_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-snapshots]
+
+  - key: fs20-t04-output-validator-cache-fallback
+    title: FS20-T04 — Add strict output validation, replay cache and deterministic fallback
+    dependsOn: [fs20-t03-causal-numeric-snapshots]
+    prompt: |
+      Execute only FS20-T04. Define separate strict JSON schemas for ALLOW/BLOCK,
+      regime classification and LONG/SHORT/FLAT research output. Require bounded
+      enums, confidence, reason codes, snapshot digest, model/config identity and
+      abstention. Reject extra action fields, prices, quantities, broker/account
+      values, tool requests and malformed output. The deterministic fallback is
+      BLOCK/UNKNOWN/FLAT respectively and always passes through existing risk and
+      stop gates.
+
+      Implement an immutable replay cache keyed by provider/model/fingerprint,
+      thinking mode, prompt, schema, snapshot and repeat index. Never cache the
+      API key or raw reasoning content. Add corruption, mismatch, injection,
+      invalid JSON, timeout and duplicate tests. Run checks, self-review, update
+      only FS20-T04, commit "feat: validate and cache FS-20 LLM output", push,
+      and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/plans/fs_20_llm_output_validation_contract_2026_07_13.md
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api, llm-cache]
+
+  - key: fs20-t05-allow-block-development
+    title: FS20-T05 — Develop the ALLOW/BLOCK deterministic-signal filter
+    dependsOn: [fs20-t04-output-validator-cache-fallback]
+    prompt: |
+      Execute only FS20-T05. On development data only, evaluate DeepSeek V4 Pro
+      and V4 Flash ALLOW/BLOCK outputs as a filter over frozen deterministic
+      long and short research signals. The LLM may suppress a candidate intent
+      but may not create, reverse, resize, price or route one. Compare thinking
+      and non-thinking configurations where supported. Keep prompts small,
+      versioned and preregistered; use a bounded search budget and preserve all
+      attempted prompts/configurations.
+
+      Measure after-cost effect, drawdown, missed profitable signals, blocked
+      losing signals, trade count, concentration, invalid outputs, latency and
+      token cost. Select no more than the preregistered number of survivors and
+      freeze them before holdout. Paid calls require the FS20 cost gate. Run
+      checks, self-review, update only FS20-T05, commit
+      "test: develop FS-20 allow block filter", push, and stop.
+    model: terra
+    effort: high
+    timeoutMinutes: 150
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/evidence/fs_20_allow_block_development_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_allow_block_development_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api, llm-cache, replay-engine]
+
+  - key: fs20-t06-allow-block-holdout-repeatability
+    title: FS20-T06 — Validate ALLOW/BLOCK on holdout, walk-forward and three repeats
+    dependsOn: [fs20-t05-allow-block-development]
+    prompt: |
+      Execute only FS20-T06. Open sealed holdout only after prompt/model/config
+      freeze. Run untouched holdout and walk-forward evaluation. For every
+      preregistered consistency sample, issue exactly three calls with identical
+      inputs/configuration and measure exact-label agreement, confidence spread,
+      invalid-output rate and resulting trade-decision variance. Do not majority-
+      vote silently; report individual outputs and the frozen aggregation rule.
+
+      Compare to the unfiltered deterministic baseline using identical costs and
+      risks. Emit PASS_ALLOW_BLOCK_RESEARCH, DEFER_ALLOW_BLOCK_EVIDENCE or
+      REJECT_ALLOW_BLOCK. Run required checks, self-review, update only FS20-T06,
+      commit "test: validate FS-20 allow block filter", push, and stop.
+    model: terra
+    effort: high
+    timeoutMinutes: 150
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/evidence/fs_20_allow_block_holdout_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_allow_block_holdout_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api, llm-cache, replay-engine]
+
+  - key: fs20-t07-regime-classifier-experiment
+    title: FS20-T07 — Evaluate the isolated market-regime classifier role
+    dependsOn: [fs20-t06-allow-block-holdout-repeatability]
+    prompt: |
+      Execute only FS20-T07. Independently evaluate a bounded DeepSeek regime
+      classifier over the same causal numeric snapshots. Freeze a small regime
+      taxonomy with UNKNOWN fallback. A regime label may be used only through a
+      preregistered deterministic mapping to existing strategies/risk settings;
+      it may not invent a trade. Use development selection followed by sealed
+      holdout/walk-forward and three-repeat consistency samples. Preserve the
+      ALLOW/BLOCK result without using it to tune this role.
+
+      Report classification stability, invalid/unknown rate, downstream after-
+      cost effect, drawdown, turnover, latency and tokens against deterministic
+      regime proxies and no-regime baselines. Run checks, self-review, update
+      only FS20-T07, commit "test: evaluate FS-20 regime classifier", push,
+      and stop.
+    model: terra
+    effort: high
+    timeoutMinutes: 150
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/evidence/fs_20_regime_classifier_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_regime_classifier_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api, llm-cache, replay-engine]
+
+  - key: fs20-t08-direct-signal-experiment
+    title: FS20-T08 — Evaluate isolated LONG/SHORT/FLAT research output
+    dependsOn: [fs20-t07-regime-classifier-experiment]
+    prompt: |
+      Execute only FS20-T08. Independently test strict LONG/SHORT/FLAT output on
+      the same causal snapshots. Treat it as research intent only: a deterministic
+      policy converts valid labels to virtual/no-write intents, applies admitted
+      side availability, position transition rules and every risk/stop gate. The
+      LLM may not specify quantity, price, order type, endpoint or account. FLAT
+      is the fallback for disagreement, invalid output, stale evidence or missing
+      shortability.
+
+      Use bounded development prompt selection, sealed holdout/walk-forward and
+      three-repeat consistency samples. Compare against deterministic long,
+      deterministic short and simple always-flat/random-label controls. Run
+      checks, self-review, update only FS20-T08, commit
+      "test: evaluate FS-20 direct signal research", push, and stop.
+    model: terra
+    effort: high
+    timeoutMinutes: 150
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/evidence/fs_20_direct_signal_research_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_direct_signal_research_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api, llm-cache, replay-engine]
+
+  - key: fs20-t09-safety-adversarial-suite
+    title: FS20-T09 — Test invalid actions, hallucinations, injection and fail-closed behavior
+    dependsOn: [fs20-t08-direct-signal-experiment]
+    prompt: |
+      Execute only FS20-T09. Build a deterministic adversarial suite covering
+      malformed snapshots, injected instructions in string fields, future-data
+      requests, invented indicators, unsupported tickers, stale risk state,
+      unavailable shorting, requests for tools/network, quantities/prices/orders,
+      confidence abuse, contradictory output and provider errors. Validate all
+      three roles and both frontier models/configurations.
+
+      Every violation must produce the role-specific deterministic fallback and
+      an auditable reason code without order side effects. No external tools or
+      web access may be exposed to the model. Produce Markdown/JSON evidence,
+      run checks, self-review, update only FS20-T09, commit
+      "test: harden FS-20 LLM safety boundary", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/evidence/fs_20_llm_safety_adversarial_suite_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_llm_safety_adversarial_suite_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-safety]
+
+  - key: fs20-t10-operational-quality-scorecard
+    title: FS20-T10 — Score reproducibility, latency, token cost and provider drift
+    dependsOn: [fs20-t09-safety-adversarial-suite]
+    prompt: |
+      Execute only FS20-T10. Build a common operational scorecard for every
+      model/mode/role: call count, success/invalid/timeout/rate-limit rates, three-
+      repeat agreement, returned model/fingerprint changes, input/output tokens,
+      cache usage, p50/p95 latency and actual/estimated API cost. Separate model
+      variance from provider/version drift and never compare cached latency as a
+      live call. Define expiry/revalidation rules when model identity or official
+      contract changes.
+
+      Produce paired Markdown/JSON evidence. Run checks, self-review, update
+      only FS20-T10, commit "docs: score FS-20 LLM operational quality", push,
+      and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 80
+    allowedPaths:
+      - docs/owner_only/evidence/fs_20_llm_operational_scorecard_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_llm_operational_scorecard_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-evaluation]
+
+  - key: fs20-t11-common-basis-comparison
+    title: FS20-T11 — Compare all LLM roles against deterministic long and short
+    dependsOn: [fs20-t10-operational-quality-scorecard]
+    prompt: |
+      Execute only FS20-T11. Compare ALLOW/BLOCK, regime classification and
+      LONG/SHORT/FLAT against admitted deterministic long and, only if available,
+      admitted deterministic short on identical SBER snapshots, periods, costs,
+      risk limits and benchmarks. Report after-cost return, drawdown, stability,
+      turnover, trade count, concentration, repeat disagreement, invalid rate,
+      latency and API cost. Preserve rejected/deferred roles and evidence-quality
+      differences. Primary objective remains stable after-cost performance with
+      controlled drawdown; maximum return is secondary.
+
+      Do not select an LLM role when evidence is not comparable or sample size is
+      insufficient. Produce paired Markdown/JSON comparison evidence, run checks,
+      self-review, update only FS20-T11, commit
+      "docs: compare FS-20 LLM and deterministic strategies", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 90
+    allowedPaths:
+      - docs/owner_only/evidence/fs_20_llm_deterministic_comparison_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_llm_deterministic_comparison_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-evaluation, strategy-comparison]
+
+  - key: fs20-t12-shadow-sandbox-integration
+    title: FS20-T12 — Integrate admitted LLM research as shadow-only sandbox context
+    dependsOn: [fs20-t11-common-basis-comparison]
+    prompt: |
+      Execute only FS20-T12. If and only if common-basis evidence identifies an
+      eligible LLM role/configuration, integrate it into the FS-17/FS-19 runtime
+      as shadow research context. The LLM receives the frozen numeric snapshot
+      and emits a validated recommendation receipt; the deterministic strategy,
+      risk engine and execution adapter remain the only components that may
+      create a sandbox intent. Record whether the LLM agreed, blocked or differed
+      and the hypothetical outcome, but do not let it alter an order in this task.
+
+      Add provider-unavailable, stale, disagreement, invalid, restart and replay
+      tests. No real endpoint or account is allowed. Produce the shadow contract,
+      run checks, self-review, update only FS20-T12, commit
+      "feat: add FS-20 LLM shadow context", push, and stop.
+    model: terra
+    effort: high
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - data/processed/fs20
+      - docs/owner_only/plans/fs_20_llm_shadow_sandbox_contract_2026_07_13.md
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, deepseek-api, forward-runtime, llm-shadow]
+
+  - key: fs20-t13-future-real-log-evaluation-contract
+    title: FS20-T13 — Define future real-trade shadow logging and delegation review
+    dependsOn: [fs20-t12-shadow-sandbox-integration]
+    prompt: |
+      Execute only FS20-T13. Define a future-only contract for evaluating LLM
+      recommendations against real trading logs after a separate owner-gated
+      transition to live trading. Specify immutable correlation among sanitized
+      market snapshot, deterministic decision, LLM role/output, risk decision,
+      actual order/fill/reconciliation, costs and later outcome. Require model,
+      fingerprint, prompt/schema, input and policy digests, timing, usage and
+      disagreement reason codes. Do not log credentials, raw account identity,
+      unrestricted broker payloads or raw reasoning content.
+
+      Define rolling counterfactual scorecards and a staged delegation ladder:
+      observe only; advisory filter; bounded deterministic-policy input; any
+      broader role only after separate evidence and owner approval. No stage may
+      be auto-promoted from PnL alone. This task creates schema/docs/fixtures only
+      and performs no live operation. Run checks, self-review, update only
+      FS20-T13, commit "docs: define future LLM live-log evaluation", push,
+      and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 80
+    allowedPaths:
+      - src/owner_only_sandbox
+      - scripts
+      - tests
+      - docs/owner_only/plans/fs_20_future_real_trade_llm_log_contract_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_future_real_trade_llm_log_fixture_2026_07_13.json
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-audit-contract]
+
+  - key: fs20-t14-admission-handoff
+    title: FS20-T14 — Decide LLM research admission and close the queue
+    dependsOn: [fs20-t13-future-real-log-evaluation-contract]
+    prompt: |
+      Execute only FS20-T14. Recompute all frozen evidence and emit exactly one
+      per-role outcome plus one overall outcome: ADMIT_LLM_RESEARCH_SANDBOX,
+      DEFER_LLM_EVIDENCE or REJECT_LLM_RESEARCH. Admission requires schema and
+      safety pass, holdout/walk-forward evidence, acceptable repeatability,
+      bounded operational cost/latency and common-basis benefit without
+      uncontrolled drawdown. Bind exact DeepSeek model/fingerprint, mode, prompt,
+      snapshot, schema, deterministic policy, cost/risk and evidence digests.
+
+      Admission permits only shadow/research use behind deterministic validation,
+      risk and fallback. It grants no direct sandbox order authority, no real
+      trade authority and no delegation promotion. Produce paired admission
+      evidence and a next-queue handoff for live-small-cap readiness that retains
+      a separate owner gate. Run checks, self-review, update FS20-T14/final state,
+      commit "docs: decide FS-20 LLM research admission", push, and stop.
+    model: auto
+    minModel: terra
+    effort: high
+    timeoutMinutes: 90
+    allowedPaths:
+      - docs/owner_only/evidence/fs_20_llm_research_admission_2026_07_13.md
+      - docs/owner_only/evidence/fs_20_llm_research_admission_2026_07_13.json
+      - docs/owner_only/plans/fs_20_live_small_cap_readiness_handoff_2026_07_13.md
+      - docs/owner_only/plans/fs_20_deepseek_llm_strategy_research_queue_2026_07_13.md
+    resources: [fs20-queue-state, llm-evaluation, strategy-admission]

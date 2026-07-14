@@ -103,6 +103,16 @@ type Task = ResolvedTask & {
   attempts?: number;
   executionAttempts?: number;
   checkpoint?: Checkpoint;
+  /** Machine-readable accounting emitted by Codex CLI JSON events. */
+  usage?: UsageRecord[];
+};
+type UsageRecord = {
+  phase: "executor" | "reviewer" | "correction";
+  attempt: number;
+  recordedAt: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
 };
 type Run = {
   id: string;
@@ -142,8 +152,8 @@ type PipelineView = {
 };
 type RunSummary = Pick<
   Run,
-  "id" | "project" | "status" | "startedAt" | "finishedAt"
-> & { taskCount: number };
+  "id" | "project" | "status" | "startedAt" | "finishedAt" | "pipeline"
+> & { taskCount: number; schemaVersion: 2 };
 
 const MODEL_IDS: Record<Model, string> = {
   luna: "gpt-5.6-luna",
@@ -181,9 +191,18 @@ function resolveTaskModel(task: TaskInput, project: ProjectSettings) {
     .at(-1) ?? available[0];
   return { model, requestedModel, reason: `auto: ${recommendation.reason}` };
 }
-const runsDirectory = resolve(".orchestrator", "runs");
-const pipelinesDirectory = resolve(".orchestrator", "plans");
-const projectsFile = resolve(".orchestrator", "projects.json");
+const portableDataDirectory = process.env.ORCHESTRATOR_WEB_ROOT
+  ? resolve(process.env.ORCHESTRATOR_WEB_ROOT, "..", "..", "..", "..", ".orchestrator")
+  : undefined;
+const dataDirectory = resolve(
+  process.env.ORCHESTRATOR_DATA_DIR ||
+    (portableDataDirectory && existsSync(portableDataDirectory)
+      ? portableDataDirectory
+      : ".orchestrator"),
+);
+const runsDirectory = join(dataDirectory, "runs");
+const pipelinesDirectory = join(dataDirectory, "plans");
+const projectsFile = join(dataDirectory, "projects.json");
 const defaultReviewSettings: ReviewSettings = {
   enabled: true,
   model: "terra",
@@ -355,7 +374,7 @@ async function loadProjects() {
     ) as ProjectProfile[];
 }
 async function persistProjects() {
-  await mkdir(resolve(".orchestrator"), { recursive: true });
+  await mkdir(dataDirectory, { recursive: true });
   await writeFile(projectsFile, JSON.stringify(savedProjects, null, 2));
 }
 
@@ -399,8 +418,15 @@ async function loadRun(id: string) {
 
 async function loadRunSummary(id: string): Promise<RunSummary | undefined> {
   const file = join(runsDirectory, id, "summary.json");
-  if (existsSync(file))
-    return JSON.parse(await readFile(file, "utf8")) as RunSummary;
+  if (existsSync(file)) {
+    const summary = JSON.parse(await readFile(file, "utf8")) as RunSummary;
+    if (summary.schemaVersion === 2) return summary;
+    const run = await loadRun(id);
+    if (!run) return summary;
+    const refreshed = runSummary(run);
+    void writeJsonAtomically(file, refreshed);
+    return refreshed;
+  }
   const run = await loadRun(id);
   if (!run) return undefined;
   const summary = runSummary(run);
@@ -443,6 +469,35 @@ function readGitStatus(cwd: string) {
     });
     child.on("error", () => resolveStatus(new Set()));
   });
+}
+
+export function usageFromEvent(line: string): Omit<UsageRecord, "phase" | "attempt" | "recordedAt"> | undefined {
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event.type !== "turn.completed") return undefined;
+    const usage = event.usage as Record<string, unknown> | undefined;
+    if (!usage) return undefined;
+    const value = (key: string) => {
+      const candidate = usage[key];
+      return typeof candidate === "number" && Number.isFinite(candidate)
+        ? Math.max(0, Math.trunc(candidate))
+        : 0;
+    };
+    return {
+      inputTokens: value("input_tokens"),
+      outputTokens: value("output_tokens"),
+      cachedInputTokens: value("cached_input_tokens"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function recordUsage(task: Task, line: string, phase: UsageRecord["phase"], attempt: number) {
+  const usage = usageFromEvent(line);
+  if (!usage) return;
+  task.usage ??= [];
+  task.usage.push({ ...usage, phase, attempt, recordedAt: timestamp() });
 }
 
 function taskEvent(line: string) {
@@ -488,6 +543,14 @@ function markdownReport(run: Run) {
   ].join("\n");
   const tasks = run.tasks
     .map((task, index) => {
+      const usage = (task.usage ?? []).reduce(
+        (total, entry) => ({
+          input: total.input + entry.inputTokens,
+          output: total.output + entry.outputTokens,
+          cached: total.cached + entry.cachedInputTokens,
+        }),
+        { input: 0, output: 0, cached: 0 },
+      );
       const meta = [
         `Status: **${task.status}**`,
         `Model: ${task.model}`,
@@ -496,6 +559,7 @@ function markdownReport(run: Run) {
         `Executor attempts: ${task.executionAttempts ?? 0}/${(task.maxRetries ?? limits.maxTaskRetries) + 1}`,
         `Timeout: ${task.timeoutMinutes ?? limits.taskTimeoutMinutes} min`,
         `Reviewer: ${task.reviewStatus ?? "—"}`,
+        `Usage: ${usage.input} input / ${usage.output} output / ${usage.cached} cached tokens`,
       ].join("\n");
       const logs = task.log.length
         ? `\n\n## Logs\n\n\`\`\`text\n${task.log.join("\n")}\n\`\`\``
@@ -745,7 +809,9 @@ function runSummary(run: Run): RunSummary {
     status: run.status,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
+    pipeline: run.pipeline,
     taskCount: run.tasks.length,
+    schemaVersion: 2,
   };
 }
 
@@ -1370,6 +1436,7 @@ async function reviewTask(run: Run, task: Task) {
       [
         "exec",
         "--ephemeral",
+        "--json",
         "--cd",
         run.project.path,
         "--model",
@@ -1393,6 +1460,12 @@ async function reviewTask(run: Run, task: Task) {
     );
     return;
   }
+  const consume = (chunk: Buffer) => {
+    for (const line of chunk.toString().split(/\r?\n/))
+      recordUsage(task, line.trim(), "reviewer", 1);
+  };
+  child.stdout?.on("data", consume);
+  child.stderr?.on("data", consume);
   const { exitCode, timedOut } = await waitForProcess(
     child,
     run.limits.reviewerTimeoutMinutes,
@@ -1462,6 +1535,12 @@ async function correctTask(run: Run, task: Task) {
     return { code: 1, timedOut: false };
   }
   activeProcesses.set(task.id, child);
+  const consume = (chunk: Buffer) => {
+    for (const line of chunk.toString().split(/\r?\n/))
+      recordUsage(task, line.trim(), "correction", task.attempts ?? 1);
+  };
+  child.stdout?.on("data", consume);
+  child.stderr?.on("data", consume);
   const { exitCode: code, timedOut } = await waitForProcess(
     child,
     task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
@@ -1543,6 +1622,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       const consume = (chunk: Buffer) => {
         const text = chunk.toString();
         for (const line of text.split(/\r?\n/)) {
+          recordUsage(task, line.trim(), "executor", attempt);
           const readable = line.trim() && taskEvent(line.trim());
           if (readable) task.log.push(readable.slice(0, 1600));
         }
@@ -1878,6 +1958,17 @@ app.get("/api/runs/:id", async (request, response) => {
     ? response.json(run)
     : response.status(404).json({ error: "Run not found." });
 });
+app.get("/api/pipelines/:id/runs", async (request, response) => {
+  const summaries = await listRuns();
+  const matching = summaries.filter(
+    (summary) => summary.pipeline?.id === request.params.id,
+  );
+  const runs = await Promise.all(matching.map((summary) => loadRun(summary.id)));
+  return response.json({
+    id: request.params.id,
+    runs: runs.filter((run): run is Run => Boolean(run)),
+  });
+});
 app.delete("/api/runs/:id", async (request, response) => {
   if (activeRun?.id === request.params.id)
     return response.status(409).json({ error: "The active run cannot be deleted." });
@@ -2200,9 +2291,10 @@ app.post("/api/runs/:id/resume", async (request, response) => {
   void execute(resumed);
   return response.status(201).json(resumed);
 });
-app.use(express.static(resolve("dist")));
+const webRoot = resolve(process.env.ORCHESTRATOR_WEB_ROOT || "dist");
+app.use(express.static(webRoot));
 app.get("/{*splat}", async (_, response) => {
-  const index = resolve("dist/index.html");
+  const index = resolve(webRoot, "index.html");
   if (existsSync(index)) return response.sendFile(index);
   return response.status(404).send("Run npm run dev for the Vite dashboard.");
 });
