@@ -155,6 +155,114 @@ type RunSummary = Pick<
   "id" | "project" | "status" | "startedAt" | "finishedAt" | "pipeline"
 > & { taskCount: number; schemaVersion: 2 };
 
+export type OutcomeClass = "success" | "failure" | "interrupted" | "pending";
+type TokenMetrics = {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  totalTokens: number;
+  calls: number;
+};
+
+export function outcomeClass(status: string): OutcomeClass {
+  if (status === "completed") return "success";
+  if (status === "failed" || status === "timed_out" || status === "blocked") return "failure";
+  if (status === "cancelled" || status === "skipped") return "interrupted";
+  return "pending";
+}
+
+export function durationMs(startedAt?: string, finishedAt?: string): number | null {
+  if (!startedAt || !finishedAt) return null;
+  const start = Date.parse(startedAt);
+  const finish = Date.parse(finishedAt);
+  return Number.isFinite(start) && Number.isFinite(finish) && finish >= start
+    ? finish - start
+    : null;
+}
+
+function normalizedTokens(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : 0;
+}
+
+function tokenMetrics(usage: unknown): TokenMetrics {
+  if (!Array.isArray(usage))
+    return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, calls: 0 };
+  const totals = usage.reduce(
+    (sum, record) => {
+      if (!record || typeof record !== "object") return sum;
+      const entry = record as Record<string, unknown>;
+      sum.inputTokens += normalizedTokens(entry.inputTokens);
+      sum.outputTokens += normalizedTokens(entry.outputTokens);
+      sum.cachedInputTokens += normalizedTokens(entry.cachedInputTokens);
+      sum.calls += 1;
+      return sum;
+    },
+    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 },
+  );
+  return { ...totals, totalTokens: totals.inputTokens + totals.outputTokens };
+}
+
+function usageRecords(task: Task): Array<Record<string, unknown>> {
+  return Array.isArray(task.usage)
+    ? task.usage.filter((entry): entry is UsageRecord => Boolean(entry) && typeof entry === "object")
+    : [];
+}
+
+export function projectTaskMetrics(task: Task) {
+  const records = usageRecords(task);
+  const storedExecutions = typeof task.executionAttempts === "number"
+    && Number.isFinite(task.executionAttempts)
+    && Number.isInteger(task.executionAttempts)
+    && task.executionAttempts >= 0
+    ? task.executionAttempts
+    : null;
+  const executorAttempts = records
+    .filter((entry) => entry.phase === "executor")
+    .map((entry) => entry.attempt)
+    .filter((attempt): attempt is number => typeof attempt === "number" && Number.isInteger(attempt) && attempt > 0);
+  const executionAttempts = storedExecutions ?? (executorAttempts.length ? Math.max(...executorAttempts) : null);
+  const storedCycles = typeof task.attempts === "number" && Number.isFinite(task.attempts) && task.attempts >= 0
+    ? Math.max(0, Math.trunc(task.attempts) - 1)
+    : null;
+  const correctionAttempts = new Set(records
+    .filter((entry) => entry.phase === "correction")
+    .map((entry) => entry.attempt)
+    .filter((attempt): attempt is number => typeof attempt === "number" && Number.isInteger(attempt) && attempt > 0));
+  const reviewCorrectionCycles = storedCycles ?? (correctionAttempts.size ? correctionAttempts.size : null);
+
+  return {
+    id: task.id,
+    key: task.key,
+    status: task.status,
+    outcome: outcomeClass(task.status),
+    durationMs: durationMs(task.startedAt, task.finishedAt),
+    executionAttempts,
+    reviewCorrectionCycles,
+    tokens: tokenMetrics(task.usage),
+  };
+}
+
+export function projectRunMetrics(run: Run) {
+  const tasks = run.tasks.map(projectTaskMetrics);
+  const tokens = tasks.reduce<TokenMetrics>((sum, task) => ({
+    inputTokens: sum.inputTokens + task.tokens.inputTokens,
+    outputTokens: sum.outputTokens + task.tokens.outputTokens,
+    cachedInputTokens: sum.cachedInputTokens + task.tokens.cachedInputTokens,
+    totalTokens: sum.totalTokens + task.tokens.totalTokens,
+    calls: sum.calls + task.tokens.calls,
+  }), { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, calls: 0 });
+  return {
+    id: run.id,
+    status: run.status,
+    outcome: outcomeClass(run.status),
+    durationMs: durationMs(run.startedAt, run.finishedAt),
+    tokens,
+    tasks,
+  };
+}
+
 const MODEL_IDS: Record<Model, string> = {
   luna: "gpt-5.6-luna",
   terra: "gpt-5.6-terra",
@@ -1956,6 +2064,14 @@ app.get("/api/runs/:id", async (request, response) => {
   const run = await loadRun(request.params.id);
   return run
     ? response.json(run)
+    : response.status(404).json({ error: "Run not found." });
+});
+app.get("/api/runs/:id/metrics", async (request, response) => {
+  const run = activeRun?.id === request.params.id
+    ? activeRun
+    : await loadRun(request.params.id);
+  return run
+    ? response.json(projectRunMetrics(run))
     : response.status(404).json({ error: "Run not found." });
 });
 app.get("/api/pipelines/:id/runs", async (request, response) => {

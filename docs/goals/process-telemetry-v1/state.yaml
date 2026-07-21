@@ -1,0 +1,322 @@
+# GoalBuddy v2 state.yaml
+version: 2
+
+goal:
+  title: "Process Telemetry v1"
+  slug: "process-telemetry-v1"
+  kind: specific
+  tranche: "Deliver the first backward-compatible process telemetry vertical slice through the existing Run, Task, UsageRecord, API, and Usage page surfaces."
+  status: done
+  oracle:
+    signal: "Old and new runs open; new tasks show duration, attempts, review cycles, tokens, and outcome; all tests and the production build pass."
+    cadence: "after each Worker package and at final audit"
+    final_proof: "TDD receipts plus passing npm test, npm run check, and npm run build, with compatibility and Usage-page behavior explicitly demonstrated."
+  intake:
+    original_request: "Prepare goal process-telemetry-v1 for the existing Orchestrator using TDD."
+    interpreted_outcome: "Extend existing run telemetry end to end without a parallel subsystem or breaking old run.json records."
+    input_shape: existing_plan
+    audience: "Orchestrator operators and maintainers"
+    authority: requested
+    proof_type: test
+    completion_proof: "The stated oracle is satisfied by automated tests, build output, and a focused UI/API walkthrough."
+    likely_misfire: "Adding isolated telemetry types or UI placeholders without deriving metrics from existing records and proving old run compatibility."
+    blind_spots_considered:
+      - "Legacy records may omit or partially contain timestamps, attempts, reviews, corrections, or token fields."
+      - "Outcome classification semantics and cycle counting can drift unless pure functions and fixtures define them first."
+      - "A broad server/index.ts cleanup could obscure the small API change and create unrelated regression risk."
+    existing_plan_facts:
+      - "Introduce OutcomeClass."
+      - "Compute duration, execution attempts, review/correction cycles, and token totals."
+      - "Keep old run.json readable and preserve existing run records."
+      - "Expose a read-only metrics API."
+      - "Show metrics on the existing Usage page."
+      - "Do not persist raw prompts, secrets, or file contents."
+      - "Implement new calculations as pure functions first and use TDD."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: live
+    url: "http://goalbuddy.localhost:41737/process-telemetry-v1/"
+    command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/process-telemetry-v1"
+
+active_task: null
+
+tasks:
+  - id: T001
+    type: scout
+    assignee: Scout
+    status: done
+    reasoning_hint: default
+    objective: "Map the existing telemetry-relevant model, persistence, API, Usage page, fixtures, and test seams without changing product files."
+    inputs:
+      - "Existing Run, Task, and UsageRecord definitions and serializers"
+      - "run.json loading and compatibility paths"
+      - "server API routes and Usage page"
+      - "Current tests and package verification scripts"
+    constraints:
+      - "Read-only."
+      - "Do not inspect or persist raw prompts, secrets, or file contents as telemetry data."
+      - "Report concrete paths and compatibility risks."
+    expected_output:
+      - "Evidence map"
+      - "Legacy/new record compatibility matrix"
+      - "Pure-function and TDD seams"
+      - "Exact candidate write scope and verification commands"
+      - "Observed definitions or ambiguity for outcome, attempts, review/correction cycles, duration, and token totals"
+    receipt:
+      result: done
+      summary: "Mapped the existing telemetry path. Run/Task/UsageRecord live in server/index.ts; run.json is loaded by plain JSON casting, so optional derived fields preserve legacy reads. Tasks already store startedAt/finishedAt, executionAttempts, correction attempts, reviewStatus, and per-call token usage. The existing UsagePage fetches full runs and computes token totals client-side. A small pure projection can define metrics and back a new GET endpoint without mutating records. Exact semantics for correction cycles, outcome precedence, invalid timestamps, and total-token meaning require Judge approval before writes."
+      evidence:
+        - "server/index.ts:86"
+        - "server/index.ts:109"
+        - "server/index.ts:117"
+        - "server/index.ts:413"
+        - "server/index.ts:474"
+        - "server/index.ts:805"
+        - "server/index.ts:1494"
+        - "server/index.ts:1576"
+        - "server/index.ts:1878"
+        - "server/index.test.ts:27"
+        - "src/UsagePage.tsx:1"
+        - "src/App.tsx:31"
+        - src/styles.css
+        - package.json
+      facts:
+        - "Run persistence writes the existing Run object to .orchestrator/runs/<run-id>/run.json and summary.json; loadRun performs JSON.parse as Run with no migration."
+        - "Task already has optional startedAt, finishedAt, attempts, executionAttempts, reviewStatus, and usage fields, which gives a backward-compatible derivation seam."
+        - "UsageRecord already records phase executor|reviewer|correction, attempt, recordedAt, inputTokens, outputTokens, and cachedInputTokens."
+        - "executionAttempts counts executor launches; attempts starts at 1 and increments once per correction, so correction cycles can be derived as max(0, attempts - 1) with usage-phase fallback only if Judge approves."
+        - "A task duration can be derived from valid startedAt/finishedAt timestamps; legacy/incomplete tasks need an explicit unavailable representation rather than a fabricated zero."
+        - "Current UsagePage fetches /api/runs/:id or /api/pipelines/:id/runs and calculates only token totals/calls client-side."
+        - "The smallest server integration is a pure exported task/run metrics projection plus one local GET metrics route near existing run routes; no broad server/index.ts refactor is needed."
+        - "Existing automated tests are in server/index.test.ts; gates are npm test, npm run check, and npm run build."
+      contradictions: []
+      ambiguity_requiring_judge:
+        - "OutcomeClass vocabulary and precedence for completed-with-reviewer-unavailable, skipped, blocked, cancelled, timed_out, and failed."
+        - "Whether review/correction cycles means corrections only or reviewer-to-correction loops; existing data records reviewer calls in usage but has no explicit review count field."
+        - "Whether total tokens is input + output, or input + output + cached input; cached input is normally a subset/accounting dimension and should not be double-counted."
+        - "Fallback rules when legacy records omit executionAttempts/attempts but contain usage records, or contain malformed timestamps/token values."
+        - "Whether the API returns run-level aggregates plus per-task metrics or only task metrics; the Usage dashboard benefits from both."
+      commands:
+        - "rg telemetry model/persistence/API/UI symbols"
+        - "read relevant server/index.ts, server/index.test.ts, src/UsagePage.tsx, src/App.tsx, package.json sections"
+      note_needed: false
+      harness: codex
+  - id: T002
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Validate the user-provided plan against Scout evidence, lock metric semantics and compatibility behavior, and authorize the largest safe end-to-end TDD Worker package."
+    inputs:
+      - "T001 receipt"
+      - "User Oracle and non-negotiable constraints in goal.md"
+      - "Current verification scripts: npm test, npm run check, npm run build"
+    constraints:
+      - "Read-only; do not implement."
+      - "Prefer existing lifecycle facts over introducing new persisted events."
+      - "Require explicit fallback behavior for missing or malformed legacy fields."
+      - "Reject any design that stores or exposes prompts, secrets, environment values, or file contents."
+      - "Reject a parallel telemetry subsystem or broad server/index.ts refactor."
+      - "Ensure API reads are side-effect free."
+    expected_output:
+      - "Decision with precise metric and OutcomeClass semantics"
+      - "Compatibility and privacy acceptance matrix"
+      - "Exact Worker objective"
+      - "allowed_files"
+      - "Ordered red-green-refactor test cases"
+      - "verify commands, including focused tests plus npm test, npm run check, and npm run build"
+      - "stop_if conditions and deferred work"
+    receipt:
+      result: done
+      decision: approved
+      full_outcome_complete: false
+      rationale: "Approved one bounded end-to-end Worker package. Existing optional lifecycle and usage fields support pure derivation without migration. Missing legacy evidence returns null; token totals avoid cached-input double counting. The dedicated GET projection excludes sensitive/task-content fields and performs no writes. Four product files cover tests, local server integration, existing Usage UI, and responsive styling without restructuring server/index.ts. Exact semantics and red-green-refactor order are recorded in notes/T002-metric-semantics.md."
+      worker_package:
+        objective: "Implement the approved process-telemetry-v1 slice test-first: pure task/run projections, legacy-safe null fallbacks, GET /api/runs/:id/metrics, and duration/attempts/review-cycles/tokens/outcome on the existing Usage page."
+        allowed_files:
+          - server/index.test.ts
+          - server/index.ts
+          - src/UsagePage.tsx
+          - src/styles.css
+        verify:
+          - "npm test"
+          - "npm run check"
+          - "npm run build"
+          - "git diff --check -- server/index.test.ts server/index.ts src/UsagePage.tsx src/styles.css"
+        stop_if:
+          - "Need product files outside allowed_files."
+          - "Implementation requires a new telemetry persistence system or run-record family."
+          - "A metrics read would rewrite or mutate run.json."
+          - "The response would expose prompt, log, output, review text, diff, file content, environment values, or secrets."
+          - "A broad server/index.ts refactor is required."
+          - "Focused verification fails twice for the same unexplained reason."
+      evidence:
+        - "T001 receipt"
+        - docs/goals/process-telemetry-v1/notes/T002-metric-semantics.md
+        - server/index.ts
+        - server/index.test.ts
+        - src/UsagePage.tsx
+        - src/styles.css
+      subgoal_contract: null
+      parallel_safety: null
+      blocked_tasks: []
+      missing_evidence:
+        - "Implementation and Oracle verification remain for T003/T004."
+      required_board_updates:
+        - "T003 package populated from this decision; activate T003."
+      harness: codex
+  - id: T003
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: medium
+    objective: "Implement the approved process-telemetry-v1 slice test-first: pure task/run projections, legacy-safe null fallbacks, GET /api/runs/:id/metrics, and duration/attempts/review-cycles/tokens/outcome on the existing Usage page."
+    inputs:
+      - "T001 and T002 receipts"
+      - "docs/goals/process-telemetry-v1/notes/T002-metric-semantics.md"
+    constraints:
+      - "Follow the exact semantics and TDD order in T002-metric-semantics.md."
+      - "Keep endpoint integration local; do not reorganize server/index.ts."
+      - "The metrics response must exclude prompt, log, output, review text, diff, file content, environment values, and secrets."
+      - "Reading metrics must not persist, mutate, or migrate a run."
+    expected_output:
+      - "Red-green-refactor evidence"
+      - "Pure metric functions and legacy-compatible projection"
+      - "Read-only metrics endpoint"
+      - "Existing Usage page renders all required metrics"
+      - "Passing focused tests, full tests, typecheck, build, and diff check"
+    allowed_files:
+      - "server/index.test.ts"
+      - "server/index.ts"
+      - "src/UsagePage.tsx"
+      - "src/styles.css"
+    verify:
+      - "npm test"
+      - "npm run check"
+      - "npm run build"
+      - "git diff --check -- server/index.test.ts server/index.ts src/UsagePage.tsx src/styles.css"
+    stop_if:
+      - "T002 has not supplied exact allowed_files, semantic decisions, and ordered TDD cases."
+      - "Implementation would require a new telemetry persistence system or a new run-record family."
+      - "A read path would need to rewrite existing run.json records."
+      - "Any proposed field could persist or expose raw prompts, secrets, environment values, or file contents."
+      - "Changes require a broad refactor of server/index.ts rather than a local integration."
+      - "A needed file falls outside Judge-approved allowed_files."
+      - "Focused verification fails twice for the same unexplained reason."
+    receipt:
+      result: done
+      changed_files:
+        - server/index.test.ts
+        - server/index.ts
+        - src/UsagePage.tsx
+        - src/styles.css
+      commands:
+        - cmd: "npm test"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm run build"
+          status: pass
+        - cmd: "git diff --check -- server/index.test.ts server/index.ts src/UsagePage.tsx src/styles.css"
+          status: pass
+        - cmd: "rendered desktop/mobile Browser QA: queue -> Расход -> historical run metrics"
+          status: pass
+        - cmd: "live API compatibility/privacy probe for one legacy-shaped and one current-shaped run"
+          status: pass
+      summary: "Implemented pure OutcomeClass, duration, attempts, correction-cycle, and token projections with legacy-safe null fallbacks and cached-token non-double-counting. Added side-effect-free GET /api/runs/:id/metrics using the active in-memory run when applicable. The existing Usage page now loads the metrics API, auto-selects the first historical source, renders process summary cards and per-task outcome/details, and remains usable without token events. Unit tests, typecheck, production build, diff check, desktop/mobile rendered QA, and live legacy/current API probes pass."
+      deviations:
+        - "The GoalBuddy Worker timed out after completing tests/backend projection; PM fallback preserved that work and completed UI/verification within the same allowed_files scope."
+      remaining_blockers: []
+      verification_attempts: 2
+      stopped_because: null
+      harness: codex
+  - id: T004
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Audit the completed slice against every Oracle dimension and either prove full completion or specify the next largest safe corrective package."
+    inputs:
+      - "All completed task receipts"
+      - "Worker red-green-refactor evidence"
+      - "Current diff and legacy/new run fixtures"
+      - "Read-only API response and Usage-page walkthrough evidence"
+      - "npm test, npm run check, and npm run build results"
+    constraints:
+      - "Read-only; do not implement."
+      - "Reject completion when any required metric is absent or based on undefined semantics."
+      - "Reject completion without explicit old-run compatibility proof and new-run metric proof."
+      - "Reject completion if metrics reads mutate run records."
+      - "Reject completion if telemetry persists or returns forbidden sensitive content."
+      - "Reject completion if required Worker work remains queued or active."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Oracle evidence matrix: old runs, new runs, duration, attempts, review cycles, tokens, outcome, API, Usage page, privacy, tests, build"
+      - "Missing evidence or exact next task if not complete"
+    receipt:
+      result: done
+      decision: complete
+      full_outcome_complete: true
+      rationale: "Every Oracle dimension has current proof. Pure tested projections derive the requested metrics from existing optional lifecycle data. Legacy absence is explicit and non-destructive; live probes opened legacy/current records without sensitive keys. The GET-only endpoint performs no persistence and includes active-run freshness. The existing Usage page renders summary and per-task metrics on desktop/mobile with a clean console. Full tests, typecheck, production build, and diff checks pass; changes remain local and no required Worker work remains."
+      worker_package: null
+      evidence:
+        - "OLD RUNS: live API opened legacy-shaped run mres3c8f-zd6vd and projected 3 tasks; unit test covers absent fields and source immutability."
+        - "NEW/CURRENT RUNS: live API opened current-shaped run mrexzsza-dmjbm and projected 7 tasks."
+        - "DURATION: valid timestamp subtraction and invalid/missing/backward null behavior pass unit tests; rendered Usage card/task line observed."
+        - "ATTEMPTS: stored executionAttempts and executor-usage fallback pass tests; rendered task details observed."
+        - "REVIEW CYCLES: attempts-minus-one and distinct correction-usage fallback pass tests; rendered summary/task details observed."
+        - "TOKENS: input/output/cached/calls aggregate tests pass; total excludes cached double counting; Usage dashboard preserves breakdown and shows total."
+        - "OUTCOME: completed/failure/interrupted/pending mapping passes tests and outcome badges render in task rows."
+        - "API: GET /api/runs/:id/metrics returns pure projections, uses active in-memory run when selected, and returns no raw task content."
+        - "USAGE PAGE: Browser flow queue -> Expense auto-loaded a historical run and displayed all fields at desktop and 390x844 mobile widths; console clean."
+        - "PRIVACY/READ-ONLY: serialization test excludes prompt/log/finalOutput/reviewOutput/diff and preserves source JSON; live probes reported sensitiveKeysPresent=false; route calls no persist/write function."
+        - "TDD/QUALITY: test diff preceded implementation; npm test passed 18/18, npm run check passed, npm run build passed, and git diff --check passed."
+        - "SCOPE: only the four approved product files changed; server integration is a local helper block plus one GET route, not a broad refactor."
+      subgoal_contract: null
+      parallel_safety: null
+      blocked_tasks: []
+      missing_evidence: []
+      required_board_updates: []
+      harness: codex
+
+checks:
+  dirty_fingerprint: "baseline HEAD 22f02a445873e5c61873d50bda23f4980ad04523; no pre-existing tracked or untracked changes observed before prep; current untracked docs are GoalBuddy control/board artifacts created by this prep"
+  last_verification:
+    result: pass
+    task: T004
+    commands:
+      - "npm test"
+      - "npm run check"
+      - "npm run build"
+      - "git diff --check -- server/index.test.ts server/index.ts src/UsagePage.tsx src/styles.css"
+      - "desktop/mobile Browser QA"
+      - "legacy/current live API compatibility and privacy probe"

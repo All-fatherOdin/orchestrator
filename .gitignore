@@ -3,5 +3,6 @@ dist/
 build/
 release/
 queues/
+docs/goals/**/.goalbuddy-board/
 .orchestrator/
 *.tsbuildinfo

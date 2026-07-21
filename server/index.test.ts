@@ -20,9 +20,97 @@ const {
   resumeRun,
   retryRun,
   usageFromEvent,
+  outcomeClass,
+  durationMs,
+  projectTaskMetrics,
+  projectRunMetrics,
   loadPipeline,
   validateQueue,
 } = await import("./index.ts");
+
+test("maps lifecycle statuses to outcome classes and derives only valid durations", () => {
+  assert.equal(outcomeClass("completed"), "success");
+  for (const status of ["failed", "timed_out", "blocked"])
+    assert.equal(outcomeClass(status), "failure");
+  for (const status of ["cancelled", "skipped"])
+    assert.equal(outcomeClass(status), "interrupted");
+  for (const status of ["idle", "pending", "running", "paused", "future_status"])
+    assert.equal(outcomeClass(status), "pending");
+
+  assert.equal(durationMs("2026-07-21T10:00:00.000Z", "2026-07-21T10:00:02.500Z"), 2500);
+  assert.equal(durationMs(undefined, "2026-07-21T10:00:02.500Z"), null);
+  assert.equal(durationMs("invalid", "2026-07-21T10:00:02.500Z"), null);
+  assert.equal(durationMs("2026-07-21T10:00:03.000Z", "2026-07-21T10:00:02.500Z"), null);
+});
+
+test("projects stored attempts and cycles with usage fallbacks for legacy tasks", () => {
+  const stored = projectTaskMetrics({
+    ...task("stored", "completed"), executionAttempts: 0, attempts: 3,
+  });
+  assert.equal(stored.executionAttempts, 0);
+  assert.equal(stored.reviewCorrectionCycles, 2);
+
+  const fallback = projectTaskMetrics({
+    ...task("legacy", "completed"),
+    usage: [
+      { phase: "executor", attempt: 1 },
+      { phase: "executor", attempt: 3 },
+      { phase: "correction", attempt: 1 },
+      { phase: "correction", attempt: 1 },
+      { phase: "correction", attempt: 2 },
+    ],
+  });
+  assert.equal(fallback.executionAttempts, 3);
+  assert.equal(fallback.reviewCorrectionCycles, 2);
+
+  const unknown = projectTaskMetrics(task("unknown", "pending"));
+  assert.equal(unknown.executionAttempts, null);
+  assert.equal(unknown.reviewCorrectionCycles, null);
+});
+
+test("aggregates normalized tokens without double-counting cached input", () => {
+  const metrics = projectTaskMetrics({
+    ...task("tokens", "completed"),
+    usage: [
+      { phase: "executor", attempt: 1, inputTokens: 100.9, outputTokens: 25.8, cachedInputTokens: 80.2 },
+      { phase: "reviewer", attempt: 1, inputTokens: -10, outputTokens: Number.NaN, cachedInputTokens: Infinity },
+      { phase: "correction", attempt: 1, inputTokens: "7", outputTokens: null, cachedInputTokens: 2 },
+    ],
+  });
+  assert.deepEqual(metrics.tokens, {
+    inputTokens: 100,
+    outputTokens: 25,
+    cachedInputTokens: 82,
+    totalTokens: 125,
+    calls: 3,
+  });
+  assert.deepEqual(projectTaskMetrics(task("no-usage", "completed")).tokens, {
+    inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, calls: 0,
+  });
+});
+
+test("projects legacy runs without exposing task content or mutating the source", () => {
+  const source = run([{
+    ...task("private", "completed"),
+    prompt: "secret prompt", log: ["secret log"], finalOutput: "secret output",
+    reviewOutput: "secret review", diff: "secret diff",
+    startedAt: "2026-07-21T10:00:00.000Z", finishedAt: "2026-07-21T10:00:01.000Z",
+    usage: [{ phase: "executor", attempt: 1, recordedAt: "now", inputTokens: 4, outputTokens: 6, cachedInputTokens: 3 }],
+  }], "completed");
+  source.startedAt = "2026-07-21T10:00:00.000Z";
+  source.finishedAt = "2026-07-21T10:00:02.000Z";
+  const before = JSON.stringify(source);
+  const metrics = projectRunMetrics(source);
+
+  assert.equal(metrics.durationMs, 2000);
+  assert.equal(metrics.outcome, "success");
+  assert.equal(metrics.tasks[0].durationMs, 1000);
+  assert.equal(metrics.tokens.totalTokens, 10);
+  assert.equal(JSON.stringify(source), before);
+  const serialized = JSON.stringify(metrics);
+  for (const forbidden of ["secret prompt", "secret log", "secret output", "secret review", "secret diff"])
+    assert.equal(serialized.includes(forbidden), false);
+});
 
 test("reads machine-readable token usage from completed Codex turns", () => {
   assert.deepEqual(
