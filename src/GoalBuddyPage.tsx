@@ -19,6 +19,20 @@ type GoalBuddyPreview = {
   };
 };
 
+type GoalBuddyPipelinePreview = {
+  contract_type: "GoalBuddyPipelinePreviewV1";
+  projectPath: string;
+  goals: Array<{
+    index: number;
+    statePath: string;
+    goalSlug?: string;
+    stateSha256?: string;
+    activeTaskId?: string;
+    activeTaskTitle?: string;
+  }>;
+  policy: { stopOnFailure: true; autoCommit: false };
+};
+
 export function goalBuddyRunRequest(
   selection: GoalBuddySelection,
   expectedStateSha256: string,
@@ -54,12 +68,27 @@ export function GoalBuddyPage<TRun>({
   const [statePath, setStatePath] = useState("");
   const [projectPath, setProjectPath] = useState(defaultProjectPath);
   const [preview, setPreview] = useState<GoalBuddyPreview | null>(null);
+  const [chainPaths, setChainPaths] = useState("");
+  const [pipelinePreview, setPipelinePreview] = useState<GoalBuddyPipelinePreview | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isPreviewingPipeline, setIsPreviewingPipeline] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
 
   const selection = { statePath: statePath.trim(), projectPath: projectPath.trim() };
   const canPreview = Boolean(selection.statePath && selection.projectPath) &&
     !isPreviewing && !isStarting;
+  const pipelineStatePaths = chainPaths
+    .split(/\r?\n/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+  const pipelineRequest = {
+    version: 1,
+    projectPath: selection.projectPath,
+    goals: pipelineStatePaths.map((statePath) => ({ statePath })),
+    policy: { stopOnFailure: true, autoCommit: false },
+  };
+  const canPreviewPipeline = Boolean(selection.projectPath && pipelineStatePaths.length) &&
+    !isPreviewingPipeline && !isStarting;
 
   function changeStatePath(value: string) {
     setStatePath(value);
@@ -69,6 +98,12 @@ export function GoalBuddyPage<TRun>({
   function changeProjectPath(value: string) {
     setProjectPath(value);
     setPreview(null);
+    setPipelinePreview(null);
+  }
+
+  function changeChainPaths(value: string) {
+    setChainPaths(value);
+    setPipelinePreview(null);
   }
 
   async function createPreview(event: FormEvent) {
@@ -96,6 +131,35 @@ export function GoalBuddyPage<TRun>({
       onRunStarted(run);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Не удалось запустить GoalBuddy-карточку.");
+    } finally {
+      setIsStarting(false);
+    }
+  }
+
+  async function createPipelinePreview() {
+    if (!canPreviewPipeline) return;
+    setIsPreviewingPipeline(true);
+    try {
+      setPipelinePreview(await postJson<GoalBuddyPipelinePreview>(
+        "/api/goalbuddy/pipelines/preview",
+        pipelineRequest,
+      ));
+    } catch (error) {
+      setPipelinePreview(null);
+      onError(error instanceof Error ? error.message : "Не удалось проверить цепочку GoalBuddy.");
+    } finally {
+      setIsPreviewingPipeline(false);
+    }
+  }
+
+  async function startPipeline() {
+    if (!pipelinePreview || isStarting || runBlocked) return;
+    setIsStarting(true);
+    try {
+      const run = await postJson<TRun>("/api/goalbuddy/pipelines", pipelineRequest);
+      onRunStarted(run);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Не удалось запустить цепочку GoalBuddy.");
     } finally {
       setIsStarting(false);
     }
@@ -179,6 +243,54 @@ export function GoalBuddyPage<TRun>({
           {isStarting ? "Запускаем…" : "Запустить карточку"}
         </button>
       </div>
+
+      <section className="goalBuddyPipelineBuilder">
+        <div className="goalBuddyPreviewTitle">
+          <div>
+            <span>serial goal pipeline</span>
+            <h3>Последовательная цепочка goals</h3>
+            <p>Один путь к state.yaml на строку. Следующий goal стартует только после подтверждённого T999 audit предыдущего.</p>
+          </div>
+        </div>
+        <label>
+          GoalBuddy goals в порядке запуска
+          <textarea
+            aria-label="GoalBuddy goal chain paths"
+            value={chainPaths}
+            onChange={(event) => changeChainPaths(event.target.value)}
+            placeholder={"D:\\repo\\docs\\goals\\first\\state.yaml\nD:\\repo\\docs\\goals\\second\\state.yaml"}
+            spellCheck={false}
+          />
+        </label>
+        {pipelinePreview && (
+          <ol className="goalBuddyPipelinePreview" aria-live="polite">
+            {pipelinePreview.goals.map((goal) => (
+              <li key={goal.statePath}>
+                <b>{goal.goalSlug ?? goal.statePath}</b>
+                <span>{goal.activeTaskId} · {goal.activeTaskTitle}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        <div className="goalBuddyActions">
+          <button
+            type="button"
+            disabled={!canPreviewPipeline}
+            onClick={() => void createPipelinePreview()}
+          >
+            {isPreviewingPipeline ? "Проверяем цепочку…" : "Проверить цепочку"}
+          </button>
+          <button
+            className="primary"
+            type="button"
+            disabled={!pipelinePreview || isStarting || runBlocked}
+            onClick={() => void startPipeline()}
+          >
+            {isStarting ? "Запускаем…" : "Запустить цепочку"}
+          </button>
+        </div>
+        <small>Все boards проверяются до старта. Ошибка, conflict или неподтверждённый oracle останавливают цепочку; commits не создаются.</small>
+      </section>
     </section>
   );
 }

@@ -73,15 +73,23 @@ type Run = {
   finishedAt?: string;
   pausedAt?: string;
   pauseRequested?: boolean;
-  pipeline?: { id: string; file: string; index: number; total: number };
+  pipeline?: {
+    id: string;
+    file: string;
+    index: number;
+    total: number;
+    kind?: "queues" | "goalbuddy";
+  };
   limits: Limits;
   git: GitSettings;
   tasks: Task[];
 };
 type PipelineView = {
   id: string;
+  kind: "queues" | "goalbuddy";
   currentIndex: number;
   status: Run["status"];
+  receiptPath?: string;
   queues: Array<{
     index: number;
     file: string;
@@ -1484,8 +1492,8 @@ export function App() {
                 {pipeline && (
                   <section className="pipelinePanel">
                     <div className="sectionHeading">
-                      <h2>Очереди pipeline</h2>
-                      <span>{pipeline.queues.length} файлов</span>
+                      <h2>{pipeline.kind === "goalbuddy" ? "Цепочка GoalBuddy goals" : "Очереди pipeline"}</h2>
+                      <span>{pipeline.queues.length} {pipeline.kind === "goalbuddy" ? "goals" : "файлов"}</span>
                     </div>
                     <ol>
                       {pipeline.queues.map((entry) => (
@@ -1501,7 +1509,7 @@ export function App() {
                                   : "Ожидает запуска"}
                             </small>
                           </div>
-                          {entry.state === "pending" &&
+                          {pipeline.kind !== "goalbuddy" && entry.state === "pending" &&
                             (run.status === "running" || run.status === "paused") && (
                               <button
                                 className="removeTask"

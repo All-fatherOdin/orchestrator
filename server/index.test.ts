@@ -17,6 +17,7 @@ const {
   acquireProjectLock,
   blockTasksWithFailedDependencies,
   outsideAllowedPaths,
+  taskWriteViolations,
   recoverRun,
   releaseProjectLock,
   resolveReviewedTaskStatus,
@@ -26,11 +27,13 @@ const {
   resumeRun,
   retryRun,
   usageFromEvent,
+  boundedFinalOutput,
   outcomeClass,
   durationMs,
   projectTaskMetrics,
   projectRunMetrics,
   loadPipeline,
+  loadGoalBuddyPipeline,
   validateQueue,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
@@ -50,10 +53,18 @@ const {
   finalizeSettledTask,
   syncGoalBuddyTaskReceipt,
   validateGoalReceiptEnvelopeV1,
+  validateGoalBuddyPipelineReceiptV1,
+  codexReasoningEffort,
 } = await import("./index.ts");
 const { TaskContextControls, contextProfileTaskPatch, optionalNumberValue } = await import("../src/App.tsx");
 const { GoalBuddyPage, goalBuddyRunRequest } = await import("../src/GoalBuddyPage.tsx");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
+
+test("maps the UI light effort to the Codex CLI low effort", () => {
+  assert.equal(codexReasoningEffort("light"), "low");
+  assert.equal(codexReasoningEffort("medium"), "medium");
+  assert.equal(codexReasoningEffort("high"), "high");
+});
 
 test("server binds successfully before recovery mutates persisted runs", async () => {
   const events: string[] = [];
@@ -180,6 +191,8 @@ test("GoalBuddy UI exposes a preview-first accessible run workflow", () => {
   assert.match(markup, /aria-label="GoalBuddy state.yaml path"/);
   assert.match(markup, /<label[^>]*>Repository/);
   assert.match(markup, /aria-label="GoalBuddy repository path"/);
+  assert.match(markup, /aria-label="GoalBuddy goal chain paths"/);
+  assert.match(markup, /Проверить цепочку/);
   assert.match(markup, />Проверить карточку<\/button>/);
   assert.match(markup, /<button[^>]*disabled=""[^>]*>Запустить карточку<\/button>/);
   assert.match(markup, /Следующая queued-карточка будет автоматически добавлена в этот run/);
@@ -278,6 +291,14 @@ test("projects legacy runs without exposing task content or mutating the source"
   const serialized = JSON.stringify(metrics);
   for (const forbidden of ["secret prompt", "secret log", "secret output", "secret review", "secret diff"])
     assert.equal(serialized.includes(forbidden), false);
+});
+
+test("bounded final output preserves structured decisions written at the end", () => {
+  const marker = 'GOALBUDDY_FINAL_DECISION_V1: {"full_outcome_complete":true}';
+  const bounded = boundedFinalOutput(`${"a".repeat(30_000)}\n${marker}`);
+  assert.ok(bounded.length > 24_000);
+  assert.match(bounded, /output truncated/);
+  assert.match(bounded, /GOALBUDDY_FINAL_DECISION_V1/);
 });
 
 test("reads machine-readable token usage from completed Codex turns", () => {
@@ -817,6 +838,25 @@ test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, 
     outsideAllowedPaths(["src/safe/a.ts", "README.md"], ["src/safe"]),
     ["README.md"],
   );
+  assert.deepEqual(
+    taskWriteViolations(
+      {
+        allowedPaths: undefined,
+        goalBuddy: {
+          goalSlug: "read-only",
+          goalTitle: "Read only",
+          externalTaskId: "T001",
+          objective: "Inspect evidence.",
+          statePath: "state.yaml",
+          stateSha256: "0".repeat(64),
+          taskType: "scout",
+          assignee: "Scout",
+        },
+      },
+      ["src/a.ts"],
+    ),
+    ["src/a.ts"],
+  );
   assert.equal(
     resolveTaskStatus({
       cancelled: false,
@@ -962,13 +1002,27 @@ test("GoalBuddy bridge syncs a receipt and advances to the next queued card", as
       {
         id: "T042",
         type: "worker",
+        assignee: "Worker",
+        reasoning_hint: "medium",
         status: "active",
         objective,
+        inputs: ["docs/requirements.md"],
+        constraints: ["Preserve the public API."],
+        expected_output: ["Implementation summary"],
         allowed_files: ["server/index.ts"],
         verify: ["npm test"],
         stop_if: ["Need files outside allowed_files."],
       },
-      { id: "T043", type: "worker", status: "queued", objective: "Do not select me." },
+      {
+        id: "T043",
+        type: "worker",
+        assignee: "Worker",
+        status: "queued",
+        objective: "Do not select me.",
+        allowed_files: ["server/index.ts"],
+        verify: ["npm test"],
+        stop_if: ["Need files outside allowed_files."],
+      },
     ],
   };
   try {
@@ -987,6 +1041,12 @@ test("GoalBuddy bridge syncs a receipt and advances to the next queued card", as
     assert.ok(preview.taskInput.goalBuddy);
     assert.equal(preview.taskInput.goalBuddy.goalSlug, "bridge-fixture");
     assert.equal(preview.taskInput.goalBuddy.stateSha256, before);
+    assert.equal(preview.taskInput.goalBuddy.taskType, "worker");
+    assert.equal(preview.taskInput.goalBuddy.assignee, "Worker");
+    assert.equal(preview.taskInput.goalBuddy.reasoningHint, "medium");
+    assert.deepEqual(preview.taskInput.goalBuddy.inputs, ["docs/requirements.md"]);
+    assert.deepEqual(preview.taskInput.goalBuddy.constraints, ["Preserve the public API."]);
+    assert.deepEqual(preview.taskInput.goalBuddy.expectedOutput, ["Implementation summary"]);
     assert.equal(preview.queue.git.checkpointCommits, false);
 
     const created = createGoalBuddyRun(preview);
@@ -997,6 +1057,10 @@ test("GoalBuddy bridge syncs a receipt and advances to the next queued card", as
     assert.equal(created.project.path, project);
     assert.match(buildPrompt(linkedTask, created.project), /Need files outside allowed_files/);
     assert.match(buildPrompt(linkedTask, created.project), /npm test/);
+    assert.match(buildPrompt(linkedTask, created.project), /GoalBuddy Worker/);
+    assert.match(buildPrompt(linkedTask, created.project), /docs\/requirements\.md/);
+    assert.match(buildPrompt(linkedTask, created.project), /Preserve the public API/);
+    assert.match(buildPrompt(linkedTask, created.project), /Implementation summary/);
 
     linkedTask.status = "completed";
     linkedTask.startedAt = new Date(Date.now() - 100).toISOString();
@@ -1117,6 +1181,182 @@ test("GoalBuddy bridge syncs a receipt and advances to the next queued card", as
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("GoalBuddy Judge can safely scope the next Worker through a structured decision", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-judge-"));
+  const project = join(root, "repository");
+  const statePath = join(root, "state.yaml");
+  const board = {
+    version: 2,
+    goal: { title: "Judge fixture", slug: "judge-fixture", status: "active" },
+    active_task: "T002",
+    tasks: [
+      {
+        id: "T002",
+        type: "judge",
+        assignee: "Judge",
+        reasoning_hint: "high",
+        status: "active",
+        objective: "Select the bounded implementation slice.",
+        constraints: ["Read-only; do not implement."],
+        expected_output: ["Exact Worker objective", "allowed_files", "verify", "stop_if"],
+      },
+      {
+        id: "T003",
+        type: "worker",
+        assignee: "Worker",
+        status: "queued",
+        objective: "Execute the Judge-scoped slice.",
+        allowed_files: [],
+        verify: [],
+        stop_if: ["Judge has not populated exact allowed_files and verify commands."],
+      },
+    ],
+  };
+  try {
+    await mkdir(project);
+    await writeFile(statePath, stringify(board), "utf8");
+    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
+    const created = createGoalBuddyRun(preview);
+    const judge = created.tasks[0];
+    const prompt = buildPrompt(judge, created.project);
+    assert.match(prompt, /read-only/i);
+    assert.match(prompt, /GOALBUDDY_NEXT_TASK_PATCH_V1/);
+    assert.match(prompt, /T003/);
+
+    judge.status = "completed";
+    judge.finalOutput = [
+      "Decision: proceed.",
+      'GOALBUDDY_NEXT_TASK_PATCH_V1: {"target_task_id":"T003","decision":"proceed","objective":"Implement the validated slice.","allowed_files":["server/index.ts"],"verify":["npm test"],"stop_if":["Need files outside allowed_files."]}',
+    ].join("\n");
+    await finalizeSettledTask(created, judge);
+
+    const updated = parse(await readFile(statePath, "utf8"));
+    assert.equal(updated.active_task, "T003");
+    assert.match(updated.tasks[0].receipt.summary, /GOALBUDDY_NEXT_TASK_PATCH_V1/);
+    assert.equal(updated.tasks[1].objective, "Implement the validated slice.");
+    assert.deepEqual(updated.tasks[1].allowed_files, ["server/index.ts"]);
+    assert.deepEqual(updated.tasks[1].verify, ["npm test"]);
+    const worker = await appendNextGoalBuddyTask(created, judge);
+    assert.ok(worker);
+    assert.deepEqual(worker.allowedPaths, ["server/index.ts"]);
+    assert.deepEqual(worker.verificationCommands, ["npm test"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("strict GoalBuddy completion requires a final Judge oracle decision", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-final-"));
+  const project = join(root, "repository");
+  const statePath = join(root, "state.yaml");
+  const board = {
+    version: 2,
+    goal: { title: "Final fixture", slug: "final-fixture", status: "active" },
+    active_task: "T999",
+    tasks: [{
+      id: "T999",
+      type: "judge",
+      assignee: "Judge",
+      status: "active",
+      objective: "Audit the full outcome against the oracle.",
+      constraints: ["Read-only; do not implement."],
+      expected_output: ["full_outcome_complete"],
+    }],
+  };
+  try {
+    await mkdir(project);
+    await writeFile(statePath, stringify(board), "utf8");
+    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
+    const created = createGoalBuddyRun(preview, [], { requireFinalAudit: true });
+    const judge = created.tasks[0];
+    assert.match(buildPrompt(judge, created.project), /GOALBUDDY_FINAL_DECISION_V1/);
+    judge.status = "completed";
+    judge.finalOutput = 'GOALBUDDY_FINAL_DECISION_V1: {"full_outcome_complete":true,"summary":"Oracle passed."}';
+    await finalizeSettledTask(created, judge);
+    assert.equal(await appendNextGoalBuddyTask(created, judge), undefined);
+    assert.equal(created.goalBuddyAdapter?.status, "complete");
+
+    const updated = parse(await readFile(statePath, "utf8"));
+    assert.equal(updated.active_task, null);
+    assert.equal(updated.goal.status, "completed");
+    assert.equal(updated.tasks[0].status, "done");
+    assert.equal(updated.tasks[0].receipt.full_outcome_complete, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preflights a serial GoalBuddy pipeline in declared order", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-pipeline-"));
+  const project = join(root, "repository");
+  const first = join(root, "first.yaml");
+  const second = join(root, "second.yaml");
+  const goal = (slug: string) => ({
+    version: 2,
+    goal: { title: slug, slug, status: "active" },
+    active_task: "T001",
+    tasks: [{
+      id: "T001",
+      type: "scout",
+      assignee: "Scout",
+      status: "active",
+      objective: `Scout ${slug}.`,
+      constraints: ["Read-only."],
+      expected_output: ["Evidence map"],
+    }],
+  });
+  try {
+    await mkdir(project);
+    await writeFile(first, stringify(goal("first-goal")), "utf8");
+    await writeFile(second, stringify(goal("second-goal")), "utf8");
+    const pipeline = await loadGoalBuddyPipeline({
+      version: 1,
+      projectPath: project,
+      goals: [{ statePath: first }, { statePath: second }],
+      policy: { stopOnFailure: true, autoCommit: false },
+    });
+    assert.equal(pipeline.kind, "goalbuddy");
+    assert.equal(pipeline.queues.length, 2);
+    assert.deepEqual(
+      pipeline.queues.map((entry: { goalSlug?: string }) => entry.goalSlug),
+      ["first-goal", "second-goal"],
+    );
+    assert.deepEqual(
+      pipeline.queues.map((entry: { file: string }) => entry.file),
+      [first, second],
+    );
+    assert.equal(pipeline.currentIndex, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("validates the durable GoalBuddy pipeline receipt contract", () => {
+  const receipt = validateGoalBuddyPipelineReceiptV1({
+    contract_type: "GoalBuddyPipelineReceiptV1",
+    contract_version: "1.0",
+    created_at: new Date().toISOString(),
+    pipeline_id: "pipeline-1",
+    project_path: "D:\\work\\repo",
+    status: "completed",
+    stop_on_failure: true,
+    auto_commit: false,
+    goals: [{
+      index: 0,
+      goal_slug: "first-goal",
+      state_path: "D:\\work\\repo\\docs\\goals\\first-goal\\state.yaml",
+      expected_state_sha256: "a".repeat(64),
+      run_id: "run-1",
+      status: "completed",
+    }],
+  });
+  assert.equal(receipt.contract_type, "GoalBuddyPipelineReceiptV1");
+  assert.throws(
+    () => validateGoalBuddyPipelineReceiptV1({ ...receipt, auto_commit: true }),
+    /GOAL_PIPELINE_RECEIPT_SCHEMA_MISMATCH/,
+  );
 });
 
 test("GoalBuddy sync preserves concurrent board changes and records a conflict", async () => {

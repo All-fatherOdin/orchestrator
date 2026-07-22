@@ -1,0 +1,16 @@
+# Sequential GoalBuddy goal pipeline.
+# Copy this file into queues/ for a user-specific plan. Paths may be absolute
+# or relative to the directory where the Orchestrator server is started.
+version: 1
+projectPath: D:\work\my-project
+
+goals:
+  - statePath: docs/goals/first-outcome/state.yaml
+  - statePath: docs/goals/second-outcome/state.yaml
+  - statePath: docs/goals/final-outcome/state.yaml
+
+# These safety policies are fixed for GoalBuddy pipelines. Explicit values make
+# agent-authored plans easy to audit and reject accidental unsafe assumptions.
+policy:
+  stopOnFailure: true
+  autoCommit: false
