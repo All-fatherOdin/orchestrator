@@ -11,9 +11,10 @@
     "desktop:dist": "npm run desktop:bundle && electron-builder --win",
     "start": "npm run build && tsx server/index.ts",
     "check": "tsc -b --pretty false",
-    "test": "tsx --test server/index.test.ts"
+    "test": "tsx --test server/index.test.ts electron/lifecycle.test.cjs"
   },
   "dependencies": {
+    "ajv8": "npm:ajv@^8.17.1",
     "express": "^5.1.0",
     "yaml": "^2.7.1"
   },

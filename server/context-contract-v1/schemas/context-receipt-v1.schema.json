@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-memory-kit:context-contract:v1:ContextReceiptV1",
+  "title": "ContextReceiptV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "receipt_id",
+    "request_id",
+    "bundle_id",
+    "outcome",
+    "reason_codes",
+    "checks",
+    "counts",
+    "policy_refs",
+    "tools",
+    "changed_paths",
+    "scope_expansion"
+  ],
+  "properties": {
+    "contract_type": {"const": "ContextReceiptV1"},
+    "contract_version": {"const": "1.0"},
+    "receipt_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "outcome": {"enum": ["pass", "fail"]},
+    "reason_codes": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+      "uniqueItems": true
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check_id", "status", "reason_codes"],
+        "properties": {
+          "check_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "status": {"enum": ["pass", "fail"]},
+          "reason_codes": {
+            "type": "array",
+            "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_max_sources", "selected_sources", "omitted_sources"],
+      "properties": {
+        "requested_max_sources": {"type": "integer", "minimum": 1},
+        "selected_sources": {"type": "integer", "minimum": 0},
+        "omitted_sources": {"type": "integer", "minimum": 0}
+      }
+    },
+    "policy_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_index", "retrieval_policy", "retrieval_scoring_policy"],
+      "properties": {
+        "context_index": {"type": "string", "minLength": 1},
+        "retrieval_policy": {"type": "string", "minLength": 1},
+        "retrieval_scoring_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "allowed", "denied"],
+      "properties": {
+        "requested": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "allowed": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "denied": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tool", "reason_code"],
+            "properties": {
+              "tool": {"type": "string", "minLength": 1},
+              "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}
+            }
+          }
+        }
+      }
+    },
+    "changed_paths": {"type": "array", "maxItems": 0},
+    "scope_expansion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "external_system", "data", "project_map_mutated"],
+      "properties": {
+        "runtime": {"const": false},
+        "external_system": {"const": false},
+        "data": {"const": false},
+        "project_map_mutated": {"const": false}
+      }
+    }
+  }
+}

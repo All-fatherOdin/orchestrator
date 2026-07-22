@@ -1,4 +1,5 @@
 import express from "express";
+import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import {
@@ -13,6 +14,10 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parse } from "yaml";
+// The static imports keep exact schema snapshots embedded in the desktop server bundle.
+import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
+import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
+import contextReceiptV1Schema from "./context-contract-v1/schemas/context-receipt-v1.schema.json";
 
 type Model = "luna" | "terra" | "sol";
 type RequestedModel = Model | "auto";
@@ -78,6 +83,22 @@ type ContextPolicyRefs = {
   context_index: string;
   retrieval_policy: string;
   retrieval_scoring_policy: string;
+};
+export type ContextRequestV1 = {
+  contract_type: "ContextRequestV1";
+  contract_version: "1.0";
+  request_id: string;
+  task: string;
+  profile: string;
+  mutation_scope: "read_only";
+  selection: {
+    max_sources: number;
+    include_triggered: boolean;
+    required_paths: string[];
+    forbidden_paths: string[];
+  };
+  requested_tools: string[];
+  policy_refs: ContextPolicyRefs;
 };
 export type ContextSourceV1 = {
   path: string;
@@ -152,11 +173,64 @@ const NO_SCOPE_EXPANSION = {
   project_map_mutated: false,
 } as const;
 const SAFE_FALLBACK_FILES = ["AGENTS.md", "README.md"] as const;
+const CONTEXT_FORBIDDEN_PATHS = [
+  ".env",
+  ".env.*",
+  "data/**",
+  "output/**",
+  "logs/**",
+  "secrets/**",
+  ".git/**",
+  ".venv/**",
+] as const;
 
 class ContextProviderFailure extends Error {
   constructor(readonly reasonCode: string, message: string) {
     super(message);
   }
+}
+
+const contextContractAjv = new Ajv2020({ allErrors: true, strict: true });
+const contextContractValidators = {
+  request: contextContractAjv.compile(contextRequestV1Schema),
+  bundle: contextContractAjv.compile(contextBundleV1Schema),
+  receipt: contextContractAjv.compile(contextReceiptV1Schema),
+};
+const contextContractNames = {
+  request: "ContextRequestV1",
+  bundle: "ContextBundleV1",
+  receipt: "ContextReceiptV1",
+} as const;
+
+export function validateContextContractV1<T>(kind: keyof typeof contextContractValidators, payload: T): T {
+  const validate = contextContractValidators[kind];
+  if (!validate(payload)) {
+    const details = contextContractAjv.errorsText(validate.errors, { separator: "; " });
+    throw new ContextProviderFailure(
+      "CONTEXT_SCHEMA_MISMATCH",
+      `CONTEXT_SCHEMA_MISMATCH: ${contextContractNames[kind]} failed runtime validation: ${details}`,
+    );
+  }
+  return payload;
+}
+
+export function createContextRequestV1(request: ContextProviderRequest): ContextRequestV1 {
+  return validateContextContractV1("request", {
+    contract_type: "ContextRequestV1",
+    contract_version: "1.0",
+    request_id: request.requestId,
+    task: request.task,
+    profile: request.profile,
+    mutation_scope: "read_only",
+    selection: {
+      max_sources: request.maxSources,
+      include_triggered: false,
+      required_paths: [],
+      forbidden_paths: [...CONTEXT_FORBIDDEN_PATHS],
+    },
+    requested_tools: [],
+    policy_refs: CONTEXT_POLICY_REFS,
+  });
 }
 
 function safeContextPath(path: string) {
@@ -179,10 +253,15 @@ function contextResult(
   request: ContextProviderRequest,
   provider: ContextProviderResult["provider"],
   sources: ContextSourceV1[],
-  options: { omitted?: number; skippedTriggered?: string[]; skippedHighRisk?: Array<{ path_glob: string; reason: string }>; reasonCode?: string } = {},
+  options: { selected?: number; omitted?: number; truncated?: boolean; skippedTriggered?: string[]; skippedHighRisk?: Array<{ path_glob: string; reason: string }>; reasonCode?: string } = {},
 ): ContextProviderResult {
   const bundleId = `bundle-${request.requestId}`;
   const reasonCodes = options.reasonCode ? [options.reasonCode] : [];
+  const omitted = options.omitted ?? 0;
+  const selected = options.selected ?? sources.length + omitted;
+  const truncated = options.truncated ?? omitted > 0;
+  if (sources.length > request.maxSources || selected !== sources.length + omitted || truncated !== (omitted > 0))
+    throw new ContextProviderFailure("CONTEXT_CONSISTENCY_MISMATCH", "Generated context selection counts are inconsistent.");
   const bundle: ContextBundleV1 = {
     contract_type: "ContextBundleV1",
     contract_version: "1.0",
@@ -193,42 +272,45 @@ function contextResult(
     sources,
     selection: {
       max_sources: request.maxSources,
-      selected_source_count: sources.length,
-      omitted_source_count: options.omitted ?? 0,
+      selected_source_count: selected,
+      omitted_source_count: omitted,
       missing_required_paths: [],
       skipped_trigger_only_context: options.skippedTriggered ?? [],
       skipped_high_risk_context: options.skippedHighRisk ?? [],
-      truncated: (options.omitted ?? 0) > 0,
+      truncated,
     },
     scope_expansion: NO_SCOPE_EXPANSION,
   };
+  const receipt: ContextReceiptV1 = {
+    contract_type: "ContextReceiptV1",
+    contract_version: "1.0",
+    receipt_id: `receipt-${request.requestId}`,
+    request_id: request.requestId,
+    bundle_id: bundleId,
+    outcome: "pass",
+    reason_codes: reasonCodes,
+    checks: [{ check_id: "context_selection", status: "pass", reason_codes: reasonCodes }],
+    counts: { requested_max_sources: request.maxSources, selected_sources: selected, omitted_sources: omitted },
+    policy_refs: CONTEXT_POLICY_REFS,
+    tools: { requested: [], allowed: [], denied: [] },
+    changed_paths: [],
+    scope_expansion: NO_SCOPE_EXPANSION,
+  };
+  validateContextContractV1("bundle", bundle);
+  validateContextContractV1("receipt", receipt);
   return {
     provider,
     fallbackReason: options.reasonCode,
     bundle,
-    receipt: {
-      contract_type: "ContextReceiptV1",
-      contract_version: "1.0",
-      receipt_id: `receipt-${request.requestId}`,
-      request_id: request.requestId,
-      bundle_id: bundleId,
-      outcome: "pass",
-      reason_codes: reasonCodes,
-      checks: [{ check_id: "context_selection", status: "pass", reason_codes: reasonCodes }],
-      counts: { requested_max_sources: request.maxSources, selected_sources: sources.length, omitted_sources: options.omitted ?? 0 },
-      policy_refs: CONTEXT_POLICY_REFS,
-      tools: { requested: [], allowed: [], denied: [] },
-      changed_paths: [],
-      scope_expansion: NO_SCOPE_EXPANSION,
-    },
+    receipt,
   };
 }
 
 export class FallbackContextProvider implements ContextProvider {
   async provide(request: ContextProviderRequest): Promise<ContextProviderResult> {
-    const sources = SAFE_FALLBACK_FILES
+    createContextRequestV1(request);
+    const availableSources = SAFE_FALLBACK_FILES
       .filter((path) => existsSync(join(request.projectPath, path)))
-      .slice(0, request.maxSources)
       .map((path): ContextSourceV1 => ({
         path,
         priority: "P0",
@@ -238,7 +320,13 @@ export class FallbackContextProvider implements ContextProvider {
         retrieval_mode: "startup_required",
         inclusion_reason: "fixed safe fallback entrypoint",
       }));
-    return contextResult(request, "fallback", sources);
+    const sources = availableSources.slice(0, request.maxSources);
+    const omitted = availableSources.length - sources.length;
+    return contextResult(request, "fallback", sources, {
+      selected: availableSources.length,
+      omitted,
+      truncated: omitted > 0,
+    });
   }
 }
 
@@ -252,6 +340,7 @@ export class RepositoryContextHelperProvider implements ContextProvider {
   constructor(private readonly options: RepositoryContextHelperOptions = {}) {}
 
   async provide(request: ContextProviderRequest): Promise<ContextProviderResult> {
+    createContextRequestV1(request);
     const helper = join(request.projectPath, this.options.helperRelativePath ?? "scripts/ai_context_helper.py");
     if (!existsSync(helper))
       throw new ContextProviderFailure("HELPER_UNAVAILABLE", "Repository context helper was not found.");
@@ -284,7 +373,7 @@ export class RepositoryContextHelperProvider implements ContextProvider {
     return this.normalize(value, request);
   }
 
-  private normalize(value: unknown, request: ContextProviderRequest): ContextProviderResult {
+  normalize(value: unknown, request: ContextProviderRequest): ContextProviderResult {
     const legacy = value as Record<string, unknown>;
     const readSet = legacy?.read_set;
     const receipt = legacy?.receipt as Record<string, unknown> | undefined;
@@ -326,8 +415,22 @@ export class RepositoryContextHelperProvider implements ContextProvider {
     });
     if (sources.length > request.maxSources)
       throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper exceeded maxSources.");
-    const omitted = typeof legacy.truncated_count === "number" && legacy.truncated_count >= 0 ? legacy.truncated_count : 0;
-    return contextResult(request, "repository-helper", sources, { omitted, skippedTriggered, skippedHighRisk });
+    const selected = legacy.selected_source_count;
+    const omitted = legacy.omitted_source_count;
+    const truncated = legacy.truncated;
+    if (!Number.isInteger(selected) || Number(selected) < sources.length)
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper selected_source_count is inconsistent with its read set.");
+    if (!Number.isInteger(omitted) || Number(omitted) < 0 || Number(selected) !== sources.length + Number(omitted) || typeof truncated !== "boolean" || truncated !== (Number(omitted) > 0))
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper omission metadata is inconsistent.");
+    if (truncated && sources.length !== request.maxSources)
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper truncated before filling maxSources.");
+    return contextResult(request, "repository-helper", sources, {
+      selected: Number(selected),
+      omitted: Number(omitted),
+      truncated,
+      skippedTriggered,
+      skippedHighRisk,
+    });
   }
 }
 
@@ -339,6 +442,8 @@ export async function resolveTaskContext(request: ContextProviderRequest, primar
     result.fallbackReason = reason;
     result.receipt.reason_codes = [reason];
     result.receipt.checks = [{ check_id: "repository_helper", status: "fail", reason_codes: [reason] }, { check_id: "safe_fallback", status: "pass", reason_codes: [] }];
+    validateContextContractV1("bundle", result.bundle);
+    validateContextContractV1("receipt", result.receipt);
     return result;
   }
 }
@@ -761,6 +866,53 @@ async function persistProjects() {
   await writeFile(projectsFile, JSON.stringify(savedProjects, null, 2));
 }
 
+export async function runHasLiveOwner(
+  run: {
+    id: string;
+    project: { path: string };
+    lock?: { path: string; acquiredAt: string };
+  },
+  isAlive: (pid: number) => boolean = processIsAlive,
+) {
+  const path = run.lock?.path ?? join(run.project.path, projectLockName);
+  try {
+    const owner = JSON.parse(await readFile(path, "utf8")) as {
+      runId?: string;
+      pid?: number;
+    };
+    return owner.runId === run.id &&
+      typeof owner.pid === "number" &&
+      owner.pid > 0 &&
+      isAlive(owner.pid);
+  } catch {
+    return false;
+  }
+}
+
+export async function bindBeforeRecovery<T extends {
+  close?: (callback: () => void) => void;
+}>(
+  bind: () => Promise<T>,
+  recover: () => Promise<void>,
+) {
+  const server = await bind();
+  try {
+    await recover();
+    return server;
+  } catch (error) {
+    if (typeof server.close === "function") {
+      await new Promise<void>((resolveClose) => {
+        try {
+          server.close?.(resolveClose);
+        } catch {
+          resolveClose();
+        }
+      });
+    }
+    throw error;
+  }
+}
+
 async function recoverInterruptedRuns() {
   if (!existsSync(runsDirectory)) return;
   const pausedRuns: Run[] = [];
@@ -773,7 +925,7 @@ async function recoverInterruptedRuns() {
       pausedRuns.push(run);
       continue;
     }
-    if (run.status !== "running") continue;
+    if (run.status !== "running" || await runHasLiveOwner(run)) continue;
     recoverRun(run);
     await persist(run);
   }
@@ -2350,7 +2502,13 @@ app.use(
   }),
 );
 app.get("/api/health", (_, response) =>
-  response.json({ ok: true, codexBin: codexBin(), cliModelIds: MODEL_IDS }),
+  response.json({
+    ok: true,
+    service: "codex-orchestrator",
+    apiVersion: 1,
+    codexBin: codexBin(),
+    cliModelIds: MODEL_IDS,
+  }),
 );
 app.get("/api/run", (_, response) => response.json(activeRun ?? null));
 app.get("/api/run/scheduler", (_, response) =>
@@ -2785,8 +2943,17 @@ app.get("/{*splat}", async (_, response) => {
 const port = Number(process.env.PORT || 4318);
 if (process.env.ORCHESTRATOR_TEST !== "1") {
   void codexCliAvailable();
-  void Promise.all([recoverInterruptedRuns(), ensureRunSummaries(), loadProjects()]).then(() =>
-    app.listen(port, () => {
+  const listen = () => new Promise<ReturnType<typeof app.listen>>((resolveListen, rejectListen) => {
+    const server = app.listen(port);
+    server.once("error", rejectListen);
+    server.once("listening", () => resolveListen(server));
+  });
+  void bindBeforeRecovery(
+    listen,
+    async () => {
+      await Promise.all([recoverInterruptedRuns(), ensureRunSummaries(), loadProjects()]);
+    },
+  ).then(() => {
       const url = `http://localhost:${port}`;
       console.log(`Orchestrator on ${url}`);
       if (process.env.ORCHESTRATOR_NO_OPEN !== "1") {
@@ -2800,6 +2967,9 @@ if (process.env.ORCHESTRATOR_TEST !== "1") {
         else
           spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
       }
-    }),
-  );
+    })
+    .catch((error) => {
+      console.error(`Orchestrator failed to start: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
 }

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 
 process.env.ORCHESTRATOR_TEST = "1";
 
@@ -33,7 +36,128 @@ const {
   contextsForRun,
   createRun,
   buildPrompt,
+  createContextRequestV1,
+  validateContextContractV1,
+  bindBeforeRecovery,
+  runHasLiveOwner,
 } = await import("./index.ts");
+const { TaskContextControls, contextProfileTaskPatch, optionalNumberValue } = await import("../src/App.tsx");
+const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
+
+test("server binds successfully before recovery mutates persisted runs", async () => {
+  const events: string[] = [];
+  const server = { close: () => undefined };
+  assert.equal(
+    await bindBeforeRecovery(
+      async () => { events.push("listen"); return server; },
+      async () => { events.push("recover"); },
+    ),
+    server,
+  );
+  assert.deepEqual(events, ["listen", "recover"]);
+
+  let recovered = false;
+  await assert.rejects(
+    bindBeforeRecovery(
+      async () => { throw new Error("EADDRINUSE"); },
+      async () => { recovered = true; },
+    ),
+    /EADDRINUSE/,
+  );
+  assert.equal(recovered, false);
+
+  let closed = false;
+  await assert.rejects(
+    bindBeforeRecovery(
+      async () => ({ close: (done: () => void) => { closed = true; done(); } }),
+      async () => { throw new Error("recovery failed"); },
+    ),
+    /recovery failed/,
+  );
+  assert.equal(closed, true);
+});
+
+test("recovery recognizes a live matching run owner", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "orchestrator-live-owner-"));
+  const lockPath = join(directory, ".codex-orchestrator.lock");
+  try {
+    await writeFile(lockPath, JSON.stringify({ runId: "run-live", pid: 1234 }), "utf8");
+    const run = {
+      id: "run-live",
+      project: { path: directory },
+      lock: { path: lockPath, acquiredAt: new Date().toISOString() },
+    };
+    assert.equal(await runHasLiveOwner(run, (pid: number) => pid === 1234), true);
+    assert.equal(await runHasLiveOwner({ ...run, id: "other-run" }, () => true), false);
+    assert.equal(await runHasLiveOwner(run, () => false), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("vendors exact Context Contract v1 schemas with recorded provenance", async () => {
+  const expected = {
+    "context-request-v1.schema.json": "20a74bb97390dc1543504c852fe5c72d8f81d53bf2ec3da964f7e36f47c083f3",
+    "context-bundle-v1.schema.json": "18c9b99f8eff25c75bb4a4b723c7bbfdcca331afa8b69c5e3ddeb9f7ce4a7b99",
+    "context-receipt-v1.schema.json": "daf185539344f646c16c6834a4d1578b61d812a7bf3c7ff94f1181de55ab22ec",
+  };
+  for (const [name, hash] of Object.entries(expected)) {
+    const snapshot = await readFile(join("server", "context-contract-v1", "schemas", name));
+    assert.equal(createHash("sha256").update(snapshot).digest("hex"), hash);
+  }
+  const provenance = await readFile(join("server", "context-contract-v1", "schemas", "PROVENANCE.md"), "utf8");
+  assert.match(provenance, /AI-assisted_System_Design_and_Agent_Memory_Kit/);
+  assert.match(provenance, /JSON Schema Draft 2020-12/);
+});
+
+test("Ajv 2020 validates generated ContextRequestV1 and rejects observable mismatches", () => {
+  const request = createContextRequestV1({
+    projectPath: "C:/safe-project",
+    requestId: "request-schema",
+    task: "Review repository",
+    profile: "review",
+    maxSources: 2,
+  });
+  assert.equal(validateContextContractV1("request", request), request);
+  assert.throws(
+    () => validateContextContractV1("request", { ...request, contract_version: "2.0" }),
+    /CONTEXT_SCHEMA_MISMATCH.*ContextRequestV1/,
+  );
+});
+
+test("visual task editor exposes accessible optional context controls", () => {
+  const markup = renderToStaticMarkup(createElement(TaskContextControls, {
+    task: { title: "Review", prompt: "Review repository", contextProfile: "review" },
+    onChange: () => undefined,
+  }));
+  assert.match(markup, /<label[^>]*>Context profile/);
+  assert.match(markup, /<label[^>]*>Maximum context sources/);
+  assert.match(markup, /aria-label="Context profile"/);
+  assert.match(markup, /aria-label="Maximum context sources"/);
+  assert.match(markup, /type="number"[^>]*min="1"[^>]*max="50"[^>]*step="1"/);
+});
+
+test("context editor values round-trip through YAML without losing optional state", () => {
+  const enabled = {
+    title: "Review",
+    prompt: "Review repository",
+    ...contextProfileTaskPatch("review"),
+    maxSources: optionalNumberValue("7"),
+  };
+  assert.deepEqual(parse(stringify({ tasks: [enabled] })).tasks[0], {
+    title: "Review",
+    prompt: "Review repository",
+    contextProfile: "review",
+    maxSources: 7,
+  });
+  const disabled = { ...enabled, ...contextProfileTaskPatch("") };
+  assert.deepEqual(parse(stringify({ tasks: [disabled] })).tasks[0], {
+    title: "Review",
+    prompt: "Review repository",
+  });
+  assert.equal(optionalNumberValue(""), undefined);
+  assert.equal(optionalNumberValue("1.5"), 1.5);
+});
 
 test("maps lifecycle statuses to outcome classes and derives only valid durations", () => {
   assert.equal(outcomeClass("completed"), "success");
@@ -239,7 +363,10 @@ test("safe fallback selects only fixed root entrypoints and emits ContextReceipt
     assert.equal(result.provider, "fallback");
     assert.deepEqual(result.bundle.sources.map((source: { path: string }) => source.path), ["AGENTS.md"]);
     assert.equal(result.receipt.contract_type, "ContextReceiptV1");
-    assert.equal(result.receipt.counts.selected_sources, 1);
+    assert.equal(result.receipt.counts.selected_sources, 2);
+    assert.equal(result.receipt.counts.omitted_sources, 1);
+    assert.equal(validateContextContractV1("bundle", result.bundle), result.bundle);
+    assert.equal(validateContextContractV1("receipt", result.receipt), result.receipt);
     assert.equal(JSON.stringify(result).includes(".env"), false);
     assert.equal(JSON.stringify(result).includes("private.md"), false);
   } finally {
@@ -262,7 +389,7 @@ test("helper timeout, invalid JSON, and contract mismatch use observable safe fa
       await writeFile(join(project, helper), source);
       const result = await resolveTaskContext(
         { projectPath: project, requestId: `request-${name}`, task: "Review", profile: "review", maxSources: 2 },
-        new RepositoryContextHelperProvider({ executable: process.execPath, helperRelativePath: helper, timeoutMs }),
+        new RepositoryContextHelperProvider({ executable: testNodeExecutable, helperRelativePath: helper, timeoutMs }),
         new FallbackContextProvider(),
       );
       assert.equal(result.provider, "fallback");
@@ -287,25 +414,44 @@ test("helper adapter preserves safety evidence and rejects divergent receipt sel
       bundle_type: "api_agent_context_bundle", request_id: "request-consistent", profile: "review",
       mutation_scope: "read-only", runtime_scope_expanded: false, broker_or_data_scope_expanded: false,
       read_set: [source], context: { read_set: [source] },
-      request_envelope: { request_id: "request-consistent", profile: "review", max_sources: 2, forbidden_paths: ["data/**"] },
+      request_envelope: { request_id: "request-consistent", profile: "review", max_sources: 1, forbidden_paths: ["data/**"] },
       skipped_high_risk_context: [{ path_glob: "data/**", reason: "excluded by helper" }],
       skipped_trigger_only_context: [],
+      selected_source_count: 4,
+      omitted_source_count: 3,
+      truncated: true,
       receipt: { receipt_type: "api_agent_context_receipt", request_id: "request-consistent", profile: "review", read_set: [source] },
     };
-    await writeFile(join(project, "scripts", "valid.cjs"), `console.log(${JSON.stringify(JSON.stringify(payload))});`);
-    const provider = new RepositoryContextHelperProvider({ executable: process.execPath, helperRelativePath: "scripts/valid.cjs", timeoutMs: 1_000 });
-    const request = { projectPath: project, requestId: "request-consistent", task: "Review", profile: "review", maxSources: 2 };
-    const valid = await provider.provide(request);
+    const provider = new RepositoryContextHelperProvider({ executable: testNodeExecutable, helperRelativePath: "scripts/valid.cjs", timeoutMs: 1_000 });
+    const request = { projectPath: project, requestId: "request-consistent", task: "Review", profile: "review", maxSources: 1 };
+    const valid = provider.normalize(payload, request);
     assert.deepEqual(valid.bundle.selection.skipped_high_risk_context, payload.skipped_high_risk_context);
+    assert.deepEqual(valid.bundle.selection.selected_source_count, 4);
+    assert.deepEqual(valid.bundle.selection.omitted_source_count, 3);
+    assert.deepEqual(valid.bundle.selection.truncated, true);
+    assert.deepEqual(valid.receipt.counts, {
+      requested_max_sources: 1,
+      selected_sources: 4,
+      omitted_sources: 3,
+    });
 
     payload.receipt.read_set = [];
-    await writeFile(join(project, "scripts", "divergent.cjs"), `console.log(${JSON.stringify(JSON.stringify(payload))});`);
     const divergent = await resolveTaskContext(
       request,
-      new RepositoryContextHelperProvider({ executable: process.execPath, helperRelativePath: "scripts/divergent.cjs", timeoutMs: 1_000 }),
+      { provide: async () => provider.normalize(payload, request) },
       new FallbackContextProvider(),
     );
     assert.equal(divergent.fallbackReason, "HELPER_CONTRACT_MISMATCH");
+
+    payload.receipt.read_set = [source];
+    payload.selected_source_count = 3;
+    const inconsistent = await resolveTaskContext(
+      request,
+      { provide: async () => provider.normalize(payload, request) },
+      new FallbackContextProvider(),
+    );
+    assert.equal(inconsistent.provider, "fallback");
+    assert.equal(inconsistent.fallbackReason, "HELPER_CONTRACT_MISMATCH");
   } finally {
     await rm(project, { recursive: true, force: true });
   }

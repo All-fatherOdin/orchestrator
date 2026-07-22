@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-memory-kit:context-contract:v1:ContextRequestV1",
+  "title": "ContextRequestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "request_id",
+    "task",
+    "profile",
+    "mutation_scope",
+    "selection",
+    "requested_tools",
+    "policy_refs"
+  ],
+  "properties": {
+    "contract_type": {"const": "ContextRequestV1"},
+    "contract_version": {"const": "1.0"},
+    "request_id": {"type": "string", "minLength": 1},
+    "task": {"type": "string", "minLength": 1},
+    "profile": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "mutation_scope": {"const": "read_only"},
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_sources", "include_triggered", "required_paths", "forbidden_paths"],
+      "properties": {
+        "max_sources": {"type": "integer", "minimum": 1},
+        "include_triggered": {"type": "boolean"},
+        "required_paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "forbidden_paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
+      }
+    },
+    "requested_tools": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "policy_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_index", "retrieval_policy", "retrieval_scoring_policy"],
+      "properties": {
+        "context_index": {"type": "string", "minLength": 1},
+        "retrieval_policy": {"type": "string", "minLength": 1},
+        "retrieval_scoring_policy": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

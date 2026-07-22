@@ -3,31 +3,65 @@ const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const {
+  configureSingleInstance,
+  ensureServerAvailability,
+  isCompatibleHealth,
+  shouldReportServerExit,
+} = require("./lifecycle.cjs");
 
 const port = Number(process.env.ORCHESTRATOR_PORT || 4318);
 const url = `http://127.0.0.1:${port}`;
 let mainWindow;
 let serverProcess;
 let isQuitting = false;
+let ownsServer = false;
+let serverReady = false;
 
-function waitForServer(timeoutMs = 15_000) {
+function probeCompatibleServer() {
+  return new Promise((resolve) => {
+    const request = http.get(`${url}/api/health`, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        try {
+          resolve(response.statusCode === 200 && isCompatibleHealth(JSON.parse(body)));
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+    request.on("error", () => resolve(false));
+    request.setTimeout(1_000, () => {
+      request.destroy();
+      resolve(false);
+    });
+  });
+}
+
+function waitForServer(child, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
-    const check = () => {
-      const request = http.get(url, (response) => {
-        response.resume();
-        resolve();
-      });
-      request.on("error", () => {
-        if (Date.now() >= deadline) {
-          reject(new Error("The local Orchestrator server did not start in time."));
-          return;
-        }
-        setTimeout(check, 200);
-      });
-      request.setTimeout(1_000, () => request.destroy());
+    let settled = false;
+    const finish = (action, value) => {
+      if (settled) return;
+      settled = true;
+      child.removeListener("exit", onExit);
+      action(value);
     };
-    check();
+    const onExit = (code) => finish(
+      reject,
+      new Error(`The local Orchestrator server exited during startup (exit code ${code ?? "unknown"}).`),
+    );
+    child.once("exit", onExit);
+    const check = async () => {
+      if (await probeCompatibleServer()) return finish(resolve);
+      if (Date.now() >= deadline)
+        return finish(reject, new Error("The local Orchestrator server did not start in time."));
+      setTimeout(check, 200);
+    };
+    void check();
   });
 }
 
@@ -51,7 +85,7 @@ function startServer() {
       ? portableWorkspaceData
       : path.join(app.getPath("userData"), ".orchestrator"));
 
-  serverProcess = spawn(process.execPath, [serverPath], {
+  return spawn(process.execPath, [serverPath], {
     cwd: app.getPath("userData"),
     env: {
       ...process.env,
@@ -65,27 +99,22 @@ function startServer() {
     windowsHide: true,
   });
 
-  serverProcess.once("exit", (code) => {
-    if (!isQuitting) {
-      dialog.showErrorBox(
-        "Orchestrator stopped",
-        `The local server stopped unexpectedly (exit code ${code ?? "unknown"}).`,
-      );
-      app.quit();
-    }
-  });
 }
 
-function stopServer() {
-  if (!serverProcess || serverProcess.killed) return;
+function stopServerProcess(processToStop) {
+  if (!processToStop || processToStop.killed) return;
   if (process.platform === "win32") {
-    spawn("taskkill", ["/pid", String(serverProcess.pid), "/T", "/F"], {
+    spawn("taskkill", ["/pid", String(processToStop.pid), "/T", "/F"], {
       windowsHide: true,
       stdio: "ignore",
     });
   } else {
-    serverProcess.kill();
+    processToStop.kill();
   }
+}
+
+function stopServer() {
+  if (ownsServer) stopServerProcess(serverProcess);
 }
 
 function createWindow() {
@@ -104,21 +133,38 @@ function createWindow() {
   mainWindow.loadURL(url);
 }
 
-app.whenReady().then(async () => {
-  startServer();
-  try {
-    await waitForServer();
-    createWindow();
-  } catch (error) {
+if (configureSingleInstance(app, () => mainWindow)) {
+  app.whenReady().then(async () => {
+    try {
+      const availability = await ensureServerAvailability({
+        probe: probeCompatibleServer,
+        start: startServer,
+        wait: waitForServer,
+        stop: async (child) => stopServerProcess(child),
+      });
+      ownsServer = availability.ownsServer;
+      serverProcess = availability.process;
+      serverReady = true;
+      serverProcess?.once("exit", (code) => {
+        if (!shouldReportServerExit({ isQuitting, ownsServer, serverReady })) return;
+        dialog.showErrorBox(
+          "Orchestrator stopped",
+          `The local server stopped unexpectedly (exit code ${code ?? "unknown"}).`,
+        );
+        app.quit();
+      });
+      createWindow();
+    } catch (error) {
+      isQuitting = true;
+      stopServer();
+      dialog.showErrorBox("Unable to start Orchestrator", error.message);
+      app.quit();
+    }
+  });
+
+  app.on("window-all-closed", () => app.quit());
+  app.on("before-quit", () => {
     isQuitting = true;
     stopServer();
-    dialog.showErrorBox("Unable to start Orchestrator", error.message);
-    app.quit();
-  }
-});
-
-app.on("window-all-closed", () => app.quit());
-app.on("before-quit", () => {
-  isQuitting = true;
-  stopServer();
-});
+  });
+}

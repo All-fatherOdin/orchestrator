@@ -128,6 +128,54 @@ type DraftQueue = {
   git?: Partial<GitSettings>;
   tasks?: DraftTask[];
 };
+export function contextProfileTaskPatch(value: string): Partial<Pick<DraftTask, "contextProfile" | "maxSources">> {
+  return value
+    ? { contextProfile: value }
+    : { contextProfile: undefined, maxSources: undefined };
+}
+
+export function optionalNumberValue(value: string): number | undefined {
+  return value === "" ? undefined : Number(value);
+}
+
+export function TaskContextControls({
+  task,
+  onChange,
+}: {
+  task: DraftTask;
+  onChange: (patch: Partial<DraftTask>) => void;
+}) {
+  return (
+    <>
+      <label>
+        Context profile
+        <input
+          aria-label="Context profile"
+          value={task.contextProfile ?? ""}
+          placeholder="Optional, e.g. review"
+          onChange={(event) => onChange(contextProfileTaskPatch(event.target.value))}
+        />
+      </label>
+      <label>
+        Maximum context sources
+        <input
+          aria-label="Maximum context sources"
+          type="number"
+          min="1"
+          max="50"
+          step="1"
+          placeholder="Default: 12"
+          disabled={!task.contextProfile}
+          value={task.maxSources ?? ""}
+          onChange={(event) => onChange({
+            maxSources: optionalNumberValue(event.target.value),
+          })}
+        />
+      </label>
+    </>
+  );
+}
+
 type LogFilter = "agent" | "command" | "warning" | "error";
 const statusLabel: Record<Status, string> = {
   pending: "В очереди",
@@ -1261,6 +1309,10 @@ export function App() {
                               }
                             />
                           </label>
+                          <TaskContextControls
+                            task={task}
+                            onChange={(patch) => updateTask(index, patch)}
+                          />
                           <input
                             className="paths"
                             value={task.key ?? ""}

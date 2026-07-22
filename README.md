@@ -9,12 +9,14 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:4317`, select a target repository and upload or paste a YAML queue. For a production-like local run:
+Open `http://localhost:4318`, select a target repository and upload or paste a YAML queue. For a production-like local run:
 
 ```powershell
 npm run build
 npm start
 ```
+
+The desktop app is single-instance. A second launch focuses the existing window instead of starting another server. If a compatible standalone Orchestrator is already healthy on the configured port, desktop attaches to it without taking ownership and leaves it running when the window closes. Server recovery starts only after the HTTP port has been acquired, and a run with a live matching lock owner is never marked interrupted by another process.
 
 The target repository's `AGENTS.md` and `.codex/config.toml` remain the source of truth: each CLI process is launched with that repository as its working directory.
 
@@ -38,7 +40,9 @@ See [tasks.example.yaml](tasks.example.yaml). Models are intentionally restricte
 
 Set a task's `model` to `auto` to let the orchestrator choose before the run. It routes contained tasks to Luna, implementation and verification work to Terra, and high-risk or cross-cutting work (such as migrations, security, architecture, production incidents, and payments) to Sol. Use `minModel: terra` or `minModel: sol` to prevent routing below a required capability level; an explicit model always takes precedence. The resolved model and routing reason are stored in the run record and report.
 
-To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`). Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. Missing helpers, timeouts, invalid JSON, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
+To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
+
+Generated `ContextRequestV1`, `ContextBundleV1`, and `ContextReceiptV1` values are runtime-validated with Ajv 8 and JSON Schema Draft 2020-12. Exact versioned schema snapshots and their source hashes are recorded in `server/context-contract-v1/schemas/PROVENANCE.md`.
 
 ### Dependencies and parallel execution
 

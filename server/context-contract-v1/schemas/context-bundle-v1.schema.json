@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agent-memory-kit:context-contract:v1:ContextBundleV1",
+  "title": "ContextBundleV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "bundle_id",
+    "request_id",
+    "profile",
+    "policy_refs",
+    "sources",
+    "selection",
+    "scope_expansion"
+  ],
+  "properties": {
+    "contract_type": {"const": "ContextBundleV1"},
+    "contract_version": {"const": "1.0"},
+    "bundle_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "profile": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "policy_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context_index", "retrieval_policy", "retrieval_scoring_policy"],
+      "properties": {
+        "context_index": {"type": "string", "minLength": 1},
+        "retrieval_policy": {"type": "string", "minLength": 1},
+        "retrieval_scoring_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "priority", "authority", "status", "layer", "retrieval_mode", "inclusion_reason"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "priority": {"type": "string", "minLength": 1},
+          "authority": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "minLength": 1},
+          "layer": {"type": "string", "minLength": 1},
+          "retrieval_mode": {"type": "string", "minLength": 1},
+          "inclusion_reason": {"type": "string", "minLength": 1},
+          "evidence_refs": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "freshness": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["temporal_kind"],
+            "properties": {
+              "temporal_kind": {"type": "string", "minLength": 1},
+              "last_verified_at": {"type": "string", "minLength": 1},
+              "valid_until": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_sources",
+        "selected_source_count",
+        "omitted_source_count",
+        "missing_required_paths",
+        "skipped_trigger_only_context",
+        "skipped_high_risk_context",
+        "truncated"
+      ],
+      "properties": {
+        "max_sources": {"type": "integer", "minimum": 1},
+        "selected_source_count": {"type": "integer", "minimum": 0},
+        "omitted_source_count": {"type": "integer", "minimum": 0},
+        "missing_required_paths": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "skipped_trigger_only_context": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "skipped_high_risk_context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path_glob", "reason"],
+            "properties": {
+              "path_glob": {"type": "string", "minLength": 1},
+              "reason": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "truncated": {"type": "boolean"}
+      }
+    },
+    "scope_expansion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime", "external_system", "data", "project_map_mutated"],
+      "properties": {
+        "runtime": {"const": false},
+        "external_system": {"const": false},
+        "data": {"const": false},
+        "project_map_mutated": {"const": false}
+      }
+    }
+  }
+}
