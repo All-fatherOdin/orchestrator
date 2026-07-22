@@ -132,6 +132,15 @@ export type OrchestratorGoalSyncV1 = {
 type GoalBuddySyncState = {
   status: "synced" | "conflict" | "failed";
   synchronizedAt?: string;
+  activatedExternalTaskId?: string;
+  error?: string;
+};
+
+type GoalBuddyContinuousAdapterV1 = {
+  contractType: "GoalBuddyContinuousAdapterV1";
+  statePath: string;
+  status: "active" | "complete" | "stopped" | "failed";
+  importedExternalTaskIds: string[];
   error?: string;
 };
 
@@ -585,6 +594,7 @@ type Run = {
   lock?: ProjectLock;
   pipeline?: { id: string; file: string; index: number; total: number };
   contextReceipts?: ContextReceiptV1[];
+  goalBuddyAdapter?: GoalBuddyContinuousAdapterV1;
 };
 type PipelineInput = { queues: Array<{ file: string }> };
 type LoadedPipeline = {
@@ -1121,9 +1131,13 @@ export async function syncGoalBuddyTaskReceipt(
   const boardTask = candidate as Record<string, unknown>;
 
   if (isSameGoalBuddySync(boardTask.orchestrator_sync, run, task, written.path)) {
-    const synchronizedAt = (boardTask.orchestrator_sync as OrchestratorGoalSyncV1).synchronized_at;
-    task.goalBuddySync = { status: "synced", synchronizedAt };
-    return boardTask.orchestrator_sync as OrchestratorGoalSyncV1;
+    const existingSync = boardTask.orchestrator_sync as OrchestratorGoalSyncV1;
+    task.goalBuddySync = {
+      status: "synced",
+      synchronizedAt: existingSync.synchronized_at,
+      activatedExternalTaskId: existingSync.progression.activated_task_id,
+    };
+    return existingSync;
   }
 
   const currentSha256 = createHash("sha256").update(source).digest("hex");
@@ -1182,7 +1196,11 @@ export async function syncGoalBuddyTaskReceipt(
   }
   document.setIn(["tasks", index, "orchestrator_sync"], sync);
   await writeTextAtomically(link.statePath, document.toString());
-  task.goalBuddySync = { status: "synced", synchronizedAt: sync.synchronized_at };
+  task.goalBuddySync = {
+    status: "synced",
+    synchronizedAt: sync.synchronized_at,
+    activatedExternalTaskId: sync.progression.activated_task_id,
+  };
   return sync;
 }
 
@@ -1914,6 +1932,70 @@ export function createRun(
       context: contexts[index],
     })),
   };
+}
+
+export function createGoalBuddyRun(
+  preview: Awaited<ReturnType<typeof previewGoalBuddyTask>>,
+  contexts: Array<ContextProviderResult | undefined> = [],
+) {
+  const queue = validateQueue(preview.queue);
+  const run = createRun(queue, undefined, contexts);
+  const externalTaskId = run.tasks[0]?.externalTaskId;
+  if (!externalTaskId)
+    throw new Error("GoalBuddy preview did not produce an external task id.");
+  run.goalBuddyAdapter = {
+    contractType: "GoalBuddyContinuousAdapterV1",
+    statePath: preview.source.statePath,
+    status: "active",
+    importedExternalTaskIds: [externalTaskId],
+  };
+  return run;
+}
+
+export async function appendNextGoalBuddyTask(run: Run, settledTask: Task) {
+  const adapter = run.goalBuddyAdapter;
+  if (!adapter) return undefined;
+  if (settledTask.status !== "completed" || settledTask.goalBuddySync?.status !== "synced") {
+    adapter.status = "stopped";
+    await persist(run);
+    return undefined;
+  }
+  const nextExternalTaskId = settledTask.goalBuddySync.activatedExternalTaskId;
+  if (!nextExternalTaskId) {
+    adapter.status = "complete";
+    await persist(run);
+    return undefined;
+  }
+  const existing = run.tasks.find((task) => task.externalTaskId === nextExternalTaskId);
+  if (existing) return existing;
+
+  const preview = await previewGoalBuddyTask({
+    statePath: adapter.statePath,
+    projectPath: run.project.path,
+  });
+  if (preview.taskInput.externalTaskId !== nextExternalTaskId)
+    throw new Error(
+      `GoalBuddy activated ${nextExternalTaskId}, but preview selected ${preview.taskInput.externalTaskId}.`,
+    );
+  const queue = validateQueue({
+    ...preview.queue,
+    project: run.project,
+    limits: run.limits,
+    git: run.git,
+  });
+  const contexts = await contextsForRun(queue);
+  const importedRun = createRun(queue, undefined, contexts);
+  const importedTask = importedRun.tasks[0];
+  if (!importedTask) throw new Error("GoalBuddy adapter produced no task.");
+  run.tasks.push(importedTask);
+  run.contextReceipts = [
+    ...(run.contextReceipts ?? []),
+    ...(importedRun.contextReceipts ?? []),
+  ];
+  adapter.importedExternalTaskIds.push(nextExternalTaskId);
+  adapter.status = "active";
+  await persist(run);
+  return importedTask;
 }
 
 function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
@@ -2705,6 +2787,17 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
         task.log.push("Reviewer unavailable: task result retained without reviewer approval.");
     }
     await finalizeSettledTask(run, task);
+    if (run.goalBuddyAdapter) {
+      try {
+        await appendNextGoalBuddyTask(run, task);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        run.goalBuddyAdapter.status = "failed";
+        run.goalBuddyAdapter.error = message;
+        task.log.push(`GoalBuddy continuous adapter stopped: ${message}`);
+        await persist(run);
+      }
+    }
     publish("run", run);
     return task.status;
 }
@@ -2771,7 +2864,9 @@ async function executeQueue(run: Run) {
     break;
   }
   if (!isCancelled(run)) {
-    if (run.tasks.some((task) => task.status === "timed_out"))
+    if (run.goalBuddyAdapter?.status === "failed")
+      run.status = "failed";
+    else if (run.tasks.some((task) => task.status === "timed_out"))
       run.status = "timed_out";
     else if (
       run.tasks.some(
@@ -3100,7 +3195,7 @@ app.post("/api/goalbuddy/runs", async (request, response) => {
     const input = typeof request.body === "string" ? parse(request.body) : request.body;
     const preview = await previewGoalBuddyTask(input as GoalBuddyPreviewInput);
     const queue = validateQueue(preview.queue);
-    const run = createRun(queue, undefined, await contextsForRun(queue));
+    const run = createGoalBuddyRun(preview, await contextsForRun(queue));
     try {
       await acquireProjectLock(run);
     } catch (error) {

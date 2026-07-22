@@ -44,12 +44,15 @@ const {
   bindBeforeRecovery,
   runHasLiveOwner,
   previewGoalBuddyTask,
+  createGoalBuddyRun,
+  appendNextGoalBuddyTask,
   createGoalReceiptEnvelopeV1,
   finalizeSettledTask,
   syncGoalBuddyTaskReceipt,
   validateGoalReceiptEnvelopeV1,
 } = await import("./index.ts");
 const { TaskContextControls, contextProfileTaskPatch, optionalNumberValue } = await import("../src/App.tsx");
+const { GoalBuddyPage, goalBuddyRunRequest } = await import("../src/GoalBuddyPage.tsx");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 test("server binds successfully before recovery mutates persisted runs", async () => {
@@ -165,6 +168,32 @@ test("context editor values round-trip through YAML without losing optional stat
   });
   assert.equal(optionalNumberValue(""), undefined);
   assert.equal(optionalNumberValue("1.5"), 1.5);
+});
+
+test("GoalBuddy UI exposes a preview-first accessible run workflow", () => {
+  const markup = renderToStaticMarkup(createElement(GoalBuddyPage, {
+    onRunStarted: () => undefined,
+    onError: () => undefined,
+  }));
+  assert.match(markup, /<h2>GoalBuddy bridge<\/h2>/);
+  assert.match(markup, /<label[^>]*>GoalBuddy state\.yaml/);
+  assert.match(markup, /aria-label="GoalBuddy state.yaml path"/);
+  assert.match(markup, /<label[^>]*>Repository/);
+  assert.match(markup, /aria-label="GoalBuddy repository path"/);
+  assert.match(markup, />Проверить карточку<\/button>/);
+  assert.match(markup, /<button[^>]*disabled=""[^>]*>Запустить карточку<\/button>/);
+  assert.match(markup, /Следующая queued-карточка будет автоматически добавлена в этот run/);
+  assert.deepEqual(
+    goalBuddyRunRequest(
+      { statePath: "D:/goals/demo/state.yaml", projectPath: "D:/work/demo" },
+      "abc123",
+    ),
+    {
+      statePath: "D:/goals/demo/state.yaml",
+      projectPath: "D:/work/demo",
+      expectedStateSha256: "abc123",
+    },
+  );
 });
 
 test("maps lifecycle statuses to outcome classes and derives only valid durations", () => {
@@ -960,8 +989,7 @@ test("GoalBuddy bridge syncs a receipt and advances to the next queued card", as
     assert.equal(preview.taskInput.goalBuddy.stateSha256, before);
     assert.equal(preview.queue.git.checkpointCommits, false);
 
-    const queue = validateQueue(preview.queue);
-    const created = createRun(queue);
+    const created = createGoalBuddyRun(preview);
     const linkedTask = created.tasks[0];
     assert.equal(linkedTask.externalTaskId, "T042");
     assert.ok(linkedTask.goalBuddy);
@@ -1033,6 +1061,24 @@ test("GoalBuddy bridge syncs a receipt and advances to the next queued card", as
     );
     const readback = await previewGoalBuddyTask({ statePath, projectPath: project });
     assert.equal(readback.taskInput.externalTaskId, "T043");
+    const appended = await appendNextGoalBuddyTask(created, linkedTask);
+    assert.ok(appended);
+    assert.equal(appended.externalTaskId, "T043");
+    assert.equal(appended.status, "pending");
+    assert.notEqual(appended.id, linkedTask.id);
+    assert.equal(appended.goalBuddy?.stateSha256, readback.source.stateSha256);
+    assert.deepEqual(created.goalBuddyAdapter?.importedExternalTaskIds, ["T042", "T043"]);
+    assert.equal(created.goalBuddyAdapter?.status, "active");
+    assert.equal(await appendNextGoalBuddyTask(created, linkedTask), appended);
+    assert.equal(created.tasks.length, 2);
+    const continuousRun = JSON.parse(
+      await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
+    );
+    assert.deepEqual(
+      continuousRun.tasks.map((task: { externalTaskId?: string }) => task.externalTaskId),
+      ["T042", "T043"],
+    );
+    assert.equal(continuousRun.goalBuddyAdapter.contractType, "GoalBuddyContinuousAdapterV1");
     const storedRun = JSON.parse(
       await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
     );
@@ -1087,7 +1133,7 @@ test("GoalBuddy sync preserves concurrent board changes and records a conflict",
     await mkdir(project);
     await writeFile(statePath, stringify(board), "utf8");
     const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createRun(validateQueue(preview.queue));
+    const created = createGoalBuddyRun(preview);
     const linkedTask = created.tasks[0];
     linkedTask.status = "completed";
     await writeFile(statePath, stringify({ ...board, owner_note: "changed concurrently" }), "utf8");
@@ -1122,7 +1168,7 @@ test("GoalBuddy progression leaves the current card active after a non-success o
     await mkdir(project);
     await writeFile(statePath, stringify(board), "utf8");
     const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createRun(validateQueue(preview.queue));
+    const created = createGoalBuddyRun(preview);
     const linkedTask = created.tasks[0];
     linkedTask.status = "failed";
 
@@ -1138,6 +1184,9 @@ test("GoalBuddy progression leaves the current card active after a non-success o
       reason: "non_success",
     });
     assert.equal(preserved.tasks[1].status, "queued");
+    assert.equal(await appendNextGoalBuddyTask(created, linkedTask), undefined);
+    assert.equal(created.tasks.length, 1);
+    assert.equal(created.goalBuddyAdapter?.status, "stopped");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1157,7 +1206,7 @@ test("GoalBuddy progression records no candidate without closing the goal", asyn
     await mkdir(project);
     await writeFile(statePath, stringify(board), "utf8");
     const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createRun(validateQueue(preview.queue));
+    const created = createGoalBuddyRun(preview);
     const linkedTask = created.tasks[0];
     linkedTask.status = "completed";
 
@@ -1171,6 +1220,9 @@ test("GoalBuddy progression records no candidate without closing the goal", asyn
       status: "not_advanced",
       reason: "no_queued_task",
     });
+    assert.equal(await appendNextGoalBuddyTask(created, linkedTask), undefined);
+    assert.equal(created.tasks.length, 1);
+    assert.equal(created.goalBuddyAdapter?.status, "complete");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

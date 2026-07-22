@@ -1,6 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse, stringify } from "yaml";
 import { UsagePage } from "./UsagePage";
+import { GoalBuddyPage } from "./GoalBuddyPage";
 
 type Status =
   | "pending"
@@ -293,6 +294,7 @@ export function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
+  const [showGoalBuddy, setShowGoalBuddy] = useState(false);
   const [projects, setProjects] = useState<ProjectProfile[]>([]);
   const [projectForm, setProjectForm] = useState({
     name: "",
@@ -836,11 +838,12 @@ export function App() {
         </div>
         <nav>
           <button
-            className={!showHistory && !showProjects && !showUsage ? "active" : ""}
+            className={!showHistory && !showProjects && !showUsage && !showGoalBuddy ? "active" : ""}
             onClick={() => {
               setShowHistory(false);
               setShowProjects(false);
               setShowUsage(false);
+              setShowGoalBuddy(false);
             }}
           >
             Очередь
@@ -851,6 +854,7 @@ export function App() {
               setShowHistory(true);
               setShowProjects(false);
               setShowUsage(false);
+              setShowGoalBuddy(false);
               void refreshHistory(0);
             }}
           >
@@ -862,6 +866,7 @@ export function App() {
               setShowProjects(true);
               setShowHistory(false);
               setShowUsage(false);
+              setShowGoalBuddy(false);
             }}
           >
             Проекты <em>{projects.length}</em>
@@ -872,9 +877,21 @@ export function App() {
               setShowUsage(true);
               setShowHistory(false);
               setShowProjects(false);
+              setShowGoalBuddy(false);
             }}
           >
             Расход
+          </button>
+          <button
+            className={showGoalBuddy ? "active" : ""}
+            onClick={() => {
+              setShowGoalBuddy(true);
+              setShowUsage(false);
+              setShowHistory(false);
+              setShowProjects(false);
+            }}
+          >
+            GoalBuddy
           </button>
         </nav>
         <div className="sidebarFoot">
@@ -884,7 +901,7 @@ export function App() {
         </div>
       </aside>
       <section className="workspace">
-        {!showUsage && <header>
+        {!showUsage && !showGoalBuddy && <header>
           <div>
             <h1>
               <FolderIcon />
@@ -949,7 +966,22 @@ export function App() {
             onConfirm={() => void deleteHistoryRun(runToDelete.id)}
           />
         )}
-        {showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
+        {showGoalBuddy ? (
+          <GoalBuddyPage<Run>
+            defaultProjectPath={run?.project.path}
+            runBlocked={run?.status === "running" || run?.status === "paused"}
+            onError={setError}
+            onRunStarted={(startedRun) => {
+              setRun(startedRun);
+              setShowGoalBuddy(false);
+              setHistory((previous) => [
+                runSummary(startedRun),
+                ...previous.filter((item) => item.id !== startedRun.id),
+              ].slice(0, 5));
+              setHistoryTotal((total) => total + 1);
+            }}
+          />
+        ) : showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
           <section className="projectsPanel">
             <div className="sectionHeading">
               <h2>Сохранённые проекты</h2>
