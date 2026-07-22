@@ -14,7 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { parse } from "yaml";
+import { parse, parseDocument } from "yaml";
 // The static imports keep exact schema snapshots embedded in the desktop server bundle.
 import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
 import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
@@ -109,6 +109,24 @@ export type GoalReceiptEnvelopeV1 = {
   orchestrator: { run_id: string; task_id: string };
   outcome: { task_status: Status; outcome_class: OutcomeClass };
   source_state_unchanged: boolean;
+};
+
+export type OrchestratorGoalSyncV1 = {
+  contract_type: "OrchestratorGoalSyncV1";
+  run_id: string;
+  task_id: string;
+  external_task_id: string;
+  run_status: Status;
+  outcome_class: OutcomeClass;
+  receipt_path: string;
+  receipt_contract_type: "GoalReceiptEnvelopeV1";
+  synchronized_at: string;
+};
+
+type GoalBuddySyncState = {
+  status: "synced" | "conflict" | "failed";
+  synchronizedAt?: string;
+  error?: string;
 };
 
 type ContextPolicyRefs = {
@@ -526,6 +544,7 @@ type Task = ResolvedTask & {
   executionAttempts?: number;
   checkpoint?: Checkpoint;
   goalReceiptPath?: string;
+  goalBuddySync?: GoalBuddySyncState;
   /** Machine-readable accounting emitted by Codex CLI JSON events. */
   usage?: UsageRecord[];
   context?: ContextProviderResult;
@@ -803,8 +822,7 @@ function publish(event: string, data: unknown) {
   subscribers.forEach((response) => response.write(message));
 }
 
-function writeJsonAtomically(file: string, value: unknown) {
-  const content = JSON.stringify(value, null, 2);
+function writeTextAtomically(file: string, content: string) {
   const previous = jsonWriteChains.get(file) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
@@ -824,6 +842,10 @@ function writeJsonAtomically(file: string, value: unknown) {
     if (jsonWriteChains.get(file) === next) jsonWriteChains.delete(file);
   });
   return next;
+}
+
+function writeJsonAtomically(file: string, value: unknown) {
+  return writeTextAtomically(file, JSON.stringify(value, null, 2));
 }
 
 function persist(run: Run) {
@@ -959,6 +981,9 @@ export async function previewGoalBuddyTask(input: GoalBuddyPreviewInput) {
   const allowedPaths = goalBuddyStringList(task.allowed_files, "allowed_files");
   const verificationCommands = goalBuddyStringList(task.verify, "verify");
   const executionGuards = goalBuddyStringList(task.stop_if, "stop_if");
+  const orchestratorSync = task.orchestrator_sync && typeof task.orchestrator_sync === "object"
+    ? task.orchestrator_sync as OrchestratorGoalSyncV1
+    : undefined;
   const goalBuddy: GoalBuddyTaskLinkV1 = {
     goalSlug,
     goalTitle: goalTitle || goalSlug,
@@ -981,6 +1006,7 @@ export async function previewGoalBuddyTask(input: GoalBuddyPreviewInput) {
     contract_type: "GoalBuddyTaskPreviewV1" as const,
     contract_version: "1.0" as const,
     source: { statePath, stateSha256 },
+    orchestratorSync,
     taskInput,
     queue: {
       project: { path: projectPath },
@@ -1042,6 +1068,79 @@ export async function writeGoalReceiptEnvelopeV1(run: Run, task: Task) {
   const envelope = createGoalReceiptEnvelopeV1(run, task, sourceStateUnchanged);
   await writeJsonAtomically(path, envelope);
   return { path, envelope };
+}
+
+class GoalBuddySyncConflict extends Error {}
+
+function isSameGoalBuddySync(
+  value: unknown,
+  run: Run,
+  task: Task,
+  receiptPath: string,
+): value is OrchestratorGoalSyncV1 {
+  if (!value || typeof value !== "object") return false;
+  const sync = value as Partial<OrchestratorGoalSyncV1>;
+  return sync.contract_type === "OrchestratorGoalSyncV1" &&
+    sync.run_id === run.id &&
+    sync.task_id === task.id &&
+    sync.external_task_id === task.externalTaskId &&
+    sync.receipt_path === receiptPath;
+}
+
+export async function syncGoalBuddyTaskReceipt(
+  run: Run,
+  task: Task,
+  written: { path: string; envelope: GoalReceiptEnvelopeV1 },
+) {
+  const link = task.goalBuddy;
+  if (!link || !task.externalTaskId)
+    throw new Error("Task does not contain GoalBuddy linkage.");
+
+  const source = await readFile(link.statePath);
+  const document = parseDocument(source.toString("utf8"));
+  if (document.errors.length)
+    throw new Error(`GoalBuddy state.yaml is invalid: ${document.errors[0].message}`);
+  const board = document.toJS() as { active_task?: unknown; tasks?: unknown };
+  if (!Array.isArray(board.tasks))
+    throw new GoalBuddySyncConflict("GoalBuddy state.yaml no longer contains tasks.");
+  const matchingIndexes = board.tasks
+    .map((candidate, index) => ({ candidate, index }))
+    .filter(({ candidate }) =>
+      Boolean(candidate) && typeof candidate === "object" &&
+      (candidate as Record<string, unknown>).id === task.externalTaskId
+    );
+  if (matchingIndexes.length !== 1)
+    throw new GoalBuddySyncConflict("GoalBuddy task linkage is no longer unique.");
+  const { candidate, index } = matchingIndexes[0];
+  const boardTask = candidate as Record<string, unknown>;
+
+  if (isSameGoalBuddySync(boardTask.orchestrator_sync, run, task, written.path)) {
+    const synchronizedAt = (boardTask.orchestrator_sync as OrchestratorGoalSyncV1).synchronized_at;
+    task.goalBuddySync = { status: "synced", synchronizedAt };
+    return boardTask.orchestrator_sync as OrchestratorGoalSyncV1;
+  }
+
+  const currentSha256 = createHash("sha256").update(source).digest("hex");
+  if (currentSha256 !== link.stateSha256)
+    throw new GoalBuddySyncConflict("GoalBuddy state.yaml changed after preview.");
+  if (board.active_task !== task.externalTaskId || boardTask.status !== "active")
+    throw new GoalBuddySyncConflict("GoalBuddy active task changed after preview.");
+
+  const sync: OrchestratorGoalSyncV1 = {
+    contract_type: "OrchestratorGoalSyncV1",
+    run_id: run.id,
+    task_id: task.id,
+    external_task_id: task.externalTaskId,
+    run_status: task.status,
+    outcome_class: outcomeClass(task.status),
+    receipt_path: written.path,
+    receipt_contract_type: "GoalReceiptEnvelopeV1",
+    synchronized_at: timestamp(),
+  };
+  document.setIn(["tasks", index, "orchestrator_sync"], sync);
+  await writeTextAtomically(link.statePath, document.toString());
+  task.goalBuddySync = { status: "synced", synchronizedAt: sync.synchronized_at };
+  return sync;
 }
 
 export async function runHasLiveOwner(
@@ -2423,6 +2522,18 @@ export async function finalizeSettledTask(run: Run, task: Task) {
       task.log.push(
         `GoalReceiptEnvelopeV1 could not be written: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+    if (goalReceipt) {
+      try {
+        await syncGoalBuddyTaskReceipt(run, task, goalReceipt);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        task.goalBuddySync = {
+          status: error instanceof GoalBuddySyncConflict ? "conflict" : "failed",
+          error: message,
+        };
+        task.log.push(`GoalBuddy sync could not be written: ${message}`);
+      }
     }
   }
   if (task.status === "completed") await createCheckpoint(run, task);

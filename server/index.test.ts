@@ -46,6 +46,7 @@ const {
   previewGoalBuddyTask,
   createGoalReceiptEnvelopeV1,
   finalizeSettledTask,
+  syncGoalBuddyTaskReceipt,
   validateGoalReceiptEnvelopeV1,
 } = await import("./index.ts");
 const { TaskContextControls, contextProfileTaskPatch, optionalNumberValue } = await import("../src/App.tsx");
@@ -919,7 +920,7 @@ test("project lock prevents two orchestrator runs from using the same repository
   }
 });
 
-test("GoalBuddy bridge maps one active task through preview, run linkage, and a separate receipt without changing state", async () => {
+test("GoalBuddy bridge syncs a receipt without changing board scheduling", async () => {
   const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-"));
   const project = join(root, "repository");
   const statePath = join(root, "state.yaml");
@@ -943,7 +944,7 @@ test("GoalBuddy bridge maps one active task through preview, run linkage, and a 
   };
   try {
     await mkdir(project);
-    await writeFile(statePath, stringify(board), "utf8");
+    await writeFile(statePath, `# owner comment\n${stringify(board)}`, "utf8");
     const before = createHash("sha256").update(await readFile(statePath)).digest("hex");
 
     const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
@@ -988,16 +989,50 @@ test("GoalBuddy bridge maps one active task through preview, run linkage, and a 
     assert.equal(receipt.outcome.outcome_class, "success");
     assert.equal(receipt.source_state_unchanged, true);
     assert.equal(linkedTask.goalReceiptPath, written.path);
+    assert.equal(linkedTask.goalBuddySync?.status, "synced");
+    const synchronizedSource = await readFile(statePath, "utf8");
+    assert.match(synchronizedSource, /# owner comment/);
+    const synchronizedBoard = parse(synchronizedSource);
+    assert.equal(synchronizedBoard.active_task, "T042");
+    assert.equal(synchronizedBoard.tasks[0].status, "active");
+    assert.equal(synchronizedBoard.tasks[1].status, "queued");
+    assert.equal(synchronizedBoard.tasks[1].orchestrator_sync, undefined);
+    assert.deepEqual(
+      {
+        contract_type: synchronizedBoard.tasks[0].orchestrator_sync.contract_type,
+        run_id: synchronizedBoard.tasks[0].orchestrator_sync.run_id,
+        task_id: synchronizedBoard.tasks[0].orchestrator_sync.task_id,
+        external_task_id: synchronizedBoard.tasks[0].orchestrator_sync.external_task_id,
+        run_status: synchronizedBoard.tasks[0].orchestrator_sync.run_status,
+        outcome_class: synchronizedBoard.tasks[0].orchestrator_sync.outcome_class,
+        receipt_path: synchronizedBoard.tasks[0].orchestrator_sync.receipt_path,
+      },
+      {
+        contract_type: "OrchestratorGoalSyncV1",
+        run_id: created.id,
+        task_id: linkedTask.id,
+        external_task_id: "T042",
+        run_status: "completed",
+        outcome_class: "success",
+        receipt_path: written.path,
+      },
+    );
+    const synchronizedHash = createHash("sha256").update(synchronizedSource).digest("hex");
+    await syncGoalBuddyTaskReceipt(created, linkedTask, written);
+    assert.equal(
+      createHash("sha256").update(await readFile(statePath)).digest("hex"),
+      synchronizedHash,
+    );
+    const readback = await previewGoalBuddyTask({ statePath, projectPath: project });
+    assert.equal(readback.orchestratorSync?.run_id, created.id);
+    assert.equal(readback.orchestratorSync?.receipt_path, written.path);
     const storedRun = JSON.parse(
       await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
     );
     assert.equal(storedRun.tasks[0].goalBuddy.goalSlug, "bridge-fixture");
     assert.equal(storedRun.tasks[0].externalTaskId, "T042");
     assert.equal(storedRun.tasks[0].goalReceiptPath, written.path);
-    assert.equal(
-      createHash("sha256").update(await readFile(statePath)).digest("hex"),
-      before,
-    );
+    assert.equal(storedRun.tasks[0].goalBuddySync.status, "synced");
 
     for (const [status, expected] of [
       ["failed", "failure"],
@@ -1026,6 +1061,38 @@ test("GoalBuddy bridge maps one active task through preview, run linkage, and a 
       () => previewGoalBuddyTask({ statePath, projectPath: project }),
       /exactly one active task/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("GoalBuddy sync preserves concurrent board changes and records a conflict", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-conflict-"));
+  const project = join(root, "repository");
+  const statePath = join(root, "state.yaml");
+  const board = {
+    version: 2,
+    goal: { title: "Conflict fixture", slug: "conflict-fixture" },
+    active_task: "T007",
+    tasks: [{ id: "T007", status: "active", objective: "Do guarded work." }],
+  };
+  try {
+    await mkdir(project);
+    await writeFile(statePath, stringify(board), "utf8");
+    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
+    const created = createRun(validateQueue(preview.queue));
+    const linkedTask = created.tasks[0];
+    linkedTask.status = "completed";
+    await writeFile(statePath, stringify({ ...board, owner_note: "changed concurrently" }), "utf8");
+
+    const written = await finalizeSettledTask(created, linkedTask);
+    assert.ok(written);
+    assert.equal(written.envelope.source_state_unchanged, false);
+    assert.equal(linkedTask.status, "failed");
+    assert.equal(linkedTask.goalBuddySync?.status, "conflict");
+    const preserved = parse(await readFile(statePath, "utf8"));
+    assert.equal(preserved.owner_note, "changed concurrently");
+    assert.equal(preserved.tasks[0].orchestrator_sync, undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
