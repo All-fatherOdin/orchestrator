@@ -24,6 +24,9 @@ tasks:
     # timeoutMinutes: 45
     # maxRetries: 2
     allowedPaths: [src/notifications]
+    # Optional Context Contract v1 selection through scripts/ai_context_helper.py.
+    contextProfile: review
+    maxSources: 8
     # Named resources are exclusive across concurrently running tasks.
     resources: [typescript-check]
   - key: reconnect-logic

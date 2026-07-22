@@ -68,7 +68,280 @@ type TaskInput = {
   allowedPaths?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
+  /** Opts the task into Context Contract v1 selection. */
+  contextProfile?: string;
+  /** Maximum number of context sources selected for this task. */
+  maxSources?: number;
 };
+
+type ContextPolicyRefs = {
+  context_index: string;
+  retrieval_policy: string;
+  retrieval_scoring_policy: string;
+};
+export type ContextSourceV1 = {
+  path: string;
+  priority: string;
+  authority: string;
+  status: string;
+  layer: string;
+  retrieval_mode: string;
+  inclusion_reason: string;
+  evidence_refs?: string[];
+};
+export type ContextBundleV1 = {
+  contract_type: "ContextBundleV1";
+  contract_version: "1.0";
+  bundle_id: string;
+  request_id: string;
+  profile: string;
+  policy_refs: ContextPolicyRefs;
+  sources: ContextSourceV1[];
+  selection: {
+    max_sources: number;
+    selected_source_count: number;
+    omitted_source_count: number;
+    missing_required_paths: string[];
+    skipped_trigger_only_context: string[];
+    skipped_high_risk_context: Array<{ path_glob: string; reason: string }>;
+    truncated: boolean;
+  };
+  scope_expansion: { runtime: false; external_system: false; data: false; project_map_mutated: false };
+};
+export type ContextReceiptV1 = {
+  contract_type: "ContextReceiptV1";
+  contract_version: "1.0";
+  receipt_id: string;
+  request_id: string;
+  bundle_id: string;
+  outcome: "pass" | "fail";
+  reason_codes: string[];
+  checks: Array<{ check_id: string; status: "pass" | "fail"; reason_codes: string[] }>;
+  counts: { requested_max_sources: number; selected_sources: number; omitted_sources: number };
+  policy_refs: ContextPolicyRefs;
+  tools: { requested: string[]; allowed: string[]; denied: Array<{ tool: string; reason_code: string }> };
+  changed_paths: [];
+  scope_expansion: { runtime: false; external_system: false; data: false; project_map_mutated: false };
+};
+export type ContextProviderRequest = {
+  projectPath: string;
+  requestId: string;
+  task: string;
+  profile: string;
+  maxSources: number;
+};
+export type ContextProviderResult = {
+  provider: "repository-helper" | "fallback";
+  bundle: ContextBundleV1;
+  receipt: ContextReceiptV1;
+  fallbackReason?: string;
+};
+export interface ContextProvider {
+  provide(request: ContextProviderRequest): Promise<ContextProviderResult>;
+}
+
+const CONTEXT_POLICY_REFS: ContextPolicyRefs = {
+  context_index: "docs/project_map/context_index.yaml",
+  retrieval_policy: "docs/project_map/retrieval_policy.yaml",
+  retrieval_scoring_policy: "docs/project_map/retrieval_scoring_policy.yaml",
+};
+const NO_SCOPE_EXPANSION = {
+  runtime: false,
+  external_system: false,
+  data: false,
+  project_map_mutated: false,
+} as const;
+const SAFE_FALLBACK_FILES = ["AGENTS.md", "README.md"] as const;
+
+class ContextProviderFailure extends Error {
+  constructor(readonly reasonCode: string, message: string) {
+    super(message);
+  }
+}
+
+function safeContextPath(path: string) {
+  const normalized = path.replace(/\\/g, "/").toLowerCase();
+  const parts = normalized.split("/");
+  return Boolean(normalized) && !normalized.startsWith("/") && !normalized.includes("../") &&
+    !parts.some((part) => part === "data" || part === "output" || part === "logs" || part === "secrets" || part === ".git" || part === ".venv" || part === "__pycache__" || part === ".pytest_cache") &&
+    !parts.some((part) => part === ".env" || part.startsWith(".env.")) &&
+    !/\.(?:db|sqlite|sqlite3|log|pyc)$/i.test(normalized) && !normalized.endsWith("/desktop.ini") && normalized !== "desktop.ini";
+}
+
+function matchesPathGlob(path: string, glob: string) {
+  const normalizedPath = path.replace(/\\/g, "/");
+  const escaped = glob.replace(/\\/g, "/").replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const pattern = escaped.replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*");
+  return new RegExp(`^${pattern}$`, "i").test(normalizedPath);
+}
+
+function contextResult(
+  request: ContextProviderRequest,
+  provider: ContextProviderResult["provider"],
+  sources: ContextSourceV1[],
+  options: { omitted?: number; skippedTriggered?: string[]; skippedHighRisk?: Array<{ path_glob: string; reason: string }>; reasonCode?: string } = {},
+): ContextProviderResult {
+  const bundleId = `bundle-${request.requestId}`;
+  const reasonCodes = options.reasonCode ? [options.reasonCode] : [];
+  const bundle: ContextBundleV1 = {
+    contract_type: "ContextBundleV1",
+    contract_version: "1.0",
+    bundle_id: bundleId,
+    request_id: request.requestId,
+    profile: request.profile,
+    policy_refs: CONTEXT_POLICY_REFS,
+    sources,
+    selection: {
+      max_sources: request.maxSources,
+      selected_source_count: sources.length,
+      omitted_source_count: options.omitted ?? 0,
+      missing_required_paths: [],
+      skipped_trigger_only_context: options.skippedTriggered ?? [],
+      skipped_high_risk_context: options.skippedHighRisk ?? [],
+      truncated: (options.omitted ?? 0) > 0,
+    },
+    scope_expansion: NO_SCOPE_EXPANSION,
+  };
+  return {
+    provider,
+    fallbackReason: options.reasonCode,
+    bundle,
+    receipt: {
+      contract_type: "ContextReceiptV1",
+      contract_version: "1.0",
+      receipt_id: `receipt-${request.requestId}`,
+      request_id: request.requestId,
+      bundle_id: bundleId,
+      outcome: "pass",
+      reason_codes: reasonCodes,
+      checks: [{ check_id: "context_selection", status: "pass", reason_codes: reasonCodes }],
+      counts: { requested_max_sources: request.maxSources, selected_sources: sources.length, omitted_sources: options.omitted ?? 0 },
+      policy_refs: CONTEXT_POLICY_REFS,
+      tools: { requested: [], allowed: [], denied: [] },
+      changed_paths: [],
+      scope_expansion: NO_SCOPE_EXPANSION,
+    },
+  };
+}
+
+export class FallbackContextProvider implements ContextProvider {
+  async provide(request: ContextProviderRequest): Promise<ContextProviderResult> {
+    const sources = SAFE_FALLBACK_FILES
+      .filter((path) => existsSync(join(request.projectPath, path)))
+      .slice(0, request.maxSources)
+      .map((path): ContextSourceV1 => ({
+        path,
+        priority: "P0",
+        authority: "repository_entrypoint",
+        status: "active",
+        layer: "root_entrypoint",
+        retrieval_mode: "startup_required",
+        inclusion_reason: "fixed safe fallback entrypoint",
+      }));
+    return contextResult(request, "fallback", sources);
+  }
+}
+
+type RepositoryContextHelperOptions = {
+  executable?: string;
+  helperRelativePath?: string;
+  timeoutMs?: number;
+};
+
+export class RepositoryContextHelperProvider implements ContextProvider {
+  constructor(private readonly options: RepositoryContextHelperOptions = {}) {}
+
+  async provide(request: ContextProviderRequest): Promise<ContextProviderResult> {
+    const helper = join(request.projectPath, this.options.helperRelativePath ?? "scripts/ai_context_helper.py");
+    if (!existsSync(helper))
+      throw new ContextProviderFailure("HELPER_UNAVAILABLE", "Repository context helper was not found.");
+    const executable = this.options.executable ?? process.env.PYTHON_BIN ?? "python";
+    const args = [helper, "--root", request.projectPath, "api-context", "--request-id", request.requestId, "--task", request.task, "--profile", request.profile, "--max-sources", String(request.maxSources), "--format", "json"];
+    const output = await new Promise<string>((resolveOutput, reject) => {
+      const child = spawn(executable, args, { cwd: request.projectPath, windowsHide: true });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolveOutput(stdout);
+      };
+      const timer = setTimeout(() => {
+        child.kill();
+        finish(new ContextProviderFailure("HELPER_TIMEOUT", "Repository context helper timed out."));
+      }, this.options.timeoutMs ?? 5_000);
+      child.stdout?.on("data", (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(0, 1_000_000); });
+      child.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(0, 20_000); });
+      child.on("error", () => finish(new ContextProviderFailure("HELPER_UNAVAILABLE", "Repository context helper could not start.")));
+      child.on("close", (code) => code === 0 ? finish() : finish(new ContextProviderFailure("HELPER_FAILED", stderr.trim() || `Repository context helper exited with code ${code}.`)));
+    });
+    let value: unknown;
+    try { value = JSON.parse(output); }
+    catch { throw new ContextProviderFailure("HELPER_INVALID_JSON", "Repository context helper returned invalid JSON."); }
+    return this.normalize(value, request);
+  }
+
+  private normalize(value: unknown, request: ContextProviderRequest): ContextProviderResult {
+    const legacy = value as Record<string, unknown>;
+    const readSet = legacy?.read_set;
+    const receipt = legacy?.receipt as Record<string, unknown> | undefined;
+    const context = legacy?.context as Record<string, unknown> | undefined;
+    const envelope = legacy?.request_envelope as Record<string, unknown> | undefined;
+    if (legacy?.bundle_type !== "api_agent_context_bundle" || legacy.request_id !== request.requestId || legacy.profile !== request.profile || legacy.mutation_scope !== "read-only" || !Array.isArray(readSet) || receipt?.receipt_type !== "api_agent_context_receipt")
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper response does not match its compatibility contract.");
+    if (envelope?.request_id !== request.requestId || envelope.profile !== request.profile || envelope.max_sources !== request.maxSources || receipt.request_id !== request.requestId || receipt.profile !== request.profile)
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper request identity diverged across payload sections.");
+    if (!Array.isArray(context?.read_set) || !Array.isArray(receipt.read_set) || JSON.stringify(context.read_set) !== JSON.stringify(readSet) || JSON.stringify(receipt.read_set) !== JSON.stringify(readSet))
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper read sets diverged across bundle, context, and receipt.");
+    if (legacy.runtime_scope_expanded !== false || legacy.broker_or_data_scope_expanded !== false)
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper expanded runtime or data scope.");
+    const forbiddenPaths = Array.isArray(envelope.forbidden_paths) && envelope.forbidden_paths.every((item) => typeof item === "string" && item)
+      ? envelope.forbidden_paths as string[]
+      : (() => { throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper omitted forbidden path evidence."); })();
+    const skippedHighRisk = Array.isArray(legacy.skipped_high_risk_context)
+      ? legacy.skipped_high_risk_context.map((item) => {
+          const entry = item as Record<string, unknown>;
+          if (typeof entry?.path_glob !== "string" || !entry.path_glob || typeof entry.reason !== "string" || !entry.reason)
+            throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper returned invalid high-risk exclusion evidence.");
+          return { path_glob: entry.path_glob, reason: entry.reason };
+        })
+      : (() => { throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper omitted high-risk exclusion evidence."); })();
+    const skippedTriggered = Array.isArray(legacy.skipped_trigger_only_context)
+      ? legacy.skipped_trigger_only_context.map((item) => typeof item === "string" ? item : String((item as Record<string, unknown>)?.path ?? "")).filter(Boolean)
+      : [];
+    const sources = readSet.map((item) => {
+      const source = item as Record<string, unknown>;
+      for (const key of ["path", "priority", "authority", "status", "layer", "retrieval_mode", "inclusion_reason"])
+        if (typeof source[key] !== "string" || !source[key])
+          throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", `Repository context helper source is missing ${key}.`);
+      if (!safeContextPath(String(source.path)) || forbiddenPaths.some((glob) => matchesPathGlob(String(source.path), glob)))
+        throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper selected a forbidden path.");
+      return {
+        path: String(source.path), priority: String(source.priority), authority: String(source.authority), status: String(source.status),
+        layer: String(source.layer), retrieval_mode: String(source.retrieval_mode), inclusion_reason: String(source.inclusion_reason),
+      } satisfies ContextSourceV1;
+    });
+    if (sources.length > request.maxSources)
+      throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper exceeded maxSources.");
+    const omitted = typeof legacy.truncated_count === "number" && legacy.truncated_count >= 0 ? legacy.truncated_count : 0;
+    return contextResult(request, "repository-helper", sources, { omitted, skippedTriggered, skippedHighRisk });
+  }
+}
+
+export async function resolveTaskContext(request: ContextProviderRequest, primary: ContextProvider = new RepositoryContextHelperProvider(), fallback: ContextProvider = new FallbackContextProvider()) {
+  try { return await primary.provide(request); }
+  catch (error) {
+    const reason = error instanceof ContextProviderFailure ? error.reasonCode : "HELPER_FAILED";
+    const result = await fallback.provide(request);
+    result.fallbackReason = reason;
+    result.receipt.reason_codes = [reason];
+    result.receipt.checks = [{ check_id: "repository_helper", status: "fail", reason_codes: [reason] }, { check_id: "safe_fallback", status: "pass", reason_codes: [] }];
+    return result;
+  }
+}
 type ResolvedTask = Omit<TaskInput, "model" | "effort"> & {
   model: Model;
   effort: Effort;
@@ -105,6 +378,7 @@ type Task = ResolvedTask & {
   checkpoint?: Checkpoint;
   /** Machine-readable accounting emitted by Codex CLI JSON events. */
   usage?: UsageRecord[];
+  context?: ContextProviderResult;
 };
 type UsageRecord = {
   phase: "executor" | "reviewer" | "correction";
@@ -135,6 +409,7 @@ type Run = {
   git: GitSettings;
   lock?: ProjectLock;
   pipeline?: { id: string; file: string; index: number; total: number };
+  contextReceipts?: ContextReceiptV1[];
 };
 type PipelineInput = { queues: Array<{ file: string }> };
 type LoadedPipeline = {
@@ -825,6 +1100,21 @@ export function validateQueue(value: unknown): {
       throw new Error(
         `Task ${index + 1}: maxRetries must be an integer from 0 to 3.`,
       );
+    if (
+      task.contextProfile !== undefined &&
+      (typeof task.contextProfile !== "string" ||
+        !/^[a-z][a-z0-9_]*$/.test(task.contextProfile))
+    )
+      throw new Error(
+        `Task ${index + 1}: contextProfile must use lowercase letters, numbers, and underscores.`,
+      );
+    if (task.maxSources !== undefined && task.contextProfile === undefined)
+      throw new Error(`Task ${index + 1}: maxSources requires contextProfile.`);
+    if (
+      task.maxSources !== undefined &&
+      (!Number.isInteger(task.maxSources) || task.maxSources < 1 || task.maxSources > 50)
+    )
+      throw new Error(`Task ${index + 1}: maxSources must be an integer from 1 to 50.`);
     return { ...task, model, effort, requestedModel: selection.requestedModel, modelSelectionReason: selection.reason };
   });
   const taskKeys = new Set<string>();
@@ -1104,9 +1394,10 @@ export async function loadPipeline(value: unknown): Promise<LoadedPipeline> {
   return { id: identifier(), queues, currentIndex: 0, status: "running" };
 }
 
-function createRun(
+export function createRun(
   queue: ReturnType<typeof validateQueue>,
   pipeline?: Run["pipeline"],
+  contexts: Array<ContextProviderResult | undefined> = [],
 ): Run {
   return {
     id: identifier(),
@@ -1116,11 +1407,13 @@ function createRun(
     limits: queue.limits,
     git: queue.git,
     pipeline,
-    tasks: queue.tasks.map((task) => ({
+    contextReceipts: contexts.flatMap((context) => context ? [context.receipt] : []),
+    tasks: queue.tasks.map((task, index) => ({
       ...task,
       id: identifier(),
       status: "pending",
       log: [],
+      context: contexts[index],
     })),
   };
 }
@@ -1142,6 +1435,8 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       allowedPaths: task.allowedPaths,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
+      contextProfile: task.contextProfile,
+      maxSources: task.maxSources,
       requestedModel: task.requestedModel,
       modelSelectionReason: task.modelSelectionReason,
     })),
@@ -1451,6 +1746,50 @@ async function readGitDiff(cwd: string, paths: string[]) {
   });
 }
 
+const preflightContextCache = new Map<string, Array<ContextProviderResult | undefined>>();
+
+function contextCacheKey(queue: ReturnType<typeof validateQueue>) {
+  return JSON.stringify({
+    projectPath: queue.project.path,
+    tasks: queue.tasks.map((task) => ({
+      key: task.key,
+      prompt: task.prompt,
+      contextProfile: task.contextProfile,
+      maxSources: task.maxSources,
+    })),
+  });
+}
+
+async function resolveQueueContexts(queue: ReturnType<typeof validateQueue>) {
+  return Promise.all(queue.tasks.map((task, index) =>
+    task.contextProfile
+      ? resolveTaskContext({
+          projectPath: queue.project.path,
+          requestId: `context-${identifier()}-${index + 1}`,
+          task: task.prompt,
+          profile: task.contextProfile,
+          maxSources: task.maxSources ?? 12,
+        })
+      : Promise.resolve(undefined),
+  ));
+}
+
+export function cachePreflightContexts(queue: ReturnType<typeof validateQueue>, contexts: Array<ContextProviderResult | undefined>) {
+  if (preflightContextCache.size >= 20)
+    preflightContextCache.delete(preflightContextCache.keys().next().value!);
+  preflightContextCache.set(contextCacheKey(queue), contexts);
+}
+
+export async function contextsForRun(queue: ReturnType<typeof validateQueue>) {
+  const key = contextCacheKey(queue);
+  const cached = preflightContextCache.get(key);
+  if (cached) {
+    preflightContextCache.delete(key);
+    return cached;
+  }
+  return resolveQueueContexts(queue);
+}
+
 async function preflight(value: unknown) {
   const pipeline = isPipeline(value) ? await loadPipeline(value) : undefined;
   const queue = pipeline?.queues[0].queue ?? validateQueue(value);
@@ -1480,6 +1819,10 @@ async function preflight(value: unknown) {
       },
     ];
   });
+  const contexts = await resolveQueueContexts(queue);
+  if (contexts.some(Boolean)) {
+    cachePreflightContexts(queue, contexts);
+  }
   const result = {
     ok: cli && git && checks.every((check) => check.ok),
     checks: [
@@ -1501,6 +1844,13 @@ async function preflight(value: unknown) {
           "No package scripts found",
       },
       ...checks,
+      ...contexts.flatMap((context, index) => context ? [{
+        name: `Task ${index + 1} context`,
+        ok: true,
+        detail: context.fallbackReason
+          ? `Controlled fallback: ${context.fallbackReason}`
+          : `${context.bundle.sources.length} source(s) from repository helper`,
+      }] : []),
       ...(pipeline
         ? [
             {
@@ -1511,18 +1861,33 @@ async function preflight(value: unknown) {
           ]
         : []),
     ],
+    contextPreviews: contexts.flatMap((context, index) => context ? [{
+      task: index + 1,
+      profile: context.bundle.profile,
+      provider: context.provider,
+      fallbackReason: context.fallbackReason,
+      sources: context.bundle.sources.map((source) => ({
+        path: source.path,
+        priority: source.priority,
+        authority: source.authority,
+        inclusionReason: source.inclusion_reason,
+      })),
+    }] : []),
   };
   return result;
 }
 
-function buildPrompt(task: Task, project: ProjectSettings) {
+export function buildPrompt(task: Task, project: ProjectSettings) {
   const paths = task.allowedPaths?.length
     ? `\nAllowed paths: ${task.allowedPaths.join(", ")}`
     : "";
   const checks = project.verificationCommands?.length
     ? `\n- Run these project verification commands when relevant:\n${project.verificationCommands.map((command) => `  - ${command}`).join("\n")}`
     : "\n- Run relevant verification commands.";
-  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.`;
+  const context = task.context
+    ? `\n\nContext Contract v1 (${task.context.provider}${task.context.fallbackReason ? `; controlled fallback: ${task.context.fallbackReason}` : ""}):\n${task.context.bundle.sources.map((source) => `- ${source.path} [${source.priority}; ${source.authority}] — ${source.inclusion_reason}`).join("\n")}`
+    : "";
+  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.`;
 }
 
 async function reviewTask(run: Run, task: Task) {
@@ -1898,12 +2263,13 @@ async function execute(run: Run) {
 async function startPipelineQueue(pipeline: LoadedPipeline) {
   const entry = pipeline.queues[pipeline.currentIndex];
   if (!entry) return;
+  const contexts = await contextsForRun(entry.queue);
   const run = createRun(entry.queue, {
     id: pipeline.id,
     file: entry.file,
     index: pipeline.currentIndex + 1,
     total: pipeline.queues.length,
-  });
+  }, contexts);
   await acquireProjectLock(run);
   pipeline.currentRunId = run.id;
   activeRun = run;
@@ -2213,7 +2579,8 @@ app.post("/api/runs", async (request, response) => {
       }
     }
     activePipeline = undefined;
-    const run = createRun(validateQueue(value));
+    const queue = validateQueue(value);
+    const run = createRun(queue, undefined, await contextsForRun(queue));
     try {
       await acquireProjectLock(run);
     } catch (error) {

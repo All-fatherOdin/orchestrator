@@ -38,6 +38,8 @@ See [tasks.example.yaml](tasks.example.yaml). Models are intentionally restricte
 
 Set a task's `model` to `auto` to let the orchestrator choose before the run. It routes contained tasks to Luna, implementation and verification work to Terra, and high-risk or cross-cutting work (such as migrations, security, architecture, production incidents, and payments) to Sol. Use `minModel: terra` or `minModel: sol` to prevent routing below a required capability level; an explicit model always takes precedence. The resolved model and routing reason are stored in the run record and report.
 
+To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`). Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. Missing helpers, timeouts, invalid JSON, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
+
 ### Dependencies and parallel execution
 
 For queues intended for a dependency-aware scheduler, give every task a stable YAML `key` and use `dependsOn` to name only its direct prerequisites. A task becomes runnable when every key in `dependsOn` has completed; all runnable tasks without a dependency or resource conflict can be launched in parallel. The current runner still executes the queue sequentially, but validates and preserves this graph for a parallel scheduler.

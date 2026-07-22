@@ -104,6 +104,15 @@ type DraftTask = {
   allowedPaths?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
+  contextProfile?: string;
+  maxSources?: number;
+};
+type ContextPreview = {
+  task: number;
+  profile: string;
+  provider: "repository-helper" | "fallback";
+  fallbackReason?: string;
+  sources: Array<{ path: string; priority: string; authority: string; inclusionReason: string }>;
 };
 type DraftQueue = {
   project?: {
@@ -230,6 +239,7 @@ export function App() {
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyOffset, setHistoryOffset] = useState(0);
   const [runToDelete, setRunToDelete] = useState<RunSummary | null>(null);
+  const [contextPreviews, setContextPreviews] = useState<ContextPreview[]>([]);
   const [isDeletingRun, setIsDeletingRun] = useState(false);
   const [pipeline, setPipeline] = useState<PipelineView | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -463,6 +473,7 @@ export function App() {
           parseJsonResponse<{
             ok: boolean;
             checks: { name: string; ok: boolean; detail: string }[];
+            contextPreviews?: ContextPreview[];
           }>(response, "Проверка очереди"),
       );
       if (!preflight.ok)
@@ -472,6 +483,7 @@ export function App() {
             .map((check) => `${check.name}: ${check.detail}`)
             .join("; "),
         );
+      setContextPreviews(preflight.contextPreviews ?? []);
       const parsed = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "text/yaml" },
@@ -1313,6 +1325,28 @@ export function App() {
                     ))}
                   </section>
                 ) : null}
+              </section>
+            )}
+            {contextPreviews.length > 0 && (
+              <section className="contextPreview" aria-label="Context preflight preview">
+                <div className="sectionHeading">
+                  <h2>Context preflight</h2>
+                  <span>{contextPreviews.reduce((total, item) => total + item.sources.length, 0)} sources</span>
+                </div>
+                {contextPreviews.map((preview) => (
+                  <article key={`${preview.task}-${preview.profile}`}>
+                    <b>Task {preview.task} · {preview.profile}</b>
+                    <small>{preview.provider}{preview.fallbackReason ? ` · fallback: ${preview.fallbackReason}` : ""}</small>
+                    <ul>
+                      {preview.sources.map((source) => (
+                        <li key={source.path}>
+                          <code>{source.path}</code>
+                          <span>{source.priority} · {source.authority}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
               </section>
             )}
             {run && (

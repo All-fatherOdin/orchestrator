@@ -1,0 +1,436 @@
+version: 2
+
+goal:
+  title: "Context Router v1"
+  slug: "context-router-v1"
+  kind: existing_plan
+  tranche: "Implement and verify the first end-to-end Context Contract v1 slice in Orchestrator."
+  status: done
+  oracle:
+    signal: "Orchestrator produces a compact context bundle for ai-stock-analyst, shows the selected-source preview during preflight, persists ContextReceiptV1 in the run record, and Kit smoke fixtures pass."
+    cadence: "after each Worker package and at final audit"
+    final_proof: "TDD receipts plus passing targeted and Kit smoke commands, with a final audit mapping the observed bundle, preview, and persisted receipt to the original request."
+  intake:
+    original_request: "Реализовать поддержку Context Contract v1 внутри Orchestrator, используя TDD."
+    interpreted_outcome: "Orchestrator safely obtains context from an external repository helper through a typed provider boundary, previews selected sources, and persists a v1 receipt."
+    input_shape: existing_plan
+    audience: "Orchestrator maintainers and users running ai-stock-analyst tasks"
+    authority: requested
+    proof_type: test
+    completion_proof: "A fixture-backed end-to-end run demonstrates the compact bundle, preflight preview, persisted ContextReceiptV1, explicit failure or controlled fallback behavior, and passing Kit smoke fixtures."
+    likely_misfire: "Adding types or a helper wrapper without proving the real preflight-to-run-record flow, safety exclusions, and failure semantics."
+    blind_spots_considered:
+      - "The existing helper contract, executable discovery, and compatibility behavior must be evidenced before implementation."
+      - "Fallback must never bypass high-risk or secret-bearing path exclusions."
+      - "Receipt persistence and preview must describe the exact selected sources, not a divergent recomputation."
+    existing_plan_facts:
+      - "Add ContextProvider."
+      - "Add RepositoryContextHelperProvider that launches the existing helper as a separate process returning JSON."
+      - "Add a safe FallbackContextProvider."
+      - "Add context profile and maxSources to TaskInput."
+      - "Preview selected sources during preflight."
+      - "Persist ContextReceiptV1 in the run record."
+      - "Do not read high-risk or secret-bearing paths."
+      - "Do not embed Python context-selection logic in TypeScript."
+      - "Timeout, invalid JSON, and contract mismatch must cause an explicit error or controlled fallback."
+      - "Use TDD."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: live
+    url: "http://goalbuddy.localhost:41737/context-router-v1/"
+    command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/context-router-v1"
+
+active_task: null
+
+tasks:
+  - id: T001
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Validate the user-provided vertical-slice plan against repository evidence and shape the largest safe TDD Worker package."
+    inputs:
+      - "User-provided Context Contract v1 plan and oracle"
+      - "Repository implementation, tests, fixtures, and existing helper integration surfaces"
+    constraints:
+      - "Read-only."
+      - "Preserve the requested vertical slice, but do not assume file locations or helper contract details."
+      - "Identify existing red verification separately from goal-owned gates."
+    expected_output:
+      - "Evidence-backed architecture and test seam map"
+      - "Validated contract and failure/fallback decisions"
+      - "Exact allowed_files, verify, and stop_if for the first Worker package"
+      - "Exact Kit smoke fixture command and classification of goal gates versus pre-existing red gates"
+    receipt:
+      result: done
+      decision: approved
+      full_outcome_complete: false
+      rationale: "Orchestrator is a compact monolith: TaskInput validation, preflight, run creation/persistence, and prompt construction are in server/index.ts; the visible launch flow is in src/App.tsx. ai-stock-analyst has a project-local read-only scripts/ai_context_helper.py with api-context JSON, explicit profile/max-sources, and default high-risk exclusions. Kit defines V1 as a normalized adapter projection over that legacy helper. Baselines are green. One bounded vertical Worker can add the provider seam, strict legacy/V1 guards, safe fixed-file fallback, exact preflight-to-run context reuse, persisted receipt, UI preview, docs, and tests."
+      worker_package:
+        objective: "Implement the complete Context Contract v1 provider-to-preflight-to-run-record vertical slice using TDD: add ContextProvider, RepositoryContextHelperProvider subprocess JSON integration, safe FallbackContextProvider, TaskInput contextProfile/maxSources, exact context reuse between preflight and run creation, prompt bundle attachment, visible selected-source preview, and persisted ContextReceiptV1."
+        allowed_files:
+          - server/index.ts
+          - server/index.test.ts
+          - src/App.tsx
+          - src/styles.css
+          - README.md
+          - tasks.example.yaml
+        verify:
+          - "npm test"
+          - "npm run check"
+          - "npm run build"
+          - "python \"D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_contract_v1_oracle.py\" --format json"
+        stop_if:
+          - "Implementation needs files outside the approved write scope."
+          - "The project-local helper executable or its api-context compatibility shape is absent or ambiguous."
+          - "The adapter would need to copy Python selection or policy logic into TypeScript."
+          - "Fallback would scan arbitrary files or could include high-risk/secret-bearing paths."
+          - "Preflight preview, prompt bundle, and persisted receipt cannot reuse the same provider result."
+          - "A goal-owned verification command fails twice after focused diagnosis."
+      evidence:
+        - "server/index.ts: TaskInput and Run types, validateQueue, preflight, createRun, persist, and buildPrompt"
+        - "server/index.test.ts: existing node:test integration surface; baseline npm test passed 18/18"
+        - "src/App.tsx: launch calls /api/preflight then /api/runs; visible preview must be added here"
+        - "D:/pet-projects/ai-stock-analyst/scripts/ai_context_helper.py: api-context command, explicit --profile/--max-sources, JSON output, high-risk exclusions"
+        - "D:/pet-projects/ai-stock-analyst/tests/test_ai_context_helper.py: helper contract and safety coverage"
+        - "Kit context_contract_v1/README.md: V1 is a normalized projection over the legacy helper surface"
+        - "Kit gate passed: context_contract_v1_oracle.py --format json, 5/5 cases and all examples passed"
+      missing_evidence: []
+      required_board_updates:
+        - "Copy worker_package scope and gates to T002 and activate T002."
+  - id: T002
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: medium
+    objective: "Implement the complete Context Contract v1 provider-to-preflight-to-run-record vertical slice using TDD, as bounded by the T001 receipt."
+    inputs:
+      - "T001 receipt"
+      - "Existing helper contract and repository test conventions identified by T001"
+      - "User-provided oracle and constraints"
+    constraints:
+      - "Write failing behavior-focused tests before production changes and record red/green evidence."
+      - "Do not read high-risk or secret-bearing paths in any provider path."
+      - "Do not reproduce Python context-selection logic in TypeScript."
+      - "Run the helper as a separate process and parse its JSON response against Context Contract v1."
+      - "Timeout, invalid JSON, and contract mismatch must be observable explicit errors or controlled fallback; never silently succeed."
+      - "Preview, execution bundle, and ContextReceiptV1 must derive from one provider result."
+    expected_output:
+      - "ContextProvider boundary and validated Context Contract v1 types"
+      - "RepositoryContextHelperProvider subprocess integration"
+      - "Policy-safe FallbackContextProvider"
+      - "TaskInput context profile and maxSources support with compatibility semantics"
+      - "Preflight selected-source preview"
+      - "ContextReceiptV1 persistence in run records"
+      - "TDD regression coverage including all named failure modes and ai-stock-analyst fixtures"
+    allowed_files:
+      - "server/index.ts"
+      - "server/index.test.ts"
+      - "src/App.tsx"
+      - "src/styles.css"
+      - "README.md"
+      - "tasks.example.yaml"
+    verify:
+      - "npm test"
+      - "npm run check"
+      - "npm run build"
+      - "python \"D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_contract_v1_oracle.py\" --format json"
+    stop_if:
+      - "Implementation needs files outside the T001-approved write scope."
+      - "The helper executable or Context Contract v1 cannot be located or its contract is ambiguous."
+      - "Fallback eligibility for a failure mode cannot be derived from the approved policy."
+      - "A proposed change would expose high-risk or secret-bearing content."
+      - "A goal-owned verification command fails twice after focused diagnosis."
+    receipt:
+      result: done
+      changed_files:
+        - server/index.ts
+        - server/index.test.ts
+        - src/App.tsx
+        - src/styles.css
+        - README.md
+        - tasks.example.yaml
+      commands:
+        - cmd: "npm test"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm run build"
+          status: pass
+        - cmd: "python \"D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_contract_v1_oracle.py\" --format json"
+          status: pass
+        - cmd: "RepositoryContextHelperProvider smoke against D:/pet-projects/ai-stock-analyst with profile=review and maxSources=4"
+          status: pass
+        - cmd: "git diff --check"
+          status: pass
+      summary: "TDD red first exposed missing validation/providers, then 21/21 tests passed. Added typed V1 provider/bundle/receipt contracts, project-local Python subprocess integration, strict legacy compatibility guards, classified timeout/invalid JSON/mismatch fallbacks, fixed-entrypoint safe fallback, contextProfile/maxSources validation, exact preflight cache reuse for prompt/run persistence, visible UI preview, and docs/examples. Real ai-stock-analyst smoke selected four safe sources and projected ContextBundleV1/ContextReceiptV1; Kit oracle passed all five cases and examples."
+      deviations:
+        - "The existing Python helper intentionally returns its legacy api-context shape; TypeScript performs the Kit-documented V1 normalized projection without copying selection logic."
+      remaining_blockers: []
+      verification_attempts: 2
+      stopped_because: null
+  - id: T003
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Review the implemented vertical slice for contract fidelity, path safety, fallback observability, and TDD evidence; activate a focused repair task if any oracle clause is weak."
+    inputs:
+      - "T001 and T002 receipts"
+      - "T002 diff and test output"
+    constraints:
+      - "Read-only."
+      - "Reject duplicated Python selection logic or any path-policy bypass."
+      - "Reject preview or receipt data that can diverge from the bundle actually supplied to execution."
+      - "Do not accept interface-only or mocked-only proof as the completed vertical slice."
+    expected_output:
+      - "accept | repair_required"
+      - "Oracle-clause evidence matrix"
+      - "Exact focused Worker repair task if required"
+      - "Fresh final-verification commands if accepted"
+    receipt:
+      result: done
+      decision: rejected
+      full_outcome_complete: false
+      rationale: "The vertical path is real and green, and exact preflight cache reuse prevents recomputation. However, the adapter drops helper-provided skipped_high_risk_context evidence and validates only a subset of the legacy compatibility boundary. A helper response whose bundle read_set diverges from context/receipt could be normalized and persisted. This weakens safety proof and the requirement that preview, execution bundle, and receipt describe the same selection. A narrow backend-only TDD repair is required before final audit."
+      worker_package:
+        objective: "Harden the legacy-helper-to-V1 adapter so helper safety evidence is preserved and bundle/context/receipt divergence fails closed."
+        allowed_files:
+          - server/index.ts
+          - server/index.test.ts
+        verify:
+          - "npm test"
+          - "npm run check"
+          - "npm run build"
+          - "python \"D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_contract_v1_oracle.py\" --format json"
+        stop_if:
+          - "Repair requires files outside allowed_files."
+          - "Enforcement would duplicate Python selection/ranking logic."
+          - "Verification fails twice after focused diagnosis."
+      evidence:
+        - "server/index.ts normalize() checks bundle discriminator/read_set but not context.read_set or receipt.read_set equality"
+        - "Real ai-stock-analyst api-context output includes 16 skipped_high_risk_context entries and matching read_set copies"
+        - "Current V1 projection emits skipped_high_risk_context as an empty array"
+        - "All T002 verification commands pass, so the repair is isolated rather than broad regression recovery"
+      missing_evidence:
+        - "Regression proof that divergent helper payloads fail closed"
+        - "Persisted V1 safety-exclusion evidence from the real helper"
+      required_board_updates:
+        - "Activate T004 repair Worker, then proceed to T999 final audit if green."
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Audit whether Context Router v1 fully satisfies the original owner outcome and oracle."
+    inputs:
+      - "All done task receipts"
+      - "Fresh targeted, repository-gate, and Kit smoke verification output"
+      - "Current diff and fixture-backed end-to-end evidence"
+    constraints:
+      - "Read-only."
+      - "Reject completion if required Worker work remains queued, active, or locally actionable."
+      - "Require evidence for bundle compactness, source preview, receipt persistence, path safety, and every named failure mode."
+      - "Require the exact Kit smoke fixture result."
+      - "Audit the likely misfire explicitly."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Evidence mapped to every oracle clause"
+      - "Missing evidence and next task if not complete"
+    receipt:
+      result: done
+      decision: not_complete
+      full_outcome_complete: false
+      rationale: "Provider, safety, fallback, UI, real helper smoke, and Kit fixtures are proven. Static flow shows preflight caches ContextProviderResult and run creation stores its receipt, but TDD does not directly assert object identity/reuse across cache consumption, prompt construction, and serialized run record. Because the user explicitly required TDD and exact preview/bundle/receipt consistency is a core oracle clause, add one narrow testability seam and regression test before completion."
+      worker_package:
+        objective: "Add direct regression proof that one cached preflight context object is consumed by run creation, prompt construction, and serialized ContextReceiptV1."
+        allowed_files:
+          - server/index.ts
+          - server/index.test.ts
+        verify:
+          - "npm test"
+          - "npm run check"
+          - "npm run build"
+        stop_if:
+          - "Proof requires changing runtime behavior or files outside allowed_files."
+          - "Verification fails twice after focused diagnosis."
+      evidence:
+        - "22/22 tests pass including helper failure modes, safety evidence, and divergence rejection"
+        - "Real ai-stock-analyst provider smoke returns four selected sources and 16 high-risk exclusions"
+        - "Kit oracle passes all five cases and valid/invalid examples"
+        - "src/App.tsx renders contextPreviews; server/index.ts caches results and stores contextReceipts"
+      missing_evidence:
+        - "Direct automated proof of exact preflight result reuse and serialized run-record receipt"
+      required_board_updates:
+        - "Activate T005, then T006 final audit."
+  - id: T004
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: medium
+    objective: "Harden the legacy-helper-to-V1 adapter so helper safety evidence is preserved and bundle/context/receipt divergence fails closed."
+    inputs:
+      - "T003 receipt"
+      - "Current RepositoryContextHelperProvider implementation"
+      - "Observed ai-stock-analyst api-context payload shape"
+    constraints:
+      - "TDD: add regression tests before the repair."
+      - "Do not copy selection logic or policy tables from Python."
+      - "Enforce helper-reported forbidden paths and consistency only."
+    expected_output:
+      - "V1 skipped_high_risk_context populated from validated helper evidence"
+      - "Fail-closed consistency checks for request envelope, bundle, context, and receipt"
+      - "Regression coverage for divergence and helper-reported forbidden selection"
+    allowed_files:
+      - "server/index.ts"
+      - "server/index.test.ts"
+    verify:
+      - "npm test"
+      - "npm run check"
+      - "npm run build"
+      - "python \"D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_contract_v1_oracle.py\" --format json"
+    stop_if:
+      - "Repair requires files outside allowed_files."
+      - "Enforcement would duplicate Python selection/ranking logic."
+      - "Verification fails twice after focused diagnosis."
+    receipt:
+      result: done
+      changed_files:
+        - server/index.ts
+        - server/index.test.ts
+      commands:
+        - cmd: "npm test"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm run build"
+          status: pass
+        - cmd: "python \"D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_contract_v1_oracle.py\" --format json"
+          status: pass
+        - cmd: "Hardened RepositoryContextHelperProvider smoke against ai-stock-analyst"
+          status: pass
+        - cmd: "git diff --check"
+          status: pass
+      summary: "Added red-first adapter consistency coverage, then hardened the compatibility boundary. The provider now requires request identity and maxSources parity, identical top-level/context/receipt read sets, read-only/no-expansion evidence, validated helper-reported forbidden globs, and valid high-risk exclusion records. Selected paths matching either fixed secret/high-risk guards or helper-reported forbidden globs fail closed. V1 bundles now preserve all helper safety evidence; real ai-stock-analyst smoke reports four sources and 16 skipped high-risk globs."
+      deviations: []
+      remaining_blockers: []
+      verification_attempts: 2
+      stopped_because: null
+
+  - id: T005
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: medium
+    objective: "Add direct regression proof that one cached preflight context object is consumed by run creation, prompt construction, and serialized ContextReceiptV1."
+    inputs:
+      - "T999 not-complete receipt"
+      - "Existing preflightContextCache, contextsForRun, createRun, and buildPrompt flow"
+    constraints:
+      - "TDD/testability seam only; do not change selection or fallback behavior."
+      - "Do not start a real Codex execution."
+    expected_output:
+      - "Automated identity/reuse assertion"
+      - "Automated prompt source assertion"
+      - "Automated run-record receipt serialization assertion"
+    allowed_files:
+      - "server/index.ts"
+      - "server/index.test.ts"
+    verify:
+      - "npm test"
+      - "npm run check"
+      - "npm run build"
+    stop_if:
+      - "Proof requires changing runtime behavior or files outside allowed_files."
+      - "Verification fails twice after focused diagnosis."
+    receipt:
+      result: done
+      changed_files:
+        - server/index.ts
+        - server/index.test.ts
+      commands:
+        - cmd: "npm test"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm run build"
+          status: pass
+      summary: "Added a red-first regression proving the exact ContextProviderResult cached during preflight is consumed by run creation without recomputation, appears in the execution prompt, and serializes its ContextReceiptV1 into the run record. Exposed narrow testability seams without changing runtime behavior. Full suite now passes 23/23."
+      deviations: []
+      remaining_blockers: []
+      verification_attempts: 2
+      stopped_because: null
+  - id: T006
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Perform the final receipt-backed audit of the complete Context Router v1 oracle after T005."
+    inputs:
+      - "All completed task receipts"
+      - "Fresh full verification"
+      - "Current diff"
+    constraints:
+      - "Read-only."
+      - "Require full_outcome_complete true only with evidence for every oracle clause."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Clause-by-clause evidence"
+    receipt:
+      result: done
+      decision: complete
+      full_outcome_complete: true
+      rationale: "Every oracle clause has fresh receipt-backed proof. The real ai-stock-analyst helper produces a four-source V1 bundle with 16 high-risk exclusions; UI renders preflight sources; an identity test proves the cached result is reused for the prompt and serialized run receipt; fixed fallback never scans; failure modes and divergent contracts fall back observably; TypeScript only validates/projects helper output and does not select/rank context; all 23 tests, typecheck, production build, Kit oracle, provider smoke, diff check, and board checker pass."
+      evidence:
+        - "Compact bundle: real ai-stock-analyst provider smoke selected exactly 4 sources with maxSources=4"
+        - "Preview: src/App.tsx renders server contextPreviews including provider/fallback and selected paths"
+        - "Exact reuse and receipt: preflight context identity regression passes and JSON serialization contains ContextReceiptV1"
+        - "Safety: fixed fallback considers only AGENTS.md/README.md; adapter enforces fixed and helper-reported forbidden paths and preserves 16 exclusions"
+        - "External helper: RepositoryContextHelperProvider spawns project-local scripts/ai_context_helper.py and parses bounded JSON"
+        - "Failure semantics: timeout, invalid JSON, discriminator/identity/read-set mismatch regression cases produce observable controlled fallback reason codes"
+        - "No Python logic copy: TypeScript performs compatibility validation and V1 projection only; Python helper retains selection/ranking/policy ownership"
+        - "Fresh gates: npm test 23/23, npm run check, npm run build, Kit oracle 5/5 plus examples, real provider smoke, git diff --check, GoalBuddy checker"
+      missing_evidence: []
+      required_board_updates: []
+checks:
+  dirty_fingerprint: "prep check: only docs/goals/context-router-v1 was shown as untracked after board creation; pre-prep cleanliness was not independently captured"
+  last_verification:
+    result: pass
+    task: T006
+    commands:
+      - "npm test (23/23)"
+      - "npm run check"
+      - "npm run build"
+      - "Kit context_contract_v1_oracle.py --format json (5/5 plus examples)"
+      - "ai-stock-analyst RepositoryContextHelperProvider smoke (4 sources, 16 high-risk exclusions)"
+      - "git diff --check"

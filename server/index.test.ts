@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,13 @@ const {
   projectRunMetrics,
   loadPipeline,
   validateQueue,
+  FallbackContextProvider,
+  RepositoryContextHelperProvider,
+  resolveTaskContext,
+  cachePreflightContexts,
+  contextsForRun,
+  createRun,
+  buildPrompt,
 } = await import("./index.ts");
 
 test("maps lifecycle statuses to outcome classes and derives only valid durations", () => {
@@ -183,6 +190,148 @@ test("validates YAML queue, models, limits, and Sol effort", async () => {
         }),
       /taskTimeoutMinutes/,
     );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("validates opt-in context profile and bounded maxSources", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-input-"));
+  try {
+    const base = { project: { path: project }, tasks: [{ title: "Context", prompt: "Review docs" }] };
+    assert.equal(validateQueue(base).tasks[0].contextProfile, undefined);
+    assert.equal(
+      validateQueue({ ...base, tasks: [{ ...base.tasks[0], contextProfile: "review", maxSources: 7 }] }).tasks[0].maxSources,
+      7,
+    );
+    assert.throws(
+      () => validateQueue({ ...base, tasks: [{ ...base.tasks[0], maxSources: 7 }] }),
+      /contextProfile/,
+    );
+    assert.throws(
+      () => validateQueue({ ...base, tasks: [{ ...base.tasks[0], contextProfile: "Review Docs" }] }),
+      /contextProfile/,
+    );
+    assert.throws(
+      () => validateQueue({ ...base, tasks: [{ ...base.tasks[0], contextProfile: "review", maxSources: 0 }] }),
+      /maxSources/,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("safe fallback selects only fixed root entrypoints and emits ContextReceiptV1", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-fallback-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    await writeFile(join(project, "README.md"), "safe");
+    await writeFile(join(project, ".env"), "SECRET=never-read");
+    await mkdir(join(project, "data"));
+    await writeFile(join(project, "data", "private.md"), "never-read");
+    const result = await new FallbackContextProvider().provide({
+      projectPath: project,
+      requestId: "request-fallback",
+      task: "Review repository",
+      profile: "review",
+      maxSources: 1,
+    });
+    assert.equal(result.provider, "fallback");
+    assert.deepEqual(result.bundle.sources.map((source: { path: string }) => source.path), ["AGENTS.md"]);
+    assert.equal(result.receipt.contract_type, "ContextReceiptV1");
+    assert.equal(result.receipt.counts.selected_sources, 1);
+    assert.equal(JSON.stringify(result).includes(".env"), false);
+    assert.equal(JSON.stringify(result).includes("private.md"), false);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("helper timeout, invalid JSON, and contract mismatch use observable safe fallback", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-helper-"));
+  try {
+    await mkdir(join(project, "scripts"));
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const cases = [
+      ["timeout", "setTimeout(() => console.log('{}'), 500);", "HELPER_TIMEOUT", 30],
+      ["invalid", "console.log('not json');", "HELPER_INVALID_JSON", 1_000],
+      ["mismatch", "console.log(JSON.stringify({bundle_type:'wrong'}));", "HELPER_CONTRACT_MISMATCH", 1_000],
+    ] as const;
+    for (const [name, source, reason, timeoutMs] of cases) {
+      const helper = `scripts/${name}.cjs`;
+      await writeFile(join(project, helper), source);
+      const result = await resolveTaskContext(
+        { projectPath: project, requestId: `request-${name}`, task: "Review", profile: "review", maxSources: 2 },
+        new RepositoryContextHelperProvider({ executable: process.execPath, helperRelativePath: helper, timeoutMs }),
+        new FallbackContextProvider(),
+      );
+      assert.equal(result.provider, "fallback");
+      assert.equal(result.fallbackReason, reason);
+      assert.ok(result.receipt.reason_codes.includes(reason));
+    }
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("helper adapter preserves safety evidence and rejects divergent receipt selections", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-consistency-"));
+  try {
+    await mkdir(join(project, "scripts"));
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const source = {
+      path: "AGENTS.md", priority: "P0", authority: "entrypoint", status: "active",
+      layer: "root", retrieval_mode: "startup_required", inclusion_reason: "selected by helper",
+    };
+    const payload = {
+      bundle_type: "api_agent_context_bundle", request_id: "request-consistent", profile: "review",
+      mutation_scope: "read-only", runtime_scope_expanded: false, broker_or_data_scope_expanded: false,
+      read_set: [source], context: { read_set: [source] },
+      request_envelope: { request_id: "request-consistent", profile: "review", max_sources: 2, forbidden_paths: ["data/**"] },
+      skipped_high_risk_context: [{ path_glob: "data/**", reason: "excluded by helper" }],
+      skipped_trigger_only_context: [],
+      receipt: { receipt_type: "api_agent_context_receipt", request_id: "request-consistent", profile: "review", read_set: [source] },
+    };
+    await writeFile(join(project, "scripts", "valid.cjs"), `console.log(${JSON.stringify(JSON.stringify(payload))});`);
+    const provider = new RepositoryContextHelperProvider({ executable: process.execPath, helperRelativePath: "scripts/valid.cjs", timeoutMs: 1_000 });
+    const request = { projectPath: project, requestId: "request-consistent", task: "Review", profile: "review", maxSources: 2 };
+    const valid = await provider.provide(request);
+    assert.deepEqual(valid.bundle.selection.skipped_high_risk_context, payload.skipped_high_risk_context);
+
+    payload.receipt.read_set = [];
+    await writeFile(join(project, "scripts", "divergent.cjs"), `console.log(${JSON.stringify(JSON.stringify(payload))});`);
+    const divergent = await resolveTaskContext(
+      request,
+      new RepositoryContextHelperProvider({ executable: process.execPath, helperRelativePath: "scripts/divergent.cjs", timeoutMs: 1_000 }),
+      new FallbackContextProvider(),
+    );
+    assert.equal(divergent.fallbackReason, "HELPER_CONTRACT_MISMATCH");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("preflight context is reused for prompt and serialized run receipt", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-reuse-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const queue = validateQueue({
+      project: { path: project },
+      tasks: [{ title: "Context", prompt: "Review", contextProfile: "review", maxSources: 2 }],
+    });
+    const context = await new FallbackContextProvider().provide({
+      projectPath: project, requestId: "request-reuse", task: "Review", profile: "review", maxSources: 2,
+    });
+    cachePreflightContexts(queue, [context]);
+    const consumed = await contextsForRun(queue);
+    assert.strictEqual(consumed[0], context);
+    const created = createRun(queue, undefined, consumed);
+    assert.strictEqual(created.tasks[0].context, context);
+    assert.strictEqual(created.contextReceipts?.[0], context.receipt);
+    assert.match(buildPrompt(created.tasks[0], created.project), /AGENTS\.md/);
+    const stored = JSON.parse(JSON.stringify(created));
+    assert.equal(stored.contextReceipts[0].contract_type, "ContextReceiptV1");
+    assert.equal(stored.contextReceipts[0].request_id, "request-reuse");
   } finally {
     await rm(project, { recursive: true, force: true });
   }
