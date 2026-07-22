@@ -920,14 +920,14 @@ test("project lock prevents two orchestrator runs from using the same repository
   }
 });
 
-test("GoalBuddy bridge syncs a receipt without changing board scheduling", async () => {
+test("GoalBuddy bridge syncs a receipt and advances to the next queued card", async () => {
   const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-"));
   const project = join(root, "repository");
   const statePath = join(root, "state.yaml");
   const objective = "Implement the bounded bridge slice.";
   const board = {
     version: 2,
-    goal: { title: "Bridge fixture", slug: "bridge-fixture" },
+    goal: { title: "Bridge fixture", slug: "bridge-fixture", status: "active" },
     active_task: "T042",
     tasks: [
       {
@@ -993,9 +993,17 @@ test("GoalBuddy bridge syncs a receipt without changing board scheduling", async
     const synchronizedSource = await readFile(statePath, "utf8");
     assert.match(synchronizedSource, /# owner comment/);
     const synchronizedBoard = parse(synchronizedSource);
-    assert.equal(synchronizedBoard.active_task, "T042");
-    assert.equal(synchronizedBoard.tasks[0].status, "active");
-    assert.equal(synchronizedBoard.tasks[1].status, "queued");
+    assert.equal(synchronizedBoard.active_task, "T043");
+    assert.equal(synchronizedBoard.tasks[0].status, "done");
+    assert.equal(synchronizedBoard.tasks[0].receipt.result, "done");
+    assert.equal(synchronizedBoard.tasks[0].receipt.orchestrator_run_id, created.id);
+    assert.equal(synchronizedBoard.tasks[0].receipt.goal_receipt_path, written.path);
+    assert.equal(synchronizedBoard.tasks[1].status, "active");
+    assert.deepEqual(synchronizedBoard.tasks[0].orchestrator_sync.progression, {
+      status: "advanced",
+      completed_task_id: "T042",
+      activated_task_id: "T043",
+    });
     assert.equal(synchronizedBoard.tasks[1].orchestrator_sync, undefined);
     assert.deepEqual(
       {
@@ -1024,8 +1032,7 @@ test("GoalBuddy bridge syncs a receipt without changing board scheduling", async
       synchronizedHash,
     );
     const readback = await previewGoalBuddyTask({ statePath, projectPath: project });
-    assert.equal(readback.orchestratorSync?.run_id, created.id);
-    assert.equal(readback.orchestratorSync?.receipt_path, written.path);
+    assert.equal(readback.taskInput.externalTaskId, "T043");
     const storedRun = JSON.parse(
       await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
     );
@@ -1093,6 +1100,77 @@ test("GoalBuddy sync preserves concurrent board changes and records a conflict",
     const preserved = parse(await readFile(statePath, "utf8"));
     assert.equal(preserved.owner_note, "changed concurrently");
     assert.equal(preserved.tasks[0].orchestrator_sync, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("GoalBuddy progression leaves the current card active after a non-success outcome", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-failure-"));
+  const project = join(root, "repository");
+  const statePath = join(root, "state.yaml");
+  const board = {
+    version: 2,
+    goal: { title: "Failure fixture", slug: "failure-fixture", status: "active" },
+    active_task: "T010",
+    tasks: [
+      { id: "T010", status: "active", objective: "Attempt guarded work." },
+      { id: "T011", status: "queued", objective: "Wait for success." },
+    ],
+  };
+  try {
+    await mkdir(project);
+    await writeFile(statePath, stringify(board), "utf8");
+    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
+    const created = createRun(validateQueue(preview.queue));
+    const linkedTask = created.tasks[0];
+    linkedTask.status = "failed";
+
+    await finalizeSettledTask(created, linkedTask);
+
+    const preserved = parse(await readFile(statePath, "utf8"));
+    assert.equal(preserved.active_task, "T010");
+    assert.equal(preserved.tasks[0].status, "active");
+    assert.equal(preserved.tasks[0].receipt, undefined);
+    assert.equal(preserved.tasks[0].orchestrator_sync.outcome_class, "failure");
+    assert.deepEqual(preserved.tasks[0].orchestrator_sync.progression, {
+      status: "not_advanced",
+      reason: "non_success",
+    });
+    assert.equal(preserved.tasks[1].status, "queued");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("GoalBuddy progression records no candidate without closing the goal", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-no-next-"));
+  const project = join(root, "repository");
+  const statePath = join(root, "state.yaml");
+  const board = {
+    version: 2,
+    goal: { title: "No-next fixture", slug: "no-next-fixture", status: "active" },
+    active_task: "T020",
+    tasks: [{ id: "T020", status: "active", objective: "Finish available work." }],
+  };
+  try {
+    await mkdir(project);
+    await writeFile(statePath, stringify(board), "utf8");
+    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
+    const created = createRun(validateQueue(preview.queue));
+    const linkedTask = created.tasks[0];
+    linkedTask.status = "completed";
+
+    await finalizeSettledTask(created, linkedTask);
+
+    const preserved = parse(await readFile(statePath, "utf8"));
+    assert.equal(preserved.goal.status, "active");
+    assert.equal(preserved.active_task, "T020");
+    assert.equal(preserved.tasks[0].status, "active");
+    assert.deepEqual(preserved.tasks[0].orchestrator_sync.progression, {
+      status: "not_advanced",
+      reason: "no_queued_task",
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

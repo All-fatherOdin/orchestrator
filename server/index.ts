@@ -121,6 +121,12 @@ export type OrchestratorGoalSyncV1 = {
   receipt_path: string;
   receipt_contract_type: "GoalReceiptEnvelopeV1";
   synchronized_at: string;
+  progression: {
+    status: "advanced" | "not_advanced";
+    completed_task_id?: string;
+    activated_task_id?: string;
+    reason?: "non_success" | "no_queued_task";
+  };
 };
 
 type GoalBuddySyncState = {
@@ -1136,7 +1142,44 @@ export async function syncGoalBuddyTaskReceipt(
     receipt_path: written.path,
     receipt_contract_type: "GoalReceiptEnvelopeV1",
     synchronized_at: timestamp(),
+    progression: {
+      status: "not_advanced",
+      reason: task.status === "completed" ? "no_queued_task" : "non_success",
+    },
   };
+
+  if (task.status === "completed") {
+    const nextIndex = board.tasks.findIndex((candidate) =>
+      Boolean(candidate) && typeof candidate === "object" &&
+      (candidate as Record<string, unknown>).status === "queued"
+    );
+    if (nextIndex >= 0) {
+      const nextTask = board.tasks[nextIndex] as Record<string, unknown>;
+      const nextTaskId = typeof nextTask.id === "string" ? nextTask.id.trim() : "";
+      if (!nextTaskId)
+        throw new GoalBuddySyncConflict("The next queued GoalBuddy task has no id.");
+      document.setIn(["tasks", index, "status"], "done");
+      document.setIn(["tasks", index, "receipt"], {
+        result: "done",
+        changed_files: task.changedFiles ?? [],
+        commands: (task.verificationCommands ?? []).map((command) => ({
+          cmd: command,
+          status: "pass",
+        })),
+        summary: `Orchestrator run ${run.id} completed task ${task.externalTaskId}.`,
+        orchestrator_run_id: run.id,
+        orchestrator_task_id: task.id,
+        goal_receipt_path: written.path,
+      });
+      document.setIn(["tasks", nextIndex, "status"], "active");
+      document.set("active_task", nextTaskId);
+      sync.progression = {
+        status: "advanced",
+        completed_task_id: task.externalTaskId,
+        activated_task_id: nextTaskId,
+      };
+    }
+  }
   document.setIn(["tasks", index, "orchestrator_sync"], sync);
   await writeTextAtomically(link.statePath, document.toString());
   task.goalBuddySync = { status: "synced", synchronizedAt: sync.synchronized_at };
