@@ -1,0 +1,40 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "done",
+    "task_id": "T999",
+    "board_path": "docs/goals/goalbuddy-bridge-v1/state.yaml",
+    "decision": "not_complete",
+    "full_outcome_complete": false,
+    "rationale": "Mapping, exact-one-active validation, immutable source hashing, schema validation, no-auto-commit enforcement, endpoints, and all repository gates are proven. However, the integration test manually marks a created task completed and calls the receipt writer directly; it does not exercise the exact settled-task finalization path used by executeTask or assert the linked run.json persisted beside the receipt. The oracle explicitly requires preview -> run -> receipt without bypassing existing execution safeguards, so one narrow backend TDD repair is required.",
+    "worker_package": {
+      "objective": "Add a shared testable post-execution finalization seam used by executeTask and prove it persists GoalBuddy linkage in run.json together with the separate receipt artifact.",
+      "allowed_files": ["server/index.ts", "server/index.test.ts"],
+      "verify": [
+        "npx tsx --test --test-name-pattern=\"GoalBuddy bridge\" server/index.test.ts",
+        "npm test",
+        "npm run check",
+        "npm run build",
+        "git diff --check"
+      ],
+      "stop_if": [
+        "The repair needs files outside allowed_files.",
+        "The test cannot exercise the same post-execution function called by executeTask.",
+        "The repair changes GoalBuddy state, selects another external task, or enables commits.",
+        "A goal-owned verification command fails twice for the same unexplained reason."
+      ]
+    },
+    "evidence": [
+      "Focused GoalBuddy bridge test passes exact mapping, zero/multiple-active rejection, receipt schema, source hash equality, and outcome semantics.",
+      "server/index.ts routes /api/goalbuddy/runs through previewGoalBuddyTask, validateQueue, createRun, project lock, persist, and execute.",
+      "server/index.ts executeTask calls writeGoalReceiptEnvelopeV1 after status settles, then persists the run.",
+      "Current test invokes createRun and writeGoalReceiptEnvelopeV1 directly instead of the shared executeTask finalization path.",
+      "Fresh npm test passes 35/35; npm run check, npm run build, git diff --check, and board checker pass."
+    ],
+    "missing_evidence": [
+      "Automated proof that the exact post-execution seam used by executeTask writes both goalReceiptPath/linkage into persisted run.json and the separate receipt file."
+    ],
+    "required_board_updates": [
+      "Activate T004, complete its TDD repair, then queue a fresh final Judge audit instead of reusing this completed T999 card."
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "done",
+    "task_id": "T004",
+    "board_path": "docs/goals/goalbuddy-bridge-v1/state.yaml",
+    "changed_files": ["server/index.ts", "server/index.test.ts"],
+    "commands": [
+      { "cmd": "npx tsx --test --test-name-pattern=\"GoalBuddy bridge\" server/index.test.ts", "status": "pass" },
+      { "cmd": "npm test", "status": "pass" },
+      { "cmd": "npm run check", "status": "pass" },
+      { "cmd": "npm run build", "status": "pass" },
+      { "cmd": "git diff --check", "status": "pass" }
+    ],
+    "summary": "TDD red failed because finalizeSettledTask did not exist; green added one shared production seam used by executeTask. The integration test now drives that seam and proves it atomically writes the schema-valid separate receipt and persists GoalBuddy goal/task/repo/run linkage plus goalReceiptPath in run.json. Source-state hash remains unchanged, checkpoint commits remain disabled, and all 35 tests, typecheck, build, diff check, and board checker pass.",
+    "deviations": [
+      "The dedicated GoalBuddy Worker produced no new seam within the bounded interval; PM fallback completed the same approved two-file package."
+    ],
+    "remaining_blockers": [],
+    "verification_attempts": 2,
+    "stopped_because": null
+  }
+}

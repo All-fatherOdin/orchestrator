@@ -9,6 +9,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 
 process.env.ORCHESTRATOR_TEST = "1";
+const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
+process.env.ORCHESTRATOR_DATA_DIR = testDataDirectory;
+test.after(async () => rm(testDataDirectory, { recursive: true, force: true }));
 
 const {
   acquireProjectLock,
@@ -40,6 +43,10 @@ const {
   validateContextContractV1,
   bindBeforeRecovery,
   runHasLiveOwner,
+  previewGoalBuddyTask,
+  createGoalReceiptEnvelopeV1,
+  finalizeSettledTask,
+  validateGoalReceiptEnvelopeV1,
 } = await import("./index.ts");
 const { TaskContextControls, contextProfileTaskPatch, optionalNumberValue } = await import("../src/App.tsx");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
@@ -909,5 +916,117 @@ test("project lock prevents two orchestrator runs from using the same repository
     await releaseProjectLock(first);
     await releaseProjectLock(second);
     await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("GoalBuddy bridge maps one active task through preview, run linkage, and a separate receipt without changing state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-"));
+  const project = join(root, "repository");
+  const statePath = join(root, "state.yaml");
+  const objective = "Implement the bounded bridge slice.";
+  const board = {
+    version: 2,
+    goal: { title: "Bridge fixture", slug: "bridge-fixture" },
+    active_task: "T042",
+    tasks: [
+      {
+        id: "T042",
+        type: "worker",
+        status: "active",
+        objective,
+        allowed_files: ["server/index.ts"],
+        verify: ["npm test"],
+        stop_if: ["Need files outside allowed_files."],
+      },
+      { id: "T043", type: "worker", status: "queued", objective: "Do not select me." },
+    ],
+  };
+  try {
+    await mkdir(project);
+    await writeFile(statePath, stringify(board), "utf8");
+    const before = createHash("sha256").update(await readFile(statePath)).digest("hex");
+
+    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
+    assert.equal(preview.contract_type, "GoalBuddyTaskPreviewV1");
+    assert.equal(preview.taskInput.title, objective);
+    assert.equal(preview.taskInput.prompt, objective);
+    assert.deepEqual(preview.taskInput.allowedPaths, ["server/index.ts"]);
+    assert.deepEqual(preview.taskInput.verificationCommands, ["npm test"]);
+    assert.deepEqual(preview.taskInput.executionGuards, ["Need files outside allowed_files."]);
+    assert.equal(preview.taskInput.externalTaskId, "T042");
+    assert.ok(preview.taskInput.goalBuddy);
+    assert.equal(preview.taskInput.goalBuddy.goalSlug, "bridge-fixture");
+    assert.equal(preview.taskInput.goalBuddy.stateSha256, before);
+    assert.equal(preview.queue.git.checkpointCommits, false);
+
+    const queue = validateQueue(preview.queue);
+    const created = createRun(queue);
+    const linkedTask = created.tasks[0];
+    assert.equal(linkedTask.externalTaskId, "T042");
+    assert.ok(linkedTask.goalBuddy);
+    assert.equal(linkedTask.goalBuddy.goalSlug, "bridge-fixture");
+    assert.equal(created.project.path, project);
+    assert.match(buildPrompt(linkedTask, created.project), /Need files outside allowed_files/);
+    assert.match(buildPrompt(linkedTask, created.project), /npm test/);
+
+    linkedTask.status = "completed";
+    linkedTask.startedAt = new Date(Date.now() - 100).toISOString();
+    linkedTask.finishedAt = new Date().toISOString();
+    const written = await finalizeSettledTask(created, linkedTask);
+    assert.ok(written);
+    assert.notEqual(written.path, statePath);
+    const receipt = validateGoalReceiptEnvelopeV1(
+      JSON.parse(await readFile(written.path, "utf8")),
+    );
+    assert.equal(receipt.contract_type, "GoalReceiptEnvelopeV1");
+    assert.equal(receipt.goal.slug, "bridge-fixture");
+    assert.equal(receipt.task.external_task_id, "T042");
+    assert.equal(receipt.repository.path, project);
+    assert.equal(receipt.orchestrator.run_id, created.id);
+    assert.equal(receipt.orchestrator.task_id, linkedTask.id);
+    assert.equal(receipt.outcome.task_status, "completed");
+    assert.equal(receipt.outcome.outcome_class, "success");
+    assert.equal(receipt.source_state_unchanged, true);
+    assert.equal(linkedTask.goalReceiptPath, written.path);
+    const storedRun = JSON.parse(
+      await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
+    );
+    assert.equal(storedRun.tasks[0].goalBuddy.goalSlug, "bridge-fixture");
+    assert.equal(storedRun.tasks[0].externalTaskId, "T042");
+    assert.equal(storedRun.tasks[0].goalReceiptPath, written.path);
+    assert.equal(
+      createHash("sha256").update(await readFile(statePath)).digest("hex"),
+      before,
+    );
+
+    for (const [status, expected] of [
+      ["failed", "failure"],
+      ["cancelled", "interrupted"],
+    ] as const) {
+      const envelope = createGoalReceiptEnvelopeV1(created, { ...linkedTask, status }, true);
+      assert.equal(envelope.outcome.task_status, status);
+      assert.equal(envelope.outcome.outcome_class, expected);
+    }
+
+    await writeFile(
+      statePath,
+      stringify({ ...board, active_task: null, tasks: board.tasks.map((task) => ({ ...task, status: "queued" })) }),
+      "utf8",
+    );
+    await assert.rejects(
+      () => previewGoalBuddyTask({ statePath, projectPath: project }),
+      /exactly one active task/,
+    );
+    await writeFile(
+      statePath,
+      stringify({ ...board, tasks: board.tasks.map((task) => ({ ...task, status: "active" })) }),
+      "utf8",
+    );
+    await assert.rejects(
+      () => previewGoalBuddyTask({ statePath, projectPath: project }),
+      /exactly one active task/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-orchestrator.local/schemas/goal-receipt-envelope-v1.schema.json",
+  "title": "GoalReceiptEnvelopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_type",
+    "contract_version",
+    "created_at",
+    "goal",
+    "task",
+    "repository",
+    "orchestrator",
+    "outcome",
+    "source_state_unchanged"
+  ],
+  "properties": {
+    "contract_type": { "const": "GoalReceiptEnvelopeV1" },
+    "contract_version": { "const": "1.0" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "title", "state_path", "state_sha256"],
+      "properties": {
+        "slug": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "state_path": { "type": "string", "minLength": 1 },
+        "state_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["external_task_id", "objective", "allowed_paths", "verification_commands", "execution_guards"],
+      "properties": {
+        "external_task_id": { "type": "string", "minLength": 1 },
+        "objective": { "type": "string", "minLength": 1 },
+        "allowed_paths": { "type": "array", "items": { "type": "string" } },
+        "verification_commands": { "type": "array", "items": { "type": "string" } },
+        "execution_guards": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": { "path": { "type": "string", "minLength": 1 } }
+    },
+    "orchestrator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "task_id"],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "task_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_status", "outcome_class"],
+      "properties": {
+        "task_status": {
+          "enum": ["pending", "running", "completed", "failed", "timed_out", "cancelled", "skipped", "blocked"]
+        },
+        "outcome_class": { "enum": ["success", "failure", "interrupted", "pending"] }
+      }
+    },
+    "source_state_unchanged": { "type": "boolean" }
+  }
+}

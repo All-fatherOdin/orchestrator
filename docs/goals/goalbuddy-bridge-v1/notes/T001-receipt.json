@@ -1,0 +1,23 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "blocked",
+    "task_id": "T001",
+    "board_path": "docs/goals/goalbuddy-bridge-v1/state.yaml",
+    "decision": "rejected",
+    "full_outcome_complete": false,
+    "rationale": "The review was stopped before the required repository evidence and baseline commands were completed; approving a Worker package without exact scope would be unsafe.",
+    "evidence": [
+      "GoalBuddy execution contract requires an evidence-backed exact Worker scope."
+    ],
+    "blocked_tasks": ["T001", "T002"],
+    "missing_evidence": [
+      "Current Git status and dirty diff",
+      "Existing Git safety and TaskInput implementation paths",
+      "Baseline npm test, npm run check, and npm run build results",
+      "Exact T002 allowed_files, verify, and stop_if"
+    ],
+    "required_board_updates": [
+      "Record T001 blocked and activate a read-only Judge fallback before T002."
+    ]
+  }
+}

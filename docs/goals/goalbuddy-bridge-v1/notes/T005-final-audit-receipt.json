@@ -1,0 +1,30 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "done",
+    "task_id": "T005",
+    "board_path": "docs/goals/goalbuddy-bridge-v1/state.yaml",
+    "decision": "complete",
+    "full_outcome_complete": true,
+    "rationale": "Every oracle clause now has direct or shared-path proof. Selection reads one active task and rejects zero/multiple; exact fields map into TaskInput; preview returns an opaque runRequest consumed by the automatic run endpoint; GoalBuddy linkage survives createRun and the same finalizeSettledTask used by executeTask persists run.json and a separate schema-valid receipt. Source bytes remain hash-identical, changed source fails closed, checkpoint commits are disabled/rejected, and existing lock/status/diff/allowedPaths/checkpoint paths remain in force. All focused, regression, typecheck, build, diff, and board gates pass.",
+    "worker_package": null,
+    "evidence": [
+      "state.yaml -> preview: previewGoalBuddyTask reads only, requires exactly one status=active task, requires active_task id agreement, and hashes source bytes.",
+      "Exact mapping: objective -> title/prompt; allowed_files -> allowedPaths; verify -> verificationCommands; stop_if -> executionGuards; task id -> externalTaskId is asserted by the focused test.",
+      "No manual copying: /api/goalbuddy/preview returns runRequest and /api/goalbuddy/runs accepts the same selection, rebuilds/validates the preview, then uses createRun, project lock, persist, and execute.",
+      "Linkage: the focused test asserts goal slug, external task id, repository path, Orchestrator run/task ids, and goalReceiptPath in persisted run.json and the receipt envelope.",
+      "Run -> receipt: executeTask calls the exported finalizeSettledTask seam; the focused test calls that exact seam and validates both persisted run.json and the separate receipt JSON.",
+      "Receipt contract: GoalReceiptEnvelopeV1 JSON Schema is runtime-validated; success, failure, and interrupted outcome semantics are tested.",
+      "Board immutability: the focused test compares SHA-256 before/after; preview only reads, and finalization fails the task if the source hash changes or becomes unreadable.",
+      "No next-task selection: preview filters only the existing active card and rejects ambiguity; queued fixture T043 is never selected.",
+      "No automatic commit: preview forces checkpointCommits=false, validateQueue rejects true for linked tasks, and the execution prompt forbids commits; existing optional checkpoint code remains gated.",
+      "Existing safeguards: /api/goalbuddy/runs reuses acquireProjectLock, executeTask Git status/diff capture, outsideAllowedPaths enforcement, reviewer, checkpoint gate, and atomic persistence.",
+      "TDD evidence: initial red was previewGoalBuddyTask missing; follow-up red was finalizeSettledTask missing; both focused tests then passed.",
+      "Fresh verification: focused GoalBuddy test pass; npm test 35/35 pass; npm run check pass; npm run build pass; git diff --check pass; GoalBuddy board checker pass."
+    ],
+    "blocked_tasks": [],
+    "missing_evidence": [],
+    "required_board_updates": [
+      "Mark T005 done, set active_task null, and mark goal.status done."
+    ]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "done",
+    "task_id": "T002",
+    "board_path": "docs/goals/goalbuddy-bridge-v1/state.yaml",
+    "changed_files": [
+      "server/index.ts",
+      "server/index.test.ts",
+      "server/goalbuddy-bridge-v1/schemas/goal-receipt-envelope-v1.schema.json"
+    ],
+    "commands": [
+      {
+        "cmd": "npx tsx --test --test-name-pattern=\"GoalBuddy bridge\" server/index.test.ts",
+        "status": "pass"
+      },
+      {
+        "cmd": "npm test",
+        "status": "pass"
+      },
+      {
+        "cmd": "npm run check",
+        "status": "pass"
+      },
+      {
+        "cmd": "npm run build",
+        "status": "pass"
+      },
+      {
+        "cmd": "git diff --check",
+        "status": "pass"
+      }
+    ],
+    "summary": "TDD red first failed because previewGoalBuddyTask did not exist; focused green then passed. Added read-only one-active GoalBuddy selection, exact TaskInput mapping, immutable source hash linkage, automatic preview/run endpoints using existing Git safeguards, task verification/guard prompting, disabled checkpoint commits for bridge runs, and atomic schema-valid GoalReceiptEnvelopeV1 files beside run.json. Full suite passes 35/35, typecheck and production build pass, and the fixture state remains byte-equivalent.",
+    "deviations": [
+      "The dedicated GoalBuddy Worker produced no allowed-file changes within the bounded interval; PM fallback completed the same approved package and scope."
+    ],
+    "remaining_blockers": [],
+    "verification_attempts": 2,
+    "stopped_because": null
+  }
+}

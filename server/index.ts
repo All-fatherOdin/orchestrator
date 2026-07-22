@@ -1,6 +1,7 @@
 import express from "express";
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import {
   mkdir,
@@ -18,6 +19,7 @@ import { parse } from "yaml";
 import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
 import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
 import contextReceiptV1Schema from "./context-contract-v1/schemas/context-receipt-v1.schema.json";
+import goalReceiptEnvelopeV1Schema from "./goalbuddy-bridge-v1/schemas/goal-receipt-envelope-v1.schema.json";
 
 type Model = "luna" | "terra" | "sol";
 type RequestedModel = Model | "auto";
@@ -56,7 +58,15 @@ type ProjectProfile = {
   defaultEffort: Effort;
   allowedModels: Model[];
 };
-type TaskInput = {
+export type GoalBuddyTaskLinkV1 = {
+  goalSlug: string;
+  goalTitle: string;
+  externalTaskId: string;
+  objective: string;
+  statePath: string;
+  stateSha256: string;
+};
+export type TaskInput = {
   /** Stable YAML identifier used to declare dependencies. */
   key?: string;
   /** YAML task keys that must complete before this task may start. */
@@ -71,12 +81,34 @@ type TaskInput = {
   minModel?: Model;
   effort?: Effort;
   allowedPaths?: string[];
+  verificationCommands?: string[];
+  executionGuards?: string[];
+  externalTaskId?: string;
+  goalBuddy?: GoalBuddyTaskLinkV1;
   timeoutMinutes?: number;
   maxRetries?: number;
   /** Opts the task into Context Contract v1 selection. */
   contextProfile?: string;
   /** Maximum number of context sources selected for this task. */
   maxSources?: number;
+};
+
+export type GoalReceiptEnvelopeV1 = {
+  contract_type: "GoalReceiptEnvelopeV1";
+  contract_version: "1.0";
+  created_at: string;
+  goal: { slug: string; title: string; state_path: string; state_sha256: string };
+  task: {
+    external_task_id: string;
+    objective: string;
+    allowed_paths: string[];
+    verification_commands: string[];
+    execution_guards: string[];
+  };
+  repository: { path: string };
+  orchestrator: { run_id: string; task_id: string };
+  outcome: { task_status: Status; outcome_class: OutcomeClass };
+  source_state_unchanged: boolean;
 };
 
 type ContextPolicyRefs = {
@@ -201,6 +233,18 @@ const contextContractNames = {
   bundle: "ContextBundleV1",
   receipt: "ContextReceiptV1",
 } as const;
+const goalReceiptAjv = new Ajv2020({ allErrors: true, strict: true, formats: {
+  "date-time": true,
+} });
+const goalReceiptValidator = goalReceiptAjv.compile(goalReceiptEnvelopeV1Schema);
+
+export function validateGoalReceiptEnvelopeV1<T>(payload: T): T & GoalReceiptEnvelopeV1 {
+  if (!goalReceiptValidator(payload)) {
+    const details = goalReceiptAjv.errorsText(goalReceiptValidator.errors, { separator: "; " });
+    throw new Error(`GOAL_RECEIPT_SCHEMA_MISMATCH: ${details}`);
+  }
+  return payload as T & GoalReceiptEnvelopeV1;
+}
 
 export function validateContextContractV1<T>(kind: keyof typeof contextContractValidators, payload: T): T {
   const validate = contextContractValidators[kind];
@@ -481,6 +525,7 @@ type Task = ResolvedTask & {
   attempts?: number;
   executionAttempts?: number;
   checkpoint?: Checkpoint;
+  goalReceiptPath?: string;
   /** Machine-readable accounting emitted by Codex CLI JSON events. */
   usage?: UsageRecord[];
   context?: ContextProviderResult;
@@ -864,6 +909,139 @@ async function loadProjects() {
 async function persistProjects() {
   await mkdir(dataDirectory, { recursive: true });
   await writeFile(projectsFile, JSON.stringify(savedProjects, null, 2));
+}
+
+type GoalBuddyPreviewInput = {
+  statePath: string;
+  projectPath: string;
+  expectedStateSha256?: string;
+};
+
+function goalBuddyStringList(value: unknown, field: string) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
+    throw new Error(`GoalBuddy active task ${field} must be a list of non-empty strings.`);
+  return value.map((item) => item.trim());
+}
+
+export async function previewGoalBuddyTask(input: GoalBuddyPreviewInput) {
+  if (!input?.statePath || !input?.projectPath)
+    throw new Error("statePath and projectPath are required.");
+  const statePath = resolve(input.statePath);
+  const projectPath = resolve(input.projectPath);
+  const source = await readFile(statePath);
+  const stateSha256 = createHash("sha256").update(source).digest("hex");
+  if (input.expectedStateSha256 && input.expectedStateSha256 !== stateSha256)
+    throw new Error("Selected GoalBuddy state.yaml changed after preview.");
+  const board = parse(source.toString("utf8")) as {
+    goal?: { slug?: unknown; title?: unknown };
+    active_task?: unknown;
+    tasks?: unknown;
+  };
+  if (!Array.isArray(board?.tasks))
+    throw new Error("GoalBuddy state.yaml must contain tasks.");
+  const active = board.tasks.filter(
+    (candidate): candidate is Record<string, unknown> =>
+      Boolean(candidate) && typeof candidate === "object" &&
+      (candidate as Record<string, unknown>).status === "active",
+  );
+  if (active.length !== 1)
+    throw new Error(`GoalBuddy state.yaml must contain exactly one active task; found ${active.length}.`);
+  const task = active[0];
+  const externalTaskId = typeof task.id === "string" ? task.id.trim() : "";
+  const objective = typeof task.objective === "string" ? task.objective.trim() : "";
+  const goalSlug = typeof board.goal?.slug === "string" ? board.goal.slug.trim() : "";
+  const goalTitle = typeof board.goal?.title === "string" ? board.goal.title.trim() : goalSlug;
+  if (!externalTaskId || !objective || !goalSlug)
+    throw new Error("GoalBuddy goal slug, active task id, and objective are required.");
+  if (board.active_task !== externalTaskId)
+    throw new Error("GoalBuddy active_task must match the single active task id.");
+  const allowedPaths = goalBuddyStringList(task.allowed_files, "allowed_files");
+  const verificationCommands = goalBuddyStringList(task.verify, "verify");
+  const executionGuards = goalBuddyStringList(task.stop_if, "stop_if");
+  const goalBuddy: GoalBuddyTaskLinkV1 = {
+    goalSlug,
+    goalTitle: goalTitle || goalSlug,
+    externalTaskId,
+    objective,
+    statePath,
+    stateSha256,
+  };
+  const taskInput: TaskInput = {
+    key: externalTaskId,
+    title: objective,
+    prompt: objective,
+    allowedPaths,
+    verificationCommands,
+    executionGuards,
+    externalTaskId,
+    goalBuddy,
+  };
+  return {
+    contract_type: "GoalBuddyTaskPreviewV1" as const,
+    contract_version: "1.0" as const,
+    source: { statePath, stateSha256 },
+    taskInput,
+    queue: {
+      project: { path: projectPath },
+      tasks: [taskInput],
+      git: { checkpointCommits: false },
+    },
+    runRequest: { statePath, projectPath, expectedStateSha256: stateSha256 },
+  };
+}
+
+export function createGoalReceiptEnvelopeV1(
+  run: Run,
+  task: Task,
+  sourceStateUnchanged: boolean,
+): GoalReceiptEnvelopeV1 {
+  const link = task.goalBuddy;
+  if (!link || !task.externalTaskId)
+    throw new Error("Task does not contain GoalBuddy linkage.");
+  return validateGoalReceiptEnvelopeV1({
+    contract_type: "GoalReceiptEnvelopeV1",
+    contract_version: "1.0",
+    created_at: timestamp(),
+    goal: {
+      slug: link.goalSlug,
+      title: link.goalTitle,
+      state_path: link.statePath,
+      state_sha256: link.stateSha256,
+    },
+    task: {
+      external_task_id: task.externalTaskId,
+      objective: link.objective,
+      allowed_paths: task.allowedPaths ?? [],
+      verification_commands: task.verificationCommands ?? [],
+      execution_guards: task.executionGuards ?? [],
+    },
+    repository: { path: run.project.path },
+    orchestrator: { run_id: run.id, task_id: task.id },
+    outcome: { task_status: task.status, outcome_class: outcomeClass(task.status) },
+    source_state_unchanged: sourceStateUnchanged,
+  });
+}
+
+export async function writeGoalReceiptEnvelopeV1(run: Run, task: Task) {
+  const link = task.goalBuddy;
+  if (!link) throw new Error("Task does not contain GoalBuddy linkage.");
+  let sourceStateUnchanged = false;
+  try {
+    const current = await readFile(link.statePath);
+    sourceStateUnchanged = createHash("sha256").update(current).digest("hex") === link.stateSha256;
+  } catch {
+    sourceStateUnchanged = false;
+  }
+  if (!sourceStateUnchanged) {
+    task.status = "failed";
+    task.log.push("GoalBuddy source state changed or became unreadable after preview.");
+  }
+  const path = join(runsDirectory, run.id, `${task.id}-goal-receipt-v1.json`);
+  task.goalReceiptPath = path;
+  const envelope = createGoalReceiptEnvelopeV1(run, task, sourceStateUnchanged);
+  await writeJsonAtomically(path, envelope);
+  return { path, envelope };
 }
 
 export async function runHasLiveOwner(
@@ -1267,6 +1445,30 @@ export function validateQueue(value: unknown): {
       (!Number.isInteger(task.maxSources) || task.maxSources < 1 || task.maxSources > 50)
     )
       throw new Error(`Task ${index + 1}: maxSources must be an integer from 1 to 50.`);
+    for (const [field, value] of [
+      ["allowedPaths", task.allowedPaths],
+      ["verificationCommands", task.verificationCommands],
+      ["executionGuards", task.executionGuards],
+    ] as const) {
+      if (
+        value !== undefined &&
+        (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
+      )
+        throw new Error(`Task ${index + 1}: ${field} must be a list of non-empty strings.`);
+    }
+    if (task.externalTaskId !== undefined && (!task.externalTaskId.trim()))
+      throw new Error(`Task ${index + 1}: externalTaskId must be a non-empty string.`);
+    if (task.goalBuddy) {
+      const link = task.goalBuddy;
+      if (
+        !link.goalSlug?.trim() || !link.goalTitle?.trim() ||
+        !link.externalTaskId?.trim() || !link.objective?.trim() ||
+        !link.statePath?.trim() || !/^[a-f0-9]{64}$/.test(link.stateSha256)
+      )
+        throw new Error(`Task ${index + 1}: invalid GoalBuddy linkage.`);
+      if (task.externalTaskId !== link.externalTaskId)
+        throw new Error(`Task ${index + 1}: externalTaskId must match GoalBuddy task id.`);
+    }
     return { ...task, model, effort, requestedModel: selection.requestedModel, modelSelectionReason: selection.reason };
   });
   const taskKeys = new Set<string>();
@@ -1307,6 +1509,8 @@ export function validateQueue(value: unknown): {
   taskKeys.forEach(visit);
   const verificationCommands =
     project.verificationCommands?.filter(Boolean) ?? [];
+  if (tasks.some((task) => task.goalBuddy) && queue.git?.checkpointCommits)
+    throw new Error("GoalBuddy bridge runs cannot enable automatic checkpoint commits.");
   return {
     project: {
       name: project.name || projectPath.split(/[\\/]/).pop() || "Project",
@@ -1585,6 +1789,10 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       minModel: task.minModel,
       effort: task.effort,
       allowedPaths: task.allowedPaths,
+      verificationCommands: task.verificationCommands,
+      executionGuards: task.executionGuards,
+      externalTaskId: task.externalTaskId,
+      goalBuddy: task.goalBuddy,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
       contextProfile: task.contextProfile,
@@ -2033,13 +2241,20 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
   const paths = task.allowedPaths?.length
     ? `\nAllowed paths: ${task.allowedPaths.join(", ")}`
     : "";
-  const checks = project.verificationCommands?.length
-    ? `\n- Run these project verification commands when relevant:\n${project.verificationCommands.map((command) => `  - ${command}`).join("\n")}`
+  const verificationCommands = [
+    ...(project.verificationCommands ?? []),
+    ...(task.verificationCommands ?? []),
+  ].filter((command, index, commands) => commands.indexOf(command) === index);
+  const checks = verificationCommands.length
+    ? `\n- Run these verification commands when relevant:\n${verificationCommands.map((command) => `  - ${command}`).join("\n")}`
     : "\n- Run relevant verification commands.";
+  const guards = task.executionGuards?.length
+    ? `\n- Stop if any execution guard applies:\n${task.executionGuards.map((guard) => `  - ${guard}`).join("\n")}`
+    : "";
   const context = task.context
     ? `\n\nContext Contract v1 (${task.context.provider}${task.context.fallbackReason ? `; controlled fallback: ${task.context.fallbackReason}` : ""}):\n${task.context.bundle.sources.map((source) => `- ${source.path} [${source.priority}; ${source.authority}] — ${source.inclusion_reason}`).join("\n")}`
     : "";
-  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.`;
+  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}${guards}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.`;
 }
 
 async function reviewTask(run: Run, task: Task) {
@@ -2198,6 +2413,23 @@ async function pauseBeforeNextTask(run: Run) {
   await resumed;
 }
 
+export async function finalizeSettledTask(run: Run, task: Task) {
+  let goalReceipt: Awaited<ReturnType<typeof writeGoalReceiptEnvelopeV1>> | undefined;
+  if (task.goalBuddy) {
+    try {
+      goalReceipt = await writeGoalReceiptEnvelopeV1(run, task);
+    } catch (error) {
+      task.status = "failed";
+      task.log.push(
+        `GoalReceiptEnvelopeV1 could not be written: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (task.status === "completed") await createCheckpoint(run, task);
+  await persist(run);
+  return goalReceipt;
+}
+
 async function executeTask(run: Run, task: Task): Promise<Status> {
     const baseline = await readGitStatus(run.project.path);
     task.status = "running";
@@ -2318,8 +2550,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       if (task.reviewStatus === "unavailable")
         task.log.push("Reviewer unavailable: task result retained without reviewer approval.");
     }
-    if (task.status === "completed") await createCheckpoint(run, task);
-    await persist(run);
+    await finalizeSettledTask(run, task);
     publish("run", run);
     return task.status;
 }
@@ -2697,6 +2928,42 @@ app.get("/api/events", (request, response) => {
   if (activeRun)
     response.write(`event: run\ndata: ${JSON.stringify(activeRun)}\n\n`);
   request.on("close", () => subscribers.delete(response));
+});
+app.post("/api/goalbuddy/preview", async (request, response) => {
+  try {
+    const input = typeof request.body === "string" ? parse(request.body) : request.body;
+    return response.json(await previewGoalBuddyTask(input as GoalBuddyPreviewInput));
+  } catch (error) {
+    return response.status(400).json({
+      error: error instanceof Error ? error.message : "Invalid GoalBuddy state selection.",
+    });
+  }
+});
+app.post("/api/goalbuddy/runs", async (request, response) => {
+  try {
+    if (activeRun?.status === "running" || activeRun?.status === "paused")
+      return response.status(409).json({ error: "A run is already active." });
+    const input = typeof request.body === "string" ? parse(request.body) : request.body;
+    const preview = await previewGoalBuddyTask(input as GoalBuddyPreviewInput);
+    const queue = validateQueue(preview.queue);
+    const run = createRun(queue, undefined, await contextsForRun(queue));
+    try {
+      await acquireProjectLock(run);
+    } catch (error) {
+      return response.status(409).json({
+        error: error instanceof Error ? error.message : "Project is locked.",
+      });
+    }
+    activePipeline = undefined;
+    activeRun = run;
+    await persist(run);
+    void execute(run);
+    return response.status(201).json(run);
+  } catch (error) {
+    return response.status(400).json({
+      error: error instanceof Error ? error.message : "Invalid GoalBuddy run request.",
+    });
+  }
 });
 app.post("/api/preflight", async (request, response) => {
   try {

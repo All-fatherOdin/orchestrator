@@ -1,0 +1,52 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "done",
+    "task_id": "T003",
+    "board_path": "docs/goals/goalbuddy-bridge-v1/state.yaml",
+    "decision": "approved",
+    "full_outcome_complete": false,
+    "rationale": "The backend is a compact monolith: TaskInput validation, preflight, run creation/persistence, Git locking/status/diff/allowedPaths/checkpoint enforcement, prompting, and run APIs are in server/index.ts; integration coverage is in server/index.test.ts. Baselines are green. One backend TDD package can add read-only GoalBuddy selection and exact mapping, carry external linkage through the existing run path, validate a versioned receipt contract, and atomically emit a separate receipt beside run.json without UI or scheduler duplication.",
+    "worker_package": {
+      "objective": "Using TDD, implement the backend GoalBuddy Bridge V1 vertical slice: read and validate an operator-selected state.yaml with exactly one active task, map it into an Orchestrator TaskInput preview, carry immutable GoalBuddy linkage through the existing preflight/createRun/execute/persist path, and atomically write a schema-valid GoalReceiptEnvelopeV1 JSON beside the run record after task execution.",
+      "allowed_files": [
+        "server/index.ts",
+        "server/index.test.ts",
+        "server/goalbuddy-bridge-v1/schemas/goal-receipt-envelope-v1.schema.json"
+      ],
+      "verify": [
+        "npx tsx --test --test-name-pattern=GoalBuddy\\ bridge server/index.test.ts",
+        "npm test",
+        "npm run check",
+        "npm run build",
+        "git diff --check"
+      ],
+      "stop_if": [
+        "The slice requires UI, queue files, or files outside allowed_files.",
+        "The bridge cannot reuse the existing preflight/createRun/execute/persist and Git safety path.",
+        "Any design would write to or advance the selected GoalBuddy state.yaml, select another GoalBuddy task, or enable automatic commits.",
+        "Goal/task/repo/run linkage or failure/cancellation receipt semantics cannot be represented without a material product decision.",
+        "A goal-owned verification command fails twice for the same unexplained reason."
+      ]
+    },
+    "evidence": [
+      "server/index.ts:59-80 TaskInput already owns title, prompt, and allowedPaths.",
+      "server/index.ts:761-790 atomically persists run.json and summary.json under .orchestrator/runs/<runId>.",
+      "server/index.ts:801-857 owns the existing per-repository project lock.",
+      "server/index.ts:1114-1125 enforces allowedPaths against changed files.",
+      "server/index.ts:1549-1570 creates and links run/task identities.",
+      "server/index.ts:1817-1876 reuses Git commands and optional checkpoint behavior; default checkpointCommits is false.",
+      "server/index.ts:1945-2042 owns preflight and the no-commit execution prompt.",
+      "server/index.ts:2201-2324 captures Git status/diff, enforces allowedPaths, reviews, checkpoints, and persists settled tasks.",
+      "server/index.ts:2701-2754 exposes existing preflight and run creation APIs.",
+      "server/index.test.ts already covers TaskInput validation, context preflight-to-run reuse, allowedPaths, lifecycle outcomes, project locking, and checkpoint behavior.",
+      "Baseline npm test: pass, 34/34.",
+      "Baseline npm run check: pass.",
+      "Baseline npm run build: pass."
+    ],
+    "missing_evidence": [],
+    "required_board_updates": [
+      "Copy worker_package exactly onto T002 and activate it.",
+      "Require red evidence before implementation and unchanged-state hash/byte proof in the Worker receipt."
+    ]
+  }
+}
