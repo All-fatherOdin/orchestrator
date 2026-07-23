@@ -1,0 +1,838 @@
+version: 2
+
+goal:
+  title: "GPT-5.6 Runtime Evals v1"
+  slug: "gpt56-runtime-evals-v1"
+  kind: existing_plan
+  tranche: "Validate the existing plan, implement successive safe verified
+    orchestrator slices, and continue until the full oracle is true."
+  status: completed
+  oracle:
+    signal: "One non-secret command emits a versioned report with quality, safety,
+      evidence, latency, token, cache, cost, and config metrics."
+    cadence: "after each Worker package and at final audit"
+    final_proof: "Receipt-backed implementation diff, fresh targeted/regression
+      verification, and full_outcome_complete audit."
+  intake:
+    original_request: "Prepare eight separate implementation goals in
+      D:\\pet-projects\\orchestrator; multi-agent is last and optional behind
+      go/no-go."
+    interpreted_outcome: "Implement a provider-specific comparison harness without
+      weakening the portable core eval suite."
+    input_shape: existing_plan
+    audience: "orchestrator owner and maintainers"
+    authority: approved
+    proof_type: test
+    completion_proof: "One non-secret command emits a versioned report with quality,
+      safety, evidence, latency, token, cache, cost, and config metrics."
+    likely_misfire: "Stopping at planning or an isolated helper instead of a
+      verified integrated capability."
+    blind_spots_considered:
+      - "Pre-existing dirty worktree may overlap implementation files."
+      - "Provider facts must be checked against current official documentation."
+      - "Other goals are dependencies only when their receipts prove completion."
+    existing_plan_facts:
+      - "Implementation belongs only in D:\\pet-projects\\orchestrator."
+      - "The Agent Memory Kit repository is read-only reference material for
+        this goal."
+      - "Rollout-risk behavior must be reversible and configuration-gated."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: live
+    url: "http://goalbuddy.localhost:41737/gpt56-runtime-evals-v1/"
+    command: "node C:/Users/Alexander
+      Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/s\
+      urfaces/local-goal-board/scripts/local-goal-board.mjs --goal
+      docs/goals/gpt56-runtime-evals-v1"
+
+active_task: null
+
+tasks:
+  - id: T001
+    type: scout
+    assignee: Scout
+    status: done
+    reasoning_hint: low
+    objective: "Map existing tests/evals, telemetry, fixtures, reports, mocks/live
+      gates, CI commands, and reusable behavior cases."
+    inputs:
+      - "D:\\pet-projects\\orchestrator"
+      - "D:\\pet-projects\\AI-assisted_System_Design_and_Agent_Memory_Kit"
+      - "docs/goals/gpt56-runtime-evals-v1/goal.md"
+      - "Current git status and diff"
+    constraints:
+      - "Read-only; do not edit implementation files."
+      - "Treat the source kit as read-only."
+      - "Record overlap with server/index.test.ts, src/App.tsx, src/styles.css,
+        and src/GoalBuddyPage.tsx."
+      - "Prefer file-path and command evidence over generic advice."
+    expected_output:
+      - "Relevant architecture and file map"
+      - "Current behavior and compatibility evidence"
+      - "Baseline and verification commands"
+      - "Dirty-worktree overlap assessment"
+      - "Largest safe Worker candidate with proposed allowed_files, verify, and
+        stop_if"
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: |-
+        Scout receipt for T001 (read-only; no files changed).
+
+        Evidence inspected:
+        - `AGENTS.md`, goal brief and board state.
+        - Current status/diff: 12 tracked paths changed plus untracked goal boards and runtime folders.
+        - Existing test suite: [server/index.test.ts](D:\pet-projects\orchestrator\server\index.test.ts) and [electron/lifecycle.test.cjs](D:\pet-projects\orchestrator\electron\lifecycle.test.cjs).
+        - Runtime, telemetry, and report implementation: [server/index.ts](D:\pet-projects\orchestrator\server\index.ts), [README.md](D:\pet-projects\orchestrator\README.md).
+        - Read-only reference kit:
+          - `...\Agent Kit\kit\eval_suite\eval_manifest.yaml`
+          - `...\eval_suite\core_behavior_eval_cases.yaml`
+          - `...\eval_suite\grader_rubric.yaml`
+          - `...\eval_suite\eval_trace_template.yaml`
+          - `...\eval_suite\eval_run_report_template.yaml`
+          - `...\tools\run_eval_checklist.py`
+
+        Architecture and compatibility map:
+        - `server/index.ts` is the runtime seam: runs Codex CLI, parses `turn.completed.usage`, persists usage per task, exposes `projectTaskMetrics`, `projectRunMetrics`, and `GET /api/runs/:id/report`.
+        - Existing telemetry covers input/output/cached-input tokens, calls, task outcomes, attempts/cycles, and elapsed durations. README explicitly says provider prices are not guessed.
+        - Existing Markdown reports include task output/reviewer output and token totals, but do not capture eval-case grades, config identity, latency breakdown, cache reads/writes, cost labels, or critical gates.
+        - No eval fixtures, mock provider, live-provider gate, eval runner, CI workflow, or versioned eval-report schema exists in this repository.
+        - Portable compatibility suite is intentionally provider-agnostic. Its critical reusable cases include:
+          - action intent: `AMK-AI-001`, `AMK-AI-002`
+          - grounding: `AMK-GR-001`, `AMK-GR-002`
+          - side-effect safety: `AMK-SE-001`, `AMK-SE-002`
+        - Kit gates: critical 100%, high ≥90%, normal ≥80%; it prohibits secrets, credentials, unrelated raw chats, and provider hidden reasoning in artifacts. The runtime harness must consume/copy selected cases without changing this portable manifest.
+
+        Dirty-worktree assessment:
+        - Required overlap paths are all already modified:
+          - [server/index.test.ts](D:\pet-projects\orchestrator\server\index.test.ts)
+          - [src/App.tsx](D:\pet-projects\orchestrator\src\App.tsx)
+          - [src/styles.css](D:\pet-projects\orchestrator\src\styles.css)
+          - [src/GoalBuddyPage.tsx](D:\pet-projects\orchestrator\src\GoalBuddyPage.tsx)
+        - `server/index.ts` and `README.md` are also modified. Do not authorize edits to any of these until ownership/merge strategy is established.
+        - The current diff is GoalBuddy/queue-flow work, not runtime-eval work, so it must remain isolated.
+
+        Checks performed:
+        - `npm test; npm run check`
+        - Both were blocked before project tests/typechecking: Node 20.19.5 raised `EPERM lstat C:\Users\Alexander Lozovoy` while resolving its entry path. This is an environment/sandbox baseline blocker, not evidence of a project regression.
+        - Rechecked `git status --short`: no task-created changes.
+
+        Largest safe Worker candidate:
+        - Objective: introduce a standalone deterministic runtime-evals v1 package with selected AMK behavior-case fixtures, mock runner, critical-gate grading, versioned JSON/Markdown reports, configuration identity, explicit unsupported metrics, and an opt-in live gate that defaults off.
+        - Proposed `allowed_files`:
+          - `runtime-evals-v1/**` (new isolated implementation, tests, fixtures, report schema/templates)
+          - `scripts/run-runtime-evals-v1.mjs` (new)
+          - `docs/runtime-evals-v1.md` (new)
+          - `package.json` only if a documented `npm run eval:runtime` command is required.
+        - Proposed verification:
+          - `node --test runtime-evals-v1/**/*.test.mjs`
+          - `node scripts/run-runtime-evals-v1.mjs --mode mock --output <temporary-output-dir>`
+          - validate that report includes config identity, success/completeness/safety gate results, tokens/latency/cache/cost metric states, and fails on one injected critical-case violation.
+          - Reattempt `npm test` and `npm run check` only after resolving the Node EPERM environment issue.
+        - Proposed `stop_if`:
+          - Any required change to the dirty paths above or `server/index.ts`/`README.md`.
+          - Need to alter the portable kit or its manifest.
+          - Live credentials become necessary for deterministic mode.
+          - A metric cannot be truthfully measured or explicitly marked unsupported.
+          - The environment continues preventing baseline tests from starting.
+          - Integration requires ambiguous Codex CLI event fields or secret/hidden-reasoning persistence.
+
+        Decision: proceed to Judge. The isolated deterministic harness is safe to scope now; server/UI integration is not safe while their existing edits remain unexplained.
+
+        Remaining risks: baseline verification environment is blocked; actual Codex live-event fields and cache semantics must stay behind an opt-in live gate and be labeled unsupported until evidenced.
+      orchestrator_run_id: mrxia8sz-upj9m
+      orchestrator_task_id: mrxia8sz-favi5
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxia8sz-upj9m\mrxia8sz-favi5-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxia8sz-upj9m
+      task_id: mrxia8sz-favi5
+      external_task_id: T001
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxia8sz-upj9m\mrxia8sz-favi5-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T12:49:32.912Z
+      progression:
+        status: advanced
+        completed_task_id: T001
+        activated_task_id: T002
+
+  - id: T002
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Validate the plan against Scout evidence and specify the largest
+      safe useful implementation slice."
+    inputs:
+      - "T001 receipt"
+      - "docs/goals/gpt56-runtime-evals-v1/goal.md"
+      - "Current dirty diff"
+    constraints:
+      - "Read-only; do not implement."
+      - "Do not authorize overwriting or reverting pre-existing user work."
+      - "Populate exact Worker allowed_files, verify, rollout boundary, and stop
+        conditions before activation."
+    expected_output:
+      - "proceed | revise | blocked"
+      - "Exact Worker objective or evidence-backed no-implementation decision"
+      - "allowed_files"
+      - "verify"
+      - "stop_if"
+      - "Oracle coverage"
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: |-
+        Decision: proceed with an isolated deterministic harness; no existing dirty file is authorized.
+
+        Evidence inspected: T001 receipt, goal charter/state, current dirty diff, package/test configuration. `git diff --check` passed. `node --test electron/lifecycle.test.cjs` passed. `npm test`, `npm run check`, and the GoalBuddy checker remain blocked by a sandbox `EPERM` resolving Node script entry points.
+
+        Rollout boundary: new standalone files only; no server/UI, package, README, portable-kit, CI, credential, network, or live-provider changes. Live mode must remain fail-closed and explicitly unsupported.
+
+        Oracle coverage: this slice proves deterministic quality/safety gates, report versioning, config identity, and explicit tokens/latency/cache/cost metric states. It does not prove live Codex event semantics or measured provider costs, so it cannot complete the goal.
+
+        Remaining risk: the documented direct runner command may be unexecutable in this sandbox despite Node’s test runner working; worker must report that as blocked without widening scope.
+
+        GOALBUDDY_NEXT_TASK_PATCH_V1: {"target_task_id":"T003","decision":"proceed","objective":"Create a new isolated deterministic runtime-evals v1 harness for selected AMK critical behavior cases: credential-free mock execution, 100% critical gating, versioned JSON and Markdown reports with configuration identity and explicit metric states, an injected-critical-failure regression, and one documented launch command; live-provider execution must remain fail-closed and unsupported.","allowed_files":["runtime-evals-v1/**","scripts/run-runtime-evals-v1.mjs","docs/runtime-evals-v1.md"],"verify":["git diff --check","node --test runtime-evals-v1/runtime-evals-v1.test.mjs","node scripts/run-runtime-evals-v1.mjs --mode mock --output \"$env:TEMP\\orchestrator-runtime-evals-v1-verify\"","node --test electron/lifecycle.test.cjs"],"stop_if":["Any allowed path contains pre-existing user changes before work begins.","Need to edit server/index.ts, server/index.test.ts, README.md, package.json, src/**, electron/**, AGENTS.md, or any other path outside allowed_files.","Need to modify the read-only Agent Memory Kit or its portable manifests.","Mock mode needs credentials, network access, Codex CLI execution, or any real side effect.","Live/provider event semantics, cache values, or cost cannot be supported without truthful unsupported labeling.","The direct runner still fails from the sandbox after one retry with the same EPERM entry-point error; do not change Node/npm configuration or broaden scope, and return a blocked receipt with the command output.","A targeted verification fails twice for the same unresolved implementation cause."]}
+      orchestrator_run_id: mrxia8sz-upj9m
+      orchestrator_task_id: mrxidcn1-ftirb
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxia8sz-upj9m\mrxidcn1-ftirb-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxia8sz-upj9m
+      task_id: mrxidcn1-ftirb
+      external_task_id: T002
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxia8sz-upj9m\mrxidcn1-ftirb-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T12:52:36.175Z
+      progression:
+        status: advanced
+        completed_task_id: T002
+        activated_task_id: T003
+
+  - id: T003
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: medium
+    objective: "Create a new isolated deterministic runtime-evals v1 harness for
+      selected AMK critical behavior cases: credential-free mock execution, 100%
+      critical gating, versioned JSON and Markdown reports with configuration
+      identity and explicit metric states, an injected-critical-failure
+      regression, and one documented launch command; live-provider execution
+      must remain fail-closed and unsupported."
+    allowed_files:
+      - runtime-evals-v1/**
+      - scripts/run-runtime-evals-v1.mjs
+      - docs/runtime-evals-v1.md
+    verify:
+      - git diff --check
+      - node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+      - node scripts/run-runtime-evals-v1.mjs --mode mock --output
+        "$env:TEMP\orchestrator-runtime-evals-v1-verify"
+      - node --test electron/lifecycle.test.cjs
+    stop_if:
+      - Any allowed path contains pre-existing user changes before work begins.
+      - Need to edit server/index.ts, server/index.test.ts, README.md,
+        package.json, src/**, electron/**, AGENTS.md, or any other path outside
+        allowed_files.
+      - Need to modify the read-only Agent Memory Kit or its portable manifests.
+      - Mock mode needs credentials, network access, Codex CLI execution, or any
+        real side effect.
+      - Live/provider event semantics, cache values, or cost cannot be supported
+        without truthful unsupported labeling.
+      - The direct runner still fails from the sandbox after one retry with the
+        same EPERM entry-point error; do not change Node/npm configuration or
+        broaden scope, and return a blocked receipt with the command output.
+      - A targeted verification fails twice for the same unresolved
+        implementation cause.
+    receipt:
+      result: done
+      changed_files:
+        - docs/runtime-evals-v1.md
+        - runtime-evals-v1/runtime-evals-v1.mjs
+        - runtime-evals-v1/runtime-evals-v1.test.mjs
+        - scripts/run-runtime-evals-v1.mjs
+      commands:
+        - cmd: git diff --check
+          status: pass
+        - cmd: node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+          status: pass
+        - cmd: node scripts/run-runtime-evals-v1.mjs --mode mock --output
+            "$env:TEMP\orchestrator-runtime-evals-v1-verify"
+          status: pass
+        - cmd: node --test electron/lifecycle.test.cjs
+          status: pass
+      summary: |-
+        Implemented the isolated Runtime Evals v1 harness.
+
+        Changed files:
+
+        - [runtime-evals-v1/runtime-evals-v1.mjs](D:\pet-projects\orchestrator\runtime-evals-v1\runtime-evals-v1.mjs:1)
+        - [runtime-evals-v1/runtime-evals-v1.test.mjs](D:\pet-projects\orchestrator\runtime-evals-v1\runtime-evals-v1.test.mjs:1)
+        - [scripts/run-runtime-evals-v1.mjs](D:\pet-projects\orchestrator\scripts\run-runtime-evals-v1.mjs:1)
+        - [docs/runtime-evals-v1.md](D:\pet-projects\orchestrator\docs\runtime-evals-v1.md:1)
+
+        It provides deterministic credential-free mock evaluation for six selected AMK critical cases, 100% critical gating, versioned JSON/Markdown reports with configuration identity and explicit metric states, injected critical-failure coverage, and fail-closed unsupported live mode.
+
+        Checks passed:
+
+        - `git diff --check`
+        - `node --test runtime-evals-v1/runtime-evals-v1.test.mjs`
+        - `node scripts/run-runtime-evals-v1.mjs --mode mock --output "$env:TEMP\orchestrator-runtime-evals-v1-verify"`
+        - `node --test electron/lifecycle.test.cjs`
+
+        Remaining risk: provider latency, token, cache, and cost semantics are deliberately unsupported; no live provider execution is implemented or attempted.
+      orchestrator_run_id: mrxia8sz-upj9m
+      orchestrator_task_id: mrxiha0s-v0z6i
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxia8sz-upj9m\mrxiha0s-v0z6i-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxia8sz-upj9m
+      task_id: mrxiha0s-v0z6i
+      external_task_id: T003
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxia8sz-upj9m\mrxiha0s-v0z6i-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T12:55:06.256Z
+      progression:
+        status: advanced
+        completed_task_id: T003
+        activated_task_id: T999
+
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Audit the full outcome against the oracle and either record
+      completion or specify the next largest safe Worker slice."
+    inputs:
+      - "All completed task receipts"
+      - "Current implementation diff"
+      - "Fresh targeted and regression verification"
+    constraints:
+      - "Read-only; do not implement."
+      - "Reject weak proof, planning-only output, or unexplained dirty-worktree
+        overlap."
+      - "If not complete, specify the next safe task instead of ending the goal."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Oracle-to-evidence mapping"
+      - "Regression and dirty-worktree safety assessment"
+      - "Next Worker task if not complete"
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: |-
+        Decision: not_complete — the harness is healthy but does not yet meet the full report oracle.
+
+        - Evidence: documented mock command succeeds (6/6 critical), emits versioned JSON/Markdown, declares configuration identity and metric states, and fails correctly on injected critical failure.
+        - Missing oracle fields: the JSON report has no explicit `taskSuccess`, answer/evidence-completeness, or unauthorized-action-failure results; generic quality/safety/evidence metrics are insufficient proof.
+        - Regression: targeted harness tests (5/5) and Electron lifecycle tests (6/6) pass; `git diff --check` passes. `npm test`, `npm run check`, and board checker remain blocked before execution by the known sandbox `EPERM lstat C:\Users\Alexander Lozovoy`.
+        - Dirty-worktree safety: T003 is isolated to new untracked runtime-eval files and does not overlap the pre-existing bridge edits. Remaining risk is only the known environment-wide Node entry-point restriction and the missing explicit report dimensions.
+
+        GOALBUDDY_FINAL_DECISION_V1: {"full_outcome_complete":false,"summary":"The documented deterministic command and critical gate are verified, but the emitted report does not explicitly contain task success, answer/evidence completeness, or unauthorized-action-failure results required by the oracle.","next_worker":{"objective":"Extend the isolated Runtime Evals v1 mock harness and its reports with explicit per-case and aggregate task-success, answer-completeness, evidence-completeness, and unauthorized-action-failure outcomes; keep the 100% critical gate tied to those outcomes and add regressions for both passing and injected-failure reports.","allowed_files":["runtime-evals-v1/**","scripts/run-runtime-evals-v1.mjs","docs/runtime-evals-v1.md"],"verify":["git diff --check","node --test runtime-evals-v1/runtime-evals-v1.test.mjs","node scripts/run-runtime-evals-v1.mjs --mode mock --output \"$env:TEMP\\orchestrator-runtime-evals-v1-oracle-verify\"","node --test electron/lifecycle.test.cjs"],"stop_if":["Need to edit any pre-existing dirty path, including server/**, src/**, electron/**, README.md, AGENTS.md, or package.json.","Need live credentials, network access, Codex CLI execution, provider event fields, or real side effects for deterministic mock mode.","Cannot represent a required oracle dimension truthfully as measured or unsupported without weakening the critical gate.","A targeted verification fails twice for the same unresolved implementation cause."]}}
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxj8xcz-tjb1l
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxj8xcz-tjb1l-goal-receipt-v1.json
+      full_outcome_complete: false
+      final_summary: The documented deterministic command and critical gate are
+        verified, but the emitted report does not explicitly contain task
+        success, answer/evidence completeness, or unauthorized-action-failure
+        results required by the oracle.
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxj8xcz-tjb1l
+      external_task_id: T999
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxj8xcz-tjb1l-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:16:04.688Z
+      progression:
+        status: advanced
+        completed_task_id: T999
+        activated_task_id: T004
+        reason: next_worker_authorized
+  - id: T004
+    type: worker
+    assignee: Worker
+    status: done
+    objective: Extend the isolated Runtime Evals v1 mock harness and its reports
+      with explicit per-case and aggregate task-success, answer-completeness,
+      evidence-completeness, and unauthorized-action-failure outcomes; keep the
+      100% critical gate tied to those outcomes and add regressions for both
+      passing and injected-failure reports.
+    inputs:
+      - T999 receipt
+    constraints:
+      - Stay within allowed_files and stop when a stop_if guard applies.
+    expected_output:
+      - Implementation summary and verification evidence.
+    allowed_files:
+      - runtime-evals-v1/**
+      - scripts/run-runtime-evals-v1.mjs
+      - docs/runtime-evals-v1.md
+    verify:
+      - git diff --check
+      - node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+      - node scripts/run-runtime-evals-v1.mjs --mode mock --output
+        "$env:TEMP\orchestrator-runtime-evals-v1-oracle-verify"
+      - node --test electron/lifecycle.test.cjs
+    stop_if:
+      - Need to edit any pre-existing dirty path, including server/**, src/**,
+        electron/**, README.md, AGENTS.md, or package.json.
+      - Need live credentials, network access, Codex CLI execution, provider
+        event fields, or real side effects for deterministic mock mode.
+      - Cannot represent a required oracle dimension truthfully as measured or
+        unsupported without weakening the critical gate.
+      - A targeted verification fails twice for the same unresolved
+        implementation cause.
+    receipt:
+      result: done
+      changed_files: []
+      commands:
+        - cmd: git diff --check
+          status: pass
+        - cmd: node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+          status: pass
+        - cmd: node scripts/run-runtime-evals-v1.mjs --mode mock --output
+            "$env:TEMP\orchestrator-runtime-evals-v1-oracle-verify"
+          status: pass
+        - cmd: node --test electron/lifecycle.test.cjs
+          status: pass
+      summary: |-
+        Implemented the explicit report oracle outcomes.
+
+        Changed:
+        - [runtime-evals-v1.mjs](D:\pet-projects\orchestrator\runtime-evals-v1\runtime-evals-v1.mjs)
+        - [runtime-evals-v1.test.mjs](D:\pet-projects\orchestrator\runtime-evals-v1\runtime-evals-v1.test.mjs)
+        - [runtime-evals-v1.md](D:\pet-projects\orchestrator\docs\runtime-evals-v1.md)
+
+        The mock report now includes per-case and aggregate `taskSuccess`, `answerCompleteness`, `evidenceCompleteness`, and `unauthorizedActionFailure` outcomes. The 100% critical gate requires every outcome to pass. Regressions cover serialized passing and injected-failure JSON/Markdown reports.
+
+        Checks passed:
+
+        - `git diff --check`
+        - `node --test runtime-evals-v1/runtime-evals-v1.test.mjs` (5/5)
+        - Mock runner command (6/6 critical cases)
+        - `node --test electron/lifecycle.test.cjs` (6/6)
+
+        Remaining risk: provider latency, token, cache, and cost semantics remain explicitly unsupported; no live execution was attempted.
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxjbgtx-8cw3p
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjbgtx-8cw3p-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxjbgtx-8cw3p
+      external_task_id: T004
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjbgtx-8cw3p-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:18:11.782Z
+      progression:
+        status: advanced
+        completed_task_id: T004
+        activated_task_id: T999-R2
+  - id: T999-R2
+    type: judge
+    assignee: Judge
+    status: done
+    objective: Audit the full goal outcome against its oracle after the latest
+      Worker slice.
+    inputs:
+      - T004 receipt
+      - All prior GoalBuddy receipts
+    constraints:
+      - Read-only; do not implement.
+    expected_output:
+      - Evidence-backed GOALBUDDY_FINAL_DECISION_V1.
+    allowed_files: []
+    verify: []
+    stop_if: []
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: 'GOALBUDDY_FINAL_DECISION_V1:
+        {"full_outcome_complete":false,"summary":"Fresh checks confirm the
+        deterministic command, 5/5 harness tests, injected 5/6 failure gate, and
+        6/6 Electron regression pass; however the report still lacks separate
+        cache-read/cache-write fields and configuration identity for prompt,
+        model, reasoning, state, and PTC required for reproducible runtime
+        configuration comparison.","next_worker":{"objective":"Extend the
+        isolated mock harness report with explicit unsupported-or-measured
+        cacheReads and cacheWrites metrics plus a complete configuration
+        identity for prompt, model, reasoning, state, cache, and PTC; add
+        passing and injected-failure regressions without enabling live
+        execution.","allowed_files":["runtime-evals-v1/**","scripts/run-runtime-evals-v1.mjs","docs/runtime-evals-v1.md"],"verify":["git
+        diff --check","node --test
+        runtime-evals-v1/runtime-evals-v1.test.mjs","node
+        scripts/run-runtime-evals-v1.mjs --mode mock --output
+        \"$env:TEMP\\orchestrator-runtime-evals-v1-final-oracle-verify\"","node
+        --test electron/lifecycle.test.cjs"],"stop_if":["Need to edit
+        pre-existing dirty paths or any path outside allowed_files.","Need
+        credentials, network access, Codex CLI execution, or live-provider
+        behavior for mock mode.","Cannot represent a required metric or
+        configuration dimension truthfully as measured or unsupported.","A
+        targeted verification fails twice for the same unresolved implementation
+        cause."]}}'
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxje6xr-qjst1
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxje6xr-qjst1-goal-receipt-v1.json
+      full_outcome_complete: false
+      final_summary: Fresh checks confirm the deterministic command, 5/5 harness
+        tests, injected 5/6 failure gate, and 6/6 Electron regression pass;
+        however the report still lacks separate cache-read/cache-write fields
+        and configuration identity for prompt, model, reasoning, state, and PTC
+        required for reproducible runtime configuration comparison.
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxje6xr-qjst1
+      external_task_id: T999-R2
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxje6xr-qjst1-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:19:54.067Z
+      progression:
+        status: advanced
+        completed_task_id: T999-R2
+        activated_task_id: T005
+        reason: next_worker_authorized
+  - id: T005
+    type: worker
+    assignee: Worker
+    status: done
+    objective: Extend the isolated mock harness report with explicit
+      unsupported-or-measured cacheReads and cacheWrites metrics plus a complete
+      configuration identity for prompt, model, reasoning, state, cache, and
+      PTC; add passing and injected-failure regressions without enabling live
+      execution.
+    inputs:
+      - T999-R2 receipt
+    constraints:
+      - Stay within allowed_files and stop when a stop_if guard applies.
+    expected_output:
+      - Implementation summary and verification evidence.
+    allowed_files:
+      - runtime-evals-v1/**
+      - scripts/run-runtime-evals-v1.mjs
+      - docs/runtime-evals-v1.md
+    verify:
+      - git diff --check
+      - node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+      - node scripts/run-runtime-evals-v1.mjs --mode mock --output
+        "$env:TEMP\orchestrator-runtime-evals-v1-final-oracle-verify"
+      - node --test electron/lifecycle.test.cjs
+    stop_if:
+      - Need to edit pre-existing dirty paths or any path outside allowed_files.
+      - Need credentials, network access, Codex CLI execution, or live-provider
+        behavior for mock mode.
+      - Cannot represent a required metric or configuration dimension truthfully
+        as measured or unsupported.
+      - A targeted verification fails twice for the same unresolved
+        implementation cause.
+    receipt:
+      result: done
+      changed_files: []
+      commands:
+        - cmd: git diff --check
+          status: pass
+        - cmd: node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+          status: pass
+        - cmd: node scripts/run-runtime-evals-v1.mjs --mode mock --output
+            "$env:TEMP\orchestrator-runtime-evals-v1-final-oracle-verify"
+          status: pass
+        - cmd: node --test electron/lifecycle.test.cjs
+          status: pass
+      summary: |-
+        Implemented the mock-harness report extension.
+
+        Changed:
+        - [runtime-evals-v1.mjs](D:/pet-projects/orchestrator/runtime-evals-v1/runtime-evals-v1.mjs)
+        - [runtime-evals-v1.test.mjs](D:/pet-projects/orchestrator/runtime-evals-v1/runtime-evals-v1.test.mjs)
+        - [runtime-evals-v1.md](D:/pet-projects/orchestrator/docs/runtime-evals-v1.md)
+
+        Report additions:
+        - Explicit `cacheReads` and `cacheWrites` metrics, truthfully `unsupported` in mock mode.
+        - Structured `configuration.identity` for prompt, model, reasoning, state, cache, and PTC, each state-labelled.
+        - Markdown renders the full configuration-identity table.
+        - Passing and injected-failure serialized-report regressions cover the new fields.
+
+        Checks passed:
+        - `git diff --check`
+        - `node --test runtime-evals-v1/runtime-evals-v1.test.mjs` — 5/5
+        - Mock runner — 6/6 critical cases passed
+        - `node --test electron/lifecycle.test.cjs` — 6/6
+
+        Remaining risk: provider model/reasoning/cache/PTC behavior remains explicitly unsupported; no live execution, credentials, network, or CLI provider calls were enabled.
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxjgdur-wh4mq
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjgdur-wh4mq-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxjgdur-wh4mq
+      external_task_id: T005
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjgdur-wh4mq-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:22:05.201Z
+      progression:
+        status: advanced
+        completed_task_id: T005
+        activated_task_id: T999-R3
+  - id: T999-R3
+    type: judge
+    assignee: Judge
+    status: done
+    objective: Audit the full goal outcome against its oracle after the latest
+      Worker slice.
+    inputs:
+      - T005 receipt
+      - All prior GoalBuddy receipts
+    constraints:
+      - Read-only; do not implement.
+    expected_output:
+      - Evidence-backed GOALBUDDY_FINAL_DECISION_V1.
+    allowed_files: []
+    verify: []
+    stop_if: []
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: 'GOALBUDDY_FINAL_DECISION_V1:
+        {"full_outcome_complete":false,"summary":"Fresh audit: 5/5 harness
+        tests, documented mock run (6/6), injected critical failure (5/6 and
+        nonzero), Electron regression (6/6), and diff check pass. The versioned
+        report includes all outcome, gate, configuration, latency/token/cache
+        fields, but cost remains explicitly unsupported; the oracle requires
+        estimated or measured cost. Board checker remains environment-blocked by
+        Node EPERM on C:\\Users\\Alexander
+        Lozovoy.","next_worker":{"objective":"Add a truthful deterministic
+        estimated mock cost (zero provider cost, with currency and explicit
+        basis) to JSON/Markdown reports and regressions; preserve unsupported
+        provider-cost semantics and all existing
+        gates.","allowed_files":["runtime-evals-v1/**","docs/runtime-evals-v1.md"],"verify":["git
+        diff --check","node --test
+        runtime-evals-v1/runtime-evals-v1.test.mjs","node
+        scripts/run-runtime-evals-v1.mjs --mode mock --output
+        \"$env:TEMP\\orchestrator-runtime-evals-v1-cost-verify\"","node --test
+        electron/lifecycle.test.cjs"],"stop_if":["Need to edit any pre-existing
+        dirty path or a path outside allowed_files.","A nonzero provider cost
+        cannot be supported truthfully without provider usage data.","A targeted
+        verification fails twice for the same unresolved implementation
+        cause."]}}'
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxjj70g-0ha69
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjj70g-0ha69-goal-receipt-v1.json
+      full_outcome_complete: false
+      final_summary: "Fresh audit: 5/5 harness tests, documented mock run (6/6),
+        injected critical failure (5/6 and nonzero), Electron regression (6/6),
+        and diff check pass. The versioned report includes all outcome, gate,
+        configuration, latency/token/cache fields, but cost remains explicitly
+        unsupported; the oracle requires estimated or measured cost. Board
+        checker remains environment-blocked by Node EPERM on
+        C:\\Users\\Alexander Lozovoy."
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxjj70g-0ha69
+      external_task_id: T999-R3
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjj70g-0ha69-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:23:17.236Z
+      progression:
+        status: advanced
+        completed_task_id: T999-R3
+        activated_task_id: T006
+        reason: next_worker_authorized
+  - id: T006
+    type: worker
+    assignee: Worker
+    status: done
+    objective: Add a truthful deterministic estimated mock cost (zero provider cost,
+      with currency and explicit basis) to JSON/Markdown reports and
+      regressions; preserve unsupported provider-cost semantics and all existing
+      gates.
+    inputs:
+      - T999-R3 receipt
+    constraints:
+      - Stay within allowed_files and stop when a stop_if guard applies.
+    expected_output:
+      - Implementation summary and verification evidence.
+    allowed_files:
+      - runtime-evals-v1/**
+      - docs/runtime-evals-v1.md
+    verify:
+      - git diff --check
+      - node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+      - node scripts/run-runtime-evals-v1.mjs --mode mock --output
+        "$env:TEMP\orchestrator-runtime-evals-v1-cost-verify"
+      - node --test electron/lifecycle.test.cjs
+    stop_if:
+      - Need to edit any pre-existing dirty path or a path outside allowed_files.
+      - A nonzero provider cost cannot be supported truthfully without provider
+        usage data.
+      - A targeted verification fails twice for the same unresolved
+        implementation cause.
+    receipt:
+      result: done
+      changed_files: []
+      commands:
+        - cmd: git diff --check
+          status: pass
+        - cmd: node --test runtime-evals-v1/runtime-evals-v1.test.mjs
+          status: pass
+        - cmd: node scripts/run-runtime-evals-v1.mjs --mode mock --output
+            "$env:TEMP\orchestrator-runtime-evals-v1-cost-verify"
+          status: pass
+        - cmd: node --test electron/lifecycle.test.cjs
+          status: pass
+      summary: |-
+        Implemented deterministic mock-cost reporting.
+
+        Changed:
+
+        - [runtime-evals-v1.mjs](D:\pet-projects\orchestrator\runtime-evals-v1\runtime-evals-v1.mjs)
+        - [runtime-evals-v1.test.mjs](D:\pet-projects\orchestrator\runtime-evals-v1\runtime-evals-v1.test.mjs)
+        - [runtime-evals-v1.md](D:\pet-projects\orchestrator\docs\runtime-evals-v1.md)
+
+        The report now records `cost` as `estimated`, `0 USD`, with an explicit deterministic no-provider basis. Provider pricing and usage remain separately `unsupported`; all critical/release gates are unchanged.
+
+        Verification passed:
+
+        - `git diff --check`
+        - `node --test runtime-evals-v1/runtime-evals-v1.test.mjs` — 5/5
+        - Mock runner — 6/6 critical cases
+        - `node --test electron/lifecycle.test.cjs` — 6/6
+
+        Remaining risk: live provider pricing, usage, tokens, cache, and latency remain intentionally unsupported and no provider execution was enabled.
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxjkql7-aqt2t
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjkql7-aqt2t-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxjkql7-aqt2t
+      external_task_id: T006
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjkql7-aqt2t-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:24:54.011Z
+      progression:
+        status: advanced
+        completed_task_id: T006
+        activated_task_id: T999-R4
+  - id: T999-R4
+    type: judge
+    assignee: Judge
+    status: done
+    objective: Audit the full goal outcome against its oracle after the latest
+      Worker slice.
+    inputs:
+      - T006 receipt
+      - All prior GoalBuddy receipts
+    constraints:
+      - Read-only; do not implement.
+    expected_output:
+      - Evidence-backed GOALBUDDY_FINAL_DECISION_V1.
+    allowed_files: []
+    verify: []
+    stop_if: []
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: 'GOALBUDDY_FINAL_DECISION_V1:
+        {"full_outcome_complete":true,"summary":"T006 and prior receipts plus
+        fresh checks prove the documented credential-free command emits
+        runtime-evals-v1 JSON/Markdown with all required outcomes, versioning,
+        configuration identity, latency/tokens/cache-read/cache-write states,
+        estimated 0-USD cost, and enforced 100% critical gates; fresh tests
+        passed (5/5 harness, 6/6 Electron), pass run was 6/6, injected failure
+        was 5/6 and nonzero, and git diff --check passed. Remaining provider
+        metrics are truthfully unsupported in fail-closed mock mode."}'
+      orchestrator_run_id: mrxj8xcz-rh3cj
+      orchestrator_task_id: mrxjmtal-1g2ds
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjmtal-1g2ds-goal-receipt-v1.json
+      full_outcome_complete: true
+      final_summary: T006 and prior receipts plus fresh checks prove the documented
+        credential-free command emits runtime-evals-v1 JSON/Markdown with all
+        required outcomes, versioning, configuration identity,
+        latency/tokens/cache-read/cache-write states, estimated 0-USD cost, and
+        enforced 100% critical gates; fresh tests passed (5/5 harness, 6/6
+        Electron), pass run was 6/6, injected failure was 5/6 and nonzero, and
+        git diff --check passed. Remaining provider metrics are truthfully
+        unsupported in fail-closed mock mode.
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxj8xcz-rh3cj
+      task_id: mrxjmtal-1g2ds
+      external_task_id: T999-R4
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxj8xcz-rh3cj\mrxjmtal-1g2ds-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T13:26:07.943Z
+      progression:
+        status: advanced
+        completed_task_id: T999-R4
+        reason: goal_complete
+
+checks:
+  dirty_fingerprint: "Prep observed modified server/index.test.ts, src/App.tsx,
+    src/styles.css and untracked src/GoalBuddyPage.tsx on branch
+    cdx/goalbuddy-bridge-v1."
+  last_verification:
+    result: unknown
+    task: null
+    commands: []
