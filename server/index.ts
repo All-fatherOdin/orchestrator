@@ -1,7 +1,6 @@
 import express from "express";
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import {
   mkdir,
@@ -14,13 +13,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { parse, parseDocument } from "yaml";
+import { parse } from "yaml";
 // The static imports keep exact schema snapshots embedded in the desktop server bundle.
 import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
 import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
 import contextReceiptV1Schema from "./context-contract-v1/schemas/context-receipt-v1.schema.json";
-import goalReceiptEnvelopeV1Schema from "./goalbuddy-bridge-v1/schemas/goal-receipt-envelope-v1.schema.json";
-import goalBuddyPipelineReceiptV1Schema from "./goalbuddy-bridge-v1/schemas/goalbuddy-pipeline-receipt-v1.schema.json";
 
 type Model = "luna" | "terra" | "sol";
 type RequestedModel = Model | "auto";
@@ -63,24 +60,6 @@ type ProjectProfile = {
   defaultEffort: Effort;
   allowedModels: Model[];
 };
-export type GoalBuddyTaskLinkV1 = {
-  goalSlug: string;
-  goalTitle: string;
-  externalTaskId: string;
-  objective: string;
-  statePath: string;
-  stateSha256: string;
-  taskType?: "scout" | "judge" | "worker" | "pm";
-  assignee?: "Scout" | "Judge" | "Worker" | "PM";
-  reasoningHint?: "low" | "medium" | "high";
-  inputs?: string[];
-  constraints?: string[];
-  expectedOutput?: string[];
-  nextTaskId?: string;
-  nextTaskType?: "scout" | "judge" | "worker" | "pm";
-  nextTaskNeedsScope?: boolean;
-  isFinalAudit?: boolean;
-};
 export type TaskInput = {
   /** Stable YAML identifier used to declare dependencies. */
   key?: string;
@@ -98,85 +77,12 @@ export type TaskInput = {
   allowedPaths?: string[];
   verificationCommands?: string[];
   executionGuards?: string[];
-  externalTaskId?: string;
-  goalBuddy?: GoalBuddyTaskLinkV1;
   timeoutMinutes?: number;
   maxRetries?: number;
   /** Opts the task into Context Contract v1 selection. */
   contextProfile?: string;
   /** Maximum number of context sources selected for this task. */
   maxSources?: number;
-};
-
-export type GoalReceiptEnvelopeV1 = {
-  contract_type: "GoalReceiptEnvelopeV1";
-  contract_version: "1.0";
-  created_at: string;
-  goal: { slug: string; title: string; state_path: string; state_sha256: string };
-  task: {
-    external_task_id: string;
-    objective: string;
-    allowed_paths: string[];
-    verification_commands: string[];
-    execution_guards: string[];
-  };
-  repository: { path: string };
-  orchestrator: { run_id: string; task_id: string };
-  outcome: { task_status: Status; outcome_class: OutcomeClass };
-  source_state_unchanged: boolean;
-};
-
-export type OrchestratorGoalSyncV1 = {
-  contract_type: "OrchestratorGoalSyncV1";
-  run_id: string;
-  task_id: string;
-  external_task_id: string;
-  run_status: Status;
-  outcome_class: OutcomeClass;
-  receipt_path: string;
-  receipt_contract_type: "GoalReceiptEnvelopeV1";
-  synchronized_at: string;
-  progression: {
-    status: "advanced" | "not_advanced";
-    completed_task_id?: string;
-    activated_task_id?: string;
-    reason?: "non_success" | "no_queued_task" | "goal_complete";
-  };
-};
-
-export type GoalBuddyPipelineReceiptV1 = {
-  contract_type: "GoalBuddyPipelineReceiptV1";
-  contract_version: "1.0";
-  created_at: string;
-  pipeline_id: string;
-  project_path: string;
-  status: "completed" | "failed" | "timed_out" | "cancelled";
-  stop_on_failure: true;
-  auto_commit: false;
-  goals: Array<{
-    index: number;
-    goal_slug: string;
-    state_path: string;
-    expected_state_sha256: string;
-    run_id?: string;
-    status: "pending" | Run["status"];
-  }>;
-};
-
-type GoalBuddySyncState = {
-  status: "synced" | "conflict" | "failed";
-  synchronizedAt?: string;
-  activatedExternalTaskId?: string;
-  error?: string;
-};
-
-type GoalBuddyContinuousAdapterV1 = {
-  contractType: "GoalBuddyContinuousAdapterV1";
-  statePath: string;
-  status: "active" | "complete" | "stopped" | "failed";
-  importedExternalTaskIds: string[];
-  requireFinalAudit?: boolean;
-  error?: string;
 };
 
 type ContextPolicyRefs = {
@@ -301,20 +207,6 @@ const contextContractNames = {
   bundle: "ContextBundleV1",
   receipt: "ContextReceiptV1",
 } as const;
-const goalReceiptAjv = new Ajv2020({ allErrors: true, strict: true, formats: {
-  "date-time": true,
-} });
-const goalReceiptValidator = goalReceiptAjv.compile(goalReceiptEnvelopeV1Schema);
-const goalBuddyPipelineReceiptValidator = goalReceiptAjv.compile(goalBuddyPipelineReceiptV1Schema);
-
-export function validateGoalReceiptEnvelopeV1<T>(payload: T): T & GoalReceiptEnvelopeV1 {
-  if (!goalReceiptValidator(payload)) {
-    const details = goalReceiptAjv.errorsText(goalReceiptValidator.errors, { separator: "; " });
-    throw new Error(`GOAL_RECEIPT_SCHEMA_MISMATCH: ${details}`);
-  }
-  return payload as T & GoalReceiptEnvelopeV1;
-}
-
 export function validateContextContractV1<T>(kind: keyof typeof contextContractValidators, payload: T): T {
   const validate = contextContractValidators[kind];
   if (!validate(payload)) {
@@ -594,8 +486,6 @@ type Task = ResolvedTask & {
   attempts?: number;
   executionAttempts?: number;
   checkpoint?: Checkpoint;
-  goalReceiptPath?: string;
-  goalBuddySync?: GoalBuddySyncState;
   /** Machine-readable accounting emitted by Codex CLI JSON events. */
   usage?: UsageRecord[];
   context?: ContextProviderResult;
@@ -633,48 +523,34 @@ type Run = {
     file: string;
     index: number;
     total: number;
-    kind?: "queues" | "goalbuddy";
+    kind?: "queues";
   };
   contextReceipts?: ContextReceiptV1[];
-  goalBuddyAdapter?: GoalBuddyContinuousAdapterV1;
 };
 type PipelineInput = { queues: Array<{ file: string }> };
-type GoalBuddyPipelineInput = {
-  version?: number;
-  projectPath: string;
-  goals: Array<{ statePath: string }>;
-  policy?: { stopOnFailure?: boolean; autoCommit?: boolean };
-};
 type LoadedPipelineEntry = {
   file: string;
   queue: ReturnType<typeof validateQueue>;
-  goalSlug?: string;
-  expectedStateSha256?: string;
 };
 type LoadedPipeline = {
   id: string;
-  kind?: "queues" | "goalbuddy";
+  kind?: "queues";
   queues: LoadedPipelineEntry[];
   currentIndex: number;
   currentRunId?: string;
   status: Run["status"];
-  projectPath?: string;
-  policy?: { stopOnFailure: true; autoCommit: false };
   runs?: Array<{
     index: number;
     file: string;
     runId: string;
     status: Run["status"];
-    goalSlug?: string;
   }>;
-  receiptPath?: string;
 };
 type PipelineView = {
   id: string;
-  kind: "queues" | "goalbuddy";
+  kind: "queues";
   currentIndex: number;
   status: Run["status"];
-  receiptPath?: string;
   queues: Array<{ index: number; file: string; name: string; state: "completed" | "current" | "pending" }>;
 };
 type RunSummary = Pick<
@@ -939,6 +815,7 @@ function persist(run: Run) {
     () => undefined,
   );
 }
+export const persistRun = persist;
 function processIsAlive(pid: number) {
   try {
     process.kill(pid, 0);
@@ -1016,415 +893,6 @@ async function persistProjects() {
   await writeFile(projectsFile, JSON.stringify(savedProjects, null, 2));
 }
 
-type GoalBuddyPreviewInput = {
-  statePath: string;
-  projectPath: string;
-  expectedStateSha256?: string;
-};
-
-function goalBuddyStringList(value: unknown, field: string) {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
-    throw new Error(`GoalBuddy active task ${field} must be a list of non-empty strings.`);
-  return value.map((item) => item.trim());
-}
-
-export function validateGoalBuddyPipelineReceiptV1<T>(payload: T): T & GoalBuddyPipelineReceiptV1 {
-  if (!goalBuddyPipelineReceiptValidator(payload)) {
-    const details = goalReceiptAjv.errorsText(goalBuddyPipelineReceiptValidator.errors, {
-      separator: "; ",
-    });
-    throw new Error(`GOAL_PIPELINE_RECEIPT_SCHEMA_MISMATCH: ${details}`);
-  }
-  return payload as T & GoalBuddyPipelineReceiptV1;
-}
-
-const GOALBUDDY_TASK_TYPES = ["scout", "judge", "worker", "pm"] as const;
-const GOALBUDDY_ASSIGNEES = ["Scout", "Judge", "Worker", "PM"] as const;
-
-function goalBuddyTaskType(value: unknown) {
-  if (value === undefined) return undefined;
-  if (!GOALBUDDY_TASK_TYPES.includes(value as typeof GOALBUDDY_TASK_TYPES[number]))
-    throw new Error("GoalBuddy active task type must be scout, judge, worker, or pm.");
-  return value as typeof GOALBUDDY_TASK_TYPES[number];
-}
-
-function goalBuddyAssignee(value: unknown) {
-  if (value === undefined) return undefined;
-  if (!GOALBUDDY_ASSIGNEES.includes(value as typeof GOALBUDDY_ASSIGNEES[number]))
-    throw new Error("GoalBuddy active task assignee must be Scout, Judge, Worker, or PM.");
-  return value as typeof GOALBUDDY_ASSIGNEES[number];
-}
-
-function goalBuddyReasoningHint(value: unknown) {
-  if (value === undefined) return undefined;
-  if (value !== "low" && value !== "medium" && value !== "high")
-    throw new Error("GoalBuddy active task reasoning_hint must be low, medium, or high.");
-  return value;
-}
-
-function expectedAssignee(type: ReturnType<typeof goalBuddyTaskType>) {
-  if (!type) return undefined;
-  return type === "pm" ? "PM" : `${type[0].toUpperCase()}${type.slice(1)}`;
-}
-
-export async function previewGoalBuddyTask(input: GoalBuddyPreviewInput) {
-  if (!input?.statePath || !input?.projectPath)
-    throw new Error("statePath and projectPath are required.");
-  const statePath = resolve(input.statePath);
-  const projectPath = resolve(input.projectPath);
-  const source = await readFile(statePath);
-  const stateSha256 = createHash("sha256").update(source).digest("hex");
-  if (input.expectedStateSha256 && input.expectedStateSha256 !== stateSha256)
-    throw new Error("Selected GoalBuddy state.yaml changed after preview.");
-  const board = parse(source.toString("utf8")) as {
-    goal?: { slug?: unknown; title?: unknown };
-    active_task?: unknown;
-    tasks?: unknown;
-  };
-  if (!Array.isArray(board?.tasks))
-    throw new Error("GoalBuddy state.yaml must contain tasks.");
-  const active = board.tasks.filter(
-    (candidate): candidate is Record<string, unknown> =>
-      Boolean(candidate) && typeof candidate === "object" &&
-      (candidate as Record<string, unknown>).status === "active",
-  );
-  if (active.length !== 1)
-    throw new Error(`GoalBuddy state.yaml must contain exactly one active task; found ${active.length}.`);
-  const task = active[0];
-  const externalTaskId = typeof task.id === "string" ? task.id.trim() : "";
-  const objective = typeof task.objective === "string" ? task.objective.trim() : "";
-  const goalSlug = typeof board.goal?.slug === "string" ? board.goal.slug.trim() : "";
-  const goalTitle = typeof board.goal?.title === "string" ? board.goal.title.trim() : goalSlug;
-  if (!externalTaskId || !objective || !goalSlug)
-    throw new Error("GoalBuddy goal slug, active task id, and objective are required.");
-  if (board.active_task !== externalTaskId)
-    throw new Error("GoalBuddy active_task must match the single active task id.");
-  const allowedPaths = goalBuddyStringList(task.allowed_files, "allowed_files");
-  const verificationCommands = goalBuddyStringList(task.verify, "verify");
-  const executionGuards = goalBuddyStringList(task.stop_if, "stop_if");
-  const taskType = goalBuddyTaskType(task.type);
-  const assignee = goalBuddyAssignee(task.assignee);
-  const reasoningHint = goalBuddyReasoningHint(task.reasoning_hint);
-  const inputs = goalBuddyStringList(task.inputs, "inputs");
-  const constraints = goalBuddyStringList(task.constraints, "constraints");
-  const expectedOutput = goalBuddyStringList(task.expected_output, "expected_output");
-  if (taskType && assignee && assignee !== expectedAssignee(taskType))
-    throw new Error(`GoalBuddy ${taskType} task must be assigned to ${expectedAssignee(taskType)}.`);
-  if (taskType === "worker" && (!allowedPaths.length || !verificationCommands.length))
-    throw new Error("An active GoalBuddy Worker requires non-empty allowed_files and verify.");
-  const nextTask = board.tasks.find((candidate) =>
-    Boolean(candidate) && typeof candidate === "object" &&
-    (candidate as Record<string, unknown>).status === "queued"
-  ) as Record<string, unknown> | undefined;
-  const nextTaskId = typeof nextTask?.id === "string" ? nextTask.id.trim() : undefined;
-  const nextTaskType = goalBuddyTaskType(nextTask?.type);
-  const nextAllowedPaths = nextTask
-    ? goalBuddyStringList(nextTask.allowed_files, "next task allowed_files")
-    : [];
-  const nextVerificationCommands = nextTask
-    ? goalBuddyStringList(nextTask.verify, "next task verify")
-    : [];
-  const orchestratorSync = task.orchestrator_sync && typeof task.orchestrator_sync === "object"
-    ? task.orchestrator_sync as OrchestratorGoalSyncV1
-    : undefined;
-  const goalBuddy: GoalBuddyTaskLinkV1 = {
-    goalSlug,
-    goalTitle: goalTitle || goalSlug,
-    externalTaskId,
-    objective,
-    statePath,
-    stateSha256,
-    taskType,
-    assignee: assignee ?? expectedAssignee(taskType) as GoalBuddyTaskLinkV1["assignee"],
-    reasoningHint,
-    inputs,
-    constraints,
-    expectedOutput,
-    nextTaskId,
-    nextTaskType,
-    nextTaskNeedsScope: nextTaskType === "worker" &&
-      (!nextAllowedPaths.length || !nextVerificationCommands.length),
-    isFinalAudit: externalTaskId === "T999" && taskType === "judge",
-  };
-  const taskInput: TaskInput = {
-    key: externalTaskId,
-    title: objective,
-    prompt: objective,
-    allowedPaths,
-    verificationCommands,
-    executionGuards,
-    externalTaskId,
-    goalBuddy,
-    effort: reasoningHint === "low" ? "light" : reasoningHint,
-  };
-  return {
-    contract_type: "GoalBuddyTaskPreviewV1" as const,
-    contract_version: "1.0" as const,
-    source: { statePath, stateSha256 },
-    orchestratorSync,
-    taskInput,
-    queue: {
-      project: { path: projectPath },
-      tasks: [taskInput],
-      git: { checkpointCommits: false },
-    },
-    runRequest: { statePath, projectPath, expectedStateSha256: stateSha256 },
-  };
-}
-
-export function createGoalReceiptEnvelopeV1(
-  run: Run,
-  task: Task,
-  sourceStateUnchanged: boolean,
-): GoalReceiptEnvelopeV1 {
-  const link = task.goalBuddy;
-  if (!link || !task.externalTaskId)
-    throw new Error("Task does not contain GoalBuddy linkage.");
-  return validateGoalReceiptEnvelopeV1({
-    contract_type: "GoalReceiptEnvelopeV1",
-    contract_version: "1.0",
-    created_at: timestamp(),
-    goal: {
-      slug: link.goalSlug,
-      title: link.goalTitle,
-      state_path: link.statePath,
-      state_sha256: link.stateSha256,
-    },
-    task: {
-      external_task_id: task.externalTaskId,
-      objective: link.objective,
-      allowed_paths: task.allowedPaths ?? [],
-      verification_commands: task.verificationCommands ?? [],
-      execution_guards: task.executionGuards ?? [],
-    },
-    repository: { path: run.project.path },
-    orchestrator: { run_id: run.id, task_id: task.id },
-    outcome: { task_status: task.status, outcome_class: outcomeClass(task.status) },
-    source_state_unchanged: sourceStateUnchanged,
-  });
-}
-
-export async function writeGoalReceiptEnvelopeV1(run: Run, task: Task) {
-  const link = task.goalBuddy;
-  if (!link) throw new Error("Task does not contain GoalBuddy linkage.");
-  let sourceStateUnchanged = false;
-  try {
-    const current = await readFile(link.statePath);
-    sourceStateUnchanged = createHash("sha256").update(current).digest("hex") === link.stateSha256;
-  } catch {
-    sourceStateUnchanged = false;
-  }
-  if (!sourceStateUnchanged) {
-    task.status = "failed";
-    task.log.push("GoalBuddy source state changed or became unreadable after preview.");
-  }
-  const path = join(runsDirectory, run.id, `${task.id}-goal-receipt-v1.json`);
-  task.goalReceiptPath = path;
-  const envelope = createGoalReceiptEnvelopeV1(run, task, sourceStateUnchanged);
-  await writeJsonAtomically(path, envelope);
-  return { path, envelope };
-}
-
-class GoalBuddySyncConflict extends Error {}
-
-function parseGoalBuddyDecision(
-  output: string | undefined,
-  marker: "GOALBUDDY_NEXT_TASK_PATCH_V1" | "GOALBUDDY_FINAL_DECISION_V1",
-) {
-  const prefix = `${marker}:`;
-  const line = output?.split(/\r?\n/).reverse()
-    .find((candidate: string) => candidate.trim().startsWith(prefix));
-  if (!line) throw new GoalBuddySyncConflict(`Missing ${marker} structured decision.`);
-  try {
-    const value = JSON.parse(line.trim().slice(prefix.length).trim()) as unknown;
-    if (!value || typeof value !== "object") throw new Error("decision is not an object");
-    return value as Record<string, unknown>;
-  } catch (error) {
-    throw new GoalBuddySyncConflict(
-      `Invalid ${marker} JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
-function goalBuddyTaskReceipt(run: Run, task: Task, receiptPath: string) {
-  return {
-    result: "done",
-    changed_files: task.changedFiles ?? [],
-    commands: (task.verificationCommands ?? []).map((command) => ({
-      cmd: command,
-      status: "pass",
-    })),
-    summary: task.finalOutput?.trim() ||
-      `Orchestrator run ${run.id} completed task ${task.externalTaskId}.`,
-    orchestrator_run_id: run.id,
-    orchestrator_task_id: task.id,
-    goal_receipt_path: receiptPath,
-  };
-}
-
-function isSameGoalBuddySync(
-  value: unknown,
-  run: Run,
-  task: Task,
-  receiptPath: string,
-): value is OrchestratorGoalSyncV1 {
-  if (!value || typeof value !== "object") return false;
-  const sync = value as Partial<OrchestratorGoalSyncV1>;
-  return sync.contract_type === "OrchestratorGoalSyncV1" &&
-    sync.run_id === run.id &&
-    sync.task_id === task.id &&
-    sync.external_task_id === task.externalTaskId &&
-    sync.receipt_path === receiptPath;
-}
-
-export async function syncGoalBuddyTaskReceipt(
-  run: Run,
-  task: Task,
-  written: { path: string; envelope: GoalReceiptEnvelopeV1 },
-) {
-  const link = task.goalBuddy;
-  if (!link || !task.externalTaskId)
-    throw new Error("Task does not contain GoalBuddy linkage.");
-
-  const source = await readFile(link.statePath);
-  const document = parseDocument(source.toString("utf8"));
-  if (document.errors.length)
-    throw new Error(`GoalBuddy state.yaml is invalid: ${document.errors[0].message}`);
-  const board = document.toJS() as {
-    goal?: { status?: unknown };
-    active_task?: unknown;
-    tasks?: unknown;
-  };
-  if (!Array.isArray(board.tasks))
-    throw new GoalBuddySyncConflict("GoalBuddy state.yaml no longer contains tasks.");
-  const matchingIndexes = board.tasks
-    .map((candidate, index) => ({ candidate, index }))
-    .filter(({ candidate }) =>
-      Boolean(candidate) && typeof candidate === "object" &&
-      (candidate as Record<string, unknown>).id === task.externalTaskId
-    );
-  if (matchingIndexes.length !== 1)
-    throw new GoalBuddySyncConflict("GoalBuddy task linkage is no longer unique.");
-  const { candidate, index } = matchingIndexes[0];
-  const boardTask = candidate as Record<string, unknown>;
-
-  if (isSameGoalBuddySync(boardTask.orchestrator_sync, run, task, written.path)) {
-    const existingSync = boardTask.orchestrator_sync as OrchestratorGoalSyncV1;
-    task.goalBuddySync = {
-      status: "synced",
-      synchronizedAt: existingSync.synchronized_at,
-      activatedExternalTaskId: existingSync.progression.activated_task_id,
-    };
-    return existingSync;
-  }
-
-  const currentSha256 = createHash("sha256").update(source).digest("hex");
-  if (currentSha256 !== link.stateSha256)
-    throw new GoalBuddySyncConflict("GoalBuddy state.yaml changed after preview.");
-  if (board.active_task !== task.externalTaskId || boardTask.status !== "active")
-    throw new GoalBuddySyncConflict("GoalBuddy active task changed after preview.");
-
-  const sync: OrchestratorGoalSyncV1 = {
-    contract_type: "OrchestratorGoalSyncV1",
-    run_id: run.id,
-    task_id: task.id,
-    external_task_id: task.externalTaskId,
-    run_status: task.status,
-    outcome_class: outcomeClass(task.status),
-    receipt_path: written.path,
-    receipt_contract_type: "GoalReceiptEnvelopeV1",
-    synchronized_at: timestamp(),
-    progression: {
-      status: "not_advanced",
-      reason: task.status === "completed" ? "no_queued_task" : "non_success",
-    },
-  };
-
-  if (task.status === "completed") {
-    const nextIndex = board.tasks.findIndex((candidate) =>
-      Boolean(candidate) && typeof candidate === "object" &&
-      (candidate as Record<string, unknown>).status === "queued"
-    );
-    if (nextIndex >= 0) {
-      const nextTask = board.tasks[nextIndex] as Record<string, unknown>;
-      const nextTaskId = typeof nextTask.id === "string" ? nextTask.id.trim() : "";
-      if (!nextTaskId)
-        throw new GoalBuddySyncConflict("The next queued GoalBuddy task has no id.");
-      const nextTaskType = goalBuddyTaskType(nextTask.type);
-      const nextAllowedFiles = goalBuddyStringList(nextTask.allowed_files, "next task allowed_files");
-      const nextVerify = goalBuddyStringList(nextTask.verify, "next task verify");
-      if (nextTaskType === "worker" && (!nextAllowedFiles.length || !nextVerify.length)) {
-        if (link.taskType !== "judge")
-          throw new GoalBuddySyncConflict(
-            `Worker ${nextTaskId} has no executable scope and the active task is not a Judge.`,
-          );
-        const patch = parseGoalBuddyDecision(task.finalOutput, "GOALBUDDY_NEXT_TASK_PATCH_V1");
-        if (patch.target_task_id !== nextTaskId)
-          throw new GoalBuddySyncConflict(
-            `Judge decision targets ${String(patch.target_task_id)}, expected ${nextTaskId}.`,
-          );
-        if (patch.decision !== "proceed")
-          throw new GoalBuddySyncConflict(
-            `Judge did not authorize Worker ${nextTaskId}: ${String(patch.reason ?? patch.decision ?? "blocked")}.`,
-          );
-        const patchedAllowedFiles = goalBuddyStringList(patch.allowed_files, "Judge allowed_files");
-        const patchedVerify = goalBuddyStringList(patch.verify, "Judge verify");
-        const patchedStopIf = goalBuddyStringList(patch.stop_if, "Judge stop_if");
-        const patchedObjective = typeof patch.objective === "string" ? patch.objective.trim() : "";
-        if (!patchedObjective || !patchedAllowedFiles.length || !patchedVerify.length)
-          throw new GoalBuddySyncConflict(
-            "Judge proceed decision requires objective, allowed_files, and verify.",
-          );
-        document.setIn(["tasks", nextIndex, "objective"], patchedObjective);
-        document.setIn(["tasks", nextIndex, "allowed_files"], patchedAllowedFiles);
-        document.setIn(["tasks", nextIndex, "verify"], patchedVerify);
-        document.setIn(["tasks", nextIndex, "stop_if"], patchedStopIf);
-      }
-      document.setIn(["tasks", index, "status"], "done");
-      document.setIn(["tasks", index, "receipt"], goalBuddyTaskReceipt(run, task, written.path));
-      document.setIn(["tasks", nextIndex, "status"], "active");
-      document.set("active_task", nextTaskId);
-      sync.progression = {
-        status: "advanced",
-        completed_task_id: task.externalTaskId,
-        activated_task_id: nextTaskId,
-      };
-    } else if (run.goalBuddyAdapter?.requireFinalAudit) {
-      if (!link.isFinalAudit)
-        throw new GoalBuddySyncConflict(
-          "Strict GoalBuddy pipeline reached the end without an active T999 Judge audit.",
-        );
-      const decision = parseGoalBuddyDecision(task.finalOutput, "GOALBUDDY_FINAL_DECISION_V1");
-      if (decision.full_outcome_complete !== true)
-        throw new GoalBuddySyncConflict(
-          `Final Judge did not prove the full outcome: ${String(decision.summary ?? "no summary")}.`,
-        );
-      document.setIn(["tasks", index, "status"], "done");
-      document.setIn(["tasks", index, "receipt"], {
-        ...goalBuddyTaskReceipt(run, task, written.path),
-        full_outcome_complete: true,
-        final_summary: typeof decision.summary === "string" ? decision.summary : undefined,
-      });
-      document.set("active_task", null);
-      document.setIn(["goal", "status"], "completed");
-      sync.progression = {
-        status: "advanced",
-        completed_task_id: task.externalTaskId,
-        reason: "goal_complete",
-      };
-    }
-  }
-  document.setIn(["tasks", index, "orchestrator_sync"], sync);
-  await writeTextAtomically(link.statePath, document.toString());
-  task.goalBuddySync = {
-    status: "synced",
-    synchronizedAt: sync.synchronized_at,
-    activatedExternalTaskId: sync.progression.activated_task_id,
-  };
-  return sync;
-}
-
 export async function runHasLiveOwner(
   run: {
     id: string;
@@ -1491,20 +959,20 @@ async function recoverInterruptedRuns() {
   for (const run of pausedRuns.sort((left, right) =>
     (right.startedAt || "").localeCompare(left.startedAt || ""),
   )) {
+    if (activeRun) continue;
     try {
       await acquireProjectLock(run);
       activeRun = run;
       activePipeline = run.pipeline
         ? await loadPersistedPipeline(run.pipeline.id)
         : undefined;
-      break;
     } catch {
       /* another orchestrator owns this project */
     }
   }
 }
 
-async function loadRun(id: string) {
+export async function loadRun(id: string) {
   const file = join(runsDirectory, id, "run.json");
   if (!existsSync(file)) return undefined;
   return JSON.parse(await readFile(file, "utf8")) as Run;
@@ -1676,7 +1144,7 @@ export function outsideAllowedPaths(
 ) {
   if (!allowedPaths?.length) return [];
   const allowed = allowedPaths.map((path) =>
-    path.replace(/\\/g, "/").replace(/\/$/, ""),
+    path.replace(/\\/g, "/").replace(/\/\*\*$/, "").replace(/\/$/, ""),
   );
   return paths.filter(
     (path) =>
@@ -1837,20 +1305,25 @@ export function validateQueue(value: unknown): {
       )
         throw new Error(`Task ${index + 1}: ${field} must be a list of non-empty strings.`);
     }
-    if (task.externalTaskId !== undefined && (!task.externalTaskId.trim()))
-      throw new Error(`Task ${index + 1}: externalTaskId must be a non-empty string.`);
-    if (task.goalBuddy) {
-      const link = task.goalBuddy;
-      if (
-        !link.goalSlug?.trim() || !link.goalTitle?.trim() ||
-        !link.externalTaskId?.trim() || !link.objective?.trim() ||
-        !link.statePath?.trim() || !/^[a-f0-9]{64}$/.test(link.stateSha256)
-      )
-        throw new Error(`Task ${index + 1}: invalid GoalBuddy linkage.`);
-      if (task.externalTaskId !== link.externalTaskId)
-        throw new Error(`Task ${index + 1}: externalTaskId must match GoalBuddy task id.`);
-    }
-    return { ...task, model, effort, requestedModel: selection.requestedModel, modelSelectionReason: selection.reason };
+    return {
+      key: task.key,
+      dependsOn: task.dependsOn,
+      resources: task.resources,
+      title: task.title,
+      prompt: task.prompt,
+      model,
+      minModel: task.minModel,
+      effort,
+      allowedPaths: task.allowedPaths,
+      verificationCommands: task.verificationCommands,
+      executionGuards: task.executionGuards,
+      timeoutMinutes: task.timeoutMinutes,
+      maxRetries: task.maxRetries,
+      contextProfile: task.contextProfile,
+      maxSources: task.maxSources,
+      requestedModel: selection.requestedModel,
+      modelSelectionReason: selection.reason,
+    };
   });
   const taskKeys = new Set<string>();
   tasks.forEach((task, index) => {
@@ -1890,8 +1363,6 @@ export function validateQueue(value: unknown): {
   taskKeys.forEach(visit);
   const verificationCommands =
     project.verificationCommands?.filter(Boolean) ?? [];
-  if (tasks.some((task) => task.goalBuddy) && queue.git?.checkpointCommits)
-    throw new Error("GoalBuddy bridge runs cannot enable automatic checkpoint commits.");
   return {
     project: {
       name: project.name || projectPath.split(/[\\/]/).pop() || "Project",
@@ -1906,6 +1377,16 @@ export function validateQueue(value: unknown): {
     limits,
     git: { ...defaultGitSettings, ...queue.git },
   };
+}
+
+/** User-authored queues are reserved for two or more independently useful tasks. */
+export function validateTaskQueue(value: unknown): ReturnType<typeof validateQueue> {
+  const queue = validateQueue(value);
+  if (queue.tasks.length < 2)
+    throw new Error(
+      "An Orchestrator task queue must include at least two tasks. Run one task in the current Codex session.",
+    );
+  return queue;
 }
 
 export function resolveTaskStatus({
@@ -1981,7 +1462,6 @@ function pipelineView(pipeline: LoadedPipeline): PipelineView {
     kind: pipeline.kind ?? "queues",
     currentIndex: pipeline.currentIndex,
     status: pipeline.status,
-    receiptPath: pipeline.receiptPath,
     queues: pipeline.queues.map((entry, index) => ({
       index,
       file: entry.file,
@@ -2123,7 +1603,7 @@ export async function loadPipeline(value: unknown): Promise<LoadedPipeline> {
         throw new Error(`Pipeline queue ${index + 1} could not be read: ${file}`);
       }
       try {
-        return { file, queue: validateQueue(parse(source)) };
+        return { file, queue: validateTaskQueue(parse(source)) };
       } catch (error) {
         throw new Error(
           `Pipeline queue ${index + 1} is invalid (${file}): ${error instanceof Error ? error.message : String(error)}`,
@@ -2148,61 +1628,10 @@ export function boundedFinalOutput(source: string, limit = 24_000) {
 }
 
 export function taskWriteViolations(
-  task: Pick<Task, "goalBuddy" | "allowedPaths">,
+  task: Pick<Task, "allowedPaths">,
   changedFiles: string[],
 ) {
-  const roleReadOnly = task.goalBuddy?.taskType === "scout" ||
-    task.goalBuddy?.taskType === "judge";
-  return roleReadOnly ? changedFiles : outsideAllowedPaths(changedFiles, task.allowedPaths);
-}
-
-/** Preflight every board before the first goal starts. */
-export async function loadGoalBuddyPipeline(value: unknown): Promise<LoadedPipeline> {
-  if (!isGoalBuddyPipeline(value) || value.goals.length === 0)
-    throw new Error("GoalBuddy pipeline must include at least one goal statePath.");
-  if (value.version !== undefined && value.version !== 1)
-    throw new Error("GoalBuddy pipeline version must be 1.");
-  if (!value.projectPath?.trim())
-    throw new Error("GoalBuddy pipeline projectPath is required.");
-  if (value.policy?.stopOnFailure !== undefined && value.policy.stopOnFailure !== true)
-    throw new Error("GoalBuddy pipelines always stop on failure.");
-  if (value.policy?.autoCommit !== undefined && value.policy.autoCommit !== false)
-    throw new Error("GoalBuddy pipelines do not create commits automatically.");
-  const projectPath = resolve(value.projectPath);
-  if (!existsSync(projectPath))
-    throw new Error(`GoalBuddy pipeline project path does not exist: ${projectPath}`);
-  const seen = new Set<string>();
-  const queues: LoadedPipelineEntry[] = [];
-  for (const [index, entry] of value.goals.entries()) {
-    if (!entry || typeof entry.statePath !== "string" || !entry.statePath.trim())
-      throw new Error(`GoalBuddy pipeline goal ${index + 1} must include statePath.`);
-    const file = resolve(entry.statePath);
-    if (seen.has(file)) throw new Error(`GoalBuddy pipeline contains duplicate statePath: ${file}`);
-    seen.add(file);
-    try {
-      const preview = await previewGoalBuddyTask({ statePath: file, projectPath });
-      queues.push({
-        file,
-        queue: validateQueue(preview.queue),
-        goalSlug: preview.taskInput.goalBuddy?.goalSlug,
-        expectedStateSha256: preview.source.stateSha256,
-      });
-    } catch (error) {
-      throw new Error(
-        `GoalBuddy pipeline goal ${index + 1} is invalid (${file}): ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  return {
-    id: identifier(),
-    kind: "goalbuddy",
-    queues,
-    currentIndex: 0,
-    status: "running",
-    projectPath,
-    policy: { stopOnFailure: true, autoCommit: false },
-    runs: [],
-  };
+  return outsideAllowedPaths(changedFiles, task.allowedPaths);
 }
 
 export function createRun(
@@ -2229,76 +1658,6 @@ export function createRun(
   };
 }
 
-export function createGoalBuddyRun(
-  preview: Awaited<ReturnType<typeof previewGoalBuddyTask>>,
-  contexts: Array<ContextProviderResult | undefined> = [],
-  options: { requireFinalAudit?: boolean } = {},
-  pipeline?: Run["pipeline"],
-) {
-  const queue = validateQueue(preview.queue);
-  const run = createRun(queue, pipeline, contexts);
-  // GoalBuddy boards carry their own Scout/Judge/Worker review flow. Running
-  // the generic diff reviewer on read-only cards would duplicate and distort it.
-  run.review = { ...run.review, enabled: false };
-  const externalTaskId = run.tasks[0]?.externalTaskId;
-  if (!externalTaskId)
-    throw new Error("GoalBuddy preview did not produce an external task id.");
-  run.goalBuddyAdapter = {
-    contractType: "GoalBuddyContinuousAdapterV1",
-    statePath: preview.source.statePath,
-    status: "active",
-    importedExternalTaskIds: [externalTaskId],
-    requireFinalAudit: options.requireFinalAudit,
-  };
-  return run;
-}
-
-export async function appendNextGoalBuddyTask(run: Run, settledTask: Task) {
-  const adapter = run.goalBuddyAdapter;
-  if (!adapter) return undefined;
-  if (settledTask.status !== "completed" || settledTask.goalBuddySync?.status !== "synced") {
-    adapter.status = "stopped";
-    await persist(run);
-    return undefined;
-  }
-  const nextExternalTaskId = settledTask.goalBuddySync.activatedExternalTaskId;
-  if (!nextExternalTaskId) {
-    adapter.status = "complete";
-    await persist(run);
-    return undefined;
-  }
-  const existing = run.tasks.find((task) => task.externalTaskId === nextExternalTaskId);
-  if (existing) return existing;
-
-  const preview = await previewGoalBuddyTask({
-    statePath: adapter.statePath,
-    projectPath: run.project.path,
-  });
-  if (preview.taskInput.externalTaskId !== nextExternalTaskId)
-    throw new Error(
-      `GoalBuddy activated ${nextExternalTaskId}, but preview selected ${preview.taskInput.externalTaskId}.`,
-    );
-  const queue = validateQueue({
-    ...preview.queue,
-    project: run.project,
-    limits: run.limits,
-    git: run.git,
-  });
-  const contexts = await contextsForRun(queue);
-  const importedRun = createRun(queue, undefined, contexts);
-  const importedTask = importedRun.tasks[0];
-  if (!importedTask) throw new Error("GoalBuddy adapter produced no task.");
-  run.tasks.push(importedTask);
-  run.contextReceipts = [
-    ...(run.contextReceipts ?? []),
-    ...(importedRun.contextReceipts ?? []),
-  ];
-  adapter.importedExternalTaskIds.push(nextExternalTaskId);
-  adapter.status = "active";
-  await persist(run);
-  return importedTask;
-}
-
 function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
   return {
     project: run.project,
@@ -2316,8 +1675,6 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       allowedPaths: task.allowedPaths,
       verificationCommands: task.verificationCommands,
       executionGuards: task.executionGuards,
-      externalTaskId: task.externalTaskId,
-      goalBuddy: task.goalBuddy,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
       contextProfile: task.contextProfile,
@@ -2331,8 +1688,6 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
 async function activePipelineForAppend() {
   if (!activeRun || (activeRun.status !== "running" && activeRun.status !== "paused"))
     throw new Error("No active queue to append to.");
-  if (activePipeline?.kind === "goalbuddy")
-    throw new Error("Task queues cannot be appended to an active GoalBuddy pipeline.");
   if (activePipeline) return activePipeline;
   const pipeline: LoadedPipeline = {
     id: identifier(),
@@ -2352,7 +1707,7 @@ async function appendPipelineQueue(source: string, filename: string) {
   const pipeline = await activePipelineForAppend();
   let queue: ReturnType<typeof validateQueue>;
   try {
-    queue = validateQueue(parse(source));
+    queue = validateTaskQueue(parse(source));
   } catch (error) {
     throw new Error(
       `Invalid appended YAML: ${error instanceof Error ? error.message : String(error)}`,
@@ -2382,8 +1737,6 @@ async function appendPipelineQueue(source: string, filename: string) {
 async function removePipelineQueue(index: number) {
   const pipeline = activePipeline;
   if (!pipeline) throw new Error("No active pipeline.");
-  if (pipeline.kind === "goalbuddy")
-    throw new Error("GoalBuddy pipeline order is immutable after preflight.");
   if (!Number.isInteger(index) || index <= pipeline.currentIndex)
     throw new Error("Only queued files after the current queue can be removed.");
   const entry = pipeline.queues[index];
@@ -2683,10 +2036,8 @@ export async function contextsForRun(queue: ReturnType<typeof validateQueue>) {
 async function preflight(value: unknown) {
   const pipeline = isPipeline(value)
     ? await loadPipeline(value)
-    : isGoalBuddyPipeline(value)
-      ? await loadGoalBuddyPipeline(value)
-      : undefined;
-  const queue = pipeline?.queues[0].queue ?? validateQueue(value);
+    : undefined;
+  const queue = pipeline?.queues[0].queue ?? validateTaskQueue(value);
   const agentsPath = join(queue.project.path, "AGENTS.md");
   const packageFile = join(queue.project.path, "package.json");
   const [cli, git, scripts] = await Promise.all([
@@ -2750,9 +2101,7 @@ async function preflight(value: unknown) {
             {
               name: "Pipeline files",
               ok: true,
-              detail: pipeline.kind === "goalbuddy"
-                ? `${pipeline.queues.length} GoalBuddy goals validated in serial order`
-                : `${pipeline.queues.length} queues validated`,
+              detail: `${pipeline.queues.length} queues validated`,
             },
           ]
         : []),
@@ -2790,41 +2139,7 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
   const context = task.context
     ? `\n\nContext Contract v1 (${task.context.provider}${task.context.fallbackReason ? `; controlled fallback: ${task.context.fallbackReason}` : ""}):\n${task.context.bundle.sources.map((source) => `- ${source.path} [${source.priority}; ${source.authority}] — ${source.inclusion_reason}`).join("\n")}`
     : "";
-  const link = task.goalBuddy;
-  const role = link?.taskType && link.assignee
-    ? `\n\nGoalBuddy role contract:\n- Goal: ${link.goalTitle} (${link.goalSlug}).\n- Board state: ${link.statePath}.\n- Role: GoalBuddy ${link.assignee} (${link.taskType}).\n- Reasoning hint: ${link.reasoningHint ?? "medium"}.\n- Read prior task receipts from the board state when an input names a T### receipt. The Orchestrator PM adapter alone updates board status and receipts.`
-    : "";
-  const inputs = link?.inputs?.length
-    ? `\n- Inputs to inspect:\n${link.inputs.map((input) => `  - ${input}`).join("\n")}`
-    : "";
-  const constraints = link?.constraints?.length
-    ? `\n- Constraints:\n${link.constraints.map((constraint) => `  - ${constraint}`).join("\n")}`
-    : "";
-  const expectedOutput = link?.expectedOutput?.length
-    ? `\n- Expected output:\n${link.expectedOutput.map((output) => `  - ${output}`).join("\n")}`
-    : "";
-  const readOnly = link?.taskType === "scout" || link?.taskType === "judge"
-    ? "\n- This role is read-only. Do not edit repository files, state.yaml, or the GoalBuddy board."
-    : "";
-  const judgePatch = link?.taskType === "judge" && link.nextTaskNeedsScope && link.nextTaskId
-    ? `\n- End with exactly one single-line structured decision for the PM adapter:\n  GOALBUDDY_NEXT_TASK_PATCH_V1: {"target_task_id":"${link.nextTaskId}","decision":"proceed","objective":"<bounded objective>","allowed_files":["<path>"],"verify":["<command>"],"stop_if":["<guard>"]}\n- Use decision \"blocked\" with a non-empty \"reason\" instead of proceed when no safe Worker scope can be authorized.`
-    : "";
-  const finalDecision = link?.isFinalAudit
-    ? `\n- End with exactly one single-line final oracle decision:\n  GOALBUDDY_FINAL_DECISION_V1: {"full_outcome_complete":true,"summary":"<evidence-backed conclusion>"}\n- Set full_outcome_complete to false when the original outcome is not proven.`
-    : "";
-  const finish = readOnly
-    ? "Finish with evidence inspected, checks performed, decision, and remaining risks."
-    : "Finish with changed files, checks run, and remaining risks.";
-  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}${context}${role}${inputs}${constraints}${expectedOutput}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${readOnly}${checks}${guards}${judgePatch}${finalDecision}\n- Do not create git commits.\n- ${finish}`;
-}
-
-function isGoalBuddyPipeline(value: unknown): value is GoalBuddyPipelineInput {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      "goals" in value &&
-      Array.isArray((value as GoalBuddyPipelineInput).goals),
-  );
+  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}${guards}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.`;
 }
 
 async function reviewTask(run: Run, task: Task) {
@@ -2984,32 +2299,8 @@ async function pauseBeforeNextTask(run: Run) {
 }
 
 export async function finalizeSettledTask(run: Run, task: Task) {
-  let goalReceipt: Awaited<ReturnType<typeof writeGoalReceiptEnvelopeV1>> | undefined;
-  if (task.goalBuddy) {
-    try {
-      goalReceipt = await writeGoalReceiptEnvelopeV1(run, task);
-    } catch (error) {
-      task.status = "failed";
-      task.log.push(
-        `GoalReceiptEnvelopeV1 could not be written: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    if (goalReceipt) {
-      try {
-        await syncGoalBuddyTaskReceipt(run, task, goalReceipt);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        task.goalBuddySync = {
-          status: error instanceof GoalBuddySyncConflict ? "conflict" : "failed",
-          error: message,
-        };
-        task.log.push(`GoalBuddy sync could not be written: ${message}`);
-      }
-    }
-  }
   if (task.status === "completed") await createCheckpoint(run, task);
   await persist(run);
-  return goalReceipt;
 }
 
 async function executeTask(run: Run, task: Task): Promise<Status> {
@@ -3097,14 +2388,10 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     const changed = await readGitStatus(run.project.path);
     task.changedFiles = [...changed].filter((path) => !baseline.has(path));
     task.diff = await readGitDiff(run.project.path, task.changedFiles);
-    const roleReadOnly = task.goalBuddy?.taskType === "scout" ||
-      task.goalBuddy?.taskType === "judge";
     const violations = taskWriteViolations(task, task.changedFiles);
     if (violations.length)
       task.log.push(
-        roleReadOnly
-          ? `Остановка: read-only GoalBuddy ${task.goalBuddy?.assignee} изменил файлы — ${violations.join(", ")}`
-          : `Остановка: изменены файлы вне allowedPaths — ${violations.join(", ")}`,
+        `Остановка: изменены файлы вне allowedPaths — ${violations.join(", ")}`,
       );
     task.status = resolveTaskStatus({
       cancelled: isCancelled(run),
@@ -3134,17 +2421,6 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
         task.log.push("Reviewer unavailable: task result retained without reviewer approval.");
     }
     await finalizeSettledTask(run, task);
-    if (run.goalBuddyAdapter) {
-      try {
-        await appendNextGoalBuddyTask(run, task);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        run.goalBuddyAdapter.status = "failed";
-        run.goalBuddyAdapter.error = message;
-        task.log.push(`GoalBuddy continuous adapter stopped: ${message}`);
-        await persist(run);
-      }
-    }
     publish("run", run);
     return task.status;
 }
@@ -3211,12 +2487,7 @@ async function executeQueue(run: Run) {
     break;
   }
   if (!isCancelled(run)) {
-    if (
-      run.goalBuddyAdapter?.status === "failed" ||
-      run.goalBuddyAdapter?.status === "stopped"
-    )
-      run.status = "failed";
-    else if (run.tasks.some((task) => task.status === "timed_out"))
+    if (run.tasks.some((task) => task.status === "timed_out"))
       run.status = "timed_out";
     else if (
       run.tasks.some(
@@ -3252,26 +2523,8 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
     total: pipeline.queues.length,
     kind: pipeline.kind ?? "queues",
   };
-  let run: Run;
-  if (pipeline.kind === "goalbuddy") {
-    if (!pipeline.projectPath || !entry.expectedStateSha256)
-      throw new Error("Saved GoalBuddy pipeline entry is incomplete.");
-    const preview = await previewGoalBuddyTask({
-      statePath: entry.file,
-      projectPath: pipeline.projectPath,
-      expectedStateSha256: entry.expectedStateSha256,
-    });
-    const queue = validateQueue(preview.queue);
-    run = createGoalBuddyRun(
-      preview,
-      await contextsForRun(queue),
-      { requireFinalAudit: true },
-      pipelineLink,
-    );
-  } else {
-    const contexts = await contextsForRun(entry.queue);
-    run = createRun(entry.queue, pipelineLink, contexts);
-  }
+  const contexts = await contextsForRun(entry.queue);
+  const run = createRun(entry.queue, pipelineLink, contexts);
   await acquireProjectLock(run);
   pipeline.currentRunId = run.id;
   pipeline.runs ??= [];
@@ -3280,7 +2533,6 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
     file: entry.file,
     runId: run.id,
     status: run.status,
-    goalSlug: entry.goalSlug,
   });
   activeRun = run;
   // A run must be durable before its executor starts. Besides making it visible
@@ -3291,34 +2543,6 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
   void execute(run);
 }
 
-async function persistGoalBuddyPipelineReceipt(pipeline: LoadedPipeline) {
-  if (pipeline.kind !== "goalbuddy") return;
-  const path = join(pipelinesDirectory, pipeline.id, "goalbuddy-pipeline-receipt-v1.json");
-  pipeline.receiptPath = path;
-  const receipt = validateGoalBuddyPipelineReceiptV1({
-    contract_type: "GoalBuddyPipelineReceiptV1",
-    contract_version: "1.0",
-    created_at: timestamp(),
-    pipeline_id: pipeline.id,
-    project_path: pipeline.projectPath,
-    status: pipeline.status,
-    stop_on_failure: true,
-    auto_commit: false,
-    goals: pipeline.queues.map((entry, index) => {
-      const recorded = pipeline.runs?.find((run) => run.index === index);
-      return {
-        index,
-        goal_slug: entry.goalSlug,
-        state_path: entry.file,
-        expected_state_sha256: entry.expectedStateSha256,
-        run_id: recorded?.runId,
-        status: recorded?.status ?? "pending",
-      };
-    }),
-  });
-  await writeJsonAtomically(path, receipt);
-}
-
 async function continuePipeline(run: Run) {
   const pipeline = activePipeline;
   if (!pipeline || pipeline.currentRunId !== run.id) return;
@@ -3326,14 +2550,12 @@ async function continuePipeline(run: Run) {
   if (recorded) recorded.status = run.status;
   if (run.status !== "completed") {
     pipeline.status = run.status;
-    await persistGoalBuddyPipelineReceipt(pipeline);
     await persistPipeline(pipeline);
     return;
   }
   pipeline.currentIndex += 1;
   if (pipeline.currentIndex >= pipeline.queues.length) {
     pipeline.status = "completed";
-    await persistGoalBuddyPipelineReceipt(pipeline);
     await persistPipeline(pipeline);
     return;
   }
@@ -3341,7 +2563,6 @@ async function continuePipeline(run: Run) {
     await startPipelineQueue(pipeline);
   } catch (error) {
     pipeline.status = "failed";
-    await persistGoalBuddyPipelineReceipt(pipeline);
     await persistPipeline(pipeline);
     lastSettledTask(run)?.log.push(
       `Pipeline could not start the next queue: ${error instanceof Error ? error.message : String(error)}`,
@@ -3384,7 +2605,7 @@ function normalizeProjectProfile(
   };
 }
 
-const app = express();
+export const app = express();
 app.use(express.json({ limit: "64kb" }));
 app.use(
   express.text({
@@ -3589,89 +2810,6 @@ app.get("/api/events", (request, response) => {
     response.write(`event: run\ndata: ${JSON.stringify(activeRun)}\n\n`);
   request.on("close", () => subscribers.delete(response));
 });
-app.post("/api/goalbuddy/preview", async (request, response) => {
-  try {
-    const input = typeof request.body === "string" ? parse(request.body) : request.body;
-    return response.json(await previewGoalBuddyTask(input as GoalBuddyPreviewInput));
-  } catch (error) {
-    return response.status(400).json({
-      error: error instanceof Error ? error.message : "Invalid GoalBuddy state selection.",
-    });
-  }
-});
-app.post("/api/goalbuddy/runs", async (request, response) => {
-  try {
-    if (activeRun?.status === "running" || activeRun?.status === "paused")
-      return response.status(409).json({ error: "A run is already active." });
-    const input = typeof request.body === "string" ? parse(request.body) : request.body;
-    const preview = await previewGoalBuddyTask(input as GoalBuddyPreviewInput);
-    const queue = validateQueue(preview.queue);
-    const run = createGoalBuddyRun(
-      preview,
-      await contextsForRun(queue),
-      { requireFinalAudit: true },
-    );
-    try {
-      await acquireProjectLock(run);
-    } catch (error) {
-      return response.status(409).json({
-        error: error instanceof Error ? error.message : "Project is locked.",
-      });
-    }
-    activePipeline = undefined;
-    activeRun = run;
-    await persist(run);
-    void execute(run);
-    return response.status(201).json(run);
-  } catch (error) {
-    return response.status(400).json({
-      error: error instanceof Error ? error.message : "Invalid GoalBuddy run request.",
-    });
-  }
-});
-app.post("/api/goalbuddy/pipelines/preview", async (request, response) => {
-  try {
-    const input = typeof request.body === "string" ? parse(request.body) : request.body;
-    const pipeline = await loadGoalBuddyPipeline(input);
-    return response.json({
-      contract_type: "GoalBuddyPipelinePreviewV1",
-      projectPath: pipeline.projectPath,
-      goals: pipeline.queues.map((entry, index) => ({
-        index,
-        statePath: entry.file,
-        goalSlug: entry.goalSlug,
-        stateSha256: entry.expectedStateSha256,
-        activeTaskId: entry.queue.tasks[0]?.externalTaskId,
-        activeTaskTitle: entry.queue.tasks[0]?.title,
-      })),
-      policy: pipeline.policy,
-    });
-  } catch (error) {
-    return response.status(400).json({
-      error: error instanceof Error ? error.message : "Invalid GoalBuddy pipeline.",
-    });
-  }
-});
-app.post("/api/goalbuddy/pipelines", async (request, response) => {
-  try {
-    if (activeRun?.status === "running" || activeRun?.status === "paused")
-      return response.status(409).json({ error: "A run is already active." });
-    const input = typeof request.body === "string" ? parse(request.body) : request.body;
-    const pipeline = await loadGoalBuddyPipeline(input);
-    activePipeline = pipeline;
-    try {
-      await startPipelineQueue(pipeline);
-      return response.status(201).json(activeRun);
-    } catch (error) {
-      activePipeline = undefined;
-      throw error;
-    }
-  } catch (error) {
-    return response.status(400).json({
-      error: error instanceof Error ? error.message : "Invalid GoalBuddy pipeline.",
-    });
-  }
-});
 app.post("/api/preflight", async (request, response) => {
   try {
     const result = await preflight(
@@ -3699,10 +2837,8 @@ app.post("/api/runs", async (request, response) => {
       return response.status(409).json({ error: "A run is already active." });
     const value =
       typeof request.body === "string" ? parse(request.body) : request.body;
-    if (isPipeline(value) || isGoalBuddyPipeline(value)) {
-      const pipeline = isGoalBuddyPipeline(value)
-        ? await loadGoalBuddyPipeline(value)
-        : await loadPipeline(value);
+    if (isPipeline(value)) {
+      const pipeline = await loadPipeline(value);
       activePipeline = pipeline;
       try {
         await startPipelineQueue(pipeline);
@@ -3713,7 +2849,7 @@ app.post("/api/runs", async (request, response) => {
       }
     }
     activePipeline = undefined;
-    const queue = validateQueue(value);
+    const queue = validateTaskQueue(value);
     const run = createRun(queue, undefined, await contextsForRun(queue));
     try {
       await acquireProjectLock(run);

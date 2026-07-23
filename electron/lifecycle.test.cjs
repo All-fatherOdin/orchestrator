@@ -6,6 +6,7 @@ const {
   ensureServerAvailability,
   isCompatibleHealth,
   shouldReportServerExit,
+  shouldStopServerOnQuit,
 } = require("./lifecycle.cjs");
 
 test("second desktop instance quits without starting another server", async () => {
@@ -88,4 +89,9 @@ test("health compatibility and exit reporting are ownership-aware", () => {
   assert.equal(shouldReportServerExit({ isQuitting: false, ownsServer: false, serverReady: true }), false);
   assert.equal(shouldReportServerExit({ isQuitting: true, ownsServer: true, serverReady: true }), false);
   assert.equal(shouldReportServerExit({ isQuitting: false, ownsServer: true, serverReady: false }), false);
+});
+
+test("desktop shutdown stops only the server process it owns", () => {
+  assert.equal(shouldStopServerOnQuit({ ownsServer: true }), true);
+  assert.equal(shouldStopServerOnQuit({ ownsServer: false }), false);
 });

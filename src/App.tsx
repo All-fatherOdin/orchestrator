@@ -1,7 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse, stringify } from "yaml";
 import { UsagePage } from "./UsagePage";
-import { GoalBuddyPage } from "./GoalBuddyPage";
 
 type Status =
   | "pending"
@@ -78,7 +77,7 @@ type Run = {
     file: string;
     index: number;
     total: number;
-    kind?: "queues" | "goalbuddy";
+    kind?: "queues";
   };
   limits: Limits;
   git: GitSettings;
@@ -86,10 +85,9 @@ type Run = {
 };
 type PipelineView = {
   id: string;
-  kind: "queues" | "goalbuddy";
+  kind: "queues";
   currentIndex: number;
   status: Run["status"];
-  receiptPath?: string;
   queues: Array<{
     index: number;
     file: string;
@@ -214,7 +212,7 @@ const runStatusLabel: Record<Run["status"], string> = {
   timed_out: "Время истекло",
   cancelled: "Отменено",
 };
-const emptyQueue = `project:\n  name: My project\n  path: D:\\\\work\\\\my-project\nlimits:\n  taskTimeoutMinutes: 30\n  reviewerTimeoutMinutes: 10\n  maxTaskRetries: 1\n  maxParallelTasks: 1\ntasks:\n  - key: notifications-types\n    title: Fix TypeScript errors\n    prompt: Fix TypeScript errors in the notifications module and run checks.\n    model: terra\n    effort: medium\n    allowedPaths: [src/notifications]`;
+export const emptyQueue = `project:\n  name: My project\n  path: D:\\\\work\\\\my-project\nlimits:\n  taskTimeoutMinutes: 30\n  reviewerTimeoutMinutes: 10\n  maxTaskRetries: 1\n  maxParallelTasks: 1\ntasks:\n  - key: notifications-types\n    title: Fix TypeScript errors\n    prompt: Fix TypeScript errors in the notifications module and run checks.\n    model: terra\n    effort: medium\n    allowedPaths: [src/notifications]\n  - key: reconnect-logic\n    title: Add reconnect logic\n    prompt: Add WebSocket reconnection with exponential backoff and tests.\n    model: terra\n    effort: medium\n    allowedPaths: [src/websocket]`;
 
 function runSummary(run: Run): RunSummary {
   return {
@@ -302,7 +300,6 @@ export function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
-  const [showGoalBuddy, setShowGoalBuddy] = useState(false);
   const [projects, setProjects] = useState<ProjectProfile[]>([]);
   const [projectForm, setProjectForm] = useState({
     name: "",
@@ -846,12 +843,11 @@ export function App() {
         </div>
         <nav>
           <button
-            className={!showHistory && !showProjects && !showUsage && !showGoalBuddy ? "active" : ""}
+            className={!showHistory && !showProjects && !showUsage ? "active" : ""}
             onClick={() => {
               setShowHistory(false);
               setShowProjects(false);
               setShowUsage(false);
-              setShowGoalBuddy(false);
             }}
           >
             Очередь
@@ -862,7 +858,6 @@ export function App() {
               setShowHistory(true);
               setShowProjects(false);
               setShowUsage(false);
-              setShowGoalBuddy(false);
               void refreshHistory(0);
             }}
           >
@@ -874,7 +869,6 @@ export function App() {
               setShowProjects(true);
               setShowHistory(false);
               setShowUsage(false);
-              setShowGoalBuddy(false);
             }}
           >
             Проекты <em>{projects.length}</em>
@@ -885,21 +879,9 @@ export function App() {
               setShowUsage(true);
               setShowHistory(false);
               setShowProjects(false);
-              setShowGoalBuddy(false);
             }}
           >
             Расход
-          </button>
-          <button
-            className={showGoalBuddy ? "active" : ""}
-            onClick={() => {
-              setShowGoalBuddy(true);
-              setShowUsage(false);
-              setShowHistory(false);
-              setShowProjects(false);
-            }}
-          >
-            GoalBuddy
           </button>
         </nav>
         <div className="sidebarFoot">
@@ -909,7 +891,7 @@ export function App() {
         </div>
       </aside>
       <section className="workspace">
-        {!showUsage && !showGoalBuddy && <header>
+        {!showUsage && <header>
           <div>
             <h1>
               <FolderIcon />
@@ -974,22 +956,7 @@ export function App() {
             onConfirm={() => void deleteHistoryRun(runToDelete.id)}
           />
         )}
-        {showGoalBuddy ? (
-          <GoalBuddyPage<Run>
-            defaultProjectPath={run?.project.path}
-            runBlocked={run?.status === "running" || run?.status === "paused"}
-            onError={setError}
-            onRunStarted={(startedRun) => {
-              setRun(startedRun);
-              setShowGoalBuddy(false);
-              setHistory((previous) => [
-                runSummary(startedRun),
-                ...previous.filter((item) => item.id !== startedRun.id),
-              ].slice(0, 5));
-              setHistoryTotal((total) => total + 1);
-            }}
-          />
-        ) : showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
+        {showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
           <section className="projectsPanel">
             <div className="sectionHeading">
               <h2>Сохранённые проекты</h2>
@@ -1492,8 +1459,8 @@ export function App() {
                 {pipeline && (
                   <section className="pipelinePanel">
                     <div className="sectionHeading">
-                      <h2>{pipeline.kind === "goalbuddy" ? "Цепочка GoalBuddy goals" : "Очереди pipeline"}</h2>
-                      <span>{pipeline.queues.length} {pipeline.kind === "goalbuddy" ? "goals" : "файлов"}</span>
+                      <h2>Очереди pipeline</h2>
+                      <span>{pipeline.queues.length} файлов</span>
                     </div>
                     <ol>
                       {pipeline.queues.map((entry) => (
@@ -1509,7 +1476,7 @@ export function App() {
                                   : "Ожидает запуска"}
                             </small>
                           </div>
-                          {pipeline.kind !== "goalbuddy" && entry.state === "pending" &&
+                          {entry.state === "pending" &&
                             (run.status === "running" || run.status === "paused") && (
                               <button
                                 className="removeTask"

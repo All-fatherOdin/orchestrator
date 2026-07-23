@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { tmpdir } from "node:os";
@@ -33,8 +33,11 @@ const {
   projectTaskMetrics,
   projectRunMetrics,
   loadPipeline,
-  loadGoalBuddyPipeline,
   validateQueue,
+  validateTaskQueue,
+  persistRun,
+  loadRun,
+  app,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
   resolveTaskContext,
@@ -46,18 +49,14 @@ const {
   validateContextContractV1,
   bindBeforeRecovery,
   runHasLiveOwner,
-  previewGoalBuddyTask,
-  createGoalBuddyRun,
-  appendNextGoalBuddyTask,
-  createGoalReceiptEnvelopeV1,
-  finalizeSettledTask,
-  syncGoalBuddyTaskReceipt,
-  validateGoalReceiptEnvelopeV1,
-  validateGoalBuddyPipelineReceiptV1,
   codexReasoningEffort,
 } = await import("./index.ts");
-const { TaskContextControls, contextProfileTaskPatch, optionalNumberValue } = await import("../src/App.tsx");
-const { GoalBuddyPage, goalBuddyRunRequest } = await import("../src/GoalBuddyPage.tsx");
+const {
+  TaskContextControls,
+  contextProfileTaskPatch,
+  emptyQueue,
+  optionalNumberValue,
+} = await import("../src/App.tsx");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 test("maps the UI light effort to the Codex CLI low effort", () => {
@@ -181,32 +180,167 @@ test("context editor values round-trip through YAML without losing optional stat
   assert.equal(optionalNumberValue("1.5"), 1.5);
 });
 
-test("GoalBuddy UI exposes a preview-first accessible run workflow", () => {
-  const markup = renderToStaticMarkup(createElement(GoalBuddyPage, {
-    onRunStarted: () => undefined,
-    onError: () => undefined,
-  }));
-  assert.match(markup, /<h2>GoalBuddy bridge<\/h2>/);
-  assert.match(markup, /<label[^>]*>GoalBuddy state\.yaml/);
-  assert.match(markup, /aria-label="GoalBuddy state.yaml path"/);
-  assert.match(markup, /<label[^>]*>Repository/);
-  assert.match(markup, /aria-label="GoalBuddy repository path"/);
-  assert.match(markup, /aria-label="GoalBuddy goal chain paths"/);
-  assert.match(markup, /Проверить цепочку/);
-  assert.match(markup, />Проверить карточку<\/button>/);
-  assert.match(markup, /<button[^>]*disabled=""[^>]*>Запустить карточку<\/button>/);
-  assert.match(markup, /Следующая queued-карточка будет автоматически добавлена в этот run/);
-  assert.deepEqual(
-    goalBuddyRunRequest(
-      { statePath: "D:/goals/demo/state.yaml", projectPath: "D:/work/demo" },
-      "abc123",
-    ),
-    {
-      statePath: "D:/goals/demo/state.yaml",
-      projectPath: "D:/work/demo",
-      expectedStateSha256: "abc123",
-    },
+test("ordinary Orchestrator queues require at least two independent tasks", () => {
+  assert.throws(
+    () => validateTaskQueue({
+      project: { path: process.cwd() },
+      tasks: [{ title: "Only task", prompt: "Do one thing" }],
+    }),
+    /at least two tasks/,
   );
+  assert.equal(
+    validateTaskQueue({
+      project: { path: process.cwd() },
+      tasks: [
+        { title: "First", prompt: "Do the first thing" },
+        { title: "Second", prompt: "Do the second thing" },
+      ],
+    }).tasks.length,
+    2,
+  );
+  assert.equal(
+    validateQueue({
+      project: { path: process.cwd() },
+      tasks: [{ title: "Goal card", prompt: "Run one adaptive card" }],
+    }).tasks.length,
+    1,
+  );
+});
+
+test("dashboard starter YAML is a valid ordinary task queue", () => {
+  const parsed = parse(emptyQueue) as {
+    project: { path: string };
+    tasks: Array<{ key?: string; title?: string; prompt?: string }>;
+  };
+  parsed.project.path = process.cwd();
+  const queue = validateTaskQueue(parsed);
+  assert.ok(queue.tasks.length >= 2);
+  assert.equal(new Set(queue.tasks.map((task) => task.key)).size, queue.tasks.length);
+  assert.ok(queue.tasks.every((task) => task.title && task.prompt));
+});
+
+test("ordinary YAML queues contain only ordinary task fields", () => {
+  const removedRuntimeName = ["goal", "buddy"].join("");
+  const queue = validateTaskQueue(parse(`
+project:
+  path: ${process.cwd().replace(/\\/g, "\\\\")}
+tasks:
+  - key: parse
+    title: Parse the queue
+    prompt: Parse ordinary YAML.
+    allowedPaths: [server/index.ts]
+    verificationCommands: [npm test]
+    executionGuards: [Stop on scope violation.]
+  - key: report
+    dependsOn: [parse]
+    title: Report terminal status
+    prompt: Report completion.
+`));
+  const serialized = JSON.stringify(queue);
+  assert.equal(queue.tasks.length, 2);
+  assert.equal(queue.tasks[1].dependsOn?.[0], "parse");
+  assert.doesNotMatch(serialized.toLowerCase(), new RegExp(removedRuntimeName));
+  const prompt = buildPrompt(createRun(queue).tasks[0], queue.project);
+  assert.match(prompt, /npm test/);
+  assert.match(prompt, /Stop on scope violation/);
+});
+
+test("ordinary runs persist terminal state and retain recovery semantics", async () => {
+  const removedRuntimeName = ["goal", "buddy"].join("");
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-ordinary-persist-"));
+  try {
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "first", title: "First", prompt: "Do first", allowedPaths: ["src"] },
+        { key: "second", dependsOn: ["first"], title: "Second", prompt: "Do second" },
+      ],
+    });
+    const created = createRun(queue);
+    created.status = "completed";
+    created.finishedAt = new Date().toISOString();
+    for (const task of created.tasks) {
+      task.status = "completed";
+      task.finishedAt = created.finishedAt;
+    }
+    await persistRun(created);
+    const loaded = await loadRun(created.id);
+    assert.equal(loaded?.status, "completed");
+    assert.deepEqual(loaded?.tasks.map((task) => task.status), ["completed", "completed"]);
+    assert.doesNotMatch(JSON.stringify(loaded).toLowerCase(), new RegExp(removedRuntimeName));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/runs/${created.id}`);
+      assert.equal(response.status, 200);
+      assert.equal((await response.json() as { status: string }).status, "completed");
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+
+    const interrupted = structuredClone(created);
+    interrupted.status = "running";
+    interrupted.finishedAt = undefined;
+    interrupted.tasks[1].status = "running";
+    interrupted.tasks[1].finishedAt = undefined;
+    const recovered = recoverRun(interrupted);
+    assert.equal(recovered.status, "failed");
+    assert.equal(recovered.tasks[0].status, "completed");
+    assert.equal(recovered.tasks[1].status, "failed");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("production surface contains only supported queue execution modes", async () => {
+  const removedRuntimeName = ["goal", "buddy"].join("");
+  const removedRuntimePattern = new RegExp(removedRuntimeName, "i");
+  const removedRolePattern = /\b(?:Scout|Judge)\b/;
+  const removedPipelineReceiptPattern = /\breceiptPath\b/;
+  const routes = (app as unknown as {
+    router: { stack: Array<{ route?: { path: string } }> };
+  }).router.stack
+    .flatMap((layer) => layer.route?.path ? [layer.route.path] : []);
+  assert.equal(routes.some((route) => removedRuntimePattern.test(route)), false);
+
+  const productionFiles = [
+    join("server", "index.ts"),
+    join("src", "App.tsx"),
+    join("src", "styles.css"),
+    join("electron", "lifecycle.cjs"),
+    join("electron", "main.cjs"),
+    "README.md",
+    "AGENTS.md",
+  ];
+  for (const file of productionFiles) {
+    const source = await readFile(file, "utf8");
+    assert.doesNotMatch(source, removedRuntimePattern, file);
+    assert.doesNotMatch(source, removedRolePattern, file);
+    assert.doesNotMatch(source, removedPipelineReceiptPattern, file);
+  }
+
+  const sourceNames = await readdir("src");
+  assert.equal(sourceNames.some((name) => removedRuntimePattern.test(name)), false);
+  const rootNames = await readdir(".");
+  assert.equal(rootNames.some((name) => removedRuntimePattern.test(name)), false);
+  const schemaDirectory = join("server", `${removedRuntimeName}-bridge-v1`, "schemas");
+  await assert.rejects(
+    readdir(schemaDirectory),
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+  );
+});
+
+test("README describes sequential-by-default dependency-aware scheduling", async () => {
+  const readme = await readFile("README.md", "utf8");
+  assert.doesNotMatch(readme, /runs tasks \*\*sequentially\*\*/i);
+  assert.doesNotMatch(readme, /still executes the queue sequentially/i);
+  assert.match(readme, /defaults to `1` to preserve sequential execution/i);
+  assert.match(readme, /can be launched in parallel/i);
 });
 
 test("maps lifecycle statuses to outcome classes and derives only valid durations", () => {
@@ -294,11 +428,11 @@ test("projects legacy runs without exposing task content or mutating the source"
 });
 
 test("bounded final output preserves structured decisions written at the end", () => {
-  const marker = 'GOALBUDDY_FINAL_DECISION_V1: {"full_outcome_complete":true}';
+  const marker = 'QUEUE_DECISION_V1: {"complete":true}';
   const bounded = boundedFinalOutput(`${"a".repeat(30_000)}\n${marker}`);
   assert.ok(bounded.length > 24_000);
   assert.match(bounded, /output truncated/);
-  assert.match(bounded, /GOALBUDDY_FINAL_DECISION_V1/);
+  assert.match(bounded, /QUEUE_DECISION_V1/);
 });
 
 test("reads machine-readable token usage from completed Codex turns", () => {
@@ -433,7 +567,7 @@ test("safe fallback selects only fixed root entrypoints and emits ContextReceipt
 });
 
 test("helper timeout, invalid JSON, and contract mismatch use observable safe fallback", async () => {
-  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-helper-"));
+  const project = await mkdtemp(join(process.cwd(), ".orchestrator-context-helper-"));
   try {
     await mkdir(join(project, "scripts"));
     await writeFile(join(project, "AGENTS.md"), "safe");
@@ -545,7 +679,7 @@ test("loads every queue in a sequential pipeline before it starts", async () => 
   const project = await mkdtemp(join(tmpdir(), "orchestrator-pipeline-"));
   const first = join(project, "first.yaml");
   const second = join(project, "second.yaml");
-  const queue = (title: string) => `project:\n  path: ${project.replace(/\\/g, "\\\\")}\ntasks:\n  - title: ${title}\n    prompt: Do work`;
+  const queue = (title: string) => `project:\n  path: ${project.replace(/\\/g, "\\\\")}\ntasks:\n  - title: ${title}\n    prompt: Do work\n  - title: ${title} follow-up\n    prompt: Do independent follow-up work`;
   try {
     await writeFile(first, queue("First"));
     await writeFile(second, queue("Second"));
@@ -839,23 +973,18 @@ test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, 
     ["README.md"],
   );
   assert.deepEqual(
+    outsideAllowedPaths(
+      ["docs/evidence/freeze.json", "docs/evidence/responses/body.bin"],
+      ["docs/evidence/**"],
+    ),
+    [],
+  );
+  assert.deepEqual(
     taskWriteViolations(
-      {
-        allowedPaths: undefined,
-        goalBuddy: {
-          goalSlug: "read-only",
-          goalTitle: "Read only",
-          externalTaskId: "T001",
-          objective: "Inspect evidence.",
-          statePath: "state.yaml",
-          stateSha256: "0".repeat(64),
-          taskType: "scout",
-          assignee: "Scout",
-        },
-      },
+      { allowedPaths: ["src"] },
       ["src/a.ts"],
     ),
-    ["src/a.ts"],
+    [],
   );
   assert.equal(
     resolveTaskStatus({
@@ -986,484 +1115,5 @@ test("project lock prevents two orchestrator runs from using the same repository
     await releaseProjectLock(first);
     await releaseProjectLock(second);
     await rm(project, { recursive: true, force: true });
-  }
-});
-
-test("GoalBuddy bridge syncs a receipt and advances to the next queued card", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-"));
-  const project = join(root, "repository");
-  const statePath = join(root, "state.yaml");
-  const objective = "Implement the bounded bridge slice.";
-  const board = {
-    version: 2,
-    goal: { title: "Bridge fixture", slug: "bridge-fixture", status: "active" },
-    active_task: "T042",
-    tasks: [
-      {
-        id: "T042",
-        type: "worker",
-        assignee: "Worker",
-        reasoning_hint: "medium",
-        status: "active",
-        objective,
-        inputs: ["docs/requirements.md"],
-        constraints: ["Preserve the public API."],
-        expected_output: ["Implementation summary"],
-        allowed_files: ["server/index.ts"],
-        verify: ["npm test"],
-        stop_if: ["Need files outside allowed_files."],
-      },
-      {
-        id: "T043",
-        type: "worker",
-        assignee: "Worker",
-        status: "queued",
-        objective: "Do not select me.",
-        allowed_files: ["server/index.ts"],
-        verify: ["npm test"],
-        stop_if: ["Need files outside allowed_files."],
-      },
-    ],
-  };
-  try {
-    await mkdir(project);
-    await writeFile(statePath, `# owner comment\n${stringify(board)}`, "utf8");
-    const before = createHash("sha256").update(await readFile(statePath)).digest("hex");
-
-    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    assert.equal(preview.contract_type, "GoalBuddyTaskPreviewV1");
-    assert.equal(preview.taskInput.title, objective);
-    assert.equal(preview.taskInput.prompt, objective);
-    assert.deepEqual(preview.taskInput.allowedPaths, ["server/index.ts"]);
-    assert.deepEqual(preview.taskInput.verificationCommands, ["npm test"]);
-    assert.deepEqual(preview.taskInput.executionGuards, ["Need files outside allowed_files."]);
-    assert.equal(preview.taskInput.externalTaskId, "T042");
-    assert.ok(preview.taskInput.goalBuddy);
-    assert.equal(preview.taskInput.goalBuddy.goalSlug, "bridge-fixture");
-    assert.equal(preview.taskInput.goalBuddy.stateSha256, before);
-    assert.equal(preview.taskInput.goalBuddy.taskType, "worker");
-    assert.equal(preview.taskInput.goalBuddy.assignee, "Worker");
-    assert.equal(preview.taskInput.goalBuddy.reasoningHint, "medium");
-    assert.deepEqual(preview.taskInput.goalBuddy.inputs, ["docs/requirements.md"]);
-    assert.deepEqual(preview.taskInput.goalBuddy.constraints, ["Preserve the public API."]);
-    assert.deepEqual(preview.taskInput.goalBuddy.expectedOutput, ["Implementation summary"]);
-    assert.equal(preview.queue.git.checkpointCommits, false);
-
-    const created = createGoalBuddyRun(preview);
-    const linkedTask = created.tasks[0];
-    assert.equal(linkedTask.externalTaskId, "T042");
-    assert.ok(linkedTask.goalBuddy);
-    assert.equal(linkedTask.goalBuddy.goalSlug, "bridge-fixture");
-    assert.equal(created.project.path, project);
-    assert.match(buildPrompt(linkedTask, created.project), /Need files outside allowed_files/);
-    assert.match(buildPrompt(linkedTask, created.project), /npm test/);
-    assert.match(buildPrompt(linkedTask, created.project), /GoalBuddy Worker/);
-    assert.match(buildPrompt(linkedTask, created.project), /docs\/requirements\.md/);
-    assert.match(buildPrompt(linkedTask, created.project), /Preserve the public API/);
-    assert.match(buildPrompt(linkedTask, created.project), /Implementation summary/);
-
-    linkedTask.status = "completed";
-    linkedTask.startedAt = new Date(Date.now() - 100).toISOString();
-    linkedTask.finishedAt = new Date().toISOString();
-    const written = await finalizeSettledTask(created, linkedTask);
-    assert.ok(written);
-    assert.notEqual(written.path, statePath);
-    const receipt = validateGoalReceiptEnvelopeV1(
-      JSON.parse(await readFile(written.path, "utf8")),
-    );
-    assert.equal(receipt.contract_type, "GoalReceiptEnvelopeV1");
-    assert.equal(receipt.goal.slug, "bridge-fixture");
-    assert.equal(receipt.task.external_task_id, "T042");
-    assert.equal(receipt.repository.path, project);
-    assert.equal(receipt.orchestrator.run_id, created.id);
-    assert.equal(receipt.orchestrator.task_id, linkedTask.id);
-    assert.equal(receipt.outcome.task_status, "completed");
-    assert.equal(receipt.outcome.outcome_class, "success");
-    assert.equal(receipt.source_state_unchanged, true);
-    assert.equal(linkedTask.goalReceiptPath, written.path);
-    assert.equal(linkedTask.goalBuddySync?.status, "synced");
-    const synchronizedSource = await readFile(statePath, "utf8");
-    assert.match(synchronizedSource, /# owner comment/);
-    const synchronizedBoard = parse(synchronizedSource);
-    assert.equal(synchronizedBoard.active_task, "T043");
-    assert.equal(synchronizedBoard.tasks[0].status, "done");
-    assert.equal(synchronizedBoard.tasks[0].receipt.result, "done");
-    assert.equal(synchronizedBoard.tasks[0].receipt.orchestrator_run_id, created.id);
-    assert.equal(synchronizedBoard.tasks[0].receipt.goal_receipt_path, written.path);
-    assert.equal(synchronizedBoard.tasks[1].status, "active");
-    assert.deepEqual(synchronizedBoard.tasks[0].orchestrator_sync.progression, {
-      status: "advanced",
-      completed_task_id: "T042",
-      activated_task_id: "T043",
-    });
-    assert.equal(synchronizedBoard.tasks[1].orchestrator_sync, undefined);
-    assert.deepEqual(
-      {
-        contract_type: synchronizedBoard.tasks[0].orchestrator_sync.contract_type,
-        run_id: synchronizedBoard.tasks[0].orchestrator_sync.run_id,
-        task_id: synchronizedBoard.tasks[0].orchestrator_sync.task_id,
-        external_task_id: synchronizedBoard.tasks[0].orchestrator_sync.external_task_id,
-        run_status: synchronizedBoard.tasks[0].orchestrator_sync.run_status,
-        outcome_class: synchronizedBoard.tasks[0].orchestrator_sync.outcome_class,
-        receipt_path: synchronizedBoard.tasks[0].orchestrator_sync.receipt_path,
-      },
-      {
-        contract_type: "OrchestratorGoalSyncV1",
-        run_id: created.id,
-        task_id: linkedTask.id,
-        external_task_id: "T042",
-        run_status: "completed",
-        outcome_class: "success",
-        receipt_path: written.path,
-      },
-    );
-    const synchronizedHash = createHash("sha256").update(synchronizedSource).digest("hex");
-    await syncGoalBuddyTaskReceipt(created, linkedTask, written);
-    assert.equal(
-      createHash("sha256").update(await readFile(statePath)).digest("hex"),
-      synchronizedHash,
-    );
-    const readback = await previewGoalBuddyTask({ statePath, projectPath: project });
-    assert.equal(readback.taskInput.externalTaskId, "T043");
-    const appended = await appendNextGoalBuddyTask(created, linkedTask);
-    assert.ok(appended);
-    assert.equal(appended.externalTaskId, "T043");
-    assert.equal(appended.status, "pending");
-    assert.notEqual(appended.id, linkedTask.id);
-    assert.equal(appended.goalBuddy?.stateSha256, readback.source.stateSha256);
-    assert.deepEqual(created.goalBuddyAdapter?.importedExternalTaskIds, ["T042", "T043"]);
-    assert.equal(created.goalBuddyAdapter?.status, "active");
-    assert.equal(await appendNextGoalBuddyTask(created, linkedTask), appended);
-    assert.equal(created.tasks.length, 2);
-    const continuousRun = JSON.parse(
-      await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
-    );
-    assert.deepEqual(
-      continuousRun.tasks.map((task: { externalTaskId?: string }) => task.externalTaskId),
-      ["T042", "T043"],
-    );
-    assert.equal(continuousRun.goalBuddyAdapter.contractType, "GoalBuddyContinuousAdapterV1");
-    const storedRun = JSON.parse(
-      await readFile(join(testDataDirectory, "runs", created.id, "run.json"), "utf8"),
-    );
-    assert.equal(storedRun.tasks[0].goalBuddy.goalSlug, "bridge-fixture");
-    assert.equal(storedRun.tasks[0].externalTaskId, "T042");
-    assert.equal(storedRun.tasks[0].goalReceiptPath, written.path);
-    assert.equal(storedRun.tasks[0].goalBuddySync.status, "synced");
-
-    for (const [status, expected] of [
-      ["failed", "failure"],
-      ["cancelled", "interrupted"],
-    ] as const) {
-      const envelope = createGoalReceiptEnvelopeV1(created, { ...linkedTask, status }, true);
-      assert.equal(envelope.outcome.task_status, status);
-      assert.equal(envelope.outcome.outcome_class, expected);
-    }
-
-    await writeFile(
-      statePath,
-      stringify({ ...board, active_task: null, tasks: board.tasks.map((task) => ({ ...task, status: "queued" })) }),
-      "utf8",
-    );
-    await assert.rejects(
-      () => previewGoalBuddyTask({ statePath, projectPath: project }),
-      /exactly one active task/,
-    );
-    await writeFile(
-      statePath,
-      stringify({ ...board, tasks: board.tasks.map((task) => ({ ...task, status: "active" })) }),
-      "utf8",
-    );
-    await assert.rejects(
-      () => previewGoalBuddyTask({ statePath, projectPath: project }),
-      /exactly one active task/,
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("GoalBuddy Judge can safely scope the next Worker through a structured decision", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-judge-"));
-  const project = join(root, "repository");
-  const statePath = join(root, "state.yaml");
-  const board = {
-    version: 2,
-    goal: { title: "Judge fixture", slug: "judge-fixture", status: "active" },
-    active_task: "T002",
-    tasks: [
-      {
-        id: "T002",
-        type: "judge",
-        assignee: "Judge",
-        reasoning_hint: "high",
-        status: "active",
-        objective: "Select the bounded implementation slice.",
-        constraints: ["Read-only; do not implement."],
-        expected_output: ["Exact Worker objective", "allowed_files", "verify", "stop_if"],
-      },
-      {
-        id: "T003",
-        type: "worker",
-        assignee: "Worker",
-        status: "queued",
-        objective: "Execute the Judge-scoped slice.",
-        allowed_files: [],
-        verify: [],
-        stop_if: ["Judge has not populated exact allowed_files and verify commands."],
-      },
-    ],
-  };
-  try {
-    await mkdir(project);
-    await writeFile(statePath, stringify(board), "utf8");
-    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createGoalBuddyRun(preview);
-    const judge = created.tasks[0];
-    const prompt = buildPrompt(judge, created.project);
-    assert.match(prompt, /read-only/i);
-    assert.match(prompt, /GOALBUDDY_NEXT_TASK_PATCH_V1/);
-    assert.match(prompt, /T003/);
-
-    judge.status = "completed";
-    judge.finalOutput = [
-      "Decision: proceed.",
-      'GOALBUDDY_NEXT_TASK_PATCH_V1: {"target_task_id":"T003","decision":"proceed","objective":"Implement the validated slice.","allowed_files":["server/index.ts"],"verify":["npm test"],"stop_if":["Need files outside allowed_files."]}',
-    ].join("\n");
-    await finalizeSettledTask(created, judge);
-
-    const updated = parse(await readFile(statePath, "utf8"));
-    assert.equal(updated.active_task, "T003");
-    assert.match(updated.tasks[0].receipt.summary, /GOALBUDDY_NEXT_TASK_PATCH_V1/);
-    assert.equal(updated.tasks[1].objective, "Implement the validated slice.");
-    assert.deepEqual(updated.tasks[1].allowed_files, ["server/index.ts"]);
-    assert.deepEqual(updated.tasks[1].verify, ["npm test"]);
-    const worker = await appendNextGoalBuddyTask(created, judge);
-    assert.ok(worker);
-    assert.deepEqual(worker.allowedPaths, ["server/index.ts"]);
-    assert.deepEqual(worker.verificationCommands, ["npm test"]);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("strict GoalBuddy completion requires a final Judge oracle decision", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-final-"));
-  const project = join(root, "repository");
-  const statePath = join(root, "state.yaml");
-  const board = {
-    version: 2,
-    goal: { title: "Final fixture", slug: "final-fixture", status: "active" },
-    active_task: "T999",
-    tasks: [{
-      id: "T999",
-      type: "judge",
-      assignee: "Judge",
-      status: "active",
-      objective: "Audit the full outcome against the oracle.",
-      constraints: ["Read-only; do not implement."],
-      expected_output: ["full_outcome_complete"],
-    }],
-  };
-  try {
-    await mkdir(project);
-    await writeFile(statePath, stringify(board), "utf8");
-    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createGoalBuddyRun(preview, [], { requireFinalAudit: true });
-    const judge = created.tasks[0];
-    assert.match(buildPrompt(judge, created.project), /GOALBUDDY_FINAL_DECISION_V1/);
-    judge.status = "completed";
-    judge.finalOutput = 'GOALBUDDY_FINAL_DECISION_V1: {"full_outcome_complete":true,"summary":"Oracle passed."}';
-    await finalizeSettledTask(created, judge);
-    assert.equal(await appendNextGoalBuddyTask(created, judge), undefined);
-    assert.equal(created.goalBuddyAdapter?.status, "complete");
-
-    const updated = parse(await readFile(statePath, "utf8"));
-    assert.equal(updated.active_task, null);
-    assert.equal(updated.goal.status, "completed");
-    assert.equal(updated.tasks[0].status, "done");
-    assert.equal(updated.tasks[0].receipt.full_outcome_complete, true);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("preflights a serial GoalBuddy pipeline in declared order", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-pipeline-"));
-  const project = join(root, "repository");
-  const first = join(root, "first.yaml");
-  const second = join(root, "second.yaml");
-  const goal = (slug: string) => ({
-    version: 2,
-    goal: { title: slug, slug, status: "active" },
-    active_task: "T001",
-    tasks: [{
-      id: "T001",
-      type: "scout",
-      assignee: "Scout",
-      status: "active",
-      objective: `Scout ${slug}.`,
-      constraints: ["Read-only."],
-      expected_output: ["Evidence map"],
-    }],
-  });
-  try {
-    await mkdir(project);
-    await writeFile(first, stringify(goal("first-goal")), "utf8");
-    await writeFile(second, stringify(goal("second-goal")), "utf8");
-    const pipeline = await loadGoalBuddyPipeline({
-      version: 1,
-      projectPath: project,
-      goals: [{ statePath: first }, { statePath: second }],
-      policy: { stopOnFailure: true, autoCommit: false },
-    });
-    assert.equal(pipeline.kind, "goalbuddy");
-    assert.equal(pipeline.queues.length, 2);
-    assert.deepEqual(
-      pipeline.queues.map((entry: { goalSlug?: string }) => entry.goalSlug),
-      ["first-goal", "second-goal"],
-    );
-    assert.deepEqual(
-      pipeline.queues.map((entry: { file: string }) => entry.file),
-      [first, second],
-    );
-    assert.equal(pipeline.currentIndex, 0);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("validates the durable GoalBuddy pipeline receipt contract", () => {
-  const receipt = validateGoalBuddyPipelineReceiptV1({
-    contract_type: "GoalBuddyPipelineReceiptV1",
-    contract_version: "1.0",
-    created_at: new Date().toISOString(),
-    pipeline_id: "pipeline-1",
-    project_path: "D:\\work\\repo",
-    status: "completed",
-    stop_on_failure: true,
-    auto_commit: false,
-    goals: [{
-      index: 0,
-      goal_slug: "first-goal",
-      state_path: "D:\\work\\repo\\docs\\goals\\first-goal\\state.yaml",
-      expected_state_sha256: "a".repeat(64),
-      run_id: "run-1",
-      status: "completed",
-    }],
-  });
-  assert.equal(receipt.contract_type, "GoalBuddyPipelineReceiptV1");
-  assert.throws(
-    () => validateGoalBuddyPipelineReceiptV1({ ...receipt, auto_commit: true }),
-    /GOAL_PIPELINE_RECEIPT_SCHEMA_MISMATCH/,
-  );
-});
-
-test("GoalBuddy sync preserves concurrent board changes and records a conflict", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-conflict-"));
-  const project = join(root, "repository");
-  const statePath = join(root, "state.yaml");
-  const board = {
-    version: 2,
-    goal: { title: "Conflict fixture", slug: "conflict-fixture" },
-    active_task: "T007",
-    tasks: [{ id: "T007", status: "active", objective: "Do guarded work." }],
-  };
-  try {
-    await mkdir(project);
-    await writeFile(statePath, stringify(board), "utf8");
-    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createGoalBuddyRun(preview);
-    const linkedTask = created.tasks[0];
-    linkedTask.status = "completed";
-    await writeFile(statePath, stringify({ ...board, owner_note: "changed concurrently" }), "utf8");
-
-    const written = await finalizeSettledTask(created, linkedTask);
-    assert.ok(written);
-    assert.equal(written.envelope.source_state_unchanged, false);
-    assert.equal(linkedTask.status, "failed");
-    assert.equal(linkedTask.goalBuddySync?.status, "conflict");
-    const preserved = parse(await readFile(statePath, "utf8"));
-    assert.equal(preserved.owner_note, "changed concurrently");
-    assert.equal(preserved.tasks[0].orchestrator_sync, undefined);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("GoalBuddy progression leaves the current card active after a non-success outcome", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-failure-"));
-  const project = join(root, "repository");
-  const statePath = join(root, "state.yaml");
-  const board = {
-    version: 2,
-    goal: { title: "Failure fixture", slug: "failure-fixture", status: "active" },
-    active_task: "T010",
-    tasks: [
-      { id: "T010", status: "active", objective: "Attempt guarded work." },
-      { id: "T011", status: "queued", objective: "Wait for success." },
-    ],
-  };
-  try {
-    await mkdir(project);
-    await writeFile(statePath, stringify(board), "utf8");
-    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createGoalBuddyRun(preview);
-    const linkedTask = created.tasks[0];
-    linkedTask.status = "failed";
-
-    await finalizeSettledTask(created, linkedTask);
-
-    const preserved = parse(await readFile(statePath, "utf8"));
-    assert.equal(preserved.active_task, "T010");
-    assert.equal(preserved.tasks[0].status, "active");
-    assert.equal(preserved.tasks[0].receipt, undefined);
-    assert.equal(preserved.tasks[0].orchestrator_sync.outcome_class, "failure");
-    assert.deepEqual(preserved.tasks[0].orchestrator_sync.progression, {
-      status: "not_advanced",
-      reason: "non_success",
-    });
-    assert.equal(preserved.tasks[1].status, "queued");
-    assert.equal(await appendNextGoalBuddyTask(created, linkedTask), undefined);
-    assert.equal(created.tasks.length, 1);
-    assert.equal(created.goalBuddyAdapter?.status, "stopped");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("GoalBuddy progression records no candidate without closing the goal", async () => {
-  const root = await mkdtemp(join(tmpdir(), "orchestrator-goalbuddy-no-next-"));
-  const project = join(root, "repository");
-  const statePath = join(root, "state.yaml");
-  const board = {
-    version: 2,
-    goal: { title: "No-next fixture", slug: "no-next-fixture", status: "active" },
-    active_task: "T020",
-    tasks: [{ id: "T020", status: "active", objective: "Finish available work." }],
-  };
-  try {
-    await mkdir(project);
-    await writeFile(statePath, stringify(board), "utf8");
-    const preview = await previewGoalBuddyTask({ statePath, projectPath: project });
-    const created = createGoalBuddyRun(preview);
-    const linkedTask = created.tasks[0];
-    linkedTask.status = "completed";
-
-    await finalizeSettledTask(created, linkedTask);
-
-    const preserved = parse(await readFile(statePath, "utf8"));
-    assert.equal(preserved.goal.status, "active");
-    assert.equal(preserved.active_task, "T020");
-    assert.equal(preserved.tasks[0].status, "active");
-    assert.deepEqual(preserved.tasks[0].orchestrator_sync.progression, {
-      status: "not_advanced",
-      reason: "no_queued_task",
-    });
-    assert.equal(await appendNextGoalBuddyTask(created, linkedTask), undefined);
-    assert.equal(created.tasks.length, 1);
-    assert.equal(created.goalBuddyAdapter?.status, "complete");
-  } finally {
-    await rm(root, { recursive: true, force: true });
   }
 });

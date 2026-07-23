@@ -8,6 +8,7 @@ const {
   ensureServerAvailability,
   isCompatibleHealth,
   shouldReportServerExit,
+  shouldStopServerOnQuit,
 } = require("./lifecycle.cjs");
 
 const port = Number(process.env.ORCHESTRATOR_PORT || 4318);
@@ -165,6 +166,6 @@ if (configureSingleInstance(app, () => mainWindow)) {
   app.on("window-all-closed", () => app.quit());
   app.on("before-quit", () => {
     isQuitting = true;
-    stopServer();
+    if (shouldStopServerOnQuit({ ownsServer })) stopServer();
   });
 }

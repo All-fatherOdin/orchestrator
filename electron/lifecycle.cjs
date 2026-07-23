@@ -41,6 +41,10 @@ function shouldReportServerExit({ isQuitting, ownsServer, serverReady }) {
   return !isQuitting && ownsServer && serverReady;
 }
 
+function shouldStopServerOnQuit({ ownsServer }) {
+  return ownsServer === true;
+}
+
 module.exports = {
   ORCHESTRATOR_API_VERSION,
   ORCHESTRATOR_SERVICE,
@@ -48,4 +52,5 @@ module.exports = {
   ensureServerAvailability,
   isCompatibleHealth,
   shouldReportServerExit,
+  shouldStopServerOnQuit,
 };

@@ -1,6 +1,6 @@
 # Orchestrator
 
-Local task queue for Codex CLI. It runs tasks **sequentially**, each in a fresh `codex exec --ephemeral` session, while the browser dashboard shows live progress.
+Local task queue for Codex CLI. It runs each task in a fresh `codex exec --ephemeral` session, schedules dependencies safely, and shows live progress in the browser dashboard.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ npm run build
 npm start
 ```
 
-The desktop app is single-instance. A second launch focuses the existing window instead of starting another server. If a compatible standalone Orchestrator is already healthy on the configured port, desktop attaches to it without taking ownership and leaves it running when the window closes. Server recovery starts only after the HTTP port has been acquired, and a run with a live matching lock owner is never marked interrupted by another process.
+The desktop app is single-instance. A second launch focuses the existing window instead of starting another server. If a compatible standalone Orchestrator is already healthy on the configured port, desktop attaches without taking ownership and leaves it running when the window closes. Otherwise desktop owns the server it starts and stops it during shutdown. Server recovery starts only after the HTTP port has been acquired, and a run with a live matching lock owner is never marked interrupted by another process.
 
 The target repository's `AGENTS.md` and `.codex/config.toml` remain the source of truth: each CLI process is launched with that repository as its working directory.
 
@@ -34,33 +34,11 @@ See [queues.plan.example.yaml](queues.plan.example.yaml). Before starting any wo
 
 While a queue is running or paused, use **Add YAML after current** in the dashboard to append another task-queue YAML. The uploaded YAML is validated immediately and copied to `.orchestrator/plans/<plan-id>/queues/`; it will start only after the active queue completes successfully. This also works for a run that was started from a single queue YAML: it is promoted to a sequential plan automatically.
 
-## GoalBuddy goals and serial goal pipelines
-
-Use the **GoalBuddy** page for adaptive work described by a GoalBuddy `state.yaml`. The bridge preserves the complete active-card role contract: `type`, `assignee`, `reasoning_hint`, `inputs`, `constraints`, `expected_output`, `allowed_files`, `verify`, and `stop_if`. Scout and Judge prompts are explicitly read-only. An active Worker is rejected until both `allowed_files` and `verify` are non-empty.
-
-Within one goal, every card runs in a fresh `codex exec --ephemeral` context. When a Judge must scope the next Worker, its prompt requires a `GOALBUDDY_NEXT_TASK_PATCH_V1` decision; the Orchestrator validates that decision and writes the bounded objective, paths, checks, and guards into the Worker card before activation. A strict run completes only when T999 returns an evidence-backed `GOALBUDDY_FINAL_DECISION_V1` with `full_outcome_complete: true`.
-
-For several distinct GoalBuddy outcomes that must execute one after another, use [goalbuddy.plan.example.yaml](goalbuddy.plan.example.yaml). User-specific plans belong in `queues/`:
-
-```yaml
-version: 1
-projectPath: D:\pet-projects\orchestrator
-goals:
-  - statePath: docs/goals/runtime-baseline/state.yaml
-  - statePath: docs/goals/approval-boundary/state.yaml
-policy:
-  stopOnFailure: true
-  autoCommit: false
-```
-
-The Orchestrator preflights every board before starting any work, preserves the declared order, and starts the next goal only after the previous goal's strict final audit completes. A failed task, board conflict, missing Judge scope, unproven oracle, timeout, cancellation, or project-lock failure stops the pipeline. The terminal record is written to `.orchestrator/plans/<pipeline-id>/goalbuddy-pipeline-receipt-v1.json`. Goal pipelines never run goals in parallel and never create commits automatically.
-
 Choose the format by intent:
 
-- **Task queue:** bounded tasks and scopes are known up front.
+- **Current Codex session:** one bounded task.
+- **Task queue:** two or more bounded tasks and scopes are known up front.
 - **Sequential queue plan:** several already-defined task queue YAML files must run serially.
-- **One GoalBuddy goal:** one adaptive outcome needs Scout/Judge/Worker discovery and one oracle.
-- **Serial GoalBuddy pipeline:** several distinct GoalBuddy outcomes each have their own board and oracle, and later goals depend on earlier completion.
 
 Repository agents receive the same routing rules from `AGENTS.md`, so a request such as “compose an Orchestrator queue” should be classified before files are created.
 
@@ -76,7 +54,7 @@ Generated `ContextRequestV1`, `ContextBundleV1`, and `ContextReceiptV1` values a
 
 ### Dependencies and parallel execution
 
-For queues intended for a dependency-aware scheduler, give every task a stable YAML `key` and use `dependsOn` to name only its direct prerequisites. A task becomes runnable when every key in `dependsOn` has completed; all runnable tasks without a dependency or resource conflict can be launched in parallel. The current runner still executes the queue sequentially, but validates and preserves this graph for a parallel scheduler.
+For dependency-aware queues, give every task a stable YAML `key` and use `dependsOn` to name only its direct prerequisites. A task becomes runnable when every key in `dependsOn` has completed; all runnable tasks without a dependency, path, or resource conflict can be launched in parallel.
 
 Set `limits.maxParallelTasks` to the maximum safe concurrency (from `1` to `4`); it defaults to `1` to preserve sequential execution. Use `resources` for named exclusive resources such as `postgres-schema`, `staging`, `port-4317`, or `stripe-sandbox`. Two tasks with the same resource are valid, but the scheduler must not run them together.
 
