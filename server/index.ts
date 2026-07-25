@@ -1,6 +1,7 @@
 import express from "express";
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import {
   mkdir,
@@ -12,16 +13,71 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse } from "yaml";
+import { renderProductionLegacyPromptV1 } from "./prompt-compiler-v1/legacy-prompt-renderer.mjs";
 // The static imports keep exact schema snapshots embedded in the desktop server bundle.
 import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
 import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
 import contextReceiptV1Schema from "./context-contract-v1/schemas/context-receipt-v1.schema.json";
+import {
+  applyContextProgrammaticReductionV1,
+  type ContextProgrammaticReductionV1,
+  type ContextPtcOptions,
+} from "./programmatic-tool-calling-v1/index.ts";
+import {
+  providerReasoningModeV1,
+  recordProviderRuntimeStateForAdapterV1,
+  sanitizeProviderReplayItemsV1,
+  selectProviderRuntimeContinuationV1,
+  validateProviderRuntimeStateV1,
+  type ProviderRuntimeAdapterV1,
+  type ProviderRuntimeDecisionV1,
+  type ProviderRuntimeIdentityV1,
+  type ProviderRuntimeStateV1,
+} from "./provider-runtime-state-v1/index.ts";
+export {
+  PROVIDER_RUNTIME_STATE_VERSION,
+  changedProviderRuntimeIdentityV1,
+  createProviderRuntimeIdentityV1,
+  providerReasoningModeV1,
+  providerRuntimeIdentityFingerprintV1,
+  recordProviderRuntimeStateV1,
+  recordProviderRuntimeStateForAdapterV1,
+  sanitizeProviderReplayItemsV1,
+  selectProviderRuntimeContinuationV1,
+  validateProviderRuntimeStateV1,
+} from "./provider-runtime-state-v1/index.ts";
+export type {
+  ProviderRuntimeAdapterV1,
+  ProviderReasoningModeV1,
+  ProviderReasoningSummaryV1,
+  ProviderReplayItemV1,
+  ProviderRuntimeDecisionV1,
+  ProviderRuntimeIdentityComponentV1,
+  ProviderRuntimeIdentityV1,
+  ProviderRuntimeStateV1,
+} from "./provider-runtime-state-v1/index.ts";
+export {
+  CONTEXT_PTC_OPERATIONS,
+  ContextPtcFailure,
+  LocalDeterministicContextPtcExecutor,
+  applyContextProgrammaticReductionV1,
+} from "./programmatic-tool-calling-v1/index.ts";
+export type {
+  ContextProgrammaticReductionV1,
+  ContextPtcCallResultV1,
+  ContextPtcCallV1,
+  ContextPtcExecutor,
+  ContextPtcOptions,
+  ContextPtcToolDescriptor,
+} from "./programmatic-tool-calling-v1/index.ts";
 
 type Model = "luna" | "terra" | "sol";
 type RequestedModel = Model | "auto";
 type Effort = "light" | "medium" | "high";
+export type CodexToolRoute = "local-codex-tools";
+type RuntimeEnvironment = Record<string, string | undefined>;
 
 export function codexReasoningEffort(effort: Effort) {
   return effort === "light" ? "low" : effort;
@@ -50,6 +106,48 @@ type ProjectSettings = {
   defaultModel?: Model;
   defaultEffort?: Effort;
   allowedModels?: Model[];
+  /** Explicit, independently configured approvals for exact local apply scopes. */
+  approvedApplyContracts?: TaskApplyApprovalContract[];
+};
+export type TaskIntent = "answer" | "review" | "diagnose" | "apply";
+export type TechnicalPermission = "read_only" | "reversible_local_write";
+export type SideEffectRisk = "none" | "reversible_local_write" | "external_write" | "destructive" | "costly" | "publication" | "scope_expansion" | "ambiguous";
+export type TaskAuthorization = {
+  /** Opt-in rollout gate. Omitted and false preserve legacy queue behavior. */
+  enabled: boolean;
+  /** What the user asked for; it is not inferred from the task prompt. */
+  intent?: TaskIntent;
+  /** The executor capability granted independently of intent. */
+  technicalPermission?: TechnicalPermission;
+  /** Classified side-effect risk, independently of capability and scope. */
+  sideEffectRisk?: SideEffectRisk;
+  /** Fresh, human-approved identifier for one reversible local apply contract. */
+  approvalId?: string;
+};
+export type TaskApplyApprovalContract = {
+  approvalId: string;
+  intent: "apply";
+  technicalPermission: "reversible_local_write";
+  sideEffectRisk: "reversible_local_write";
+  allowedPaths: string[];
+  verificationCommands: string[];
+};
+export type TaskAuthorizationEvidence = {
+  contractType: "TaskAuthorizationEvidenceV1";
+  enabled: boolean;
+  decision: "authorized" | "denied" | "disabled";
+  reason: string;
+  intent?: TaskIntent;
+  technicalPermission?: TechnicalPermission;
+  sideEffectRisk?: SideEffectRisk;
+  approvalId?: string;
+  allowedPaths: string[];
+  verificationCommands: string[];
+  scopeFingerprint: string;
+  goalFingerprint: string;
+  branch: string;
+  authorityFingerprint: string;
+  approvalContractFingerprint?: string;
 };
 type ProjectProfile = {
   id: string;
@@ -83,6 +181,8 @@ export type TaskInput = {
   contextProfile?: string;
   /** Maximum number of context sources selected for this task. */
   maxSources?: number;
+  /** Configuration-gated task-level authorization boundary. Disabled by default. */
+  authorization?: TaskAuthorization;
 };
 
 type ContextPolicyRefs = {
@@ -162,6 +262,7 @@ export type ContextProviderResult = {
   bundle: ContextBundleV1;
   receipt: ContextReceiptV1;
   fallbackReason?: string;
+  programmaticReduction?: ContextProgrammaticReductionV1;
 };
 export interface ContextProvider {
   provide(request: ContextProviderRequest): Promise<ContextProviderResult>;
@@ -439,8 +540,18 @@ export class RepositoryContextHelperProvider implements ContextProvider {
   }
 }
 
-export async function resolveTaskContext(request: ContextProviderRequest, primary: ContextProvider = new RepositoryContextHelperProvider(), fallback: ContextProvider = new FallbackContextProvider()) {
-  try { return await primary.provide(request); }
+export function contextPtcEnabled(environment: RuntimeEnvironment = process.env) {
+  return environment.ORCHESTRATOR_CONTEXT_PTC_V1 === "1";
+}
+
+export async function resolveTaskContext(
+  request: ContextProviderRequest,
+  primary: ContextProvider = new RepositoryContextHelperProvider(),
+  fallback: ContextProvider = new FallbackContextProvider(),
+  ptc: ContextPtcOptions = { enabled: contextPtcEnabled() },
+) {
+  let routed: ContextProviderResult;
+  try { routed = await primary.provide(request); }
   catch (error) {
     const reason = error instanceof ContextProviderFailure ? error.reasonCode : "HELPER_FAILED";
     const result = await fallback.provide(request);
@@ -449,8 +560,9 @@ export async function resolveTaskContext(request: ContextProviderRequest, primar
     result.receipt.checks = [{ check_id: "repository_helper", status: "fail", reason_codes: [reason] }, { check_id: "safe_fallback", status: "pass", reason_codes: [] }];
     validateContextContractV1("bundle", result.bundle);
     validateContextContractV1("receipt", result.receipt);
-    return result;
+    routed = result;
   }
+  return applyContextProgrammaticReductionV1(routed, ptc, validateContextContractV1);
 }
 type ResolvedTask = Omit<TaskInput, "model" | "effort"> & {
   model: Model;
@@ -460,6 +572,14 @@ type ResolvedTask = Omit<TaskInput, "model" | "effort"> & {
 };
 type ReviewStatus =
   "pending" | "approved" | "changes_requested" | "unavailable" | "timed_out";
+type ExecutorOutcome = "COMPLETED" | "STOPPED";
+type ExecutorOutcomeAssessment = {
+  disposition: "completed" | "stopped" | "invalid" | "legacy";
+  outcome?: ExecutorOutcome;
+  reason: string;
+};
+const EXECUTOR_OUTCOME_CONTRACT_VERSION = 1 as const;
+const EXECUTOR_OUTCOME_MARKER = "ORCHESTRATOR_EXECUTOR_OUTCOME_V1";
 type ReviewSettings = {
   enabled: boolean;
   model: Model;
@@ -483,12 +603,23 @@ type Task = ResolvedTask & {
   finalOutput?: string;
   reviewStatus?: ReviewStatus;
   reviewOutput?: string;
+  reviewWriteViolations?: string[];
   attempts?: number;
   executionAttempts?: number;
   checkpoint?: Checkpoint;
   /** Machine-readable accounting emitted by Codex CLI JSON events. */
   usage?: UsageRecord[];
   context?: ContextProviderResult;
+  authorizationEvidence?: TaskAuthorizationEvidence;
+  /** Absent on historical records created before the executor outcome contract. */
+  executorOutcomeContractVersion?: typeof EXECUTOR_OUTCOME_CONTRACT_VERSION;
+  executorOutcome?: ExecutorOutcome;
+  executorOutcomeReason?: string;
+  /** Ephemeral provider metadata; never truth, completion, approval, or durable memory. */
+  providerRuntimeState?: ProviderRuntimeStateV1;
+  /** Last bounded selection persisted before an executor continuation. */
+  providerRuntimeDecision?: ProviderRuntimeDecisionV1;
+  providerRuntimeIdentity?: ProviderRuntimeIdentityV1;
 };
 type UsageRecord = {
   phase: "executor" | "reviewer" | "correction";
@@ -497,6 +628,8 @@ type UsageRecord = {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  /** Provider-reported cache population tokens, when the active provider exposes them. */
+  cacheWriteTokens?: number;
 };
 type Run = {
   id: string;
@@ -563,6 +696,7 @@ type TokenMetrics = {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
   totalTokens: number;
   calls: number;
 };
@@ -591,7 +725,7 @@ function normalizedTokens(value: unknown) {
 
 function tokenMetrics(usage: unknown): TokenMetrics {
   if (!Array.isArray(usage))
-    return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, calls: 0 };
+    return { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, totalTokens: 0, calls: 0 };
   const totals = usage.reduce(
     (sum, record) => {
       if (!record || typeof record !== "object") return sum;
@@ -599,10 +733,11 @@ function tokenMetrics(usage: unknown): TokenMetrics {
       sum.inputTokens += normalizedTokens(entry.inputTokens);
       sum.outputTokens += normalizedTokens(entry.outputTokens);
       sum.cachedInputTokens += normalizedTokens(entry.cachedInputTokens);
+      sum.cacheWriteTokens += normalizedTokens(entry.cacheWriteTokens);
       sum.calls += 1;
       return sum;
     },
-    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, calls: 0 },
+    { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, calls: 0 },
   );
   return { ...totals, totalTokens: totals.inputTokens + totals.outputTokens };
 }
@@ -653,9 +788,10 @@ export function projectRunMetrics(run: Run) {
     inputTokens: sum.inputTokens + task.tokens.inputTokens,
     outputTokens: sum.outputTokens + task.tokens.outputTokens,
     cachedInputTokens: sum.cachedInputTokens + task.tokens.cachedInputTokens,
+    cacheWriteTokens: sum.cacheWriteTokens + task.tokens.cacheWriteTokens,
     totalTokens: sum.totalTokens + task.tokens.totalTokens,
     calls: sum.calls + task.tokens.calls,
-  }), { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, calls: 0 });
+  }), { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, totalTokens: 0, calls: 0 });
   return {
     id: run.id,
     status: run.status,
@@ -673,14 +809,40 @@ const MODEL_IDS: Record<Model, string> = {
 };
 const MODEL_RANK: Record<Model, number> = { luna: 0, terra: 1, sol: 2 };
 
+/**
+ * Terra and Sol are the established Codex CLI routes. Luna stays opt-in until
+ * the installed runtime has been verified to accept it with local Codex tools.
+ * This is deliberately an environment capability, not an optimistic fallback.
+ */
+export function installedCodexModels(environment: RuntimeEnvironment = process.env): Model[] {
+  return environment.CODEX_LUNA_SUPPORTED === "1"
+    ? ["luna", "terra", "sol"]
+    : ["terra", "sol"];
+}
+
+export function assertCodexRouteCompatible(
+  model: Model,
+  effort: Effort,
+  toolRoute: CodexToolRoute = "local-codex-tools",
+  environment: RuntimeEnvironment = process.env,
+) {
+  if (!installedCodexModels(environment).includes(model))
+    throw new Error(`Model ${model} is not enabled by the installed Codex runtime for ${toolRoute}.`);
+  // The UI exposes only the GPT-5.6 reasoning efforts that map directly to
+  // Codex's low, medium, and high settings. Do not silently coerce a route.
+  if (!(["light", "medium", "high"] as string[]).includes(effort))
+    throw new Error(`Reasoning effort ${effort} is not supported for ${model}.`);
+  return { model: MODEL_IDS[model], reasoningEffort: codexReasoningEffort(effort), toolRoute };
+}
+
 function autoModelRecommendation(task: TaskInput): {
   model: Model;
   reason: string;
 } {
+  if (task.minModel === "sol")
+    return { model: "sol", reason: "explicit quality-first minimum" };
   const text = `${task.title} ${task.prompt}`.toLowerCase();
-  if (/\b(security|auth(?:entication|orization)?|migration|architecture|incident|production|payment|billing|concurrency|distributed)\b/.test(text))
-    return { model: "sol", reason: "high-risk or cross-cutting task" };
-  if (/\b(integration|debug|refactor|test|api|database|multiple files)\b/.test(text))
+  if (/\b(security|auth(?:entication|orization)?|migration|architecture|incident|production|payment|billing|concurrency|distributed|integration|debug|refactor|test|api|database|multiple files)\b/.test(text))
     return { model: "terra", reason: "implementation or verification task" };
   return { model: "luna", reason: "contained task" };
 }
@@ -693,8 +855,8 @@ function resolveTaskModel(task: TaskInput, project: ProjectSettings) {
   const recommendation = autoModelRecommendation(task);
   const minimum = task.minModel ?? "luna";
   const available = (project.allowedModels?.length ? project.allowedModels : Object.keys(MODEL_IDS) as Model[])
-    .filter((model) => MODEL_RANK[model] >= MODEL_RANK[minimum])
-    .filter((model) => !(model === "sol" && task.effort === "high"));
+    .filter((model) => installedCodexModels().includes(model))
+    .filter((model) => MODEL_RANK[model] >= MODEL_RANK[minimum]);
   if (!available.length)
     throw new Error("No enabled model satisfies this task's minModel and effort.");
   const model = [...available]
@@ -781,7 +943,7 @@ function publish(event: string, data: unknown) {
   subscribers.forEach((response) => response.write(message));
 }
 
-function writeTextAtomically(file: string, content: string) {
+export function writeTextAtomically(file: string, content: string) {
   const previous = jsonWriteChains.get(file) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
@@ -795,11 +957,12 @@ function writeTextAtomically(file: string, content: string) {
         await unlink(temporary).catch(() => undefined);
         throw error;
       }
-    });
-  jsonWriteChains.set(file, next);
-  void next.finally(() => {
-    if (jsonWriteChains.get(file) === next) jsonWriteChains.delete(file);
   });
+  jsonWriteChains.set(file, next);
+  const cleanup = () => {
+    if (jsonWriteChains.get(file) === next) jsonWriteChains.delete(file);
+  };
+  void next.then(cleanup, cleanup);
   return next;
 }
 
@@ -807,12 +970,11 @@ function writeJsonAtomically(file: string, value: unknown) {
   return writeTextAtomically(file, JSON.stringify(value, null, 2));
 }
 
-function persist(run: Run) {
-  return Promise.all([
-    writeJsonAtomically(join(runsDirectory, run.id, "run.json"), run),
-    writeJsonAtomically(join(runsDirectory, run.id, "summary.json"), runSummary(run)),
-  ]).then(
-    () => undefined,
+async function persist(run: Run) {
+  await writeJsonAtomically(join(runsDirectory, run.id, "run.json"), run);
+  await writeJsonAtomically(
+    join(runsDirectory, run.id, "summary.json"),
+    runSummary(run),
   );
 }
 export const persistRun = persist;
@@ -916,6 +1078,48 @@ export async function runHasLiveOwner(
   }
 }
 
+export async function clearDeadProjectLock(
+  run: {
+    id: string;
+    project: { path: string };
+    lock?: { path: string; acquiredAt: string };
+  },
+  isAlive: (pid: number) => boolean = processIsAlive,
+) {
+  const path = run.lock?.path ?? join(run.project.path, projectLockName);
+  try {
+    const owner = JSON.parse(await readFile(path, "utf8")) as {
+      runId?: string;
+      pid?: number;
+    };
+    if (
+      owner.runId !== run.id ||
+      typeof owner.pid !== "number" ||
+      owner.pid <= 0 ||
+      isAlive(owner.pid)
+    )
+      return false;
+    await unlink(path);
+    run.lock = undefined;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function reconcilePersistedRunOwner(
+  run: {
+    id: string;
+    project: { path: string };
+    lock?: { path: string; acquiredAt: string };
+  },
+  isAlive: (pid: number) => boolean = processIsAlive,
+) {
+  const hasLiveOwner = await runHasLiveOwner(run, isAlive);
+  if (!hasLiveOwner) await clearDeadProjectLock(run, isAlive);
+  return hasLiveOwner;
+}
+
 export async function bindBeforeRecovery<T extends {
   close?: (callback: () => void) => void;
 }>(
@@ -947,13 +1151,18 @@ async function recoverInterruptedRuns() {
     if (!entry.isDirectory()) continue;
     const file = join(runsDirectory, entry.name, "run.json");
     if (!existsSync(file)) continue;
-    const run = JSON.parse(await readFile(file, "utf8")) as Run;
+    const run = normalizeProviderRuntimePersistenceV1(
+      JSON.parse(await readFile(file, "utf8")) as Run,
+    );
+    const branch = await currentBranchIdentity(run.project.path);
+    assertStoredRunAuthorizations(run, branch);
+    const hasLiveOwner = await reconcilePersistedRunOwner(run);
     if (run.status === "paused") {
       pausedRuns.push(run);
       continue;
     }
-    if (run.status !== "running" || await runHasLiveOwner(run)) continue;
-    recoverRun(run);
+    if (run.status !== "running" || hasLiveOwner) continue;
+    recoverRun(run, branch);
     await persist(run);
   }
   for (const run of pausedRuns.sort((left, right) =>
@@ -975,25 +1184,33 @@ async function recoverInterruptedRuns() {
 export async function loadRun(id: string) {
   const file = join(runsDirectory, id, "run.json");
   if (!existsSync(file)) return undefined;
-  return JSON.parse(await readFile(file, "utf8")) as Run;
+  const run = normalizeProviderRuntimePersistenceV1(
+    JSON.parse(await readFile(file, "utf8")) as Run,
+  );
+  assertStoredRunAuthorizations(run, await currentBranchIdentity(run.project.path));
+  return run;
 }
 
-async function loadRunSummary(id: string): Promise<RunSummary | undefined> {
+export async function loadRunSummary(id: string): Promise<RunSummary | undefined> {
   const file = join(runsDirectory, id, "summary.json");
+  let summary: RunSummary | undefined;
   if (existsSync(file)) {
-    const summary = JSON.parse(await readFile(file, "utf8")) as RunSummary;
-    if (summary.schemaVersion === 2) return summary;
-    const run = await loadRun(id);
-    if (!run) return summary;
-    const refreshed = runSummary(run);
-    void writeJsonAtomically(file, refreshed);
-    return refreshed;
+    try {
+      summary = JSON.parse(await readFile(file, "utf8")) as RunSummary;
+    } catch {
+      summary = undefined;
+    }
   }
   const run = await loadRun(id);
-  if (!run) return undefined;
-  const summary = runSummary(run);
-  void writeJsonAtomically(file, summary);
-  return summary;
+  if (!run) return summary;
+  const refreshed = runSummary(run);
+  if (
+    summary?.schemaVersion === 2 &&
+    JSON.stringify(summary) === JSON.stringify(refreshed)
+  )
+    return summary;
+  await writeJsonAtomically(file, refreshed);
+  return refreshed;
 }
 
 async function listRuns() {
@@ -1049,6 +1266,7 @@ export function usageFromEvent(line: string): Omit<UsageRecord, "phase" | "attem
       inputTokens: value("input_tokens"),
       outputTokens: value("output_tokens"),
       cachedInputTokens: value("cached_input_tokens"),
+      cacheWriteTokens: value("cache_write_tokens") || value("cache_creation_input_tokens"),
     };
   } catch {
     return undefined;
@@ -1121,6 +1339,9 @@ function markdownReport(run: Run) {
         `Executor attempts: ${task.executionAttempts ?? 0}/${(task.maxRetries ?? limits.maxTaskRetries) + 1}`,
         `Timeout: ${task.timeoutMinutes ?? limits.taskTimeoutMinutes} min`,
         `Reviewer: ${task.reviewStatus ?? "—"}`,
+        `Provider runtime: ${task.providerRuntimeDecision
+          ? `${task.providerRuntimeDecision.strategy} (${task.providerRuntimeDecision.reason}; invalidated: ${task.providerRuntimeDecision.invalidatedBy.join(", ") || "none"})`
+          : "—"}`,
         `Usage: ${usage.input} input / ${usage.output} output / ${usage.cached} cached tokens`,
       ].join("\n");
       const logs = task.log.length
@@ -1152,6 +1373,337 @@ export function outsideAllowedPaths(
   );
 }
 
+function authorizationScope(task: Pick<TaskInput, "allowedPaths" | "verificationCommands">, project: ProjectSettings) {
+  return {
+    allowedPaths: [...(task.allowedPaths ?? [])],
+    verificationCommands: [...new Set([...(project.verificationCommands ?? []), ...(task.verificationCommands ?? [])])],
+  };
+}
+
+function scopeFingerprint(scope: { allowedPaths: string[]; verificationCommands: string[] }) {
+  return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
+}
+
+function taskGoalFingerprint(
+  task: Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
+) {
+  return createHash("sha256").update(JSON.stringify({
+    key: task.key ?? "",
+    title: task.title ?? "",
+    prompt: task.prompt ?? "",
+  })).digest("hex");
+}
+
+function taskAuthorityFingerprint(
+  authorization: TaskAuthorization | undefined,
+  project: ProjectSettings & { name?: string; path?: string },
+) {
+  return createHash("sha256").update(JSON.stringify({
+    projectName: project.name ?? "",
+    projectPath: project.path ?? "",
+    approvalId: authorization?.approvalId ?? "",
+  })).digest("hex");
+}
+
+function applyContractFingerprint(contract: TaskApplyApprovalContract) {
+  return createHash("sha256").update(JSON.stringify(contract)).digest("hex");
+}
+
+function matchingApplyContract(
+  authorization: TaskAuthorization,
+  scope: { allowedPaths: string[]; verificationCommands: string[] },
+  project: ProjectSettings,
+) {
+  const contract = project.approvedApplyContracts?.find(
+    (candidate) => candidate.approvalId === authorization.approvalId,
+  );
+  if (!contract) return undefined;
+  const contractScope = {
+    allowedPaths: contract.allowedPaths,
+    verificationCommands: contract.verificationCommands,
+  };
+  return contract.intent === "apply" &&
+    contract.technicalPermission === "reversible_local_write" &&
+    contract.sideEffectRisk === "reversible_local_write" &&
+    scopeFingerprint(contractScope) === scopeFingerprint(scope)
+    ? contract
+    : undefined;
+}
+
+/**
+ * Evaluates the opt-in authorization boundary without inferring intent, risk, or
+ * capability from the task prompt. All non-local or ambiguous effects fail closed.
+ */
+export function authorizeTask(
+  task: Pick<TaskInput, "authorization" | "allowedPaths" | "verificationCommands"> &
+    Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
+  project: ProjectSettings = {},
+  branch = "",
+): TaskAuthorizationEvidence {
+  const authorization = task.authorization;
+  const scope = authorizationScope(task, project);
+  const base = {
+    contractType: "TaskAuthorizationEvidenceV1" as const,
+    enabled: Boolean(authorization?.enabled),
+    intent: authorization?.intent,
+    technicalPermission: authorization?.technicalPermission,
+    sideEffectRisk: authorization?.sideEffectRisk,
+    approvalId: authorization?.approvalId,
+    ...scope,
+    scopeFingerprint: scopeFingerprint(scope),
+    goalFingerprint: taskGoalFingerprint(task),
+    branch,
+    authorityFingerprint: taskAuthorityFingerprint(authorization, project),
+  };
+  if (!authorization?.enabled)
+    return { ...base, decision: "disabled", reason: "FEATURE_DISABLED" };
+  if (!authorization.intent || !authorization.technicalPermission || !authorization.sideEffectRisk)
+    return { ...base, decision: "denied", reason: "AMBIGUOUS_CLASSIFICATION" };
+  if (["external_write", "destructive", "costly", "publication", "scope_expansion", "ambiguous"].includes(authorization.sideEffectRisk))
+    return { ...base, decision: "denied", reason: "FRESH_EXPLICIT_GATE_REQUIRED" };
+  if (["answer", "review", "diagnose"].includes(authorization.intent)) {
+    if (authorization.technicalPermission !== "read_only" || authorization.sideEffectRisk !== "none")
+      return { ...base, decision: "denied", reason: "NON_MUTATING_CONTRACT_REQUIRED" };
+    return { ...base, decision: "authorized", reason: "NON_MUTATING_AUTHORIZED" };
+  }
+  if (authorization.intent !== "apply" || authorization.technicalPermission !== "reversible_local_write" || authorization.sideEffectRisk !== "reversible_local_write")
+    return { ...base, decision: "denied", reason: "APPLY_CONTRACT_MISMATCH" };
+  if (!authorization.approvalId?.trim())
+    return { ...base, decision: "denied", reason: "FRESH_EXPLICIT_GATE_REQUIRED" };
+  if (!scope.allowedPaths.length || !scope.verificationCommands.length)
+    return { ...base, decision: "denied", reason: "EXACT_SCOPE_REQUIRED" };
+  const approval = matchingApplyContract(authorization, scope, project);
+  if (!approval)
+    return { ...base, decision: "denied", reason: "APPROVAL_CONTRACT_MISMATCH" };
+  return {
+    ...base,
+    decision: "authorized",
+    reason: "APPROVED_REVERSIBLE_LOCAL_APPLY",
+    approvalContractFingerprint: applyContractFingerprint(approval),
+  };
+}
+
+/** Replay only succeeds when current inputs and the configured approval reproduce stored evidence. */
+export function replayTaskAuthorization(
+  evidence: TaskAuthorizationEvidence,
+  task: Pick<TaskInput, "authorization" | "allowedPaths" | "verificationCommands"> &
+    Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
+  project: ProjectSettings = {},
+  branch = evidence.branch,
+) {
+  const replayed = authorizeTask(task, project, branch);
+  return JSON.stringify(replayed) === JSON.stringify(evidence);
+}
+
+/** Verifies loaded evidence against the current task, contract, branch, and authority. */
+export function verifyStoredTaskAuthorization(
+  evidence: TaskAuthorizationEvidence | undefined,
+  task: Pick<TaskInput, "authorization" | "allowedPaths" | "verificationCommands"> &
+    Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
+  project: ProjectSettings = {},
+  branch = evidence?.branch ?? "",
+) {
+  if (!evidence) return false;
+  return replayTaskAuthorization(evidence, task, project, branch);
+}
+
+export const codexCliProviderRuntimeAdapterV1: ProviderRuntimeAdapterV1 =
+  Object.freeze({
+    id: "codex-cli-ephemeral-v1",
+    supportsPreviousResponseId: false,
+    supportsManualReplay: false,
+  });
+
+function providerRuntimeComponentFingerprintV1(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+type ProviderRuntimeTaskV1 = Pick<
+  Task,
+  | "key"
+  | "title"
+  | "prompt"
+  | "allowedPaths"
+  | "verificationCommands"
+  | "model"
+  | "requestedModel"
+  | "minModel"
+  | "effort"
+  | "modelSelectionReason"
+  | "context"
+  | "authorization"
+  | "authorizationEvidence"
+>;
+type ProviderRuntimeProjectV1 = ProjectSettings & {
+  name?: string;
+  path?: string;
+};
+
+export function providerRuntimeIdentityForTaskV1(
+  task: ProviderRuntimeTaskV1,
+  project: ProviderRuntimeProjectV1,
+  branch: string,
+): ProviderRuntimeIdentityV1 {
+  const authorization =
+    task.authorizationEvidence ?? authorizeTask(task, project, branch);
+  return {
+    goal: taskGoalFingerprint(task),
+    scope: scopeFingerprint(authorizationScope(task, project)),
+    branch: branch || "branch-unavailable",
+    priority: providerRuntimeComponentFingerprintV1({
+      model: task.model,
+      requestedModel: task.requestedModel,
+      minModel: task.minModel ?? "",
+      effort: task.effort,
+      modelSelectionReason: task.modelSelectionReason,
+      sources: (task.context?.bundle.sources ?? []).map((source) => ({
+        path: source.path,
+        priority: source.priority,
+        authority: source.authority,
+      })),
+    }),
+    authorization: providerRuntimeComponentFingerprintV1({
+      configuredAuthorization: task.authorization ?? null,
+      approvedApplyContracts: project.approvedApplyContracts ?? [],
+      contractType: authorization.contractType,
+      enabled: authorization.enabled,
+      decision: authorization.decision,
+      reason: authorization.reason,
+      intent: authorization.intent ?? "",
+      technicalPermission: authorization.technicalPermission ?? "",
+      sideEffectRisk: authorization.sideEffectRisk ?? "",
+      approvalId: authorization.approvalId ?? "",
+      authorityFingerprint: authorization.authorityFingerprint,
+      approvalContractFingerprint:
+        authorization.approvalContractFingerprint ?? "",
+    }),
+  };
+}
+
+export function prepareProviderRuntimeContinuationForTaskV1(input: {
+  task: ProviderRuntimeTaskV1 & {
+    providerRuntimeState?: ProviderRuntimeStateV1;
+  };
+  project: ProviderRuntimeProjectV1;
+  branch: string;
+  environment?: RuntimeEnvironment;
+  adapter?: ProviderRuntimeAdapterV1;
+}) {
+  const adapter = input.adapter ?? codexCliProviderRuntimeAdapterV1;
+  const mode = providerReasoningModeV1(input.environment);
+  const identity = providerRuntimeIdentityForTaskV1(
+    input.task,
+    input.project,
+    input.branch,
+  );
+  const decision = selectProviderRuntimeContinuationV1({
+    mode,
+    identity,
+    state: input.branch ? input.task.providerRuntimeState : undefined,
+    supportsPreviousResponseId: adapter.supportsPreviousResponseId,
+    supportsManualReplay: adapter.supportsManualReplay,
+  });
+  const invalidated = decision.invalidatedBy.length
+    ? decision.invalidatedBy.join(",")
+    : "none";
+  return {
+    identity,
+    decision,
+    state:
+      decision.stateDisposition === "retain"
+        ? input.task.providerRuntimeState
+        : undefined,
+    log:
+      `Provider runtime: adapter=${adapter.id} strategy=${decision.strategy} ` +
+      `reason=${decision.reason} invalidated=${invalidated}`,
+  };
+}
+
+export function normalizeProviderRuntimePersistenceV1(run: Run) {
+  for (const task of run.tasks) {
+    if (task.providerRuntimeState)
+      task.providerRuntimeState = validateProviderRuntimeStateV1(
+        task.providerRuntimeState,
+      );
+    if (!task.providerRuntimeDecision) continue;
+    const decision = task.providerRuntimeDecision;
+    task.providerRuntimeDecision = {
+      mode: decision.mode,
+      stateDisposition: decision.stateDisposition,
+      strategy: decision.strategy,
+      reason: decision.reason,
+      invalidatedBy: [...decision.invalidatedBy],
+      previousResponseId: decision.previousResponseId,
+      manualReplayItems: decision.manualReplayItems
+        ? sanitizeProviderReplayItemsV1(decision.manualReplayItems)
+        : undefined,
+    };
+  }
+  return run;
+}
+
+export function taskSandbox(evidence: TaskAuthorizationEvidence) {
+  return evidence.enabled && evidence.intent !== "apply" ? "read-only" : "workspace-write";
+}
+
+export function codexExecutionBoundaryArgs(
+  evidence: TaskAuthorizationEvidence,
+  phase: "executor" | "reviewer" | "correction",
+) {
+  const sandbox = phase === "reviewer" ? "read-only" : taskSandbox(evidence);
+  const args = ["--sandbox", sandbox];
+  if (evidence.enabled || phase === "reviewer")
+    args.push("-c", "sandbox_workspace_write.network_access=false");
+  return args;
+}
+
+export function orchestratorVerificationCommands(
+  evidence: TaskAuthorizationEvidence,
+) {
+  return evidence.enabled &&
+    evidence.decision === "authorized" &&
+    evidence.intent === "apply"
+    ? [...evidence.verificationCommands]
+    : [];
+}
+
+export function authorizationWriteViolations(
+  evidence: TaskAuthorizationEvidence,
+  changedFiles: string[],
+) {
+  if (!evidence.enabled) return [];
+  if (evidence.intent !== "apply") return changedFiles;
+  return outsideAllowedPaths(changedFiles, evidence.allowedPaths);
+}
+
+function assertStoredRunAuthorizations(run: Run, branch?: string) {
+  for (const task of run.tasks) {
+    if (!task.authorization?.enabled && !task.authorizationEvidence?.enabled)
+      continue;
+    if (!verifyStoredTaskAuthorization(
+      task.authorizationEvidence,
+      task,
+      run.project,
+      branch ?? task.authorizationEvidence?.branch ?? "",
+    ))
+      throw new Error(
+        `Stored authorization for task "${task.title}" is stale or mismatched; a fresh contract is required.`,
+      );
+  }
+}
+
+async function taskAuthorizationIdentityViolations(run: Run, task: Task) {
+  if (!task.authorizationEvidence?.enabled) return [];
+  return verifyStoredTaskAuthorization(
+    task.authorizationEvidence,
+    task,
+    run.project,
+    await currentBranchIdentity(run.project.path),
+  )
+    ? []
+    : ["<authorization-identity-changed>"];
+}
+
 export function validateQueue(value: unknown): {
   project: { name: string; path: string } & ProjectSettings;
   tasks: ResolvedTask[];
@@ -1174,6 +1726,25 @@ export function validateQueue(value: unknown): {
   const projectPath = resolve(project.path!);
   if (!existsSync(projectPath))
     throw new Error(`Project path does not exist: ${projectPath}`);
+  if (project.approvedApplyContracts !== undefined) {
+    if (!Array.isArray(project.approvedApplyContracts))
+      throw new Error("project.approvedApplyContracts must be a list.");
+    const approvalIds = new Set<string>();
+    for (const contract of project.approvedApplyContracts) {
+      if (!contract || typeof contract !== "object" ||
+        typeof contract.approvalId !== "string" || !contract.approvalId.trim() ||
+        contract.intent !== "apply" ||
+        contract.technicalPermission !== "reversible_local_write" ||
+        contract.sideEffectRisk !== "reversible_local_write" ||
+        !Array.isArray(contract.allowedPaths) || !contract.allowedPaths.length ||
+        !Array.isArray(contract.verificationCommands) || !contract.verificationCommands.length ||
+        [...contract.allowedPaths, ...contract.verificationCommands].some((item) => typeof item !== "string" || !item.trim()))
+        throw new Error("project.approvedApplyContracts entries must declare one exact reversible local apply scope.");
+      if (approvalIds.has(contract.approvalId))
+        throw new Error("project.approvedApplyContracts approvalId values must be unique.");
+      approvalIds.add(contract.approvalId);
+    }
+  }
   const limits = { ...defaultLimits, ...queue.limits };
   if (
     !Number.isInteger(limits.taskTimeoutMinutes) ||
@@ -1257,10 +1828,7 @@ export function validateQueue(value: unknown): {
       );
     if (!["light", "medium", "high"].includes(effort))
       throw new Error(`Task ${index + 1}: unsupported effort.`);
-    if (model === "sol" && effort === "high")
-      throw new Error(
-        `Task ${index + 1}: Sol with high effort is disabled in MVP.`,
-      );
+    assertCodexRouteCompatible(model, effort);
     if (
       task.timeoutMinutes !== undefined &&
       (!Number.isInteger(task.timeoutMinutes) ||
@@ -1305,6 +1873,21 @@ export function validateQueue(value: unknown): {
       )
         throw new Error(`Task ${index + 1}: ${field} must be a list of non-empty strings.`);
     }
+    const authorization = task.authorization;
+    if (authorization !== undefined) {
+      if (!authorization || typeof authorization !== "object" || typeof authorization.enabled !== "boolean")
+        throw new Error(`Task ${index + 1}: authorization must include enabled: true or false.`);
+      if (authorization.enabled) {
+        if (!(["answer", "review", "diagnose", "apply"] as string[]).includes(authorization.intent ?? ""))
+          throw new Error(`Task ${index + 1}: enabled authorization requires a recognized intent.`);
+        if (!(["read_only", "reversible_local_write"] as string[]).includes(authorization.technicalPermission ?? ""))
+          throw new Error(`Task ${index + 1}: enabled authorization requires a recognized technicalPermission.`);
+        if (!(["none", "reversible_local_write", "external_write", "destructive", "costly", "publication", "scope_expansion", "ambiguous"] as string[]).includes(authorization.sideEffectRisk ?? ""))
+          throw new Error(`Task ${index + 1}: enabled authorization requires a recognized sideEffectRisk.`);
+      }
+      if (authorization.approvalId !== undefined && (typeof authorization.approvalId !== "string" || !authorization.approvalId.trim()))
+        throw new Error(`Task ${index + 1}: authorization.approvalId must be a non-empty string.`);
+    }
     return {
       key: task.key,
       dependsOn: task.dependsOn,
@@ -1321,6 +1904,7 @@ export function validateQueue(value: unknown): {
       maxRetries: task.maxRetries,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
+      authorization: task.authorization,
       requestedModel: selection.requestedModel,
       modelSelectionReason: selection.reason,
     };
@@ -1395,17 +1979,25 @@ export function resolveTaskStatus({
   exitCode,
   timedOut,
   violations,
+  executorOutcome,
 }: {
   cancelled: boolean;
   skipped: boolean;
   exitCode: number;
   timedOut: boolean;
   violations: string[];
+  executorOutcome?: ExecutorOutcomeAssessment;
 }): Status {
   if (cancelled) return "cancelled";
   if (skipped) return "skipped";
   if (timedOut) return "timed_out";
-  return exitCode === 0 && violations.length === 0 ? "completed" : "failed";
+  return exitCode === 0 &&
+    violations.length === 0 &&
+    (!executorOutcome ||
+      executorOutcome.disposition === "completed" ||
+      executorOutcome.disposition === "legacy")
+    ? "completed"
+    : "failed";
 }
 
 async function ensureRunSummaries() {
@@ -1481,9 +2073,109 @@ export function resolveReviewedTaskStatus(
   reviewStatus?: ReviewStatus,
 ): Status {
   if (status !== "completed") return status;
+  if (reviewStatus === "approved") return "completed";
   if (reviewStatus === "timed_out") return "timed_out";
-  if (reviewStatus === "changes_requested") return "failed";
-  return "completed";
+  return "failed";
+}
+
+export function assessExecutorOutcome(
+  output: string | undefined,
+  contractVersion: number | undefined,
+): ExecutorOutcomeAssessment {
+  if (contractVersion === undefined)
+    return {
+      disposition: "legacy",
+      reason: "Historical execution has no executor outcome contract.",
+    };
+  if (contractVersion !== EXECUTOR_OUTCOME_CONTRACT_VERSION)
+    return {
+      disposition: "invalid",
+      reason: `Unsupported executor outcome contract version: ${contractVersion}.`,
+    };
+  const markerLines = (output ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(`${EXECUTOR_OUTCOME_MARKER}:`));
+  if (markerLines.length === 0)
+    return {
+      disposition: "invalid",
+      reason: `Required executor outcome marker ${EXECUTOR_OUTCOME_MARKER} is missing.`,
+    };
+  if (markerLines.length !== 1)
+    return {
+      disposition: "invalid",
+      reason: `Required executor outcome marker ${EXECUTOR_OUTCOME_MARKER} must appear exactly once.`,
+    };
+  const match = markerLines[0].match(
+    /^ORCHESTRATOR_EXECUTOR_OUTCOME_V1: (COMPLETED|STOPPED)$/,
+  );
+  if (!match)
+    return {
+      disposition: "invalid",
+      reason: `Required executor outcome marker ${EXECUTOR_OUTCOME_MARKER} is malformed.`,
+    };
+  const outcome = match[1] as ExecutorOutcome;
+  return outcome === "COMPLETED"
+    ? {
+        disposition: "completed",
+        outcome,
+        reason: "Executor reported COMPLETED.",
+      }
+    : {
+        disposition: "stopped",
+        outcome,
+        reason: "Executor reported STOPPED; the requested outcome was not delivered.",
+      };
+}
+
+export function assessReviewerResult({
+  exitCode,
+  timedOut,
+  report,
+}: {
+  exitCode: number;
+  timedOut: boolean;
+  report: string | undefined;
+}): { status: ReviewStatus; reason: string } {
+  if (timedOut)
+    return { status: "timed_out", reason: "Reviewer timed out before approval." };
+  if (exitCode !== 0)
+    return {
+      status: "unavailable",
+      reason: `Reviewer exited with code ${exitCode}; approval was not established.`,
+    };
+  if (!report?.trim())
+    return {
+      status: "unavailable",
+      reason: "Reviewer did not return a report; approval was not established.",
+    };
+  const verdictLines = report
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("VERDICT:"));
+  if (verdictLines.length !== 1)
+    return {
+      status: "changes_requested",
+      reason: "Reviewer report must contain exactly one machine-readable verdict.",
+    };
+  const verdict = verdictLines[0].match(
+    /^VERDICT: (APPROVED|CHANGES_REQUESTED)$/,
+  )?.[1];
+  if (!verdict)
+    return {
+      status: "changes_requested",
+      reason: "Reviewer report contains a malformed verdict.",
+    };
+  return verdict === "APPROVED"
+    ? { status: "approved", reason: "Reviewer approved the task." }
+    : {
+        status: "changes_requested",
+        reason: "Reviewer requested changes.",
+      };
+}
+
+export function boundedReviewerDiagnostics(value: string) {
+  return value.trim().slice(-8_000);
 }
 
 function pathsOverlap(left: string, right: string) {
@@ -1654,6 +2346,7 @@ export function createRun(
       status: "pending",
       log: [],
       context: contexts[index],
+      executorOutcomeContractVersion: EXECUTOR_OUTCOME_CONTRACT_VERSION,
     })),
   };
 }
@@ -1679,6 +2372,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       maxRetries: task.maxRetries,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
+      authorization: task.authorization,
       requestedModel: task.requestedModel,
       modelSelectionReason: task.modelSelectionReason,
     })),
@@ -1755,7 +2449,9 @@ async function removePipelineQueue(index: number) {
   return pipelineView(pipeline);
 }
 
-export function recoverRun(run: Run) {
+export function recoverRun(run: Run, branch?: string) {
+  normalizeProviderRuntimePersistenceV1(run);
+  assertStoredRunAuthorizations(run, branch);
   if (run.status !== "running") return run;
   const runningTasks = run.tasks.filter(
     (candidate) => candidate.status === "running",
@@ -1776,6 +2472,9 @@ export function recoverRun(run: Run) {
 function resetTaskForRun(task: Task, sourceRunId: string) {
   return {
     ...task,
+    providerRuntimeState: task.providerRuntimeState
+      ? validateProviderRuntimeStateV1(task.providerRuntimeState)
+      : undefined,
     id: identifier(),
     status: "pending" as Status,
     log: [`Restarted from run ${sourceRunId}`],
@@ -1788,9 +2487,12 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     finalOutput: undefined,
     reviewStatus: undefined,
     reviewOutput: undefined,
+    reviewWriteViolations: undefined,
     attempts: undefined,
     executionAttempts: undefined,
     checkpoint: undefined,
+    providerRuntimeDecision: undefined,
+    providerRuntimeIdentity: undefined,
   };
 }
 
@@ -1814,7 +2516,8 @@ function dependentTaskKeys(tasks: Task[], rootKey?: string) {
   return keys;
 }
 
-export function retryRun(source: Run, task: Task): Run {
+export function retryRun(source: Run, task: Task, branch?: string): Run {
+  assertStoredRunAuthorizations(source, branch);
   const retryKeys = dependentTaskKeys(source.tasks, task.key);
   return {
     id: identifier(),
@@ -1826,17 +2529,33 @@ export function retryRun(source: Run, task: Task): Run {
     tasks: source.tasks.map((candidate) =>
       candidate.id === task.id || (candidate.key && retryKeys.has(candidate.key))
         ? resetTaskForRun(candidate, source.id)
-        : { ...candidate, id: identifier() },
+        : {
+            ...candidate,
+            id: identifier(),
+            providerRuntimeState: candidate.providerRuntimeState
+              ? validateProviderRuntimeStateV1(candidate.providerRuntimeState)
+              : undefined,
+          },
     ),
   };
 }
 
-export function resumeRun(source: Run): Run | undefined {
+export function resumeRun(source: Run, branch?: string): Run | undefined {
+  assertStoredRunAuthorizations(source, branch);
   if (source.tasks.every((task) => task.status === "completed")) return undefined;
   const remaining = source.tasks
-    .map((task) => task.status === "completed" ? { ...task, id: identifier() } : ({
+    .map((task) => task.status === "completed" ? {
       ...task,
       id: identifier(),
+      providerRuntimeState: task.providerRuntimeState
+        ? validateProviderRuntimeStateV1(task.providerRuntimeState)
+        : undefined,
+    } : ({
+      ...task,
+      id: identifier(),
+      providerRuntimeState: task.providerRuntimeState
+        ? validateProviderRuntimeStateV1(task.providerRuntimeState)
+        : undefined,
       status: "pending" as Status,
       log: [`Возобновлено из run ${source.id}`],
       startedAt: undefined,
@@ -1848,9 +2567,12 @@ export function resumeRun(source: Run): Run | undefined {
       finalOutput: undefined,
       reviewStatus: undefined,
       reviewOutput: undefined,
+      reviewWriteViolations: undefined,
       attempts: undefined,
       executionAttempts: undefined,
       checkpoint: undefined,
+      providerRuntimeDecision: undefined,
+      providerRuntimeIdentity: undefined,
     }));
   return {
     id: identifier(),
@@ -1929,6 +2651,51 @@ async function runGit(cwd: string, args: string[]) {
     );
     child.on("error", (error) => done({ code: 1, output: error.message }));
   });
+}
+
+async function readWorkspaceSnapshot(cwd: string) {
+  const paths = await readGitStatus(cwd);
+  const snapshot = new Map<string, string>();
+  const head = await runGit(cwd, ["rev-parse", "HEAD"]);
+  snapshot.set("\0HEAD", head.code === 0 ? head.output : "");
+  snapshot.set("\0BRANCH", await currentBranchIdentity(cwd));
+  await Promise.all([...paths].map(async (path) => {
+    const absolute = resolve(cwd, path);
+    const root = `${resolve(cwd)}${process.platform === "win32" ? "\\" : "/"}`;
+    if (absolute !== resolve(cwd) && !absolute.startsWith(root)) return;
+    try {
+      const content = await readFile(absolute);
+      snapshot.set(path, createHash("sha256").update(content).digest("hex"));
+    } catch {
+      snapshot.set(path, "<missing>");
+    }
+  }));
+  return snapshot;
+}
+
+function changedWorkspaceFiles(
+  baseline: Map<string, string>,
+  current: Map<string, string>,
+  ignoredPaths: string[] = [],
+) {
+  const ignored = new Set(ignoredPaths.map((path) => path.split("\\").join("/")));
+  const changed = [...new Set([...baseline.keys(), ...current.keys()])]
+    .filter((path) => path !== "\0HEAD" && path !== "\0BRANCH")
+    .filter((path) => !ignored.has(path))
+    .filter((path) => baseline.get(path) !== current.get(path));
+  if (baseline.get("\0HEAD") !== current.get("\0HEAD"))
+    changed.push("<git-head-changed>");
+  if (baseline.get("\0BRANCH") !== current.get("\0BRANCH"))
+    changed.push("<git-branch-changed>");
+  return changed;
+}
+
+async function currentBranchIdentity(cwd: string) {
+  const branch = await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (branch.code !== 0) return "";
+  if (branch.output !== "HEAD") return branch.output;
+  const head = await runGit(cwd, ["rev-parse", "HEAD"]);
+  return head.code === 0 ? `detached:${head.output}` : "";
 }
 
 async function createCheckpoint(run: Run, task: Task) {
@@ -2123,23 +2890,12 @@ async function preflight(value: unknown) {
 }
 
 export function buildPrompt(task: Task, project: ProjectSettings) {
-  const paths = task.allowedPaths?.length
-    ? `\nAllowed paths: ${task.allowedPaths.join(", ")}`
-    : "";
-  const verificationCommands = [
-    ...(project.verificationCommands ?? []),
-    ...(task.verificationCommands ?? []),
-  ].filter((command, index, commands) => commands.indexOf(command) === index);
-  const checks = verificationCommands.length
-    ? `\n- Run these verification commands when relevant:\n${verificationCommands.map((command) => `  - ${command}`).join("\n")}`
-    : "\n- Run relevant verification commands.";
-  const guards = task.executionGuards?.length
-    ? `\n- Stop if any execution guard applies:\n${task.executionGuards.map((guard) => `  - ${guard}`).join("\n")}`
-    : "";
-  const context = task.context
-    ? `\n\nContext Contract v1 (${task.context.provider}${task.context.fallbackReason ? `; controlled fallback: ${task.context.fallbackReason}` : ""}):\n${task.context.bundle.sources.map((source) => `- ${source.path} [${source.priority}; ${source.authority}] — ${source.inclusion_reason}`).join("\n")}`
-    : "";
-  return `Work on this single task in the current repository.\n\nTask: ${task.prompt}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}${guards}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.`;
+  return renderProductionLegacyPromptV1({
+    task,
+    project,
+    authorization:
+      task.authorizationEvidence ?? authorizeTask(task, project),
+  });
 }
 
 async function reviewTask(run: Run, task: Task) {
@@ -2149,11 +2905,17 @@ async function reviewTask(run: Run, task: Task) {
     return;
   }
   task.reviewStatus = "pending";
+  task.reviewWriteViolations = undefined;
+  const reviewBaseline = await readWorkspaceSnapshot(run.project.path);
   task.log.push("Запущена независимая проверка reviewer");
   await persist(run);
   publish("run", run);
-  const outputFile = join(runsDirectory, run.id, `${task.id}-review.md`);
-  const prompt = `Review the current git diff for this completed task. Do not edit files.\n\nTask: ${task.title}\nScope: ${task.prompt}\n\nCheck correctness, scope, allowed paths, and whether relevant verification was run. End with exactly one line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED. Then list concise findings.`;
+  const outputFile = join(
+    runsDirectory,
+    run.id,
+    `${task.id}-review-${task.attempts ?? 1}.md`,
+  );
+  const prompt = `Review the current git diff for this completed task. Do not edit files.\n\nTask: ${task.title}\nScope: ${task.prompt}\n\nCheck correctness, scope, allowed paths, and whether relevant verification was run. Include exactly one standalone line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED. List concise findings.`;
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(
@@ -2166,6 +2928,10 @@ async function reviewTask(run: Run, task: Task) {
         run.project.path,
         "--model",
         MODEL_IDS[run.review.model],
+        ...codexExecutionBoundaryArgs(
+          task.authorizationEvidence ?? authorizeTask(task, run.project),
+          "reviewer",
+        ),
         "-c",
         `model_reasoning_effort=\"${codexReasoningEffort(run.review.effort)}\"`,
         "--output-last-message",
@@ -2185,12 +2951,24 @@ async function reviewTask(run: Run, task: Task) {
     );
     return;
   }
-  const consume = (chunk: Buffer) => {
-    for (const line of chunk.toString().split(/\r?\n/))
+  let diagnostics = "";
+  const consumeStdout = (chunk: Buffer) => {
+    for (const line of chunk.toString().split(/\r?\n/)) {
+      const trimmed = line.trim();
+      recordUsage(task, trimmed, "reviewer", 1);
+      const readable = trimmed && taskEvent(trimmed);
+      if (readable)
+        diagnostics = boundedReviewerDiagnostics(`${diagnostics}\n${readable}`);
+    }
+  };
+  const consumeStderr = (chunk: Buffer) => {
+    const text = chunk.toString();
+    diagnostics = boundedReviewerDiagnostics(`${diagnostics}${text}`);
+    for (const line of text.split(/\r?\n/))
       recordUsage(task, line.trim(), "reviewer", 1);
   };
-  child.stdout?.on("data", consume);
-  child.stderr?.on("data", consume);
+  child.stdout?.on("data", consumeStdout);
+  child.stderr?.on("data", consumeStderr);
   const { exitCode, timedOut } = await waitForProcess(
     child,
     run.limits.reviewerTimeoutMinutes,
@@ -2199,21 +2977,51 @@ async function reviewTask(run: Run, task: Task) {
         `Reviewer превысил лимит ${run.limits.reviewerTimeoutMinutes} мин. и был остановлен.`,
       ),
   );
-  task.reviewOutput = existsSync(outputFile)
+  const report = existsSync(outputFile)
     ? (await readFile(outputFile, "utf8")).slice(0, 24_000)
-    : "Reviewer did not return a report.";
-  task.reviewStatus = timedOut
-    ? "timed_out"
-    : exitCode === 0 && /VERDICT:\s*APPROVED/i.test(task.reviewOutput)
-      ? "approved"
-      : exitCode === 0
-        ? "changes_requested"
-        : "unavailable";
+    : undefined;
+  task.reviewOutput = report ?? "Reviewer did not return a report.";
+  const assessment = assessReviewerResult({ exitCode, timedOut, report });
+  task.reviewStatus = assessment.status;
+  if (task.reviewStatus !== "approved") task.log.push(assessment.reason);
+  if (diagnostics) task.log.push(`Reviewer diagnostics:\n${diagnostics}`);
+  const reviewCurrent = await readWorkspaceSnapshot(run.project.path);
+  const reviewOutputPath = relative(run.project.path, outputFile);
+  const reviewWrites = changedWorkspaceFiles(
+    reviewBaseline,
+    reviewCurrent,
+    [reviewOutputPath],
+  );
+  if (reviewWrites.length) {
+    task.reviewWriteViolations = reviewWrites;
+    task.reviewStatus = "changes_requested";
+    task.log.push(
+      `Reviewer violated its read-only boundary: ${reviewWrites.join(", ")}`,
+    );
+  }
   task.log.push(
     task.reviewStatus === "approved"
       ? "Reviewer: одобрено"
       : `Reviewer: ${task.reviewStatus}`,
   );
+}
+
+async function prepareExecutorProviderRuntime(
+  run: Run,
+  task: Task,
+  phase: "executor" | "correction",
+) {
+  const selected = prepareProviderRuntimeContinuationForTaskV1({
+    task,
+    project: run.project,
+    branch: await currentBranchIdentity(run.project.path),
+  });
+  task.providerRuntimeIdentity = selected.identity;
+  task.providerRuntimeDecision = selected.decision;
+  task.providerRuntimeState = selected.state;
+  task.log.push(`${phase}: ${selected.log}`);
+  await persist(run);
+  publish("run", run);
 }
 
 async function correctTask(run: Run, task: Task) {
@@ -2229,6 +3037,7 @@ async function correctTask(run: Run, task: Task) {
     `${task.id}-fix-${task.attempts}.md`,
   );
   const prompt = `${buildPrompt(task, run.project)}\n\nReviewer found these issues:\n${task.reviewOutput ?? "No report available."}\n\nFix only the reviewer findings. Do not create a git commit.`;
+  await prepareExecutorProviderRuntime(run, task, "correction");
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(
@@ -2241,6 +3050,10 @@ async function correctTask(run: Run, task: Task) {
         run.project.path,
         "--model",
         MODEL_IDS[task.model],
+        ...codexExecutionBoundaryArgs(
+          task.authorizationEvidence ?? authorizeTask(task, run.project),
+          "correction",
+        ),
         "-c",
         `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
         "--output-last-message",
@@ -2277,12 +3090,68 @@ async function correctTask(run: Run, task: Task) {
   activeProcesses.delete(task.id);
   if (existsSync(outputFile))
     task.finalOutput = (await readFile(outputFile, "utf8")).slice(0, 24_000);
+  const executorOutcome = assessExecutorOutcome(
+    task.finalOutput,
+    task.executorOutcomeContractVersion,
+  );
+  task.executorOutcome = executorOutcome.outcome;
+  task.executorOutcomeReason = executorOutcome.reason;
+  if (
+    executorOutcome.disposition === "stopped" ||
+    executorOutcome.disposition === "invalid"
+  )
+    task.log.push(`Correction outcome rejected: ${executorOutcome.reason}`);
+  const effectiveCode =
+    code === 0 &&
+    (executorOutcome.disposition === "stopped" ||
+      executorOutcome.disposition === "invalid")
+      ? 1
+      : code;
   task.log.push(
-    code === 0
+    effectiveCode === 0
       ? "Автоисправление завершено"
       : "Автоисправление завершилось ошибкой",
   );
-  return { code, timedOut };
+  return { code: effectiveCode, timedOut };
+}
+
+async function runTaskVerification(run: Run, task: Task) {
+  const evidence = task.authorizationEvidence;
+  if (!evidence) return { code: 0, timedOut: false };
+  for (const command of orchestratorVerificationCommands(evidence)) {
+    task.log.push(`Orchestrator verification: ${command}`);
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, {
+        cwd: run.project.path,
+        shell: true,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      task.log.push(
+        `Verification could not start: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return { code: 1, timedOut: false };
+    }
+    let output = "";
+    const consume = (chunk: Buffer) => {
+      output = `${output}${chunk.toString()}`.slice(-8_000);
+    };
+    child.stdout?.on("data", consume);
+    child.stderr?.on("data", consume);
+    const result = await waitForProcess(
+      child,
+      task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
+      () => task.log.push(`Verification timed out: ${command}`),
+    );
+    if (output.trim()) task.log.push(output.trim());
+    if (result.exitCode !== 0 || result.timedOut) return {
+      code: result.exitCode || 1,
+      timedOut: result.timedOut,
+    };
+  }
+  return { code: 0, timedOut: false };
 }
 
 async function pauseBeforeNextTask(run: Run) {
@@ -2304,7 +3173,49 @@ export async function finalizeSettledTask(run: Run, task: Task) {
 }
 
 async function executeTask(run: Run, task: Task): Promise<Status> {
-    const baseline = await readGitStatus(run.project.path);
+    const branch = await currentBranchIdentity(run.project.path);
+    if (
+      task.authorizationEvidence?.enabled &&
+      !verifyStoredTaskAuthorization(
+        task.authorizationEvidence,
+        task,
+        run.project,
+        branch,
+      )
+    ) {
+      task.status = "blocked";
+      task.startedAt = timestamp();
+      task.finishedAt = task.startedAt;
+      task.exitCode = 1;
+      task.log.push("Stored authorization is stale or mismatched; a fresh contract is required.");
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
+    task.authorizationEvidence ??= authorizeTask(task, run.project, branch);
+    if (task.authorizationEvidence.enabled && task.authorizationEvidence.decision !== "authorized") {
+      task.status = "blocked";
+      task.startedAt = timestamp();
+      task.finishedAt = task.startedAt;
+      task.exitCode = 1;
+      task.log.push(`Authorization denied: ${task.authorizationEvidence.reason}.`);
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
+    try {
+      assertCodexRouteCompatible(task.model, task.effort);
+    } catch (error) {
+      task.status = "blocked";
+      task.startedAt = timestamp();
+      task.finishedAt = task.startedAt;
+      task.exitCode = 1;
+      task.log.push(`Route compatibility denied: ${error instanceof Error ? error.message : String(error)}`);
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
+    const baseline = await readWorkspaceSnapshot(run.project.path);
     task.status = "running";
     task.startedAt = timestamp();
     task.attempts = 1;
@@ -2322,6 +3233,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       run.project.path,
       "--model",
       MODEL_IDS[task.model],
+      ...codexExecutionBoundaryArgs(task.authorizationEvidence, "executor"),
       "-c",
       `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
       "--output-last-message",
@@ -2334,6 +3246,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       task.log.push(
         `Запуск исполнителя ${attempt}/${maxRetries + 1} · лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин.`,
       );
+      await prepareExecutorProviderRuntime(run, task, "executor");
       let child: ReturnType<typeof spawn>;
       try {
         child = spawn(codexBin(), args, {
@@ -2385,10 +3298,44 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     task.finishedAt = timestamp();
     if (existsSync(outputFile))
       task.finalOutput = boundedFinalOutput(await readFile(outputFile, "utf8"));
-    const changed = await readGitStatus(run.project.path);
-    task.changedFiles = [...changed].filter((path) => !baseline.has(path));
+    const executorOutcome = assessExecutorOutcome(
+      task.finalOutput,
+      task.executorOutcomeContractVersion,
+    );
+    task.executorOutcome = executorOutcome.outcome;
+    task.executorOutcomeReason = executorOutcome.reason;
+    if (
+      executorOutcome.disposition === "stopped" ||
+      executorOutcome.disposition === "invalid"
+    )
+      task.log.push(`Executor outcome rejected: ${executorOutcome.reason}`);
+    let changed = await readWorkspaceSnapshot(run.project.path);
+    task.changedFiles = changedWorkspaceFiles(baseline, changed);
+    let violations = [...new Set([
+      ...taskWriteViolations(task, task.changedFiles),
+      ...authorizationWriteViolations(task.authorizationEvidence, task.changedFiles),
+      ...await taskAuthorizationIdentityViolations(run, task),
+    ])];
+    if (
+      task.exitCode === 0 &&
+      !violations.length &&
+      (executorOutcome.disposition === "completed" ||
+        executorOutcome.disposition === "legacy") &&
+      !isCancelled(run) &&
+      !skippedTaskIds.has(task.id)
+    ) {
+      const verification = await runTaskVerification(run, task);
+      if (verification.timedOut) task.timedOut = true;
+      if (verification.code !== 0) task.exitCode = verification.code;
+    }
+    changed = await readWorkspaceSnapshot(run.project.path);
+    task.changedFiles = changedWorkspaceFiles(baseline, changed);
     task.diff = await readGitDiff(run.project.path, task.changedFiles);
-    const violations = taskWriteViolations(task, task.changedFiles);
+    violations = [...new Set([
+      ...taskWriteViolations(task, task.changedFiles),
+      ...authorizationWriteViolations(task.authorizationEvidence, task.changedFiles),
+      ...await taskAuthorizationIdentityViolations(run, task),
+    ])];
     if (violations.length)
       task.log.push(
         `Остановка: изменены файлы вне allowedPaths — ${violations.join(", ")}`,
@@ -2399,6 +3346,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       exitCode: task.exitCode ?? 1,
       timedOut: Boolean(task.timedOut),
       violations,
+      executorOutcome,
     });
     if (task.status === "skipped") {
       task.log.push("Пропущено пользователем");
@@ -2408,13 +3356,36 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       await reviewTask(run, task);
       if (
         task.reviewStatus === "changes_requested" &&
+        !task.reviewWriteViolations?.length &&
+        (!task.authorizationEvidence.enabled || task.authorizationEvidence.intent === "apply") &&
         (task.attempts ?? 1) <= run.review.maxCorrections &&
         !isCancelled(run)
       ) {
         const fixResult = await correctTask(run, task);
         if (fixResult.timedOut) task.status = "timed_out";
-        else if (fixResult.code === 0 && !isCancelled(run))
-          await reviewTask(run, task);
+        else if (fixResult.code === 0 && !isCancelled(run)) {
+          const verification = await runTaskVerification(run, task);
+          if (verification.timedOut) task.status = "timed_out";
+          else if (verification.code !== 0) task.status = "failed";
+          changed = await readWorkspaceSnapshot(run.project.path);
+          task.changedFiles = changedWorkspaceFiles(baseline, changed);
+          task.diff = await readGitDiff(run.project.path, task.changedFiles);
+          violations = [...new Set([
+            ...taskWriteViolations(task, task.changedFiles),
+            ...authorizationWriteViolations(
+              task.authorizationEvidence,
+              task.changedFiles,
+            ),
+            ...await taskAuthorizationIdentityViolations(run, task),
+          ])];
+          if (violations.length) {
+            task.status = "failed";
+            task.log.push(
+              `Correction changed files outside its exact authorization: ${violations.join(", ")}`,
+            );
+          } else if (task.status === "completed")
+            await reviewTask(run, task);
+        }
       }
       task.status = resolveReviewedTaskStatus(task.status, task.reviewStatus);
       if (task.reviewStatus === "unavailable")
@@ -2426,6 +3397,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
 }
 
 async function executeQueue(run: Run) {
+  const branch = await currentBranchIdentity(run.project.path);
+  for (const task of run.tasks) {
+    if (!task.authorization?.enabled || task.authorizationEvidence) continue;
+    task.authorizationEvidence = authorizeTask(task, run.project, branch);
+  }
+  assertStoredRunAuthorizations(run, branch);
   run.status = "running";
   run.startedAt ??= timestamp();
   run.pausedAt = undefined;
@@ -2513,6 +3490,20 @@ async function execute(run: Run) {
   }
 }
 
+export function runInBackground(
+  operation: Promise<unknown>,
+  report: (error: unknown) => void = (error) =>
+    console.error("Background Orchestrator operation failed.", error),
+) {
+  void operation.then(undefined, (error) => {
+    try {
+      report(error);
+    } catch (reportError) {
+      console.error("Could not report a background Orchestrator failure.", reportError);
+    }
+  });
+}
+
 async function startPipelineQueue(pipeline: LoadedPipeline) {
   const entry = pipeline.queues[pipeline.currentIndex];
   if (!entry) return;
@@ -2540,7 +3531,7 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
   // if the process exits while the executor is being scheduled.
   await Promise.all([persistPipeline(pipeline), persist(run)]);
   publish("run", run);
-  void execute(run);
+  runInBackground(execute(run));
 }
 
 async function continuePipeline(run: Run) {
@@ -2862,7 +3853,7 @@ app.post("/api/runs", async (request, response) => {
     }
     activeRun = run;
     await persist(run);
-    void execute(run);
+    runInBackground(execute(run));
     response.status(201).json(run);
   } catch (error) {
     response
@@ -2930,7 +3921,7 @@ app.post("/api/continue", async (_, response) => {
   await persist(activeRun);
   publish("run", activeRun);
   if (resume) resume();
-  else void execute(activeRun);
+  else runInBackground(execute(activeRun));
   return response.json(activeRun);
 });
 app.post("/api/cancel", async (_, response) => {
@@ -3002,7 +3993,7 @@ app.post("/api/runs/:runId/tasks/:taskId/retry", async (request, response) => {
   }
   activeRun = retry;
   await persist(retry);
-  void execute(retry);
+  runInBackground(execute(retry));
   return response.status(201).json(retry);
 });
 app.post("/api/runs/:id/resume", async (request, response) => {
@@ -3041,7 +4032,7 @@ app.post("/api/runs/:id/resume", async (request, response) => {
     persist(resumed),
     pipeline ? persistPipeline(pipeline) : Promise.resolve(),
   ]);
-  void execute(resumed);
+  runInBackground(execute(resumed));
   return response.status(201).json(resumed);
 });
 const webRoot = resolve(process.env.ORCHESTRATOR_WEB_ROOT || "dist");

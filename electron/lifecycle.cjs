@@ -1,3 +1,6 @@
+const fs = require("node:fs");
+const path = require("node:path");
+
 const ORCHESTRATOR_SERVICE = "codex-orchestrator";
 const ORCHESTRATOR_API_VERSION = 1;
 
@@ -45,10 +48,40 @@ function shouldStopServerOnQuit({ ownsServer }) {
   return ownsServer === true;
 }
 
+function createServerLogHandles(dataDirectory, filesystem = fs) {
+  const directory = path.join(dataDirectory, "logs");
+  const stdoutPath = path.join(directory, "server.stdout.log");
+  const stderrPath = path.join(directory, "server.stderr.log");
+  filesystem.mkdirSync(directory, { recursive: true });
+  const stdout = filesystem.openSync(stdoutPath, "a");
+  let stderr;
+  try {
+    stderr = filesystem.openSync(stderrPath, "a");
+  } catch (error) {
+    filesystem.closeSync(stdout);
+    throw error;
+  }
+  return {
+    stdout,
+    stderr,
+    stdoutPath,
+    stderrPath,
+    stdio: ["ignore", stdout, stderr],
+    close() {
+      try {
+        filesystem.closeSync(stdout);
+      } finally {
+        filesystem.closeSync(stderr);
+      }
+    },
+  };
+}
+
 module.exports = {
   ORCHESTRATOR_API_VERSION,
   ORCHESTRATOR_SERVICE,
   configureSingleInstance,
+  createServerLogHandles,
   ensureServerAvailability,
   isCompatibleHealth,
   shouldReportServerExit,

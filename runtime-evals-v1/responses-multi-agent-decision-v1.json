@@ -1,0 +1,211 @@
+{
+  "schemaVersion": "responses-multi-agent-decision-v1",
+  "decision": "NO",
+  "summary": "Production delegation remains disabled because one or more predeclared hard gates failed.",
+  "benchmark": {
+    "mode": "deterministic-local-fixtures",
+    "simulatesResponsesApiSchedulingOnly": true,
+    "providerCallMade": false,
+    "credentialsRequired": false,
+    "networkAccessed": false,
+    "liveLatencyOrQualityClaim": false,
+    "fixtureSet": "three-disjoint-bounded-io-workstreams"
+  },
+  "distinction": {
+    "responsesApiMultiAgent": "Provider beta controlled by Responses request multi_agent.enabled plus responses_multi_agent=v1.",
+    "codexMultiAgent": "Separate Codex runtime collaboration mode; it is neither evidence for nor an input to this Responses API gate."
+  },
+  "thresholds": {
+    "schemaVersion": "responses-multi-agent-pilot-thresholds-v1",
+    "declaredBeforeBenchmark": true,
+    "value": {
+      "minimumWallClockImprovementRatio": 0.25,
+      "minimumQualityImprovement": 0.05,
+      "minimumQualityScore": 1,
+      "maximumTokenInputRatio": 1.5,
+      "maximumCostInputRatio": 1.5,
+      "speedOrQualityGainRequired": true
+    },
+    "correctness": {
+      "minimumEvidencePreservationRatio": 1,
+      "minimumReplayMatchRatio": 1,
+      "maximumDuplicateWorkCount": 0,
+      "minimumFinalSynthesisRatio": 1
+    },
+    "execution": {
+      "maximumConcurrentSubagents": 3,
+      "requiredRootSyntheses": 1,
+      "requireDisjointWriteScopes": true
+    },
+    "compatibility": {
+      "requireResponsesApiMultiAgent": true,
+      "requireMaxToolCallsSupport": true,
+      "requireExplicitCompactionSupport": true,
+      "requireReasoningSummarySupport": true,
+      "requireProviderRuntimeRoute": true,
+      "requireProductionDisabledDuringGate": true
+    }
+  },
+  "measurements": {
+    "timing": {
+      "clock": "performance.now",
+      "iterations": 5,
+      "statistic": "median",
+      "singleAgentMs": 139.996,
+      "multiAgentSimulationMs": 47.73,
+      "wallClockImprovementRatio": 0.6591,
+      "samples": {
+        "singleAgentMs": [
+          135.102,
+          140.99,
+          139.693,
+          139.996,
+          141.767
+        ],
+        "multiAgentSimulationMs": [
+          52.087,
+          47.397,
+          47.73,
+          47.836,
+          47.312
+        ]
+      }
+    },
+    "quality": {
+      "singleAgent": 1,
+      "multiAgentSimulation": 1,
+      "improvement": 0
+    },
+    "tokens": {
+      "unit": "deterministic fixture token units (not provider-reported tokens)",
+      "costInputUnit": "weighted fixture units; input weight 1, output weight 4 (not currency)",
+      "singleAgent": {
+        "input": 2160,
+        "output": 1080,
+        "total": 3240,
+        "costInput": 6480
+      },
+      "multiAgent": {
+        "input": 2760,
+        "output": 1140,
+        "total": 3900,
+        "costInput": 7320
+      }
+    },
+    "tokenInputRatio": 1.2037,
+    "costInputRatio": 1.1296,
+    "toolCalls": {
+      "singleAgent": 3,
+      "multiAgentSimulation": 3,
+      "responsesApiMaxToolCallsSupported": false
+    },
+    "compaction": {
+      "localFixtureReplayPreserved": true,
+      "responsesApiExplicitCompactSupported": false,
+      "responsesApiAutomaticPerAgentCompaction": true
+    },
+    "reasoningSummary": {
+      "localFixtureSummaryCompatible": true,
+      "responsesApiReasoningSummarySupported": false
+    },
+    "evidencePreservationRatio": 1,
+    "replayMatchRatio": 1,
+    "responsesApiResponseItemReplaySupported": true,
+    "duplicateWorkCount": 0,
+    "finalSynthesisRatio": 1,
+    "disjointWriteScopes": true,
+    "concurrentSubagents": 3,
+    "rootSynthesisCount": 1
+  },
+  "checks": {
+    "valueGain": true,
+    "quality": true,
+    "tokens": true,
+    "costInputs": true,
+    "evidence": true,
+    "replay": true,
+    "duplicateWork": true,
+    "synthesis": true,
+    "disjointWriteScopes": true,
+    "subagentCap": true,
+    "oneRootSynthesis": true,
+    "responsesApiCapability": true,
+    "maxToolCallsCompatibility": false,
+    "compactionCompatibility": false,
+    "reasoningSummaryCompatibility": false,
+    "providerRuntimeRoute": false,
+    "productionDisabled": true,
+    "codexFlagNotConflated": true
+  },
+  "failedChecks": [
+    "maxToolCallsCompatibility",
+    "compactionCompatibility",
+    "reasoningSummaryCompatibility",
+    "providerRuntimeRoute"
+  ],
+  "providerRuntimeCompatibility": {
+    "evidenceAsOf": "2026-07-23",
+    "sources": [
+      {
+        "url": "https://developers.openai.com/api/docs/guides/responses-multi-agent",
+        "claim": "Responses API Multi-agent is a GPT-5.6 beta enabled by multi_agent.enabled and responses_multi_agent=v1; default recommended concurrency is three."
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/guides/responses-multi-agent#limitations",
+        "claim": "With Multi-agent enabled, /responses/compact, reasoning.summary, and max_tool_calls are unsupported; automatic per-agent compaction is implicit."
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/guides/amazon-bedrock#responses-api-feature-availability",
+        "claim": "Responses API Multi-agent is not available through Amazon Bedrock."
+      }
+    ],
+    "openAiResponsesApi": {
+      "multiAgentBeta": true,
+      "maxToolCalls": false,
+      "explicitCompaction": false,
+      "automaticPerAgentCompaction": true,
+      "reasoningSummary": false,
+      "responseItemReplay": true
+    },
+    "amazonBedrockResponsesCompatibleRuntime": {
+      "multiAgentBeta": false
+    },
+    "repositoryRuntime": {
+      "route": "fresh ephemeral Codex CLI sessions",
+      "directResponsesApiAdapter": false,
+      "openAiSdkDependency": false,
+      "productionImport": false
+    },
+    "codexMultiAgentFlag": {
+      "capability": "Codex runtime collaboration mode",
+      "sameAsResponsesApiMultiAgent": false,
+      "gateInput": false
+    }
+  },
+  "evidence": {
+    "baselineSynthesisHash": "ad9d09f61d25793d75c7a0a8729a3815d99bfb89690e43ef823b9315c986ab5d",
+    "candidateSynthesisHash": "ad9d09f61d25793d75c7a0a8729a3815d99bfb89690e43ef823b9315c986ab5d",
+    "replaySynthesisHash": "ad9d09f61d25793d75c7a0a8729a3815d99bfb89690e43ef823b9315c986ab5d",
+    "stableFixtureIdentity": "bae6778de1b8ac1c3ad712b28d62f2b7a4105c3b44f23ff1d1da01f2d75b6c95",
+    "thresholdIdentity": "8c302cd9050172cc4a370ece9e10fab6f6ea48fa393f76e6f87734a3b8eb72fa",
+    "note": "{\"fixtureSet\":\"three-disjoint-bounded-io-workstreams\",\"thresholds\":\"responses-multi-agent-pilot-thresholds-v1\"}"
+  },
+  "production": {
+    "responsesApiDelegationEnabled": false,
+    "activeServerImportsPilot": false,
+    "enablementImplemented": false,
+    "repositoryInspection": {
+      "activeServerPilotImportCount": 0,
+      "activeServerResponsesBetaTokenCount": 0,
+      "openAiSdkDependency": false
+    },
+    "rollbackConditions": [
+      "Any predeclared threshold regresses.",
+      "Provider beta schema or availability changes.",
+      "Tool-call limiting, evidence, replay, compaction, or reasoning-summary behavior becomes incompatible.",
+      "Write scopes overlap, subagent concurrency exceeds three, duplicate work appears, or root synthesis is missing.",
+      "Token or weighted cost inputs exceed 1.5x the single-agent baseline."
+    ],
+    "rollbackAction": "Keep the active server on its existing single-agent Codex CLI execution path; remove any future adapter import or request-level enablement."
+  }
+}

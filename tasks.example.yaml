@@ -12,6 +12,10 @@ git:
   # Creates a checkpoint commit after each reviewer-approved task.
   checkpointCommits: false
 tasks:
+  # Every queue task must be independently useful, not an artificial phase of one outcome.
+  # If production-owned code must be changed or called directly, keep the same task's implementation, tests, and benchmark together.
+  # Its allowedPaths must include all production and test files required for that complete outcome.
+  # Do not rely on a dependent task to retroactively grant paths or prove a prerequisite.
   # Stable `key` values let the orchestrator construct a dependency graph.
   # Tasks with no unmet dependsOn entries may run in parallel.
   - key: typecheck-fixes

@@ -27,7 +27,13 @@ test('mock run is credential-free, deterministic, and passes every critical case
   }
   assert.equal(report.configuration.identity.prompt.state, 'measured');
   assert.equal(report.configuration.identity.state.value, 'stateless-in-process');
-  for (const name of ['model', 'reasoning', 'cache', 'ptc']) assert.equal(report.configuration.identity[name].state, 'unsupported');
+  assert.equal(report.configuration.identity.providerRuntimeState.value, 'off-by-default');
+  assert.match(
+    report.configuration.identity.providerRuntimeState.reason,
+    /persisted run\/task decisions.*legacy loading.*Codex CLI current-turn fallback/,
+  );
+  assert.ok(report.cases.some((testCase) => testCase.id === 'PRS-003'));
+  for (const name of ['model', 'reasoning', 'routing', 'cache', 'ptc']) assert.equal(report.configuration.identity[name].state, 'unsupported');
   for (const name of ['latency', 'tokens', 'cacheReads', 'cacheWrites']) assert.equal(report.metrics[name].state, 'unsupported');
   assert.equal(report.metrics.cost.state, 'estimated');
   assert.equal(report.metrics.cost.value, 0);
@@ -45,14 +51,20 @@ test('mock run is credential-free, deterministic, and passes every critical case
 test('an injected critical failure fails the 100 percent critical release gate', () => {
   const report = runMockEvaluation({ injectCriticalFailure: 'AMK-SE-002' });
   assert.equal(report.gates.critical.state, 'fail');
-  assert.equal(report.gates.critical.observedPassRate, 5 / 6);
+  assert.equal(
+    report.gates.critical.observedPassRate,
+    (SELECTED_CRITICAL_CASES.length - 1) / SELECTED_CRITICAL_CASES.length,
+  );
   assert.equal(report.gates.release.state, 'fail');
   const failedCase = report.cases.find((testCase) => testCase.id === 'AMK-SE-002');
   assert.equal(failedCase.state, 'fail');
   for (const name of REQUIRED_OUTCOMES) {
     assert.equal(failedCase.outcomes[name].state, 'fail');
     assert.equal(report.outcomes[name].state, 'fail');
-    assert.equal(report.outcomes[name].observedPassRate, 5 / 6);
+    assert.equal(
+      report.outcomes[name].observedPassRate,
+      (SELECTED_CRITICAL_CASES.length - 1) / SELECTED_CRITICAL_CASES.length,
+    );
   }
 });
 
@@ -68,6 +80,7 @@ test('versioned JSON and Markdown reports preserve passing and injected-failure 
     assert.equal(passingJson.metrics.cacheReads.state, 'unsupported');
     assert.equal(passingJson.metrics.cacheWrites.state, 'unsupported');
     assert.equal(passingJson.configuration.identity.ptc.state, 'unsupported');
+    assert.equal(passingJson.configuration.identity.routing.state, 'unsupported');
     assert.deepEqual(passingJson.metrics.cost, {
       state: 'estimated',
       value: 0,
@@ -90,7 +103,10 @@ test('versioned JSON and Markdown reports preserve passing and injected-failure 
     assert.equal(failedJson.metrics.cost.value, 0);
     assert.equal(failedJson.metrics.cost.providerPricing.state, 'unsupported');
     assert.equal(failedJson.configuration.identity.prompt.state, 'measured');
-    assert.match(failedMarkdown, /\| taskSuccess \| fail \| 5\/6 \|/);
+    assert.match(
+      failedMarkdown,
+      new RegExp(`\\| taskSuccess \\| fail \\| ${SELECTED_CRITICAL_CASES.length - 1}\\/${SELECTED_CRITICAL_CASES.length} \\|`),
+    );
     assert.match(failedMarkdown, /\| cacheWrites \| unsupported \| n\/a \|/);
     assert.match(failedMarkdown, /estimated provider cost is zero USD/);
   } finally {

@@ -1,0 +1,158 @@
+version: 2
+
+goal:
+  title: "Prompt Cache Layout v1"
+  slug: "prompt-cache-layout-v1"
+  kind: existing_plan
+  tranche: "Validate the existing plan, implement successive safe verified orchestrator slices, and continue until the full oracle is true."
+  status: active
+  oracle:
+    signal: "Tests prove prefix stability, dynamic isolation, usage metrics, and no behavior regression; explicit mode stays gated."
+    cadence: "after each Worker package and at final audit"
+    final_proof: "Receipt-backed implementation diff, fresh targeted/regression verification, and full_outcome_complete audit."
+  intake:
+    original_request: "Prepare eight separate implementation goals in D:\\pet-projects\\orchestrator; multi-agent is last and optional behind go/no-go."
+    interpreted_outcome: "Implement stable-prefix/dynamic-suffix prompt layout, cache telemetry, and measured explicit-cache gating."
+    input_shape: existing_plan
+    audience: "orchestrator owner and maintainers"
+    authority: approved
+    proof_type: test
+    completion_proof: "Tests prove prefix stability, dynamic isolation, usage metrics, and no behavior regression; explicit mode stays gated."
+    likely_misfire: "Stopping at planning or an isolated helper instead of a verified integrated capability."
+    blind_spots_considered:
+      - "Pre-existing dirty worktree may overlap implementation files."
+      - "Provider facts must be checked against current official documentation."
+      - "Other goals are dependencies only when their receipts prove completion."
+    existing_plan_facts:
+      - "Implementation belongs only in D:\\pet-projects\\orchestrator."
+      - "The Agent Memory Kit repository is read-only reference material for this goal."
+      - "Rollout-risk behavior must be reversible and configuration-gated."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: live
+    url: "http://goalbuddy.localhost:41737/prompt-cache-layout-v1/"
+    command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/prompt-cache-layout-v1"
+
+active_task: T001
+
+tasks:
+  - id: T001
+    type: scout
+    assignee: Scout
+    status: active
+    reasoning_hint: low
+    objective: "Map prompt ordering, volatile fields, cache fields, telemetry, adapters, and representative prompts."
+    inputs:
+      - "D:\\pet-projects\\orchestrator"
+      - "D:\\pet-projects\\AI-assisted_System_Design_and_Agent_Memory_Kit"
+      - "docs/goals/prompt-cache-layout-v1/goal.md"
+      - "Current git status and diff"
+    constraints:
+      - "Read-only; do not edit implementation files."
+      - "Treat the source kit as read-only."
+      - "Record overlap with server/index.test.ts, src/App.tsx, src/styles.css, and src/GoalBuddyPage.tsx."
+      - "Prefer file-path and command evidence over generic advice."
+    expected_output:
+      - "Relevant architecture and file map"
+      - "Current behavior and compatibility evidence"
+      - "Baseline and verification commands"
+      - "Dirty-worktree overlap assessment"
+      - "Largest safe Worker candidate with proposed allowed_files, verify, and stop_if"
+    receipt: null
+
+  - id: T002
+    type: judge
+    assignee: Judge
+    status: queued
+    reasoning_hint: high
+    objective: "Validate the plan against Scout evidence and specify the largest safe useful implementation slice."
+    inputs:
+      - "T001 receipt"
+      - "docs/goals/prompt-cache-layout-v1/goal.md"
+      - "Current dirty diff"
+    constraints:
+      - "Read-only; do not implement."
+      - "Do not authorize overwriting or reverting pre-existing user work."
+      - "Populate exact Worker allowed_files, verify, rollout boundary, and stop conditions before activation."
+    expected_output:
+      - "proceed | revise | blocked"
+      - "Exact Worker objective or evidence-backed no-implementation decision"
+      - "allowed_files"
+      - "verify"
+      - "stop_if"
+      - "Oracle coverage"
+    receipt: null
+
+  - id: T003
+    type: worker
+    assignee: Worker
+    status: queued
+    reasoning_hint: medium
+    objective: "Implement the Judge-scoped cache-aware layout and metrics with implicit baseline and gated explicit mode."
+    allowed_files: []
+    verify: []
+    stop_if:
+      - "Judge has not populated exact allowed_files and verify commands."
+      - "Need files outside allowed_files."
+      - "An allowed file contains unexplained pre-existing user changes."
+      - "Behavior or provider compatibility is ambiguous."
+      - "Verification fails twice for the same unresolved cause."
+      - "Work would mutate the read-only source kit or expand scope."
+    receipt: null
+
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: queued
+    reasoning_hint: high
+    objective: "Audit the full outcome against the oracle and either record completion or specify the next largest safe Worker slice."
+    inputs:
+      - "All completed task receipts"
+      - "Current implementation diff"
+      - "Fresh targeted and regression verification"
+    constraints:
+      - "Read-only; do not implement."
+      - "Reject weak proof, planning-only output, or unexplained dirty-worktree overlap."
+      - "If not complete, specify the next safe task instead of ending the goal."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Oracle-to-evidence mapping"
+      - "Regression and dirty-worktree safety assessment"
+      - "Next Worker task if not complete"
+    receipt: null
+
+checks:
+  dirty_fingerprint: "Prep observed modified server/index.test.ts, src/App.tsx, src/styles.css and untracked src/GoalBuddyPage.tsx on branch cdx/goalbuddy-bridge-v1."
+  last_verification:
+    result: unknown
+    task: null
+    commands: []

@@ -1,0 +1,39 @@
+{
+  "schemaVersion": "responses-multi-agent-fixtures-v1",
+  "fixtureSet": "three-disjoint-bounded-io-workstreams",
+  "rootSynthesisCount": 1,
+  "workstreams": [
+    {
+      "id": "contract",
+      "allowedPaths": ["fixture-output/contract.json"],
+      "delayMs": 40,
+      "facts": ["contract:v1", "field:decision"],
+      "evidence": ["fixture://contract/schema", "fixture://contract/example"],
+      "tokenInputs": { "input": 520, "output": 280 }
+    },
+    {
+      "id": "runtime",
+      "allowedPaths": ["fixture-output/runtime.json"],
+      "delayMs": 40,
+      "facts": ["runtime:local", "network:false"],
+      "evidence": ["fixture://runtime/config", "fixture://runtime/guard"],
+      "tokenInputs": { "input": 520, "output": 280 }
+    },
+    {
+      "id": "evidence",
+      "allowedPaths": ["fixture-output/evidence.json"],
+      "delayMs": 40,
+      "facts": ["replay:stable", "citations:preserved"],
+      "evidence": ["fixture://evidence/receipt", "fixture://evidence/replay"],
+      "tokenInputs": { "input": 520, "output": 280 }
+    }
+  ],
+  "accounting": {
+    "singleAgentRootInput": 600,
+    "singleAgentSynthesisOutput": 240,
+    "multiAgentRootInput": 900,
+    "multiAgentSynthesisOutput": 300,
+    "multiAgentDelegationOverheadInput": 300,
+    "costWeights": { "input": 1, "output": 4 }
+  }
+}

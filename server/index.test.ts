@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { tmpdir } from "node:os";
@@ -20,6 +20,11 @@ const {
   taskWriteViolations,
   recoverRun,
   releaseProjectLock,
+  clearDeadProjectLock,
+  reconcilePersistedRunOwner,
+  assessExecutorOutcome,
+  assessReviewerResult,
+  boundedReviewerDiagnostics,
   resolveReviewedTaskStatus,
   resolveTaskStatus,
   schedulerSnapshot,
@@ -37,6 +42,9 @@ const {
   validateTaskQueue,
   persistRun,
   loadRun,
+  loadRunSummary,
+  writeTextAtomically,
+  runInBackground,
   app,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
@@ -47,10 +55,41 @@ const {
   buildPrompt,
   createContextRequestV1,
   validateContextContractV1,
+  contextPtcEnabled,
+  ContextPtcFailure,
+  LocalDeterministicContextPtcExecutor,
   bindBeforeRecovery,
   runHasLiveOwner,
   codexReasoningEffort,
+  installedCodexModels,
+  assertCodexRouteCompatible,
+  authorizeTask,
+  replayTaskAuthorization,
+  verifyStoredTaskAuthorization,
+  taskSandbox,
+  authorizationWriteViolations,
+  codexExecutionBoundaryArgs,
+  orchestratorVerificationCommands,
+  changedProviderRuntimeIdentityV1,
+  providerReasoningModeV1,
+  recordProviderRuntimeStateV1,
+  sanitizeProviderReplayItemsV1,
+  selectProviderRuntimeContinuationV1,
+  codexCliProviderRuntimeAdapterV1,
+  providerRuntimeIdentityForTaskV1,
+  prepareProviderRuntimeContinuationForTaskV1,
+  recordProviderRuntimeStateForAdapterV1,
+  normalizeProviderRuntimePersistenceV1,
 } = await import("./index.ts");
+// @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
+const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
+const { renderProductionLegacyPromptV1 } = await import(
+  "./prompt-compiler-v1/legacy-prompt-renderer.mjs"
+);
+const { productionBuildPromptFixture } = await import(
+  // @ts-ignore JavaScript production-equivalent fixture is validated by the compiler suite.
+  "./prompt-compiler-v1/size-comparison.fixture.mjs"
+);
 const {
   TaskContextControls,
   contextProfileTaskPatch,
@@ -63,6 +102,643 @@ test("maps the UI light effort to the Codex CLI low effort", () => {
   assert.equal(codexReasoningEffort("light"), "low");
   assert.equal(codexReasoningEffort("medium"), "medium");
   assert.equal(codexReasoningEffort("high"), "high");
+});
+
+test("buildPrompt and the benchmark use the same production-owned legacy renderer", () => {
+  assert.equal(
+    buildPrompt(
+      productionBuildPromptFixture.task as any,
+      productionBuildPromptFixture.project as any,
+    ),
+    renderProductionLegacyPromptV1(productionBuildPromptFixture),
+  );
+});
+
+const providerRuntimeIdentity = {
+  goal: "goal-fingerprint",
+  scope: "scope-fingerprint",
+  branch: "main",
+  priority: "priority-fingerprint",
+  authorization: "authorization-fingerprint",
+};
+
+test("provider runtime reasoning is disabled by default with safe current-turn fallbacks", () => {
+  assert.equal(providerReasoningModeV1({}), "off");
+  assert.equal(
+    providerReasoningModeV1({
+      ORCHESTRATOR_PROVIDER_REASONING_MODE: "current_turn",
+    }),
+    "current_turn",
+  );
+  assert.equal(
+    providerReasoningModeV1({
+      ORCHESTRATOR_PROVIDER_REASONING_MODE: "persisted",
+    }),
+    "persisted",
+  );
+  assert.throws(
+    () =>
+      providerReasoningModeV1({
+        ORCHESTRATOR_PROVIDER_REASONING_MODE: "always",
+      }),
+    /must be off, current_turn, or persisted/,
+  );
+  const state = recordProviderRuntimeStateV1({
+    identity: providerRuntimeIdentity,
+    previousResponseId: "resp_operational_only",
+  });
+  assert.equal(state, undefined);
+  assert.deepEqual(
+    selectProviderRuntimeContinuationV1({
+      identity: providerRuntimeIdentity,
+    }),
+    {
+      mode: "off",
+      stateDisposition: "discard",
+      strategy: "off",
+      reason: "FEATURE_DISABLED",
+      invalidatedBy: [],
+    },
+  );
+  assert.deepEqual(
+    selectProviderRuntimeContinuationV1({
+      mode: "persisted",
+      identity: providerRuntimeIdentity,
+    }),
+    {
+      mode: "persisted",
+      stateDisposition: "discard",
+      strategy: "current_turn",
+      reason: "NO_REUSABLE_STATE",
+      invalidatedBy: [],
+    },
+  );
+  assert.equal(
+    selectProviderRuntimeContinuationV1({
+      mode: "current_turn",
+      identity: providerRuntimeIdentity,
+    }).strategy,
+    "current_turn",
+  );
+});
+
+test("provider runtime state reuses only an exact five-part identity", () => {
+  const state = recordProviderRuntimeStateV1({
+    mode: "persisted",
+    identity: providerRuntimeIdentity,
+    previousResponseId: "resp_operational_only",
+    recordedAt: "2026-07-23T00:00:00.000Z",
+  });
+  assert.ok(state);
+  const reuse = selectProviderRuntimeContinuationV1({
+    mode: "persisted",
+    identity: { ...providerRuntimeIdentity },
+    state,
+    supportsPreviousResponseId: true,
+  });
+  assert.equal(reuse.strategy, "previous_response_id");
+  assert.equal(reuse.stateDisposition, "retain");
+  assert.equal(reuse.previousResponseId, "resp_operational_only");
+  assert.deepEqual(state.authority, {
+    sourceOfTruth: false,
+    completionEvidence: false,
+    approvalEvidence: false,
+    durableProjectMemory: false,
+  });
+
+  const changed = {
+    goal: "new-goal",
+    scope: "new-scope",
+    branch: "feature/new-branch",
+    priority: "new-priority",
+    authorization: "new-authorization",
+  };
+  assert.deepEqual(
+    changedProviderRuntimeIdentityV1(providerRuntimeIdentity, changed),
+    ["goal", "scope", "branch", "priority", "authorization"],
+  );
+  for (const component of Object.keys(providerRuntimeIdentity)) {
+    const identity = {
+      ...providerRuntimeIdentity,
+      [component]: `changed-${component}`,
+    };
+    const invalidated = selectProviderRuntimeContinuationV1({
+      mode: "persisted",
+      identity,
+      state,
+      supportsPreviousResponseId: true,
+      supportsManualReplay: true,
+    });
+    assert.equal(invalidated.strategy, "current_turn");
+    assert.equal(invalidated.reason, "IDENTITY_CHANGED");
+    assert.equal(invalidated.stateDisposition, "discard");
+    assert.deepEqual(invalidated.invalidatedBy, [component]);
+    assert.equal(invalidated.previousResponseId, undefined);
+    assert.equal(invalidated.manualReplayItems, undefined);
+  }
+});
+
+test("manual provider replay preserves item types and assistant phases without hidden reasoning", () => {
+  const replayItems = [
+    {
+      type: "reasoning",
+      id: "rs_1",
+      status: "completed",
+      summary: [{ type: "summary_text", text: "Operational summary only." }],
+    },
+    {
+      type: "message",
+      role: "assistant",
+      phase: "commentary",
+      content: [{ type: "output_text", text: "Progress update" }],
+    },
+    {
+      type: "function_call",
+      call_id: "call_1",
+      name: "read_file",
+      arguments: "{\"path\":\"README.md\"}",
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_1",
+      output: "README contents",
+    },
+    {
+      type: "message",
+      role: "assistant",
+      phase: "final",
+      content: [{ type: "output_text", text: "Final answer" }],
+    },
+  ];
+  const state = recordProviderRuntimeStateV1({
+    mode: "persisted",
+    identity: providerRuntimeIdentity,
+    reasoningSummaries: [
+      { type: "summary_text", text: "Operational summary only." },
+    ],
+    manualReplayItems: replayItems,
+    recordedAt: "2026-07-23T00:00:00.000Z",
+  });
+  assert.ok(state);
+  const replay = selectProviderRuntimeContinuationV1({
+    mode: "persisted",
+    identity: providerRuntimeIdentity,
+    state: JSON.parse(JSON.stringify(state)),
+    supportsPreviousResponseId: false,
+    supportsManualReplay: true,
+  });
+  assert.equal(replay.strategy, "manual_replay");
+  assert.deepEqual(
+    replay.manualReplayItems?.map((item) => item.type),
+    ["reasoning", "message", "function_call", "function_call_output", "message"],
+  );
+  assert.deepEqual(
+    replay.manualReplayItems
+      ?.filter((item) => item.role === "assistant")
+      .map((item) => item.phase),
+    ["commentary", "final"],
+  );
+  assert.deepEqual(state.reasoningSummaries, [
+    { type: "summary_text", text: "Operational summary only." },
+  ]);
+});
+
+test("provider runtime state fails closed on hidden reasoning or forged authority", () => {
+  assert.throws(
+    () =>
+      sanitizeProviderReplayItemsV1([
+        {
+          type: "reasoning",
+          summary: [],
+          encrypted_content: "opaque-hidden-reasoning",
+        },
+      ]),
+    /Hidden reasoning field is forbidden/,
+  );
+  assert.throws(
+    () =>
+      sanitizeProviderReplayItemsV1([
+        {
+          type: "reasoning",
+          summary: [],
+          content: [{ type: "reasoning_text", text: "private chain" }],
+        },
+      ]),
+    /Hidden reasoning item type is forbidden|non-summary fields: content/,
+  );
+  assert.throws(
+    () =>
+      sanitizeProviderReplayItemsV1([
+        {
+          type: "message",
+          role: "assistant",
+          phase: "commentary",
+          content: [{ type: "reasoning_text", text: "private chain" }],
+        },
+      ]),
+    /Hidden reasoning item type is forbidden/,
+  );
+  const state = recordProviderRuntimeStateV1({
+    mode: "persisted",
+    identity: providerRuntimeIdentity,
+    previousResponseId: "resp_not_evidence",
+    recordedAt: "2026-07-23T00:00:00.000Z",
+  });
+  assert.ok(state);
+  const forged = {
+    ...state,
+    authority: { ...state.authority, approvalEvidence: true },
+  };
+  assert.throws(
+    () =>
+      selectProviderRuntimeContinuationV1({
+        mode: "persisted",
+        identity: providerRuntimeIdentity,
+        state: forged as any,
+        supportsPreviousResponseId: true,
+      }),
+    /cannot carry project authority/,
+  );
+});
+
+test("the Codex CLI adapter explicitly rejects provider continuation and records an observable fallback", () => {
+  assert.deepEqual(codexCliProviderRuntimeAdapterV1, {
+    id: "codex-cli-ephemeral-v1",
+    supportsPreviousResponseId: false,
+    supportsManualReplay: false,
+  });
+  const lifecycleTask = {
+    ...task("provider-lifecycle", "pending"),
+    requestedModel: "terra",
+    modelSelectionReason: "explicit task or project default",
+    allowedPaths: ["server"],
+    verificationCommands: ["node --test"],
+  };
+  const project = {
+    name: "Test",
+    path: process.cwd(),
+    verificationCommands: ["git diff --check"],
+  };
+  const identity = providerRuntimeIdentityForTaskV1(
+    lifecycleTask,
+    project,
+    "feature/provider-state",
+  );
+  const stored = recordProviderRuntimeStateV1({
+    mode: "persisted",
+    identity,
+    previousResponseId: "resp_must_not_reach_cli",
+    recordedAt: "2026-07-23T00:00:00.000Z",
+  });
+  const selected = prepareProviderRuntimeContinuationForTaskV1({
+    task: { ...lifecycleTask, providerRuntimeState: stored },
+    project,
+    branch: "feature/provider-state",
+    environment: { ORCHESTRATOR_PROVIDER_REASONING_MODE: "persisted" },
+  });
+  assert.equal(selected.decision.strategy, "current_turn");
+  assert.equal(selected.decision.reason, "PROVIDER_CONTINUATION_UNAVAILABLE");
+  assert.equal(selected.state, undefined);
+  assert.match(selected.log, /strategy=current_turn/);
+  assert.match(selected.log, /reason=PROVIDER_CONTINUATION_UNAVAILABLE/);
+  assert.doesNotMatch(selected.log, /resp_must_not_reach_cli/);
+  assert.throws(
+    () =>
+      recordProviderRuntimeStateForAdapterV1(
+        codexCliProviderRuntimeAdapterV1,
+        {
+          mode: "persisted",
+          identity,
+          previousResponseId: "resp_must_not_be_recorded",
+        },
+      ),
+    /does not support provider continuation/,
+  );
+});
+
+test("task lifecycle identity invalidates persisted state for goal, scope, branch, priority, and authorization changes", () => {
+  const project = { name: "Test", path: process.cwd() };
+  const baseTask = {
+    ...task("identity", "pending"),
+    requestedModel: "terra",
+    modelSelectionReason: "explicit",
+    allowedPaths: ["server"],
+    verificationCommands: ["node --test"],
+    authorizationEvidence: {
+      contractType: "TaskAuthorizationEvidenceV1",
+      enabled: false,
+      decision: "disabled",
+      reason: "FEATURE_DISABLED",
+      allowedPaths: ["server"],
+      verificationCommands: ["node --test"],
+      scopeFingerprint: "scope-a",
+      goalFingerprint: "goal-a",
+      branch: "main",
+      authorityFingerprint: "authority-a",
+    },
+  };
+  const baseIdentity = providerRuntimeIdentityForTaskV1(baseTask, project, "main");
+  const state = recordProviderRuntimeStateV1({
+    mode: "persisted",
+    identity: baseIdentity,
+    previousResponseId: "resp_safe_fixture",
+    recordedAt: "2026-07-23T00:00:00.000Z",
+  });
+  assert.ok(state);
+  const supportingAdapter = {
+    id: "future-supporting-adapter",
+    supportsPreviousResponseId: true,
+    supportsManualReplay: true,
+  };
+  const changes = [
+    ["goal", { ...baseTask, prompt: "Changed goal" }, "main"],
+    ["scope", { ...baseTask, allowedPaths: ["runtime-evals-v1"] }, "main"],
+    ["branch", baseTask, "feature/other"],
+    ["priority", { ...baseTask, effort: "high" }, "main"],
+    [
+      "authorization",
+      {
+        ...baseTask,
+        authorizationEvidence: {
+          ...baseTask.authorizationEvidence,
+          authorityFingerprint: "authority-b",
+        },
+      },
+      "main",
+    ],
+  ] as const;
+  for (const [component, changedTask, branch] of changes) {
+    const selected = prepareProviderRuntimeContinuationForTaskV1({
+      task: { ...changedTask, providerRuntimeState: state },
+      project,
+      branch,
+      adapter: supportingAdapter,
+      environment: { ORCHESTRATOR_PROVIDER_REASONING_MODE: "persisted" },
+    });
+    assert.equal(selected.decision.strategy, "current_turn");
+    assert.equal(selected.decision.reason, "IDENTITY_CHANGED");
+    assert.deepEqual(selected.decision.invalidatedBy, [component]);
+    assert.equal(selected.state, undefined);
+  }
+});
+
+test("legacy run records load without provider runtime fields while retry and resume retain safe optional state", () => {
+  const legacy = run([task("legacy-provider-record", "failed")]);
+  const normalizedLegacy = normalizeProviderRuntimePersistenceV1(
+    structuredClone(legacy),
+  );
+  assert.equal(normalizedLegacy.tasks[0].providerRuntimeState, undefined);
+  assert.equal(normalizedLegacy.tasks[0].providerRuntimeDecision, undefined);
+
+  const identity = providerRuntimeIdentityForTaskV1(
+    {
+      ...legacy.tasks[0],
+      requestedModel: "terra",
+      modelSelectionReason: "explicit",
+    },
+    legacy.project,
+    "main",
+  );
+  const state = recordProviderRuntimeStateV1({
+    mode: "persisted",
+    identity,
+    previousResponseId: "resp_retry_fixture",
+    recordedAt: "2026-07-23T00:00:00.000Z",
+  });
+  assert.ok(state);
+  assert.throws(
+    () =>
+      normalizeProviderRuntimePersistenceV1({
+        ...structuredClone(legacy),
+        tasks: [
+          {
+            ...structuredClone(legacy.tasks[0]),
+            providerRuntimeState: {
+              ...state,
+              raw_reasoning: "must never load",
+            },
+          },
+        ],
+      }),
+    /Hidden reasoning field is forbidden/,
+  );
+  legacy.tasks[0].providerRuntimeState = state;
+  const retry = retryRun(legacy, legacy.tasks[0]);
+  const resumed = resumeRun(legacy);
+  assert.deepEqual(retry.tasks[0].providerRuntimeState, state);
+  assert.deepEqual(resumed?.tasks[0].providerRuntimeState, state);
+  assert.equal(retry.tasks[0].providerRuntimeDecision, undefined);
+  assert.equal(resumed?.tasks[0].providerRuntimeDecision, undefined);
+  const recovered = recoverRun({
+    ...legacy,
+    status: "running",
+    tasks: [{ ...legacy.tasks[0], status: "running" }],
+  });
+  assert.deepEqual(recovered.tasks[0].providerRuntimeState, state);
+});
+
+test("fails closed on unverified Luna routes and preserves explicit GPT-5.6 configuration identity", () => {
+  assert.deepEqual(installedCodexModels({}), ["terra", "sol"]);
+  assert.deepEqual(installedCodexModels({ CODEX_LUNA_SUPPORTED: "1" }), ["luna", "terra", "sol"]);
+  assert.deepEqual(
+    assertCodexRouteCompatible("terra", "medium", "local-codex-tools", {}),
+    { model: "gpt-5.6-terra", reasoningEffort: "medium", toolRoute: "local-codex-tools" },
+  );
+  assert.throws(
+    () => assertCodexRouteCompatible("luna", "light", "local-codex-tools", {}),
+    /not enabled by the installed Codex runtime/,
+  );
+});
+
+test("enabled answer, review, and diagnose contracts are authorized only as non-mutating", () => {
+  for (const intent of ["answer", "review", "diagnose"] as const) {
+    const evidence = authorizeTask({
+      authorization: { enabled: true, intent, technicalPermission: "read_only", sideEffectRisk: "none" },
+    });
+    assert.equal(evidence.decision, "authorized");
+    assert.equal(evidence.reason, "NON_MUTATING_AUTHORIZED");
+    assert.equal(taskSandbox(evidence), "read-only");
+    assert.deepEqual(authorizationWriteViolations(evidence, ["unexpected-write.ts"]), ["unexpected-write.ts"]);
+  }
+  assert.equal(authorizeTask({
+    authorization: { enabled: true, intent: "review", technicalPermission: "reversible_local_write", sideEffectRisk: "none" },
+  }).reason, "NON_MUTATING_CONTRACT_REQUIRED");
+});
+
+test("one configured approved apply contract authorizes its exact reversible local scope and replays persisted run evidence", () => {
+  const task = {
+    allowedPaths: ["server/index.ts", "server/index.test.ts"],
+    verificationCommands: ["npm test", "git diff --check"],
+    authorization: {
+      enabled: true,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      approvalId: "approval-42",
+    },
+  };
+  const project = {
+    approvedApplyContracts: [{
+      approvalId: "approval-42",
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      allowedPaths: ["server/index.ts", "server/index.test.ts"],
+      verificationCommands: ["npm test", "git diff --check"],
+    }],
+  };
+  const evidence = authorizeTask(task, project);
+  assert.equal(evidence.decision, "authorized");
+  assert.equal(evidence.reason, "APPROVED_REVERSIBLE_LOCAL_APPLY");
+  assert.equal(taskSandbox(evidence), "workspace-write");
+  assert.equal(replayTaskAuthorization(evidence, task, project), true);
+  assert.equal(replayTaskAuthorization(evidence, { ...task, allowedPaths: ["server/index.ts"] }, project), false);
+  assert.equal(authorizeTask(task).reason, "APPROVAL_CONTRACT_MISMATCH");
+  const persistedRun = JSON.parse(JSON.stringify({ tasks: [{ authorizationEvidence: evidence }] }));
+  assert.equal(verifyStoredTaskAuthorization(
+    persistedRun.tasks[0].authorizationEvidence,
+    task,
+    project,
+  ), true);
+  assert.equal(verifyStoredTaskAuthorization(persistedRun.tasks[0].authorizationEvidence, task, {
+    approvedApplyContracts: [{ ...project.approvedApplyContracts[0], verificationCommands: ["npm test"] }],
+  }), false);
+});
+
+test("executor, reviewer, and correction phases carry the enforced sandbox boundary", () => {
+  const applyTask = {
+    title: "Apply exact patch",
+    prompt: "Change the server boundary",
+    allowedPaths: ["server/index.ts"],
+    verificationCommands: ["git diff --check"],
+    authorization: {
+      enabled: true,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      approvalId: "approval-phases",
+    },
+  };
+  const project = {
+    approvedApplyContracts: [{
+      approvalId: "approval-phases",
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      allowedPaths: ["server/index.ts"],
+      verificationCommands: ["git diff --check"],
+    }],
+  };
+  const apply = authorizeTask(applyTask, project, "feature/approval");
+  for (const phase of ["executor", "correction"] as const)
+    assert.deepEqual(codexExecutionBoundaryArgs(apply, phase), [
+      "--sandbox",
+      "workspace-write",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+    ]);
+  assert.deepEqual(codexExecutionBoundaryArgs(apply, "reviewer"), [
+    "--sandbox",
+    "read-only",
+    "-c",
+    "sandbox_workspace_write.network_access=false",
+  ]);
+  const prompt = buildPrompt({
+    ...applyTask,
+    id: "apply-task",
+    model: "terra",
+    requestedModel: "terra",
+    modelSelectionReason: "test",
+    effort: "light",
+    status: "pending",
+    log: [],
+    authorizationEvidence: apply,
+  } as any, project);
+  assert.match(prompt, /does not command-allowlist executor shell commands/);
+  assert.match(prompt, /Do not run verification commands yourself/);
+  const readOnly = authorizeTask({
+    title: "Review",
+    prompt: "Review only",
+    authorization: {
+      enabled: true,
+      intent: "review",
+      technicalPermission: "read_only",
+      sideEffectRisk: "none",
+    },
+  }, {}, "feature/approval");
+  assert.equal(codexExecutionBoundaryArgs(readOnly, "executor")[1], "read-only");
+});
+
+test("exact changed-file and orchestrator verification boundaries fail closed", () => {
+  const task = {
+    allowedPaths: ["server/index.ts"],
+    verificationCommands: ["node local-check.mjs", "git diff --check"],
+    authorization: {
+      enabled: true,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      approvalId: "approval-scope",
+    },
+  };
+  const evidence = authorizeTask(task, {
+    approvedApplyContracts: [{
+      approvalId: "approval-scope",
+      intent: "apply",
+      technicalPermission: "reversible_local_write",
+      sideEffectRisk: "reversible_local_write",
+      allowedPaths: ["server/index.ts"],
+      verificationCommands: ["node local-check.mjs", "git diff --check"],
+    }],
+  });
+  assert.deepEqual(authorizationWriteViolations(evidence, ["server/index.ts"]), []);
+  assert.deepEqual(
+    authorizationWriteViolations(evidence, ["server/index.ts", "README.md"]),
+    ["README.md"],
+  );
+  assert.deepEqual(orchestratorVerificationCommands(evidence), [
+    "node local-check.mjs",
+    "git diff --check",
+  ]);
+});
+
+test("disabled-by-default fallback does not invent approval or verification authority", () => {
+  const evidence = authorizeTask({});
+  assert.equal(evidence.decision, "disabled");
+  assert.equal(taskSandbox(evidence), "workspace-write");
+  assert.deepEqual(codexExecutionBoundaryArgs(evidence, "executor"), [
+    "--sandbox",
+    "workspace-write",
+  ]);
+  assert.deepEqual(orchestratorVerificationCommands(evidence), []);
+  assert.deepEqual(authorizationWriteViolations(evidence, ["legacy-change.ts"]), []);
+});
+
+test("external, destructive, costly, published, expanded, and ambiguous effects fail closed", () => {
+  for (const sideEffectRisk of ["external_write", "destructive", "costly", "publication", "scope_expansion", "ambiguous"] as const) {
+    const evidence = authorizeTask({
+      allowedPaths: ["server/index.ts"],
+      verificationCommands: ["npm test"],
+      authorization: {
+        enabled: true,
+        intent: "apply",
+        technicalPermission: "reversible_local_write",
+        sideEffectRisk,
+        approvalId: "old-approval",
+      },
+    }, { approvedApplyContracts: [{
+      approvalId: "old-approval",
+      intent: "apply",
+      technicalPermission: "reversible_local_write",
+      sideEffectRisk: "reversible_local_write",
+      allowedPaths: ["server/index.ts"],
+      verificationCommands: ["npm test"],
+    }] });
+    assert.equal(evidence.decision, "denied");
+    assert.equal(evidence.reason, "FRESH_EXPLICIT_GATE_REQUIRED");
+  }
+  assert.equal(authorizeTask({ authorization: { enabled: true } }).reason, "AMBIGUOUS_CLASSIFICATION");
+  assert.equal(authorizeTask({}).decision, "disabled");
 });
 
 test("server binds successfully before recovery mutates persisted runs", async () => {
@@ -219,6 +895,14 @@ test("dashboard starter YAML is a valid ordinary task queue", () => {
   assert.ok(queue.tasks.every((task) => task.title && task.prompt));
 });
 
+test("versioned queue template keeps one production contract outcome in one coherent scope", async () => {
+  const template = await readFile(join(process.cwd(), "tasks.example.yaml"), "utf8");
+  assert.match(template, /production-owned code/i);
+  assert.match(template, /same task.*implementation.*tests.*benchmark/i);
+  assert.match(template, /allowedPaths.*all production and test files/i);
+  assert.match(template, /independently useful/i);
+});
+
 test("ordinary YAML queues contain only ordinary task fields", () => {
   const removedRuntimeName = ["goal", "buddy"].join("");
   const queue = validateTaskQueue(parse(`
@@ -243,6 +927,10 @@ tasks:
   const prompt = buildPrompt(createRun(queue).tasks[0], queue.project);
   assert.match(prompt, /npm test/);
   assert.match(prompt, /Stop on scope violation/);
+  assert.match(
+    prompt,
+    /ORCHESTRATOR_EXECUTOR_OUTCOME_V1: (?:COMPLETED|STOPPED)/,
+  );
 });
 
 test("ordinary runs persist terminal state and retain recovery semantics", async () => {
@@ -260,6 +948,7 @@ test("ordinary runs persist terminal state and retain recovery semantics", async
     created.status = "completed";
     created.finishedAt = new Date().toISOString();
     for (const task of created.tasks) {
+      delete task.executorOutcomeContractVersion;
       task.status = "completed";
       task.finishedAt = created.finishedAt;
     }
@@ -387,7 +1076,7 @@ test("aggregates normalized tokens without double-counting cached input", () => 
   const metrics = projectTaskMetrics({
     ...task("tokens", "completed"),
     usage: [
-      { phase: "executor", attempt: 1, inputTokens: 100.9, outputTokens: 25.8, cachedInputTokens: 80.2 },
+      { phase: "executor", attempt: 1, inputTokens: 100.9, outputTokens: 25.8, cachedInputTokens: 80.2, cacheWriteTokens: 20.7 },
       { phase: "reviewer", attempt: 1, inputTokens: -10, outputTokens: Number.NaN, cachedInputTokens: Infinity },
       { phase: "correction", attempt: 1, inputTokens: "7", outputTokens: null, cachedInputTokens: 2 },
     ],
@@ -396,11 +1085,12 @@ test("aggregates normalized tokens without double-counting cached input", () => 
     inputTokens: 100,
     outputTokens: 25,
     cachedInputTokens: 82,
+    cacheWriteTokens: 20,
     totalTokens: 125,
     calls: 3,
   });
   assert.deepEqual(projectTaskMetrics(task("no-usage", "completed")).tokens, {
-    inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, calls: 0,
+    inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, totalTokens: 0, calls: 0,
   });
 });
 
@@ -438,10 +1128,22 @@ test("bounded final output preserves structured decisions written at the end", (
 test("reads machine-readable token usage from completed Codex turns", () => {
   assert.deepEqual(
     usageFromEvent('{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":45,"cached_input_tokens":80}}'),
-    { inputTokens: 120, outputTokens: 45, cachedInputTokens: 80 },
+    { inputTokens: 120, outputTokens: 45, cachedInputTokens: 80, cacheWriteTokens: 0 },
   );
   assert.equal(usageFromEvent('{"type":"turn.started"}'), undefined);
   assert.equal(usageFromEvent("not json"), undefined);
+});
+
+test("cache layout preserves a stable governance prefix while task and tool inputs change", () => {
+  const governance = { version: "v1", requiredInvariants: [{ id: "scope", text: "Stay in scope." }], rules: ["No commits."] };
+  const task = { goal: "Implement.", successCriteria: ["Pass."], outputContract: "Report.", allowedScope: ["server"], verificationCommands: ["node --test"], stopRules: ["Stop on regression."] };
+  const first = buildPromptCacheLayoutV1({ governance, task, toolContract: { version: "v1", allowedTools: ["shell"], rules: ["Declared only."] } });
+  const second = buildPromptCacheLayoutV1({ governance, task: { ...task, goal: "Review." }, toolContract: { version: "v2", allowedTools: ["shell", "filesystem"], rules: ["Declared only."] } });
+  assert.equal(first.stablePrefixIdentity, second.stablePrefixIdentity);
+  assert.match(second.dynamicSuffix, /filesystem/);
+  assert.throws(() => buildPromptCacheLayoutV1({ governance: { ...governance, requestId: "volatile" }, task, toolContract: { version: "v1", allowedTools: ["shell"], rules: ["Declared only."] } }), /Volatile/);
+  assert.deepEqual(explicitCacheBreakpointV1(), { enabled: false, reason: "disabled-by-default; implicit provider caching remains available" });
+  assert.throws(() => explicitCacheBreakpointV1({ enabled: true, route: {} }), /unsupported/);
 });
 
 function task(id: string, status: string): any {
@@ -477,7 +1179,98 @@ function run(tasks: any[], status = "failed"): any {
   };
 }
 
-test("validates YAML queue, models, limits, and Sol effort", async () => {
+function authorizedRunFixture(branch = "feature/approval") {
+  const contract = {
+    approvalId: "approval-lifecycle",
+    intent: "apply" as const,
+    technicalPermission: "reversible_local_write" as const,
+    sideEffectRisk: "reversible_local_write" as const,
+    allowedPaths: ["server/index.ts"],
+    verificationCommands: ["git diff --check"],
+  };
+  const authorizedTask = {
+    ...task("authorized", "failed"),
+    key: "authorization-goal",
+    prompt: "Apply the exact server change",
+    allowedPaths: [...contract.allowedPaths],
+    verificationCommands: [...contract.verificationCommands],
+    authorization: {
+      enabled: true,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      approvalId: contract.approvalId,
+    },
+  };
+  const source = run([authorizedTask]);
+  source.project.approvedApplyContracts = [contract];
+  authorizedTask.authorizationEvidence = authorizeTask(
+    authorizedTask,
+    source.project,
+    branch,
+  );
+  return source;
+}
+
+test("recovery, resume, and retry reject stale task authorization identities", () => {
+  const source = authorizedRunFixture();
+  assert.doesNotThrow(() => recoverRun(structuredClone(source), "feature/approval"));
+  assert.ok(resumeRun(structuredClone(source), "feature/approval"));
+  assert.equal(retryRun(
+    structuredClone(source),
+    structuredClone(source.tasks[0]),
+    "feature/approval",
+  ).tasks[0].status, "pending");
+
+  const changedGoal = structuredClone(source);
+  changedGoal.tasks[0].prompt = "Expanded goal";
+  assert.throws(
+    () => retryRun(changedGoal, changedGoal.tasks[0], "feature/approval"),
+    /fresh contract/,
+  );
+  assert.throws(
+    () => resumeRun(structuredClone(source), "feature/other"),
+    /fresh contract/,
+  );
+  const changedAuthority = structuredClone(source);
+  changedAuthority.project.path = `${source.project.path}-other`;
+  assert.throws(
+    () => recoverRun(changedAuthority, "feature/approval"),
+    /fresh contract/,
+  );
+  const changedContract = structuredClone(source);
+  changedContract.project.approvedApplyContracts[0].verificationCommands = ["node other-check.mjs"];
+  assert.throws(
+    () => retryRun(changedContract, changedContract.tasks[0], "feature/approval"),
+    /fresh contract/,
+  );
+});
+
+test("loading persisted runs verifies stored task authorization before replay", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-auth-load-"));
+  try {
+    const source = authorizedRunFixture("");
+    source.id = "authorization-load-run";
+    source.project.path = project;
+    source.tasks[0].authorizationEvidence = authorizeTask(
+      source.tasks[0],
+      source.project,
+      "",
+    );
+    await persistRun(source);
+    assert.equal((await loadRun(source.id))?.id, source.id);
+
+    const file = join(testDataDirectory, "runs", source.id, "run.json");
+    const stored = JSON.parse(await readFile(file, "utf8"));
+    stored.tasks[0].prompt = "Changed after persistence";
+    await writeFile(file, JSON.stringify(stored, null, 2));
+    await assert.rejects(() => loadRun(source.id), /fresh contract/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("validates YAML queue, models, limits, and explicit Sol high effort", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-test-"));
   try {
     const queue = parse(
@@ -488,15 +1281,12 @@ test("validates YAML queue, models, limits, and Sol effort", async () => {
     assert.equal(result.limits.maxTaskRetries, 2);
     assert.equal(result.limits.maxParallelTasks, 1);
     assert.equal(result.tasks[0].model, "terra");
-    assert.throws(
-      () =>
-        validateQueue({
-          ...(queue as object),
-          tasks: [
-            { title: "Too costly", prompt: "No", model: "sol", effort: "high" },
-          ],
-        }),
-      /Sol with high effort/,
+    assert.equal(
+      validateQueue({
+        ...(queue as object),
+        tasks: [{ title: "Quality-first", prompt: "No", model: "sol", effort: "high" }],
+      }).tasks[0].model,
+      "sol",
     );
     assert.throws(
       () =>
@@ -675,6 +1465,211 @@ test("preflight context is reused for prompt and serialized run receipt", async 
   }
 });
 
+test("programmatic context reduction is disabled by default and preserves the direct router result", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-ptc-disabled-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const request = { projectPath: project, requestId: "request-ptc-disabled", task: "Review", profile: "review", maxSources: 2 };
+    const direct = await new FallbackContextProvider().provide(request);
+    const resolved = await resolveTaskContext(request, { provide: async () => direct }, new FallbackContextProvider());
+    assert.strictEqual(resolved, direct);
+    assert.equal(resolved.programmaticReduction, undefined);
+    assert.equal(contextPtcEnabled({}), false);
+    assert.equal(contextPtcEnabled({ ORCHESTRATOR_CONTEXT_PTC_V1: "1" }), true);
+    assert.equal(contextPtcEnabled({ ORCHESTRATOR_CONTEXT_PTC_V1: "true" }), false);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("local programmatic adapter reduces only the existing router bundle and preserves linkage and evidence", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-ptc-local-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    await writeFile(join(project, "README.md"), "safe");
+    const request = { projectPath: project, requestId: "request-ptc-local", task: "Review", profile: "review", maxSources: 3 };
+    const routed = await new FallbackContextProvider().provide(request);
+    routed.bundle.sources = [
+      { ...routed.bundle.sources[1], priority: "P1", evidence_refs: ["evidence-readme"] },
+      { ...routed.bundle.sources[0], priority: "P0", evidence_refs: ["evidence-agents"] },
+      { ...routed.bundle.sources[0], priority: "P0", evidence_refs: ["evidence-agents-extra"] },
+    ];
+    routed.bundle.selection.selected_source_count = 3;
+    routed.receipt.counts.selected_sources = 3;
+    let routerCalls = 0;
+    const resolved = await resolveTaskContext(
+      request,
+      { provide: async () => { routerCalls += 1; return routed; } },
+      new FallbackContextProvider(),
+      { enabled: true, executor: new LocalDeterministicContextPtcExecutor() },
+    );
+
+    assert.equal(routerCalls, 1);
+    assert.deepEqual(resolved.bundle.sources.map((source: { path: string }) => source.path), ["AGENTS.md", "README.md"]);
+    assert.deepEqual(resolved.bundle.sources[0].evidence_refs, ["evidence-agents", "evidence-agents-extra"]);
+    assert.deepEqual(resolved.bundle.selection, {
+      ...routed.bundle.selection,
+      omitted_source_count: 1,
+      truncated: true,
+    });
+    assert.equal(resolved.programmaticReduction?.state, "applied");
+    assert.equal(resolved.programmaticReduction?.requires_direct_final_validation, true);
+    assert.deepEqual(resolved.programmaticReduction?.retained_evidence_refs, [
+      "evidence-agents",
+      "evidence-agents-extra",
+      "evidence-readme",
+    ]);
+    assert.equal(resolved.programmaticReduction?.call_receipts.length, 6);
+    for (const receipt of resolved.programmaticReduction?.call_receipts ?? []) {
+      assert.match(receipt.call_id, /^ptc-request-ptc-local-\d+$/);
+      assert.deepEqual(receipt.caller, { type: "context_router", request_id: request.requestId });
+    }
+    assert.equal(validateContextContractV1("bundle", resolved.bundle), resolved.bundle);
+    assert.equal(validateContextContractV1("receipt", resolved.receipt), resolved.receipt);
+    const queue = validateQueue({
+      project: { path: project },
+      tasks: [{ title: "Context", prompt: "Review", contextProfile: "review", maxSources: 3 }],
+    });
+    cachePreflightContexts(queue, [resolved]);
+    const run = createRun(queue, undefined, await contextsForRun(queue));
+    const prompt = buildPrompt(run.tasks[0], run.project);
+    assert.match(prompt, /AGENTS\.md/);
+    assert.match(prompt, /README\.md/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("programmatic adapter rejects unsafe tools before execution and keeps direct fallback complete", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-ptc-denied-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const request = { projectPath: project, requestId: "request-ptc-denied", task: "Review", profile: "review", maxSources: 2 };
+    const routed = await new FallbackContextProvider().provide(request);
+    let executions = 0;
+    const unsafeExecutor = {
+      describe: (operation: any) => ({
+        operation,
+        readOnly: operation !== "join",
+        approvalSensitive: operation === "rank",
+      }),
+      execute: async () => { executions += 1; throw new Error("must not execute"); },
+    };
+    const resolved = await resolveTaskContext(
+      request,
+      { provide: async () => routed },
+      new FallbackContextProvider(),
+      { enabled: true, executor: unsafeExecutor },
+    );
+    assert.equal(executions, 0);
+    assert.equal(resolved.programmaticReduction?.state, "direct_fallback");
+    assert.deepEqual(resolved.programmaticReduction?.reason_codes, ["PTC_TOOL_DENIED"]);
+    assert.deepEqual(resolved.bundle, routed.bundle);
+    assert.deepEqual(resolved.receipt, routed.receipt);
+    assert.equal(validateContextContractV1("bundle", resolved.bundle), resolved.bundle);
+    assert.equal(validateContextContractV1("receipt", resolved.receipt), resolved.receipt);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("programmatic adapter retries only retryable calls and stops on linkage or evidence loss", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-ptc-stop-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const request = { projectPath: project, requestId: "request-ptc-stop", task: "Review", profile: "review", maxSources: 2 };
+    const routed = await new FallbackContextProvider().provide(request);
+    routed.bundle.sources[0].evidence_refs = ["evidence-required"];
+    const local = new LocalDeterministicContextPtcExecutor();
+    let attempts = 0;
+    const retryingExecutor = {
+      describe: (operation: any) => local.describe(operation),
+      execute: async (call: any) => {
+        if (call.operation === "filter" && attempts++ === 0)
+          throw new ContextPtcFailure("PTC_TRANSIENT", "retry once", true);
+        return local.execute(call);
+      },
+    };
+    const retried = await resolveTaskContext(
+      request,
+      { provide: async () => routed },
+      new FallbackContextProvider(),
+      { enabled: true, executor: retryingExecutor, maxAttempts: 2 },
+    );
+    assert.equal(retried.programmaticReduction?.state, "applied");
+    assert.equal(retried.programmaticReduction?.call_receipts[0].attempts, 2);
+
+    const wrongLinkExecutor = {
+      describe: (operation: any) => local.describe(operation),
+      execute: async (call: any) => ({ ...(await local.execute(call)), call_id: "wrong" }),
+    };
+    const wrongLink = await resolveTaskContext(
+      request,
+      { provide: async () => routed },
+      new FallbackContextProvider(),
+      { enabled: true, executor: wrongLinkExecutor },
+    );
+    assert.deepEqual(wrongLink.programmaticReduction?.reason_codes, ["PTC_LINKAGE_MISMATCH"]);
+    assert.deepEqual(wrongLink.bundle, routed.bundle);
+
+    const evidenceDroppingExecutor = {
+      describe: (operation: any) => local.describe(operation),
+      execute: async (call: any) => {
+        const response = await local.execute(call);
+        if (call.operation === "schema_validate") delete response.output.bundle.sources[0].evidence_refs;
+        return response;
+      },
+    };
+    const evidenceLost = await resolveTaskContext(
+      request,
+      { provide: async () => routed },
+      new FallbackContextProvider(),
+      { enabled: true, executor: evidenceDroppingExecutor },
+    );
+    assert.deepEqual(evidenceLost.programmaticReduction?.reason_codes, ["PTC_EVIDENCE_LOST"]);
+    assert.deepEqual(evidenceLost.bundle, routed.bundle);
+
+    const exhaustedExecutor = {
+      describe: (operation: any) => local.describe(operation),
+      execute: async () => { throw new ContextPtcFailure("PTC_TRANSIENT", "still transient", true); },
+    };
+    const exhausted = await resolveTaskContext(
+      request,
+      { provide: async () => routed },
+      new FallbackContextProvider(),
+      { enabled: true, executor: exhaustedExecutor, maxAttempts: 2 },
+    );
+    assert.deepEqual(exhausted.programmaticReduction?.reason_codes, ["PTC_RETRY_EXHAUSTED"]);
+
+    const invalidReasonExecutor = {
+      describe: (operation: any) => local.describe(operation),
+      execute: async (call: any) => ({ ...(await local.execute(call)), reason_codes: ["invalid-code"] }),
+    };
+    const invalidReason = await resolveTaskContext(
+      request,
+      { provide: async () => routed },
+      new FallbackContextProvider(),
+      { enabled: true, executor: invalidReasonExecutor },
+    );
+    assert.deepEqual(invalidReason.programmaticReduction?.reason_codes, ["PTC_REASON_CODE_INVALID"]);
+
+    const conflicting = structuredClone(routed);
+    conflicting.bundle.sources.push({ ...conflicting.bundle.sources[0], authority: "conflicting_authority" });
+    conflicting.bundle.selection.selected_source_count = 2;
+    conflicting.receipt.counts.selected_sources = 2;
+    const semanticConflict = await resolveTaskContext(
+      request,
+      { provide: async () => conflicting },
+      new FallbackContextProvider(),
+      { enabled: true, executor: local },
+    );
+    assert.deepEqual(semanticConflict.programmaticReduction?.reason_codes, ["PTC_SEMANTIC_CONFLICT"]);
+    assert.deepEqual(semanticConflict.bundle, conflicting.bundle);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("loads every queue in a sequential pipeline before it starts", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-pipeline-"));
   const first = join(project, "first.yaml");
@@ -697,7 +1692,7 @@ test("loads every queue in a sequential pipeline before it starts", async () => 
   }
 });
 
-test("resolves automatic models within project and task constraints", async () => {
+test("routes everyday work to Terra and uses Sol only for an explicit quality-first minimum", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-routing-"));
   try {
     const queue = validateQueue({
@@ -706,13 +1701,22 @@ test("resolves automatic models within project and task constraints", async () =
         { title: "Update wording", prompt: "Correct a typo", model: "auto" },
         { title: "API integration", prompt: "Add integration tests", model: "auto" },
         { title: "Migration", prompt: "Create a database migration", model: "auto", minModel: "terra" },
+        { title: "Quality review", prompt: "Review a distributed system design", model: "auto", minModel: "sol", effort: "high" },
       ],
     });
-    assert.equal(queue.tasks[0].model, "luna");
+    assert.equal(queue.tasks[0].model, "terra");
     assert.equal(queue.tasks[0].requestedModel, "auto");
     assert.equal(queue.tasks[1].model, "terra");
-    assert.equal(queue.tasks[2].model, "sol");
-    assert.match(queue.tasks[2].modelSelectionReason, /^auto:/);
+    assert.equal(queue.tasks[2].model, "terra");
+    assert.equal(queue.tasks[3].model, "sol");
+    assert.match(queue.tasks[3].modelSelectionReason, /explicit quality-first/);
+    assert.throws(
+      () => validateQueue({
+        project: { path: project, allowedModels: ["luna", "terra"] },
+        tasks: [{ title: "Fast", prompt: "Classify", model: "luna" }],
+      }),
+      /not enabled by the installed Codex runtime/,
+    );
     assert.throws(
       () => validateQueue({
         project: { path: project, allowedModels: ["luna"] },
@@ -1048,6 +2052,93 @@ test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, 
   );
 });
 
+test("executor outcome v1 fails closed when an execution guard stops the requested work", () => {
+  const stopped = assessExecutorOutcome(
+    "Stopped due to the explicit size guard.\n\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: STOPPED",
+    1,
+  );
+  assert.deepEqual(stopped, {
+    disposition: "stopped",
+    outcome: "STOPPED",
+    reason: "Executor reported STOPPED; the requested outcome was not delivered.",
+  });
+  assert.equal(
+    resolveTaskStatus({
+      cancelled: false,
+      skipped: false,
+      exitCode: 0,
+      timedOut: false,
+      violations: [],
+      executorOutcome: stopped,
+    }),
+    "failed",
+  );
+
+  const parent = {
+    ...task("guarded", "failed"),
+    key: "guarded",
+    executorOutcome: "STOPPED",
+    executorOutcomeReason: stopped.reason,
+  };
+  const dependent = {
+    ...task("dependent", "pending"),
+    key: "dependent",
+    dependsOn: ["guarded"],
+  };
+  assert.equal(blockTasksWithFailedDependencies([parent, dependent]), true);
+  assert.equal(dependent.status, "blocked");
+});
+
+test("executor outcome v1 accepts only one valid required marker and keeps legacy records compatible", () => {
+  const completed = assessExecutorOutcome(
+    "Delivered the requested change.\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED",
+    1,
+  );
+  assert.equal(completed.disposition, "completed");
+  assert.equal(completed.outcome, "COMPLETED");
+
+  for (const output of [
+    "No marker was returned.",
+    "ORCHESTRATOR_EXECUTOR_OUTCOME_V1: DONE",
+    "ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: STOPPED",
+  ]) {
+    const malformed = assessExecutorOutcome(output, 1);
+    assert.equal(malformed.disposition, "invalid");
+    assert.match(malformed.reason, /outcome marker/i);
+    assert.equal(
+      resolveTaskStatus({
+        cancelled: false,
+        skipped: false,
+        exitCode: 0,
+        timedOut: false,
+        violations: [],
+        executorOutcome: malformed,
+      }),
+      "failed",
+    );
+  }
+
+  const historical = assessExecutorOutcome(
+    "Historical final output without a marker.",
+    undefined,
+  );
+  assert.deepEqual(historical, {
+    disposition: "legacy",
+    reason: "Historical execution has no executor outcome contract.",
+  });
+  assert.equal(
+    resolveTaskStatus({
+      cancelled: false,
+      skipped: false,
+      exitCode: 0,
+      timedOut: false,
+      violations: [],
+      executorOutcome: historical,
+    }),
+    "completed",
+  );
+});
+
 test("retry and resume preserve completed work and reset graph descendants", () => {
   const completed = { ...task("done", "completed"), key: "setup" };
   const failed = {
@@ -1077,11 +2168,71 @@ test("retry and resume preserve completed work and reset graph descendants", () 
   );
 });
 
-test("keeps a successful task completed when the reviewer is unavailable", () => {
+test("review-enabled completion fails closed unless a strict reviewer verdict approves it", () => {
   assert.equal(resolveReviewedTaskStatus("completed", "approved"), "completed");
-  assert.equal(resolveReviewedTaskStatus("completed", "unavailable"), "completed");
+  assert.equal(resolveReviewedTaskStatus("completed", "unavailable"), "failed");
+  assert.equal(resolveReviewedTaskStatus("completed", "pending"), "failed");
   assert.equal(resolveReviewedTaskStatus("completed", "changes_requested"), "failed");
   assert.equal(resolveReviewedTaskStatus("completed", "timed_out"), "timed_out");
+
+  assert.equal(
+    assessReviewerResult({
+      exitCode: 0,
+      timedOut: false,
+      report: "Looks good.\nVERDICT: APPROVED",
+    }).status,
+    "approved",
+  );
+  assert.equal(
+    assessReviewerResult({
+      exitCode: 0,
+      timedOut: false,
+      report: "VERDICT: APPROVED with caveats",
+    }).status,
+    "changes_requested",
+  );
+  assert.equal(
+    assessReviewerResult({
+      exitCode: 9,
+      timedOut: false,
+      report: "VERDICT: APPROVED",
+    }).status,
+    "unavailable",
+  );
+  assert.equal(
+    assessReviewerResult({
+      exitCode: 0,
+      timedOut: true,
+      report: "VERDICT: APPROVED",
+    }).status,
+    "timed_out",
+  );
+});
+
+test("nine reviewers returning no report cannot approve or complete tasks", () => {
+  const results = Array.from({ length: 9 }, () =>
+    assessReviewerResult({
+      exitCode: 0,
+      timedOut: false,
+      report: undefined,
+    }),
+  );
+  assert.ok(results.every((result) => result.status === "unavailable"));
+  assert.ok(results.every((result) => /did not return a report/i.test(result.reason)));
+  assert.ok(
+    results.every(
+      (result) =>
+        resolveReviewedTaskStatus("completed", result.status) === "failed",
+    ),
+  );
+});
+
+test("reviewer diagnostics are tail-bounded for actionable task logs", () => {
+  const diagnostics = boundedReviewerDiagnostics(
+    `reviewer unavailable: ${"x".repeat(20_000)} final diagnostic`,
+  );
+  assert.ok(diagnostics.length <= 8_000);
+  assert.match(diagnostics, /final diagnostic$/);
 });
 
 test("recovery after restart fails an in-progress task and preserves its run record", () => {
@@ -1116,4 +2267,118 @@ test("project lock prevents two orchestrator runs from using the same repository
     await releaseProjectLock(second);
     await rm(project, { recursive: true, force: true });
   }
+});
+
+test("restart recovery removes only the interrupted run's dead project lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-dead-lock-"));
+  const source = run([task("interrupted", "running")], "running");
+  source.id = "interrupted-run";
+  source.project.path = project;
+  const lockPath = join(project, ".codex-orchestrator.lock");
+  source.lock = { path: lockPath, acquiredAt: new Date().toISOString() };
+  await writeFile(
+    lockPath,
+    JSON.stringify({ runId: source.id, pid: 999_999 }),
+  );
+
+  try {
+    assert.equal(await clearDeadProjectLock(source, () => false), true);
+    await assert.rejects(() => access(lockPath));
+    assert.equal(source.lock, undefined);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("startup ownership reconciliation removes a terminal run's stale lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-terminal-lock-"));
+  const queue = validateTaskQueue({
+    project: { path: project },
+    tasks: [
+      { key: "first", title: "First", prompt: "First task" },
+      { key: "second", title: "Second", prompt: "Second task" },
+    ],
+  });
+  const source = createRun(queue);
+  source.status = "failed";
+  source.finishedAt = new Date().toISOString();
+  const lockPath = join(project, ".codex-orchestrator.lock");
+  source.lock = { path: lockPath, acquiredAt: source.finishedAt };
+  await writeFile(lockPath, JSON.stringify({ runId: source.id, pid: 999_999 }));
+
+  try {
+    assert.equal(await reconcilePersistedRunOwner(source, () => false), false);
+    await assert.rejects(() => access(lockPath));
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("failed canonical run persistence does not publish a newer derived summary", async () => {
+  const source = run([task("persist-order", "pending")], "running");
+  source.id = `persist-order-${Date.now()}`;
+  const directory = join(testDataDirectory, "runs", source.id);
+  await mkdir(join(directory, "run.json"), { recursive: true });
+
+  await assert.rejects(() => persistRun(source));
+  await assert.rejects(() => access(join(directory, "summary.json")));
+});
+
+test("atomic write cleanup does not create a secondary unhandled rejection", async () => {
+  const parentFile = join(testDataDirectory, `atomic-parent-${Date.now()}`);
+  await writeFile(parentFile, "not a directory");
+  let unhandled: unknown;
+  const onUnhandled = (error: unknown) => {
+    unhandled = error;
+  };
+  process.once("unhandledRejection", onUnhandled);
+  try {
+    await assert.rejects(() =>
+      writeTextAtomically(join(parentFile, "run.json"), "{}"),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(unhandled, undefined);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("background run failures are observed instead of becoming unhandled rejections", async () => {
+  const expected = new Error("persist failed");
+  let reported: unknown;
+
+  runInBackground(Promise.reject(expected), (error: unknown) => {
+    reported = error;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(reported, expected);
+});
+
+test("schema-v2 summary is repaired when it diverges from canonical run state", async () => {
+  const source = run([task("summary-repair", "failed")], "failed");
+  source.id = `summary-repair-${Date.now()}`;
+  source.finishedAt = new Date().toISOString();
+  await persistRun(source);
+  const summaryFile = join(testDataDirectory, "runs", source.id, "summary.json");
+  await writeFile(
+    summaryFile,
+    JSON.stringify({
+      id: source.id,
+      project: source.project,
+      status: "running",
+      startedAt: source.startedAt,
+      taskCount: source.tasks.length,
+      schemaVersion: 2,
+    }),
+  );
+
+  const repaired = await loadRunSummary(source.id);
+
+  assert.equal(repaired?.status, "failed");
+  assert.equal(repaired?.finishedAt, source.finishedAt);
+  assert.equal(
+    (JSON.parse(await readFile(summaryFile, "utf8")) as { status: string }).status,
+    "failed",
+  );
 });

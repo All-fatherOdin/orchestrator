@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "responses-multi-agent-pilot-thresholds-v1",
+  "declaredBeforeBenchmark": true,
+  "value": {
+    "minimumWallClockImprovementRatio": 0.25,
+    "minimumQualityImprovement": 0.05,
+    "minimumQualityScore": 1,
+    "maximumTokenInputRatio": 1.5,
+    "maximumCostInputRatio": 1.5,
+    "speedOrQualityGainRequired": true
+  },
+  "correctness": {
+    "minimumEvidencePreservationRatio": 1,
+    "minimumReplayMatchRatio": 1,
+    "maximumDuplicateWorkCount": 0,
+    "minimumFinalSynthesisRatio": 1
+  },
+  "execution": {
+    "maximumConcurrentSubagents": 3,
+    "requiredRootSyntheses": 1,
+    "requireDisjointWriteScopes": true
+  },
+  "compatibility": {
+    "requireResponsesApiMultiAgent": true,
+    "requireMaxToolCallsSupport": true,
+    "requireExplicitCompactionSupport": true,
+    "requireReasoningSummarySupport": true,
+    "requireProviderRuntimeRoute": true,
+    "requireProductionDisabledDuringGate": true
+  }
+}
