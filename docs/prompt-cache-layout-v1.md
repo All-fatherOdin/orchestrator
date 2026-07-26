@@ -1,0 +1,9 @@
+# Prompt Cache Layout v1
+
+`PromptCacheLayoutV1` builds a deterministic reusable prefix from the compact compiler's immutable governance contract, followed by a dynamic suffix. The prefix has a SHA-256 configuration identity for comparison and reporting; it is not a provider cache key or a claim that a cache was used.
+
+The dynamic suffix always contains task data and tool contracts. Timestamps, request IDs, user-specific values, changing tool lists, Working State, selected sources, and tool output are rejected from the stable input or remain outside the prefix. This preserves deterministic assembly and prevents volatile data from invalidating the reusable portion.
+
+The current GPT-5.6 Codex CLI routes retain implicit provider caching and the ordinary uncached fallback. No explicit provider cache-breakpoint field is sent by the runner. `explicitCacheBreakpointV1` is disabled by default and rejects enablement unless a route declares compatibility and reproducible benchmark evidence records `netValue: true`; no compatible route is configured today.
+
+Run metrics retain input, output, cache-read (`cachedInputTokens`), and provider-reported cache-write (`cacheWriteTokens`) tokens with call counts and latency/task outcome projections. In **Расход**, cache reads and writes are visible as separate non-negative values in the cards, chart tooltips, and task details; total tokens remain input plus output only. Older records without `cacheWriteTokens` display zero and remain usable. The interface does not infer provider support, pricing, or savings from a missing or zero value. Runtime evaluation reports display cache reads/writes alongside latency, cost inputs, task success, route, and configuration identity. The deterministic mock marks provider cache, latency, and pricing data unsupported. It does not claim token, latency, or cost savings.

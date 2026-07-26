@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   configureSingleInstance,
+  createServerLogHandles,
   ensureServerAvailability,
   isCompatibleHealth,
   shouldReportServerExit,
@@ -94,4 +95,28 @@ test("health compatibility and exit reporting are ownership-aware", () => {
 test("desktop shutdown stops only the server process it owns", () => {
   assert.equal(shouldStopServerOnQuit({ ownsServer: true }), true);
   assert.equal(shouldStopServerOnQuit({ ownsServer: false }), false);
+});
+
+test("desktop server logs stdout and stderr to durable append-only files", () => {
+  const calls = [];
+  const closed = [];
+  const handles = createServerLogHandles("C:\\data", {
+    mkdirSync: (directory, options) => calls.push(["mkdir", directory, options]),
+    openSync: (file, flags) => {
+      calls.push(["open", file, flags]);
+      return calls.length;
+    },
+    closeSync: (descriptor) => closed.push(descriptor),
+  });
+
+  assert.deepEqual(handles.stdio, ["ignore", handles.stdout, handles.stderr]);
+  assert.match(handles.stdoutPath, /server\.stdout\.log$/);
+  assert.match(handles.stderrPath, /server\.stderr\.log$/);
+  assert.deepEqual(
+    calls.filter(([kind]) => kind === "open").map(([, , flags]) => flags),
+    ["a", "a"],
+  );
+
+  handles.close();
+  assert.deepEqual(closed, [handles.stdout, handles.stderr]);
 });

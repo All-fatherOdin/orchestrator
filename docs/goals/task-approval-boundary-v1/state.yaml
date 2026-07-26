@@ -1,0 +1,258 @@
+version: 2
+
+goal:
+  title: "Task Approval Boundary v1"
+  slug: "task-approval-boundary-v1"
+  kind: existing_plan
+  tranche: "Validate the existing plan, implement successive safe verified
+    orchestrator slices, and continue until the full oracle is true."
+  status: active
+  oracle:
+    signal: "Tests prove answer/review cannot mutate, approved scoped apply proceeds
+      without repeated approval, and high-risk actions stop."
+    cadence: "after each Worker package and at final audit"
+    final_proof: "Receipt-backed implementation diff, fresh targeted/regression
+      verification, and full_outcome_complete audit."
+  intake:
+    original_request: "Prepare eight separate implementation goals in
+      D:\\pet-projects\\orchestrator; multi-agent is last and optional behind
+      go/no-go."
+    interpreted_outcome: "Implement one task-level local execution grant while
+      preserving fresh gates for high-risk or expanded-scope actions."
+    input_shape: existing_plan
+    audience: "orchestrator owner and maintainers"
+    authority: approved
+    proof_type: test
+    completion_proof: "Tests prove answer/review cannot mutate, approved scoped
+      apply proceeds without repeated approval, and high-risk actions stop."
+    likely_misfire: "Stopping at planning or an isolated helper instead of a
+      verified integrated capability."
+    blind_spots_considered:
+      - "Pre-existing dirty worktree may overlap implementation files."
+      - "Provider facts must be checked against current official documentation."
+      - "Other goals are dependencies only when their receipts prove completion."
+    existing_plan_facts:
+      - "Implementation belongs only in D:\\pet-projects\\orchestrator."
+      - "The Agent Memory Kit repository is read-only reference material for
+        this goal."
+      - "Rollout-risk behavior must be reversible and configuration-gated."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: live
+    url: "http://goalbuddy.localhost:41737/task-approval-boundary-v1/"
+    command: "node C:/Users/Alexander
+      Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/s\
+      urfaces/local-goal-board/scripts/local-goal-board.mjs --goal
+      docs/goals/task-approval-boundary-v1"
+
+active_task: T002
+
+tasks:
+  - id: T001
+    type: scout
+    assignee: Scout
+    status: done
+    reasoning_hint: low
+    objective: "Map intent, permission, approval, receipt, replay, and risk-tier
+      surfaces plus tests."
+    inputs:
+      - "D:\\pet-projects\\orchestrator"
+      - "D:\\pet-projects\\AI-assisted_System_Design_and_Agent_Memory_Kit"
+      - "docs/goals/task-approval-boundary-v1/goal.md"
+      - "Current git status and diff"
+    constraints:
+      - "Read-only; do not edit implementation files."
+      - "Treat the source kit as read-only."
+      - "Record overlap with server/index.test.ts, src/App.tsx, src/styles.css,
+        and src/GoalBuddyPage.tsx."
+      - "Prefer file-path and command evidence over generic advice."
+    expected_output:
+      - "Relevant architecture and file map"
+      - "Current behavior and compatibility evidence"
+      - "Baseline and verification commands"
+      - "Dirty-worktree overlap assessment"
+      - "Largest safe Worker candidate with proposed allowed_files, verify, and
+        stop_if"
+    receipt:
+      result: done
+      changed_files: []
+      commands: []
+      summary: |-
+        Scout complete; no repository or board files changed.
+
+        ```json
+        {
+          "goalbuddy_receipt_v1": {
+            "result": "done",
+            "summary": "Mapped the approval-boundary surface. The required integrated server/test paths already contain substantial unowned changes, so no Worker is safe to activate until the Judge establishes ownership and merge strategy.",
+            "evidence": [
+              "docs/goals/task-approval-boundary-v1/goal.md",
+              "docs/goals/task-approval-boundary-v1/state.yaml",
+              "server/index.ts",
+              "server/index.test.ts",
+              "src/App.tsx",
+              "src/GoalBuddyPage.tsx",
+              "src/styles.css",
+              "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/ACTION_INTENT_CONTRACT.md",
+              "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/PERMISSIONS_POLICY_TEMPLATE.yaml",
+              "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/WORKING_STATE_AND_REPLAY_GUIDE.md"
+            ]
+          }
+        }
+        ```
+
+        Architecture and behavior:
+
+        - [`server/index.ts`](D:\pet-projects\orchestrator\server\index.ts:1048) is the integration point: it imports a single active GoalBuddy card, maps `allowed_files`, `verify`, and `stop_if` into `TaskInput`, snapshots `state.yaml` with SHA-256, runs work, writes a receipt, and only synchronizes if the source state is unchanged.
+        - Receipt/replay protection exists for GoalBuddy: [`createGoalReceiptEnvelopeV1`](D:\pet-projects\orchestrator\server\index.ts:1153) records scope and outcome; [`syncGoalBuddyTaskReceipt`](D:\pet-projects\orchestrator\server\index.ts:1258) fails closed on changed board state or active-task mismatch.
+        - Existing explicit confirmations cover rollback and queue→GoalBuddy escalation, but there is no generic task-level model for intent, technical permission, approval grant, or risk tier.
+        - [`server/index.test.ts`](D:\pet-projects\orchestrator\server\index.test.ts:1109) already tests state-hash protection, receipt sync, Judge-scoped Worker transition, final audits, and concurrent-board conflict.
+        - [`src/App.tsx`](D:\pet-projects\orchestrator\src\App.tsx:662) owns current browser confirmations; [`src/GoalBuddyPage.tsx`](D:\pet-projects\orchestrator\src\GoalBuddyPage.tsx:104) owns preview/start controls; [`src/styles.css`](D:\pet-projects\orchestrator\src\styles.css:1) styles those surfaces.
+
+        Compatibility evidence from the read-only source kit:
+
+        - Intent and permission must remain separate; answer/review/diagnose cannot mutate.
+        - Apply requires explicit request and scope; external effects need separate approval.
+        - Replay must inspect side-effect receipts and must not automatically execute pending mutations.
+        - Receipts should capture operation, actor, scope, changed resources, tool/command, result, verification, recovery, and sensitivity.
+
+        Dirty-worktree assessment:
+
+        - The named overlap paths are all modified: `server/index.test.ts` (+171/−72), `src/App.tsx` (+102/−9), `src/GoalBuddyPage.tsx` (+125/−109), `src/styles.css` (+2/−1).
+        - Core implementation file `server/index.ts` is also modified (+424/−241).
+        - Therefore a UI-inclusive or server-integrated Worker must stop under the board’s existing “unexplained pre-existing change” rule. No safe write slice is currently approvable without explicit ownership/merge guidance.
+
+        Checks performed:
+
+        - `git diff --check` passed.
+        - Goal-state checker, `npm run check`, and `npm test` could not start: the sandbox blocks Node resolving `C:\Users\Alexander Lozovoy` with `EPERM`. This is environment access failure, not a test result.
+
+        Largest candidate after ownership is resolved:
+
+        - Objective: Add a configuration-gated server approval contract that classifies intent, permission mode, scope, and risk; reject mutation for answer/review/diagnose, allow one approved reversible local apply scope without repeat prompts, and require a new gate for external/destructive/costly/scope-expanded actions.
+        - Proposed `allowed_files`: `server/index.ts`, `server/index.test.ts`.
+        - Verify: `npm run check`; `npm test`; `git diff --check`.
+        - Stop if: either file’s existing changes remain unowned; UI/API contract must change; receipt schema needs alteration; risk classification or approval persistence semantics are ambiguous; any external/destructive/costly path would be enabled rather than fail-closed.
+
+        Remaining risk: server-only work cannot validate the user-facing approval experience; touching `src/App.tsx`, `src/GoalBuddyPage.tsx`, or CSS should be a follow-up only after their current changes are attributed.
+      orchestrator_run_id: mrxm4c93-m6rx9
+      orchestrator_task_id: mrxm4c93-fj7a3
+      goal_receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxm4c93-m6rx9\mrxm4c93-fj7a3-goal-receipt-v1.json
+    orchestrator_sync:
+      contract_type: OrchestratorGoalSyncV1
+      run_id: mrxm4c93-m6rx9
+      task_id: mrxm4c93-fj7a3
+      external_task_id: T001
+      run_status: completed
+      outcome_class: success
+      receipt_path: D:\pet-projects\orchestrator\.orchestrator\runs\mrxm4c93-m6rx9\mrxm4c93-fj7a3-goal-receipt-v1.json
+      receipt_contract_type: GoalReceiptEnvelopeV1
+      synchronized_at: 2026-07-23T14:36:16.486Z
+      progression:
+        status: advanced
+        completed_task_id: T001
+        activated_task_id: T002
+
+  - id: T002
+    type: judge
+    assignee: Judge
+    status: active
+    reasoning_hint: high
+    objective: "Validate the plan against Scout evidence and specify the largest
+      safe useful implementation slice."
+    inputs:
+      - "T001 receipt"
+      - "docs/goals/task-approval-boundary-v1/goal.md"
+      - "Current dirty diff"
+    constraints:
+      - "Read-only; do not implement."
+      - "Do not authorize overwriting or reverting pre-existing user work."
+      - "Populate exact Worker allowed_files, verify, rollout boundary, and stop
+        conditions before activation."
+    expected_output:
+      - "proceed | revise | blocked"
+      - "Exact Worker objective or evidence-backed no-implementation decision"
+      - "allowed_files"
+      - "verify"
+      - "stop_if"
+      - "Oracle coverage"
+    receipt: null
+
+  - id: T003
+    type: worker
+    assignee: Worker
+    status: queued
+    reasoning_hint: medium
+    objective: "Implement the Judge-scoped approval state machine and representative
+      integrations/tests."
+    allowed_files: []
+    verify: []
+    stop_if:
+      - "Judge has not populated exact allowed_files and verify commands."
+      - "Need files outside allowed_files."
+      - "An allowed file contains unexplained pre-existing user changes."
+      - "Behavior or provider compatibility is ambiguous."
+      - "Verification fails twice for the same unresolved cause."
+      - "Work would mutate the read-only source kit or expand scope."
+    receipt: null
+
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: queued
+    reasoning_hint: high
+    objective: "Audit the full outcome against the oracle and either record
+      completion or specify the next largest safe Worker slice."
+    inputs:
+      - "All completed task receipts"
+      - "Current implementation diff"
+      - "Fresh targeted and regression verification"
+    constraints:
+      - "Read-only; do not implement."
+      - "Reject weak proof, planning-only output, or unexplained dirty-worktree
+        overlap."
+      - "If not complete, specify the next safe task instead of ending the goal."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Oracle-to-evidence mapping"
+      - "Regression and dirty-worktree safety assessment"
+      - "Next Worker task if not complete"
+    receipt: null
+
+checks:
+  dirty_fingerprint: "Prep observed modified server/index.test.ts, src/App.tsx,
+    src/styles.css and untracked src/GoalBuddyPage.tsx on branch
+    cdx/goalbuddy-bridge-v1."
+  last_verification:
+    result: unknown
+    task: null
+    commands: []

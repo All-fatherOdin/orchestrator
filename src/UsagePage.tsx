@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
-type UsageRecord = { inputTokens: number; outputTokens: number; cachedInputTokens: number };
+type UsageRecord = { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens?: number };
 type Task = { id: string; key?: string; title: string; model: string; usage?: UsageRecord[] };
 type OutcomeClass = "success" | "failure" | "interrupted" | "pending";
-type TokenMetrics = { inputTokens: number; outputTokens: number; cachedInputTokens: number; totalTokens: number; calls: number };
+type TokenMetrics = { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens?: number; totalTokens: number; calls: number };
 type TaskMetrics = { id: string; key?: string; status: string; outcome: OutcomeClass; durationMs: number | null; executionAttempts: number | null; reviewCorrectionCycles: number | null; tokens: TokenMetrics };
 type RunMetrics = { id: string; status: string; outcome: OutcomeClass; durationMs: number | null; tokens: TokenMetrics; tasks: TaskMetrics[] };
 export type UsageRun = {
@@ -16,10 +16,10 @@ export type UsageRun = {
 };
 type RunSummary = Pick<UsageRun, "id" | "project" | "status" | "startedAt" | "pipeline"> & { taskCount: number };
 type ViewTask = Task & { runId: string; queueIndex?: number };
-type Totals = { input: number; output: number; cached: number; calls: number };
+export type UsageTotals = { input: number; output: number; cacheRead: number; cacheWrite: number; calls: number };
 
 const pageSize = 5;
-const zero: Totals = { input: 0, output: 0, cached: 0, calls: 0 };
+const zero: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 };
 const format = new Intl.NumberFormat("ru-RU");
 const outcomeLabels: Record<OutcomeClass, string> = { success: "Успешно", failure: "Ошибка", interrupted: "Прервано", pending: "В процессе" };
 
@@ -33,23 +33,34 @@ function formatDuration(value: number | null) {
   return `${Math.floor(minutes / 60)} ч ${minutes % 60} мин`;
 }
 
-function totals(tasks: Task[]): Totals {
-  return tasks.reduce<Totals>((all, task) => (task.usage ?? []).reduce(
-    (sum, entry) => ({ input: sum.input + entry.inputTokens, output: sum.output + entry.outputTokens, cached: sum.cached + entry.cachedInputTokens, calls: sum.calls + 1 }),
+function tokenCount(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+/** Aggregates persisted call telemetry; cache fields are deliberately excluded from input/output totals. */
+export function aggregateUsage(tasks: Pick<Task, "usage">[]): UsageTotals {
+  return tasks.reduce<UsageTotals>((all, task) => (task.usage ?? []).reduce(
+    (sum, entry) => ({ input: sum.input + tokenCount(entry.inputTokens), output: sum.output + tokenCount(entry.outputTokens), cacheRead: sum.cacheRead + tokenCount(entry.cachedInputTokens), cacheWrite: sum.cacheWrite + tokenCount(entry.cacheWriteTokens), calls: sum.calls + 1 }),
     all,
   ), zero);
+}
+
+function totals(tasks: Task[]): UsageTotals { return aggregateUsage(tasks); }
+
+function metricTokenCount(metrics: TokenMetrics | undefined, field: "cachedInputTokens" | "cacheWriteTokens") {
+  return tokenCount(metrics?.[field]);
 }
 function TaskBar({ task, maximum }: { task: ViewTask; maximum: number }) {
   const value = totals([task]);
   const total = value.input + value.output;
-  const uncachedInput = Math.max(0, value.input - value.cached);
+  const uncachedInput = Math.max(0, value.input - value.cacheRead);
   const width = maximum ? Math.max(2, total / maximum * 100) : 0;
-  return <div className="usageBarRow" title={`${task.title}: ${format.format(total)} токенов`}>
+  return <div className="usageBarRow" title={`${task.title}: ${format.format(total)} токенов; кэш-чтение: ${format.format(value.cacheRead)}; кэш-запись: ${format.format(value.cacheWrite)}`}>
     <span className="usageBarLabel">{task.queueIndex ? `Q${task.queueIndex} · ` : ""}{task.key ?? task.id}</span>
     <div className="usageBarTrack"><div className="usageBar" style={{ width: `${width}%` }}>
       {uncachedInput ? <i className="input" style={{ flex: uncachedInput }} /> : null}
       {value.output ? <i className="output" style={{ flex: value.output }} /> : null}
-      {value.cached ? <i className="cached" style={{ flex: value.cached }} /> : null}
+      {value.cacheRead ? <i className="cached" style={{ flex: value.cacheRead }} /> : null}
     </div></div><b>{format.format(total)}</b>
   </div>;
 }
@@ -120,6 +131,10 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
   const usage = useMemo(() => totals(visibleTasks), [visibleTasks]);
   const metricsByTask = useMemo(() => new Map(visibleRuns.flatMap((run) => (metricsByRun[run.id]?.tasks ?? []).map((task) => [`${run.id}:${task.id}`, task] as const))), [metricsByRun, visibleRuns]);
   const visibleMetrics = useMemo(() => visibleTasks.map((task) => metricsByTask.get(`${task.runId}:${task.id}`)).filter((task): task is TaskMetrics => Boolean(task)), [metricsByTask, visibleTasks]);
+  const endpointCacheTotals = useMemo(() => visibleMetrics.reduce((sum, task) => ({
+    read: sum.read + metricTokenCount(task.tokens, "cachedInputTokens"),
+    write: sum.write + metricTokenCount(task.tokens, "cacheWriteTokens"),
+  }), { read: 0, write: 0 }), [visibleMetrics]);
   const processTotals = useMemo(() => {
     const durations = visibleMetrics.map((task) => task.durationMs).filter((value): value is number => value !== null);
     const attempts = visibleMetrics.map((task) => task.executionAttempts).filter((value): value is number => value !== null);
@@ -153,14 +168,14 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
     </div>
     <div className="usagePagination"><span>Запуски: {runsTotal ? `${runsOffset + 1}–${Math.min(runsOffset + pageSize, runsTotal)} из ${runsTotal}` : "нет"}</span><button onClick={() => setRunsOffset((value) => Math.max(0, value - pageSize))} disabled={runsOffset === 0}>Назад</button><button onClick={() => setRunsOffset((value) => value + pageSize)} disabled={runsOffset + pageSize >= runsTotal}>Далее</button></div>
     {loading ? <p className="empty">Загружаем данные запуска…</p> : !sourceRuns.length ? <p className="empty">Выберите запуск, чтобы посмотреть расход.</p> : <>
-      <div className="usageMetrics"><UsageMetric label="Всего токенов" value={usage.input + usage.output} /><UsageMetric label="Входящие токены" value={usage.input} /><UsageMetric label="Исходящие токены" value={usage.output} /><UsageMetric label="Кэш-токены" value={usage.cached} /><ProcessMetric label="Время задач" value={formatDuration(processTotals.durationMs)} /><ProcessMetric label="Запуски исполнителя" value={processTotals.attempts === null ? "—" : format.format(processTotals.attempts)} /><ProcessMetric label="Циклы проверки" value={processTotals.cycles === null ? "—" : format.format(processTotals.cycles)} /><article className="usageMetric"><span>Стоимость</span><strong>Не предоставлена CLI</strong><small>Без тарифов провайдера оценка была бы неточной</small></article></div>
+      <div className="usageMetrics"><UsageMetric label="Всего токенов" value={usage.input + usage.output} /><UsageMetric label="Входящие токены" value={usage.input} /><UsageMetric label="Исходящие токены" value={usage.output} /><UsageMetric label="Кэш-чтение" value={usage.cacheRead} title={`Метрики endpoint: ${format.format(endpointCacheTotals.read)}`} /><UsageMetric label="Кэш-запись" value={usage.cacheWrite} title={`Метрики endpoint: ${format.format(endpointCacheTotals.write)}`} /><ProcessMetric label="Время задач" value={formatDuration(processTotals.durationMs)} /><ProcessMetric label="Запуски исполнителя" value={processTotals.attempts === null ? "—" : format.format(processTotals.attempts)} /><ProcessMetric label="Циклы проверки" value={processTotals.cycles === null ? "—" : format.format(processTotals.cycles)} /><article className="usageMetric"><span>Стоимость</span><strong>Не предоставлена CLI</strong><small>Без тарифов провайдера оценка была бы неточной</small></article></div>
       {!hasUsage && !hasProcessMetrics ? <p className="usageEmpty">Для выбранных данных пока нет telemetry-событий. Метрики появятся у новых запусков; старые записи продолжат открываться без миграции.</p> : <>
-        {hasUsage && taskId === "all" ? <section className="usageChart"><div className="usageChartHead"><h3>{isPipeline && queueId === "all" ? "Токены по всем очередям" : "Токены по задачам"}</h3><span><i className="input" /> входящие без кэша <i className="output" /> исходящие <i className="cached" /> кэш</span></div>{allTasks.map((task) => <TaskBar key={`${task.runId}:${task.id}`} task={task} maximum={maximum} />)}</section> : null}
+        {hasUsage && taskId === "all" ? <section className="usageChart"><div className="usageChartHead"><h3>{isPipeline && queueId === "all" ? "Токены по всем очередям" : "Токены по задачам"}</h3><span><i className="input" /> входящие без кэша <i className="output" /> исходящие <i className="cached" /> кэш-чтение</span></div>{allTasks.map((task) => <TaskBar key={`${task.runId}:${task.id}`} task={task} maximum={maximum} />)}</section> : null}
         {!hasUsage ? <p className="usageEmpty">Токены для этих задач не записаны; процессные метрики показаны по доступным lifecycle-полям.</p> : null}
-        <section className="usageTable"><h3>Детализация задач</h3><div className="usageTableHead"><span>Задача</span><span>Модель</span><span>Входящие</span><span>Исходящие</span><span>Кэш</span><span>Вызовы</span><span>Исход</span></div>{visibleTasks.map((task) => { const value = totals([task]); const process = metricsByTask.get(`${task.runId}:${task.id}`); return <div className="usageTableRow" key={`${task.runId}:${task.id}`}><b>{task.key ?? task.id}<small>{task.queueIndex ? `Очередь ${task.queueIndex} · ` : ""}{task.title}</small><small className="usageProcessLine">{process ? `${formatDuration(process.durationMs)} · запусков: ${process.executionAttempts ?? "—"} · циклов: ${process.reviewCorrectionCycles ?? "—"} · всего: ${format.format(process.tokens.totalTokens)} токенов` : "Метрики недоступны"}</small></b><span>{task.model}</span><span>{format.format(value.input)}</span><span>{format.format(value.output)}</span><span>{format.format(value.cached)}</span><span>{value.calls}</span><span className={`usageOutcome ${process?.outcome ?? "pending"}`}>{process ? outcomeLabels[process.outcome] : "—"}</span></div>; })}</section>
+        <section className="usageTable"><h3>Детализация задач</h3><div className="usageTableHead"><span>Задача</span><span>Модель</span><span>Входящие</span><span>Исходящие</span><span>Кэш-чтение</span><span>Кэш-запись</span><span>Вызовы</span><span>Исход</span></div>{visibleTasks.map((task) => { const value = totals([task]); const process = metricsByTask.get(`${task.runId}:${task.id}`); const cacheRead = process ? metricTokenCount(process.tokens, "cachedInputTokens") : value.cacheRead; const cacheWrite = process ? metricTokenCount(process.tokens, "cacheWriteTokens") : value.cacheWrite; return <div className="usageTableRow" key={`${task.runId}:${task.id}`}><b>{task.key ?? task.id}<small>{task.queueIndex ? `Очередь ${task.queueIndex} · ` : ""}{task.title}</small><small className="usageProcessLine">{process ? `${formatDuration(process.durationMs)} · запусков: ${process.executionAttempts ?? "—"} · циклов: ${process.reviewCorrectionCycles ?? "—"} · всего: ${format.format(process.tokens.totalTokens)} токенов · кэш-чтение: ${format.format(cacheRead)} · кэш-запись: ${format.format(cacheWrite)}` : "Метрики недоступны"}</small></b><span>{task.model}</span><span>{format.format(value.input)}</span><span>{format.format(value.output)}</span><span>{format.format(cacheRead)}</span><span>{format.format(cacheWrite)}</span><span>{value.calls}</span><span className={`usageOutcome ${process?.outcome ?? "pending"}`}>{process ? outcomeLabels[process.outcome] : "—"}</span></div>; })}</section>
       </>}
     </>}
   </section>;
 }
-function UsageMetric({ label, value }: { label: string; value: number }) { return <article className="usageMetric"><span>{label}</span><strong>{format.format(value)}</strong><small>Во всех выбранных вызовах</small></article>; }
+function UsageMetric({ label, value, title }: { label: string; value: number; title?: string }) { return <article className="usageMetric" title={title}><span>{label}</span><strong>{format.format(value)}</strong><small>Во всех выбранных вызовах</small></article>; }
 function ProcessMetric({ label, value }: { label: string; value: string }) { return <article className="usageMetric"><span>{label}</span><strong>{value}</strong><small>По выбранным задачам</small></article>; }

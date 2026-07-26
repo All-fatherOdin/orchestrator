@@ -5,6 +5,7 @@ const http = require("node:http");
 const path = require("node:path");
 const {
   configureSingleInstance,
+  createServerLogHandles,
   ensureServerAvailability,
   isCompatibleHealth,
   shouldReportServerExit,
@@ -18,6 +19,7 @@ let serverProcess;
 let isQuitting = false;
 let ownsServer = false;
 let serverReady = false;
+let serverStderrPath;
 
 function probeCompatibleServer() {
   return new Promise((resolve) => {
@@ -86,19 +88,25 @@ function startServer() {
       ? portableWorkspaceData
       : path.join(app.getPath("userData"), ".orchestrator"));
 
-  return spawn(process.execPath, [serverPath], {
-    cwd: app.getPath("userData"),
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-      ORCHESTRATOR_NO_OPEN: "1",
-      ORCHESTRATOR_WEB_ROOT: webRoot,
-      ORCHESTRATOR_DATA_DIR: dataDirectory,
-      PORT: String(port),
-    },
-    stdio: "ignore",
-    windowsHide: true,
-  });
+  const logs = createServerLogHandles(dataDirectory);
+  serverStderrPath = logs.stderrPath;
+  try {
+    return spawn(process.execPath, [serverPath], {
+      cwd: app.getPath("userData"),
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        ORCHESTRATOR_NO_OPEN: "1",
+        ORCHESTRATOR_WEB_ROOT: webRoot,
+        ORCHESTRATOR_DATA_DIR: dataDirectory,
+        PORT: String(port),
+      },
+      stdio: logs.stdio,
+      windowsHide: true,
+    });
+  } finally {
+    logs.close();
+  }
 
 }
 
@@ -150,7 +158,8 @@ if (configureSingleInstance(app, () => mainWindow)) {
         if (!shouldReportServerExit({ isQuitting, ownsServer, serverReady })) return;
         dialog.showErrorBox(
           "Orchestrator stopped",
-          `The local server stopped unexpectedly (exit code ${code ?? "unknown"}).`,
+          `The local server stopped unexpectedly (exit code ${code ?? "unknown"}).` +
+            (serverStderrPath ? `\n\nServer log: ${serverStderrPath}` : ""),
         );
         app.quit();
       });
