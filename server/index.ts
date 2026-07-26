@@ -1574,6 +1574,57 @@ function authorizationScope(task: Pick<TaskInput, "allowedPaths" | "verification
   };
 }
 
+export function reviewerEvidencePreflight(
+  task: Pick<TaskInput, "prompt" | "verificationCommands">,
+  project: ProjectSettings,
+) {
+  const requiresExactLines = [
+    /\bexact\s+(?:file\s+)?paths?\s+and\s+lines?\b/i,
+    /\bexact\s+(?:file|path)\/line\s+evidence\b/i,
+    /\b(?:cite|report|include|provide)\b[^\r\n.]{0,80}\bexact\b[^\r\n.]{0,40}\blines?\b/i,
+    /\bline-numbered\s+(?:content|evidence|output)\b/i,
+    /\bточн\w*\b[^\r\n.]{0,60}\bстрок\w*\b/i,
+  ].some((pattern) => pattern.test(task.prompt));
+  if (!requiresExactLines)
+    return {
+      required: false,
+      ok: true,
+      detail: "No exact line-evidence requirement detected.",
+    };
+
+  const commands = [
+    ...(project.verificationCommands ?? []),
+    ...(task.verificationCommands ?? []),
+  ];
+  const hasLineNumberedReader = commands.some((command) =>
+    (/\bSelect-String\b/i.test(command) && !/\s-Quiet\b/i.test(command)) ||
+    (/\brg(?:\.exe)?\b/i.test(command) &&
+      /(?:^|\s)(?:-n\b|--line-number\b)/i.test(command)) ||
+    (/\bfindstr(?:\.exe)?\b/i.test(command) && /\s\/n\b/i.test(command)) ||
+    (/\bGet-Content\b/i.test(command) &&
+      /\bForEach-Object\b/i.test(command) &&
+      /\+\+/.test(command)),
+  );
+  return hasLineNumberedReader
+    ? {
+        required: true,
+        ok: true,
+        detail: "Exact line evidence has a line-numbered content reader.",
+      }
+    : {
+        required: true,
+        ok: false,
+        detail:
+          "Exact line evidence is required, but verificationCommands do not include a line-numbered content reader.",
+      };
+}
+
+export function taskAllowsCorrection(
+  task: Pick<TaskInput, "allowedPaths">,
+) {
+  return task.allowedPaths === undefined || task.allowedPaths.length > 0;
+}
+
 function scopeFingerprint(scope: { allowedPaths: string[]; verificationCommands: string[] }) {
   return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
 }
@@ -3149,12 +3200,20 @@ async function preflight(value: unknown) {
   ]);
   const checks = queue.tasks.flatMap((task, index) => {
     const modelOk = Object.hasOwn(MODEL_IDS, task.model ?? "terra");
+    const evidence = reviewerEvidencePreflight(task, queue.project);
     return [
       {
         name: `Task ${index + 1} model`,
         ok: modelOk,
         detail: task.model ?? "terra",
       },
+      ...(evidence.required
+        ? [{
+            name: `Task ${index + 1} reviewer evidence`,
+            ok: evidence.ok,
+            detail: evidence.detail,
+          }]
+        : []),
     ];
   });
   const contexts = await resolveQueueContexts(queue);
@@ -3739,6 +3798,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       if (
         task.reviewStatus === "changes_requested" &&
         !task.reviewWriteViolations?.length &&
+        taskAllowsCorrection(task) &&
         (!task.authorizationEvidence.enabled || task.authorizationEvidence.intent === "apply") &&
         (task.attempts ?? 1) <= run.review.maxCorrections &&
         !isCancelled(run)
@@ -3769,6 +3829,13 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
             await reviewTask(run, task);
         }
       }
+      if (
+        task.reviewStatus === "changes_requested" &&
+        !taskAllowsCorrection(task)
+      )
+        task.log.push(
+          "Correction skipped: allowedPaths is explicitly empty, so the task is read-only.",
+        );
       task.status = resolveReviewedTaskStatus(settledStatus, task.reviewStatus);
       if (task.reviewStatus === "unavailable")
         task.log.push("Reviewer unavailable: task result retained without reviewer approval.");

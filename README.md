@@ -55,6 +55,14 @@ basetemp between executor and reviewer sessions. Also remember that ordinary
 diagnostics as failure, as shown in `tasks.example.yaml`; do not stage files
 merely to make verification see them.
 
+Preflight also checks exact-line review requirements. If a task asks the
+reviewer to cite exact paths and lines, its project or task
+`verificationCommands` must include a line-numbered content reader such as
+`Get-Content` with an explicit counter, non-quiet `Select-String`, `rg -n`, or
+`findstr /n`. Existence and whitespace checks alone cannot supply that
+evidence. A task with an explicit `allowedPaths: []` is read-only: reviewer
+changes fail the task directly and do not enter the correction loop.
+
 Set a task's `model` to `auto` to let the orchestrator choose before the run. It routes everyday implementation and verification work to Terra. Contained work uses Luna only when that runtime capability is enabled; otherwise it falls back to Terra. Use `minModel: sol` for the explicit quality-first Sol escalation and compare its preserved reasoning baseline with one lower effort before changing the setting. An explicit model always takes precedence, but an unsupported model, reasoning, or local-tool route is rejected rather than sent to Codex. The resolved model and routing reason are stored in the run record and report. See [GPT-5.6 routing](docs/gpt56-model-routing-v1.md) for source date and fallback behavior.
 
 To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.

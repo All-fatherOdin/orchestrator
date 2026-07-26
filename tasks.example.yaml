@@ -37,6 +37,12 @@ tasks:
     allowedPaths: [src/notifications]
     verificationCommands:
       - npm run typecheck
+      # If the prompt requires exact path/line evidence, include a command
+      # that actually emits numbered content. Preflight rejects existence- or
+      # whitespace-only evidence for that requirement. PowerShell example:
+      # - >-
+      #   $i = 0; Get-Content -LiteralPath 'src/notifications/result.ts' |
+      #   ForEach-Object { $i++; '{0}:{1}' -f $i, $_ }
       # Ordinary `git diff --check -- <path>` does not inspect a new untracked
       # file. For such files, use a content-aware PowerShell check like this
       # (replace the example path). `git diff --no-index` normally exits 1
@@ -65,4 +71,6 @@ tasks:
     effort: medium
     # This task waits for both independent implementation branches.
     dependsOn: [typecheck-fixes, reconnect-logic]
+    # Use `allowedPaths: []` for a read-only task; reviewer rejection then
+    # fails closed without an automatic correction attempt.
     allowedPaths: [tests/integration]

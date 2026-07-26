@@ -26,6 +26,8 @@ const {
   assessExecutorOutcome,
   assessReviewerResult,
   buildReviewerPrompt,
+  reviewerEvidencePreflight,
+  taskAllowsCorrection,
   boundedReviewerDiagnostics,
   resolveReviewedTaskStatus,
   resolveTaskStatus,
@@ -2406,6 +2408,61 @@ test("reviewer prompt isolates the task change set from pre-existing workspace c
   );
   assert.match(prompt, /Do not request their removal or modification/);
   assert.doesNotMatch(prompt, /Review the current git diff/);
+});
+
+test("preflight rejects exact-line review requirements without line-readable verification evidence", () => {
+  const taskInput = {
+    prompt: "Review both artifacts and report findings with exact paths and lines.",
+    verificationCommands: [
+      "$paths = @('contract.md', 'validation.md'); foreach ($path in $paths) { if (-not (Test-Path $path)) { exit 1 } }",
+      "git diff --check",
+    ],
+  };
+
+  assert.deepEqual(reviewerEvidencePreflight(taskInput, {}), {
+    required: true,
+    ok: false,
+    detail:
+      "Exact line evidence is required, but verificationCommands do not include a line-numbered content reader.",
+  });
+  assert.deepEqual(
+    reviewerEvidencePreflight(
+      taskInput,
+      {
+        verificationCommands: [
+          "$i = 0; Get-Content contract.md | ForEach-Object { $i++; '{0}:{1}' -f $i, $_ }",
+        ],
+      },
+    ),
+    {
+      required: true,
+      ok: true,
+      detail: "Exact line evidence has a line-numbered content reader.",
+    },
+  );
+  assert.equal(
+    reviewerEvidencePreflight(
+      { prompt: "Run the unit tests.", verificationCommands: ["npm test"] },
+      {},
+    ).required,
+    false,
+  );
+  assert.equal(
+    reviewerEvidencePreflight(
+      {
+        prompt: "Include exact file/line evidence.",
+        verificationCommands: ["Test-Path contract.md"],
+      },
+      {},
+    ).ok,
+    false,
+  );
+});
+
+test("correction loop is disabled only for an explicitly empty allowedPaths scope", () => {
+  assert.equal(taskAllowsCorrection({ allowedPaths: [] }), false);
+  assert.equal(taskAllowsCorrection({ allowedPaths: ["src"] }), true);
+  assert.equal(taskAllowsCorrection({}), true);
 });
 
 test("nine reviewers returning no report cannot approve or complete tasks", () => {
