@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import test from "node:test";
@@ -24,14 +25,17 @@ const {
   reconcilePersistedRunOwner,
   assessExecutorOutcome,
   assessReviewerResult,
+  buildReviewerPrompt,
   boundedReviewerDiagnostics,
   resolveReviewedTaskStatus,
   resolveTaskStatus,
   schedulerSnapshot,
+  reconcileRunState,
   selectRunnableTasks,
   resumeRun,
   retryRun,
   usageFromEvent,
+  taskEvent,
   boundedFinalOutput,
   outcomeClass,
   durationMs,
@@ -69,6 +73,7 @@ const {
   taskSandbox,
   authorizationWriteViolations,
   codexExecutionBoundaryArgs,
+  codexExecCommandStartArgs,
   orchestratorVerificationCommands,
   changedProviderRuntimeIdentityV1,
   providerReasoningModeV1,
@@ -80,6 +85,8 @@ const {
   prepareProviderRuntimeContinuationForTaskV1,
   recordProviderRuntimeStateForAdapterV1,
   normalizeProviderRuntimePersistenceV1,
+  createCheckpoint,
+  isManagedCheckpoint,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
@@ -102,6 +109,30 @@ test("maps the UI light effort to the Codex CLI low effort", () => {
   assert.equal(codexReasoningEffort("light"), "low");
   assert.equal(codexReasoningEffort("medium"), "medium");
   assert.equal(codexReasoningEffort("high"), "high");
+});
+
+test("Codex skill-budget diagnostics remain warnings while real errors remain errors", () => {
+  const skillBudget = JSON.stringify({
+    type: "item.completed",
+    item: {
+      type: "error",
+      message:
+        "Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill.",
+    },
+  });
+  const actualFailure = JSON.stringify({
+    type: "item.completed",
+    item: {
+      type: "error",
+      message: "Provider connection failed.",
+    },
+  });
+
+  assert.equal(
+    taskEvent(skillBudget),
+    "WARNING: Codex: Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill.",
+  );
+  assert.equal(taskEvent(actualFailure), "ERROR: Codex: Provider connection failed.");
 });
 
 test("buildPrompt and the benchmark use the same production-owned legacy renderer", () => {
@@ -638,10 +669,17 @@ test("executor, reviewer, and correction phases carry the enforced sandbox bound
       "sandbox_workspace_write.network_access=false",
     ]);
   assert.deepEqual(codexExecutionBoundaryArgs(apply, "reviewer"), [
-    "--sandbox",
-    "read-only",
     "-c",
-    "sandbox_workspace_write.network_access=false",
+    "default_permissions='orchestrator-reviewer'",
+    "-c",
+    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':tmpdir' = 'write', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+  ]);
+  assert.deepEqual(codexExecCommandStartArgs(apply, "reviewer"), [
+    "exec",
+    "-c",
+    "default_permissions='orchestrator-reviewer'",
+    "-c",
+    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':tmpdir' = 'write', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
   ]);
   const prompt = buildPrompt({
     ...applyTask,
@@ -1394,7 +1432,8 @@ test("helper adapter preserves safety evidence and rejects divergent receipt sel
     };
     const payload = {
       bundle_type: "api_agent_context_bundle", request_id: "request-consistent", profile: "review",
-      mutation_scope: "read-only", runtime_scope_expanded: false, broker_or_data_scope_expanded: false,
+      mutation_scope: "read-only", runtime_scope_expanded: false,
+      external_system_scope_expanded: false, data_scope_expanded: false,
       read_set: [source], context: { read_set: [source] },
       request_envelope: { request_id: "request-consistent", profile: "review", max_sources: 1, forbidden_paths: ["data/**"] },
       skipped_high_risk_context: [{ path_glob: "data/**", reason: "excluded by helper" }],
@@ -1415,6 +1454,24 @@ test("helper adapter preserves safety evidence and rejects divergent receipt sel
       requested_max_sources: 1,
       selected_sources: 4,
       omitted_sources: 3,
+    });
+
+    const legacyScopePayload = {
+      ...payload,
+      external_system_scope_expanded: undefined,
+      data_scope_expanded: undefined,
+      broker_or_data_scope_expanded: false,
+    };
+    assert.equal(provider.normalize(legacyScopePayload, request).provider, "repository-helper");
+
+    const canonicalPayload = { ...payload } as Record<string, unknown>;
+    delete canonicalPayload.selected_source_count;
+    delete canonicalPayload.omitted_source_count;
+    delete canonicalPayload.truncated;
+    assert.deepEqual(provider.normalize(canonicalPayload, request).receipt.counts, {
+      requested_max_sources: 1,
+      selected_sources: 1,
+      omitted_sources: 0,
     });
 
     payload.receipt.read_set = [];
@@ -1971,6 +2028,91 @@ test("scheduler blocks transitive descendants and reports ready versus waiting w
   assert.deepEqual(snapshot.waitingTaskKeys, ["e2e"]);
 });
 
+test("run reconciliation keeps reviewer and correction ownership nonterminal and preserves terminal precedence", () => {
+  const reviewing = run([{ ...task("reviewing", "completed"), executionPhase: "reviewer" }], "running");
+  reviewing.limits.maxParallelTasks = 1;
+  assert.equal(reconcileRunState(reviewing), "running");
+  assert.equal(reviewing.tasks[0].status, "running");
+  assert.equal(reviewing.finishedAt, undefined);
+  assert.equal(schedulerSnapshot(reviewing).availableSlots, 0);
+
+  const correcting = run([{ ...task("correcting", "completed"), executionPhase: "correction" }], "running");
+  correcting.limits.maxParallelTasks = 1;
+  assert.equal(reconcileRunState(correcting), "running");
+  assert.equal(correcting.tasks[0].status, "running");
+  assert.equal(schedulerSnapshot(correcting).availableSlots, 0);
+
+  const settled = run([
+    task("timed-out", "timed_out"),
+    task("failed", "failed"),
+    task("blocked", "blocked"),
+  ], "running");
+  assert.equal(reconcileRunState(settled), "timed_out");
+  assert.ok(settled.finishedAt);
+
+  const terminalTransition = run([task("done", "completed")], "running");
+  terminalTransition.finishedAt = "2000-01-01T00:00:00.000Z";
+  assert.equal(reconcileRunState(terminalTransition), "completed");
+  assert.notEqual(terminalTransition.finishedAt, "2000-01-01T00:00:00.000Z");
+
+  const cancelled = run([task("done", "completed")], "cancelled");
+  assert.equal(reconcileRunState(cancelled), "cancelled");
+  assert.ok(cancelled.finishedAt);
+
+  const cancelledWithPending = run([
+    task("done", "completed"),
+    task("never-started", "pending"),
+  ], "cancelled");
+  assert.equal(reconcileRunState(cancelledWithPending), "cancelled");
+  assert.equal(cancelledWithPending.tasks[1].status, "cancelled");
+  assert.ok(cancelledWithPending.tasks[1].finishedAt);
+  assert.ok(cancelledWithPending.finishedAt);
+});
+
+test("loading and serving an all-terminal running record reconciles it atomically", async () => {
+  const source = run([task("first", "completed"), task("second", "completed")], "running");
+  source.id = `terminal-running-${Date.now()}`;
+  source.finishedAt = undefined;
+  await persistRun(source);
+  const runFile = join(testDataDirectory, "runs", source.id, "run.json");
+  const summaryFile = join(testDataDirectory, "runs", source.id, "summary.json");
+  const stale = structuredClone(source);
+  stale.status = "running";
+  stale.finishedAt = undefined;
+  await writeFile(runFile, JSON.stringify(stale));
+  await writeFile(summaryFile, JSON.stringify({ id: source.id, status: "running" }));
+
+  const loaded = await loadRun(source.id);
+  assert.equal(loaded?.status, "completed");
+  assert.ok(loaded?.finishedAt);
+  const stored = JSON.parse(
+    await readFile(runFile, "utf8"),
+  );
+  assert.equal(stored.status, "completed");
+  const summary = await loadRunSummary(source.id);
+  assert.equal(summary?.status, "completed");
+  assert.equal(summary?.finishedAt, stored.finishedAt);
+  assert.equal(
+    (JSON.parse(await readFile(summaryFile, "utf8")) as { status: string }).status,
+    "running",
+  );
+
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/runs/${source.id}`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { status: string }).status, "completed");
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  }
+});
+
 test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, and timeout states", () => {
   assert.deepEqual(
     outsideAllowedPaths(["src/safe/a.ts", "README.md"], ["src/safe"]),
@@ -2209,6 +2351,40 @@ test("review-enabled completion fails closed unless a strict reviewer verdict ap
   );
 });
 
+test("reviewer prompt requires the exact configured verification commands", () => {
+  const python =
+    "& 'C:\\Tools\\Python\\python.exe' -m pytest 'Agent Kit/kit/tests/test_governance_extensions.py' -q";
+  const prompt = buildReviewerPrompt(
+    {
+      ...task("review-exact-verification", "completed"),
+      title: "Review exact verification",
+      prompt: "Review the retained implementation.",
+      authorizationEvidence: {
+        contractType: "TaskAuthorizationEvidenceV1",
+        enabled: false,
+        decision: "disabled",
+        reason: "NON_MUTATING_CONTRACT",
+        intent: "review",
+        technicalPermission: "read_only",
+        sideEffectRisk: "none",
+        allowedPaths: [],
+        verificationCommands: [python, "git diff --check"],
+        scopeFingerprint: "scope",
+        goalFingerprint: "goal",
+        branch: "main",
+        authorityFingerprint: "authority",
+      },
+    },
+    { verificationCommands: ["ignored fallback"] },
+  );
+
+  assert.match(prompt, /Run only these exact verification commands verbatim/);
+  assert.match(prompt, /Do not substitute executables, aliases, launchers, or commands/);
+  assert.ok(prompt.includes(`1. ${python}`));
+  assert.ok(prompt.includes("2. git diff --check"));
+  assert.doesNotMatch(prompt, /ignored fallback/);
+});
+
 test("nine reviewers returning no report cannot approve or complete tasks", () => {
   const results = Array.from({ length: 9 }, () =>
     assessReviewerResult({
@@ -2247,9 +2423,20 @@ test("recovery after restart fails an in-progress task and preserves its run rec
     recovered.tasks[0].log.at(-1) ?? "",
     /process ended before Codex/,
   );
+
+  const reviewer = run([
+    { ...task("reviewer", "completed"), executionPhase: "reviewer" },
+    task("pending", "pending"),
+  ], "running");
+  const recoveredReviewer = recoverRun(reviewer);
+  assert.equal(recoveredReviewer.status, "failed");
+  assert.equal(recoveredReviewer.tasks[0].status, "failed");
+  assert.equal(recoveredReviewer.tasks[0].executionPhase, undefined);
+  assert.equal(recoveredReviewer.tasks[1].status, "blocked");
+  assert.ok(recoveredReviewer.finishedAt);
 });
 
-test("project lock prevents two orchestrator runs from using the same repository", async () => {
+test("project lock stays outside the repository and prevents concurrent runs", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-lock-"));
   const first = run([task("first", "pending")], "idle");
   const second = run([task("second", "pending")], "idle");
@@ -2259,12 +2446,34 @@ test("project lock prevents two orchestrator runs from using the same repository
   second.project.path = project;
   try {
     await acquireProjectLock(first);
+    assert.notEqual(first.lock?.path, join(project, ".codex-orchestrator.lock"));
+    await assert.rejects(() => access(join(project, ".codex-orchestrator.lock")));
     await assert.rejects(() => acquireProjectLock(second), /Project is locked/);
     await releaseProjectLock(first);
     await acquireProjectLock(second);
   } finally {
     await releaseProjectLock(first);
     await releaseProjectLock(second);
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("project lock removes stale legacy files and honors a live legacy owner", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-legacy-lock-"));
+  const legacyPath = join(project, ".codex-orchestrator.lock");
+  const source = run([task("source", "pending")], "idle");
+  source.id = "source-run";
+  source.project.path = project;
+  try {
+    await writeFile(legacyPath, JSON.stringify({ runId: "stale-run", pid: 999_999 }));
+    await acquireProjectLock(source);
+    await assert.rejects(() => access(legacyPath));
+    await releaseProjectLock(source);
+
+    await writeFile(legacyPath, JSON.stringify({ runId: "live-run", pid: process.pid }));
+    await assert.rejects(() => acquireProjectLock(source), /Project is locked/);
+  } finally {
+    await releaseProjectLock(source);
     await rm(project, { recursive: true, force: true });
   }
 });
@@ -2314,6 +2523,57 @@ test("startup ownership reconciliation removes a terminal run's stale lock", asy
   }
 });
 
+test("terminal persisted runs clear only their own stale project lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-terminal-load-lock-"));
+  const source = run([task("failed", "failed")], "failed");
+  source.id = `terminal-lock-${Date.now()}-${Math.random()}`;
+  source.project.path = project;
+  source.finishedAt = "2026-07-25T00:00:00.000Z";
+  const lockPath = join(project, ".codex-orchestrator.lock");
+  source.lock = { path: lockPath, acquiredAt: source.finishedAt };
+  await writeFile(lockPath, JSON.stringify({ runId: source.id, pid: 999_999 }));
+  await persistRun(source);
+
+  try {
+    const loaded = await loadRun(source.id);
+    assert.equal(loaded?.status, "failed");
+    assert.equal(loaded?.finishedAt, source.finishedAt);
+    await assert.rejects(() => access(lockPath));
+
+    await writeFile(lockPath, JSON.stringify({ runId: "other-run", pid: 999_999 }));
+    loaded!.lock = { path: lockPath, acquiredAt: source.finishedAt };
+    assert.equal(await reconcilePersistedRunOwner(loaded!, () => false), false);
+    await access(lockPath);
+
+    await writeFile(lockPath, JSON.stringify({ runId: source.id, pid: 4321 }));
+    assert.equal(await reconcilePersistedRunOwner(loaded!, (pid) => pid === 4321), true);
+    await access(lockPath);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("loading a terminal run with its matching live lock preserves its terminal state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-terminal-live-lock-"));
+  const source = run([task("failed", "failed")], "failed");
+  source.id = `terminal-live-lock-${Date.now()}-${Math.random()}`;
+  source.project.path = project;
+  source.finishedAt = "2026-07-25T00:00:00.000Z";
+  const lockPath = join(project, ".codex-orchestrator.lock");
+  source.lock = { path: lockPath, acquiredAt: source.finishedAt };
+  await writeFile(lockPath, JSON.stringify({ runId: source.id, pid: process.pid }));
+  await persistRun(source);
+
+  try {
+    const loaded = await loadRun(source.id);
+    assert.equal(loaded?.status, "failed");
+    assert.equal(loaded?.finishedAt, source.finishedAt);
+    await access(lockPath);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("failed canonical run persistence does not publish a newer derived summary", async () => {
   const source = run([task("persist-order", "pending")], "running");
   source.id = `persist-order-${Date.now()}`;
@@ -2355,12 +2615,14 @@ test("background run failures are observed instead of becoming unhandled rejecti
   assert.equal(reported, expected);
 });
 
-test("schema-v2 summary is repaired when it diverges from canonical run state", async () => {
+test("run persistence keeps the run canonical and derives summaries without rewriting stale records", async () => {
   const source = run([task("summary-repair", "failed")], "failed");
   source.id = `summary-repair-${Date.now()}`;
   source.finishedAt = new Date().toISOString();
   await persistRun(source);
   const summaryFile = join(testDataDirectory, "runs", source.id, "summary.json");
+
+  await assert.rejects(() => access(summaryFile));
   await writeFile(
     summaryFile,
     JSON.stringify({
@@ -2379,6 +2641,204 @@ test("schema-v2 summary is repaired when it diverges from canonical run state", 
   assert.equal(repaired?.finishedAt, source.finishedAt);
   assert.equal(
     (JSON.parse(await readFile(summaryFile, "utf8")) as { status: string }).status,
-    "failed",
+    "running",
   );
+});
+
+function git(cwd: string, ...args: string[]) {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+async function checkpointFixture(create = true) {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-checkpoint-"));
+  git(project, "init", "-b", "main");
+  git(project, "config", "user.email", "test@example.invalid");
+  git(project, "config", "user.name", "Orchestrator Test");
+  await writeFile(join(project, "managed.txt"), "parent\n");
+  git(project, "add", "managed.txt");
+  git(project, "commit", "-m", "parent");
+  await writeFile(join(project, "managed.txt"), "managed checkpoint\n");
+  const checkpointTask = {
+    ...task("checkpoint-task", "completed"),
+    changedFiles: ["managed.txt"],
+  };
+  const checkpointRun = run([checkpointTask], "running");
+  checkpointRun.id = `checkpoint-${Date.now()}-${Math.random()}`;
+  checkpointRun.project.path = project;
+  checkpointRun.git.checkpointCommits = true;
+  if (create) {
+    await createCheckpoint(checkpointRun, checkpointTask);
+    assert.ok(checkpointTask.checkpoint);
+  }
+  return { project, checkpointRun, checkpointTask };
+}
+
+test("managed checkpoints require a process-private authenticated receipt rather than persisted or Git evidence", async () => {
+  const fixture = await checkpointFixture();
+  try {
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), true);
+    assert.equal(fixture.checkpointRun.checkpointLedger?.length, 1);
+
+    const forgedRun = structuredClone(fixture.checkpointRun);
+    forgedRun.id = `${fixture.checkpointRun.id}-forged`;
+    forgedRun.checkpointLedger = structuredClone(fixture.checkpointRun.checkpointLedger);
+    const forgedTask = structuredClone(fixture.checkpointTask);
+    forgedRun.tasks = [forgedTask];
+    Object.freeze(forgedRun.checkpointLedger);
+    Object.freeze(forgedTask.checkpoint);
+    assert.equal(await isManagedCheckpoint(forgedRun, forgedTask), false);
+
+    const ambiguousRun = structuredClone(fixture.checkpointRun);
+    ambiguousRun.checkpointLedger.push(structuredClone(ambiguousRun.checkpointLedger[0]));
+    assert.equal(await isManagedCheckpoint(ambiguousRun, ambiguousRun.tasks[0]), false);
+
+    const receiptMutationRun = structuredClone(fixture.checkpointRun);
+    receiptMutationRun.tasks[0].checkpoint.message = "mutated receipt field";
+    receiptMutationRun.checkpointLedger[0].message = "mutated receipt field";
+    assert.equal(await isManagedCheckpoint(receiptMutationRun, receiptMutationRun.tasks[0]), false);
+
+    const replayedTask = structuredClone(fixture.checkpointTask);
+    replayedTask.id = "different-task";
+    fixture.checkpointRun.tasks.push(replayedTask);
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, replayedTask), false);
+
+    const mutatedTask = structuredClone(fixture.checkpointTask);
+    mutatedTask.checkpoint.hash = git(fixture.project, "rev-parse", "HEAD^");
+    fixture.checkpointRun.tasks.push(mutatedTask);
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, mutatedTask), false);
+  } finally {
+    await rm(fixture.project, { recursive: true, force: true });
+  }
+});
+
+test("concurrent checkpoint finalization creates one authenticated ledger entry", async () => {
+  const fixture = await checkpointFixture(false);
+  try {
+    await Promise.all([
+      createCheckpoint(fixture.checkpointRun, fixture.checkpointTask),
+      createCheckpoint(fixture.checkpointRun, fixture.checkpointTask),
+    ]);
+    assert.equal(fixture.checkpointRun.checkpointLedger?.length, 1);
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), true);
+  } finally {
+    await rm(fixture.project, { recursive: true, force: true });
+  }
+});
+
+test("process-authenticated checkpoint chains retain only their authenticated history", async () => {
+  const fixture = await checkpointFixture();
+  try {
+    const first = fixture.checkpointTask;
+    await writeFile(join(fixture.project, "second.txt"), "second managed checkpoint\n");
+    const second = {
+      ...task("second-checkpoint-task", "completed"),
+      changedFiles: ["second.txt"],
+    };
+    fixture.checkpointRun.tasks.push(second);
+    await createCheckpoint(fixture.checkpointRun, second);
+
+    assert.equal(fixture.checkpointRun.checkpointLedger?.length, 2);
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, first), true);
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, second), true);
+
+    await writeFile(join(fixture.project, "foreign.txt"), "foreign descendant\n");
+    git(fixture.project, "add", "foreign.txt");
+    git(fixture.project, "commit", "-m", "foreign descendant");
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, first), false);
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, second), false);
+  } finally {
+    await rm(fixture.project, { recursive: true, force: true });
+  }
+});
+
+test("a receipt authenticated for another run cannot be replayed as a foreign checkpoint", async () => {
+  const [fixture, foreign] = await Promise.all([checkpointFixture(), checkpointFixture()]);
+  try {
+    const foreignTask = structuredClone(foreign.checkpointTask);
+    const foreignLedger = structuredClone(foreign.checkpointRun.checkpointLedger);
+    fixture.checkpointRun.tasks = [foreignTask];
+    fixture.checkpointRun.checkpointLedger = foreignLedger;
+
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, foreignTask), false);
+  } finally {
+    await Promise.all([
+      rm(fixture.project, { recursive: true, force: true }),
+      rm(foreign.project, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("managed checkpoint authentication fails closed after history rewrite, branch changes, and process restart", async () => {
+  const fixture = await checkpointFixture();
+  try {
+    git(fixture.project, "checkout", "-b", "different-branch");
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), false);
+    git(fixture.project, "checkout", "main");
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), true);
+    const persisted = join(fixture.project, "persisted-run.json");
+    await writeFile(persisted, JSON.stringify(fixture.checkpointRun));
+    const serverUrl = new URL("./index.ts", import.meta.url).href;
+    const output = execFileSync(
+      testNodeExecutable,
+      ["--import", "tsx", "--input-type=module", "-e", `process.env.ORCHESTRATOR_TEST='1'; const stored = JSON.parse(await (await import('node:fs/promises')).readFile(${JSON.stringify(persisted)}, 'utf8')); const server = await import(${JSON.stringify(serverUrl)}); process.stdout.write(String(await server.isManagedCheckpoint(stored, stored.tasks[0])));`],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+    assert.equal(output.trim(), "false");
+    const checkpoint = structuredClone(fixture.checkpointTask.checkpoint);
+    const ledger = structuredClone(fixture.checkpointRun.checkpointLedger);
+    const parent = git(fixture.project, "rev-parse", "HEAD^");
+    git(fixture.project, "reset", "--hard", parent);
+    await writeFile(join(fixture.project, "managed.txt"), "forged matching evidence\n");
+    git(fixture.project, "add", "managed.txt");
+    git(fixture.project, "commit", "-m", checkpoint.message);
+    fixture.checkpointTask.checkpoint = {
+      ...checkpoint,
+      hash: git(fixture.project, "rev-parse", "HEAD"),
+    };
+    fixture.checkpointRun.checkpointLedger = ledger?.map((entry: any) => ({
+      ...entry,
+      commitHash: fixture.checkpointTask.checkpoint.hash,
+    }));
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), false);
+  } finally {
+    await rm(fixture.project, { recursive: true, force: true });
+  }
+});
+
+test("managed checkpoints reject a foreign descendant despite forged matching refs and reflog", async () => {
+  const fixture = await checkpointFixture();
+  try {
+    const checkpoint = fixture.checkpointTask.checkpoint!;
+    await writeFile(join(fixture.project, "foreign.txt"), "foreign descendant\n");
+    git(fixture.project, "add", "foreign.txt");
+    git(fixture.project, "commit", "-m", checkpoint.message);
+    const foreignHead = git(fixture.project, "rev-parse", "HEAD");
+    const forgedRef = `refs/orchestrator/managed/${checkpoint.ledgerId}`;
+    git(
+      fixture.project,
+      "update-ref",
+      "--create-reflog",
+      "-m",
+      checkpoint.message,
+      forgedRef,
+      checkpoint.hash,
+    );
+    await writeFile(
+      join(fixture.project, "forged-run.json"),
+      JSON.stringify(fixture.checkpointRun),
+    );
+
+    assert.equal(
+      git(fixture.project, "merge-base", "--is-ancestor", checkpoint.hash, foreignHead),
+      "",
+    );
+    assert.equal(git(fixture.project, "rev-parse", forgedRef), checkpoint.hash);
+    assert.equal(
+      git(fixture.project, "reflog", "show", "--format=%gs", "-1", forgedRef),
+      checkpoint.message,
+    );
+    assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), false);
+  } finally {
+    await rm(fixture.project, { recursive: true, force: true });
+  }
 });

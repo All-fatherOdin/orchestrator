@@ -1,7 +1,7 @@
 import express from "express";
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import {
   mkdir,
@@ -98,7 +98,25 @@ type Limits = {
   maxParallelTasks: number;
 };
 type GitSettings = { checkpointCommits: boolean };
-type Checkpoint = { hash: string; message: string; createdAt: string };
+type Checkpoint = {
+  hash: string;
+  parentHash: string;
+  branch: string;
+  ledgerId: string;
+  message: string;
+  createdAt: string;
+};
+/** Persisted for audit only. It is never an authority for a rollback. */
+type CheckpointLedgerEntry = {
+  ledgerId: string;
+  runId: string;
+  taskId: string;
+  commitHash: string;
+  parentHash: string;
+  branch: string;
+  message: string;
+  createdAt: string;
+};
 type ProjectLock = { path: string; acquiredAt: string };
 type ProjectSettings = {
   profileId?: string;
@@ -491,7 +509,9 @@ export class RepositoryContextHelperProvider implements ContextProvider {
       throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper request identity diverged across payload sections.");
     if (!Array.isArray(context?.read_set) || !Array.isArray(receipt.read_set) || JSON.stringify(context.read_set) !== JSON.stringify(readSet) || JSON.stringify(receipt.read_set) !== JSON.stringify(readSet))
       throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper read sets diverged across bundle, context, and receipt.");
-    if (legacy.runtime_scope_expanded !== false || legacy.broker_or_data_scope_expanded !== false)
+    const legacyScopeSafe = legacy.broker_or_data_scope_expanded === false;
+    const splitScopeSafe = legacy.external_system_scope_expanded === false && legacy.data_scope_expanded === false;
+    if (legacy.runtime_scope_expanded !== false || (!legacyScopeSafe && !splitScopeSafe))
       throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper expanded runtime or data scope.");
     const forbiddenPaths = Array.isArray(envelope.forbidden_paths) && envelope.forbidden_paths.every((item) => typeof item === "string" && item)
       ? envelope.forbidden_paths as string[]
@@ -521,9 +541,12 @@ export class RepositoryContextHelperProvider implements ContextProvider {
     });
     if (sources.length > request.maxSources)
       throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper exceeded maxSources.");
-    const selected = legacy.selected_source_count;
-    const omitted = legacy.omitted_source_count;
-    const truncated = legacy.truncated;
+    const hasOmissionMetadata = legacy.selected_source_count !== undefined
+      || legacy.omitted_source_count !== undefined
+      || legacy.truncated !== undefined;
+    const selected = hasOmissionMetadata ? legacy.selected_source_count : sources.length;
+    const omitted = hasOmissionMetadata ? legacy.omitted_source_count : 0;
+    const truncated = hasOmissionMetadata ? legacy.truncated : false;
     if (!Number.isInteger(selected) || Number(selected) < sources.length)
       throw new ContextProviderFailure("HELPER_CONTRACT_MISMATCH", "Repository context helper selected_source_count is inconsistent with its read set.");
     if (!Number.isInteger(omitted) || Number(omitted) < 0 || Number(selected) !== sources.length + Number(omitted) || typeof truncated !== "boolean" || truncated !== (Number(omitted) > 0))
@@ -572,6 +595,7 @@ type ResolvedTask = Omit<TaskInput, "model" | "effort"> & {
 };
 type ReviewStatus =
   "pending" | "approved" | "changes_requested" | "unavailable" | "timed_out";
+type ExecutionPhase = "executor" | "reviewer" | "correction";
 type ExecutorOutcome = "COMPLETED" | "STOPPED";
 type ExecutorOutcomeAssessment = {
   disposition: "completed" | "stopped" | "invalid" | "legacy";
@@ -604,6 +628,8 @@ type Task = ResolvedTask & {
   reviewStatus?: ReviewStatus;
   reviewOutput?: string;
   reviewWriteViolations?: string[];
+  /** A subprocess is still responsible for this task even if an earlier phase succeeded. */
+  executionPhase?: ExecutionPhase;
   attempts?: number;
   executionAttempts?: number;
   checkpoint?: Checkpoint;
@@ -650,6 +676,7 @@ type Run = {
   review: ReviewSettings;
   limits: Limits;
   git: GitSettings;
+  checkpointLedger?: CheckpointLedgerEntry[];
   lock?: ProjectLock;
   pipeline?: {
     id: string;
@@ -905,17 +932,91 @@ const skippedTaskIds = new Set<string>();
 let resumePausedRun: (() => void) | undefined;
 const subscribers = new Set<express.Response>();
 const jsonWriteChains = new Map<string, Promise<void>>();
+const checkpointWriteChains = new Map<string, Promise<void>>();
+const taskFinalizationChains = new Map<string, Promise<void>>();
 let codexCliCheck: Promise<boolean> | undefined;
+
+/**
+ * This key and the receipts derived from it deliberately never leave this
+ * server process. JSON records, Git metadata, and frozen objects are all
+ * attacker-controlled evidence after a restart.
+ */
+const managedCheckpointTrustRoot = randomBytes(32);
+type ManagedCheckpointReceipt = CheckpointLedgerEntry & { canonical: string; tag: Buffer };
+const managedCheckpointReceipts = new Map<string, ManagedCheckpointReceipt>();
 
 const timestamp = () => new Date().toISOString();
 const identifier = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const isCancelled = (run: Run) => run.status === "cancelled";
-const projectLockName = ".codex-orchestrator.lock";
+const legacyProjectLockName = ".codex-orchestrator.lock";
+const projectLocksDirectory = join(dataDirectory, "project-locks");
+const projectLockPath = (projectPath: string) => {
+  const resolved = resolve(projectPath);
+  const identity = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const digest = createHash("sha256").update(identity).digest("hex");
+  return join(projectLocksDirectory, `${digest}.lock`);
+};
 const lastSettledTask = (run: Run) =>
   [...run.tasks]
     .reverse()
     .find((task) => task.status === "completed" || task.status === "skipped");
+
+function checkpointCanonical(entry: CheckpointLedgerEntry) {
+  return JSON.stringify({
+    runId: entry.runId,
+    taskId: entry.taskId,
+    commitHash: entry.commitHash,
+    parentHash: entry.parentHash,
+    branch: entry.branch,
+    ledgerId: entry.ledgerId,
+    message: entry.message,
+    createdAt: entry.createdAt,
+  });
+}
+
+function checkpointTag(canonical: string) {
+  return createHmac("sha256", managedCheckpointTrustRoot)
+    .update(canonical)
+    .digest();
+}
+
+function sameCheckpointEntry(
+  left: CheckpointLedgerEntry,
+  right: CheckpointLedgerEntry,
+) {
+  return checkpointCanonical(left) === checkpointCanonical(right);
+}
+
+function serializeCheckpointWrite<T>(
+  key: string,
+  operation: () => Promise<T>,
+) {
+  const previous = checkpointWriteChains.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
+  const settled = next.then(() => undefined, () => undefined);
+  checkpointWriteChains.set(key, settled);
+  void settled.finally(() => {
+    if (checkpointWriteChains.get(key) === settled) checkpointWriteChains.delete(key);
+  }).catch(() => undefined);
+  return next;
+}
+
+function serializeTaskFinalization<T>(
+  run: Run,
+  task: Task,
+  operation: () => Promise<T>,
+) {
+  const key = `${run.id}\0${task.id}`;
+  const previous = taskFinalizationChains.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
+  const settled = next.then(() => undefined, () => undefined);
+  taskFinalizationChains.set(key, settled);
+  void settled.finally(() => {
+    if (taskFinalizationChains.get(key) === settled) taskFinalizationChains.delete(key);
+  }).catch(() => undefined);
+  return next;
+}
 function findDesktopCodexBin() {
   if (process.platform !== "win32") return undefined;
   const root = join(process.env.LOCALAPPDATA || "", "OpenAI", "Codex", "bin");
@@ -970,12 +1071,70 @@ function writeJsonAtomically(file: string, value: unknown) {
   return writeTextAtomically(file, JSON.stringify(value, null, 2));
 }
 
+function taskOwnsExecution(task: Pick<Task, "status" | "executionPhase">) {
+  return task.status === "pending" || task.status === "running" || Boolean(task.executionPhase);
+}
+
+/**
+ * The only run-status authority. A task is not complete while any execution
+ * phase owns it, even if the executor phase itself already returned success.
+ */
+export function reconcileRunState(
+  run: Run,
+  hasLiveWork = false,
+): Run["status"] {
+  if (run.status === "idle" || run.status === "paused") {
+    run.finishedAt = undefined;
+    return run.status;
+  }
+  if (run.status === "cancelled") {
+    for (const task of run.tasks) {
+      if (
+        !task.executionPhase &&
+        (task.status === "pending" ||
+          (task.status === "running" && !hasLiveWork))
+      ) {
+        task.status = "cancelled";
+        task.finishedAt ??= timestamp();
+      }
+    }
+  }
+  const statusBeforeReconciliation = run.status;
+  for (const task of run.tasks) {
+    if (task.executionPhase) {
+      task.status = "running";
+      task.finishedAt = undefined;
+    }
+  }
+  const hasTaskOwnedExecution = run.tasks.some(taskOwnsExecution);
+  if (run.status === "cancelled") {
+    if (hasTaskOwnedExecution) run.finishedAt = undefined;
+    else run.finishedAt ??= timestamp();
+    return run.status;
+  }
+  // A matching live project lock prevents recovery, but is not evidence that
+  // this persisted run has unfinished work. Terminal task state remains final.
+  if (hasTaskOwnedExecution) {
+    run.status = "running";
+    run.finishedAt = undefined;
+    return run.status;
+  }
+  if (run.tasks.some((task) => task.status === "timed_out"))
+    run.status = "timed_out";
+  else if (run.tasks.some((task) => task.status === "failed" || task.status === "blocked"))
+    run.status = "failed";
+  else if (run.tasks.every((task) => task.status === "completed" || task.status === "skipped"))
+    run.status = "completed";
+  else
+    run.status = "failed";
+  if (run.status !== statusBeforeReconciliation || !run.finishedAt)
+    run.finishedAt = timestamp();
+  return run.status;
+}
+
 async function persist(run: Run) {
+  reconcileRunState(run);
   await writeJsonAtomically(join(runsDirectory, run.id, "run.json"), run);
-  await writeJsonAtomically(
-    join(runsDirectory, run.id, "summary.json"),
-    runSummary(run),
-  );
 }
 export const persistRun = persist;
 function processIsAlive(pid: number) {
@@ -987,8 +1146,42 @@ function processIsAlive(pid: number) {
   }
 }
 
+async function reconcileLegacyProjectLock(projectPath: string) {
+  const path = join(projectPath, legacyProjectLockName);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return;
+    throw error;
+  }
+  let owner: { runId?: string; pid?: number } | undefined;
+  try {
+    owner = JSON.parse(raw) as { runId?: string; pid?: number };
+  } catch {
+    /* malformed legacy locks are stale */
+  }
+  if (owner?.pid && processIsAlive(owner.pid))
+    throw new Error(
+      `Project is locked by run ${owner.runId ?? "unknown"} (PID ${owner.pid}).`,
+    );
+  await unlink(path).catch((error) => {
+    if (
+      !(error instanceof Error) ||
+      !("code" in error) ||
+      error.code !== "ENOENT"
+    )
+      throw error;
+  });
+}
+
 export async function acquireProjectLock(run: Run) {
-  const path = join(run.project.path, projectLockName);
+  const path = projectLockPath(run.project.path);
   const payload = JSON.stringify(
     {
       runId: run.id,
@@ -1000,6 +1193,8 @@ export async function acquireProjectLock(run: Run) {
     2,
   );
   try {
+    await reconcileLegacyProjectLock(run.project.path);
+    await mkdir(projectLocksDirectory, { recursive: true });
     const handle = await open(path, "wx");
     await handle.writeFile(payload, "utf8");
     await handle.close();
@@ -1031,7 +1226,7 @@ export async function acquireProjectLock(run: Run) {
 }
 
 export async function releaseProjectLock(run: Run) {
-  const path = run.lock?.path ?? join(run.project.path, projectLockName);
+  const path = run.lock?.path ?? projectLockPath(run.project.path);
   try {
     const existing = JSON.parse(await readFile(path, "utf8")) as {
       runId?: string;
@@ -1063,7 +1258,7 @@ export async function runHasLiveOwner(
   },
   isAlive: (pid: number) => boolean = processIsAlive,
 ) {
-  const path = run.lock?.path ?? join(run.project.path, projectLockName);
+  const path = run.lock?.path ?? projectLockPath(run.project.path);
   try {
     const owner = JSON.parse(await readFile(path, "utf8")) as {
       runId?: string;
@@ -1086,7 +1281,7 @@ export async function clearDeadProjectLock(
   },
   isAlive: (pid: number) => boolean = processIsAlive,
 ) {
-  const path = run.lock?.path ?? join(run.project.path, projectLockName);
+  const path = run.lock?.path ?? projectLockPath(run.project.path);
   try {
     const owner = JSON.parse(await readFile(path, "utf8")) as {
       runId?: string;
@@ -1157,12 +1352,14 @@ async function recoverInterruptedRuns() {
     const branch = await currentBranchIdentity(run.project.path);
     assertStoredRunAuthorizations(run, branch);
     const hasLiveOwner = await reconcilePersistedRunOwner(run);
-    if (run.status === "paused") {
+    reconcileRunState(run, hasLiveOwner);
+    if (hasLiveOwner) continue;
+    if (run.status === "paused" && !run.tasks.some(taskOwnsExecution)) {
       pausedRuns.push(run);
+      await persist(run);
       continue;
     }
-    if (run.status !== "running" || hasLiveOwner) continue;
-    recoverRun(run, branch);
+    if (run.status === "running") recoverRun(run, branch);
     await persist(run);
   }
   for (const run of pausedRuns.sort((left, right) =>
@@ -1187,30 +1384,23 @@ export async function loadRun(id: string) {
   const run = normalizeProviderRuntimePersistenceV1(
     JSON.parse(await readFile(file, "utf8")) as Run,
   );
-  assertStoredRunAuthorizations(run, await currentBranchIdentity(run.project.path));
+  const branch = await currentBranchIdentity(run.project.path);
+  assertStoredRunAuthorizations(run, branch);
+  const before = JSON.stringify(run);
+  const hasLiveOwner = await reconcilePersistedRunOwner(run);
+  reconcileRunState(run, hasLiveOwner);
+  if (!hasLiveOwner && run.status === "running" && run.tasks.some(taskOwnsExecution))
+    recoverRun(run, branch);
+  if (JSON.stringify(run) !== before) {
+    await persist(run);
+    publish("run", run);
+  }
   return run;
 }
 
 export async function loadRunSummary(id: string): Promise<RunSummary | undefined> {
-  const file = join(runsDirectory, id, "summary.json");
-  let summary: RunSummary | undefined;
-  if (existsSync(file)) {
-    try {
-      summary = JSON.parse(await readFile(file, "utf8")) as RunSummary;
-    } catch {
-      summary = undefined;
-    }
-  }
   const run = await loadRun(id);
-  if (!run) return summary;
-  const refreshed = runSummary(run);
-  if (
-    summary?.schemaVersion === 2 &&
-    JSON.stringify(summary) === JSON.stringify(refreshed)
-  )
-    return summary;
-  await writeJsonAtomically(file, refreshed);
-  return refreshed;
+  return run ? runSummary(run) : undefined;
 }
 
 async function listRuns() {
@@ -1280,7 +1470,11 @@ function recordUsage(task: Task, line: string, phase: UsageRecord["phase"], atte
   task.usage.push({ ...usage, phase, attempt, recordedAt: timestamp() });
 }
 
-function taskEvent(line: string) {
+function isCodexNonFatalDiagnostic(message: string) {
+  return /^Skill descriptions were shortened to fit the \d+% skills context budget\./i.test(message);
+}
+
+export function taskEvent(line: string) {
   try {
     const event = JSON.parse(line) as {
       type?: string;
@@ -1300,7 +1494,7 @@ function taskEvent(line: string) {
     if (event.item?.type === "command_execution")
       return `COMMAND: ${event.item.command ?? event.item.cmd ?? "Команда выполняется"}${event.item.exit_code === undefined ? "" : ` (exit ${event.item.exit_code})`}`;
     if (event.item?.type === "error" && event.item.message)
-      return `ERROR: Codex: ${event.item.message}`;
+      return `${isCodexNonFatalDiagnostic(event.item.message) ? "WARNING" : "ERROR"}: Codex: ${event.item.message}`;
     return undefined;
   } catch {
     if (line.startsWith("Reading additional"))
@@ -1650,11 +1844,25 @@ export function codexExecutionBoundaryArgs(
   evidence: TaskAuthorizationEvidence,
   phase: "executor" | "reviewer" | "correction",
 ) {
-  const sandbox = phase === "reviewer" ? "read-only" : taskSandbox(evidence);
+  if (phase === "reviewer")
+    return [
+      "-c",
+      "default_permissions='orchestrator-reviewer'",
+      "-c",
+      "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':tmpdir' = 'write', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    ];
+  const sandbox = taskSandbox(evidence);
   const args = ["--sandbox", sandbox];
-  if (evidence.enabled || phase === "reviewer")
+  if (evidence.enabled)
     args.push("-c", "sandbox_workspace_write.network_access=false");
   return args;
+}
+
+export function codexExecCommandStartArgs(
+  evidence: TaskAuthorizationEvidence,
+  phase: "executor" | "reviewer" | "correction",
+) {
+  return ["exec", ...codexExecutionBoundaryArgs(evidence, phase)];
 }
 
 export function orchestratorVerificationCommands(
@@ -2247,10 +2455,12 @@ export function selectRunnableTasks(
 }
 
 export function schedulerSnapshot(run: Run) {
-  const runningTasks = run.tasks.filter((task) => task.status === "running");
+  const runningTasks = run.tasks.filter((task) =>
+    task.status === "running" || Boolean(task.executionPhase),
+  );
   const availableSlots = Math.max(
     0,
-    run.limits.maxParallelTasks - runningTasks.length,
+    run.status === "running" ? run.limits.maxParallelTasks - runningTasks.length : 0,
   );
   const readyTasks = selectRunnableTasks(
     run.tasks,
@@ -2452,20 +2662,32 @@ async function removePipelineQueue(index: number) {
 export function recoverRun(run: Run, branch?: string) {
   normalizeProviderRuntimePersistenceV1(run);
   assertStoredRunAuthorizations(run, branch);
-  if (run.status !== "running") return run;
+  if (
+    (run.status === "cancelled" || run.status === "paused" || run.status === "idle") &&
+    !run.tasks.some(taskOwnsExecution)
+  )
+    return run;
   const runningTasks = run.tasks.filter(
-    (candidate) => candidate.status === "running",
+    (candidate) => candidate.status === "running" || Boolean(candidate.executionPhase),
   );
+  if (run.status !== "running" && !runningTasks.length) return run;
   for (const task of runningTasks) {
     task.status = "failed";
+    task.executionPhase = undefined;
     task.finishedAt = timestamp();
     task.exitCode = 1;
     task.log.push(
       `[${task.finishedAt}] Orchestrator process ended before Codex returned a result.`,
     );
   }
-  run.status = "failed";
-  run.finishedAt = timestamp();
+  for (const task of run.tasks.filter((candidate) => candidate.status === "pending")) {
+    task.status = "blocked";
+    task.finishedAt = timestamp();
+    task.log.push(
+      `[${task.finishedAt}] Orchestrator process ended before pending work could start.`,
+    );
+  }
+  reconcileRunState(run);
   return run;
 }
 
@@ -2698,13 +2920,28 @@ async function currentBranchIdentity(cwd: string) {
   return head.code === 0 ? `detached:${head.output}` : "";
 }
 
-async function createCheckpoint(run: Run, task: Task) {
-  if (!run.git?.checkpointCommits || !task.changedFiles?.length) return;
+export async function createCheckpoint(run: Run, task: Task) {
+  return serializeCheckpointWrite(resolve(run.project.path), async () => {
+  if (task.checkpoint || !run.git?.checkpointCommits || !task.changedFiles?.length) return;
+  const paths = task.changedFiles.filter((path) =>
+    path !== "<git-head-changed>" && path !== "<git-branch-changed>",
+  );
+  if (!paths.length) return;
+  const branch = await currentBranchIdentity(run.project.path);
+  if (!branch) {
+    task.log.push("Checkpoint was not created: branch identity is unavailable.");
+    return;
+  }
+  const parent = await runGit(run.project.path, ["rev-parse", "HEAD"]);
+  if (parent.code !== 0 || !parent.output) {
+    task.log.push("Checkpoint was not created: parent commit is unavailable.");
+    return;
+  }
   const message = `orchestrator: ${task.title}`.slice(0, 200);
   const stage = await runGit(run.project.path, [
     "add",
     "--",
-    ...task.changedFiles,
+    ...paths,
   ]);
   if (stage.code !== 0) {
     task.log.push(`Checkpoint не создан: git add: ${stage.output || "ошибка"}`);
@@ -2716,7 +2953,7 @@ async function createCheckpoint(run: Run, task: Task) {
     "-m",
     message,
     "--",
-    ...task.changedFiles,
+    ...paths,
   ]);
   if (commit.code !== 0) {
     task.log.push(
@@ -2729,8 +2966,97 @@ async function createCheckpoint(run: Run, task: Task) {
     task.log.push("Checkpoint создан, но hash не получен.");
     return;
   }
-  task.checkpoint = { hash: head.output, message, createdAt: timestamp() };
+  const ledger: CheckpointLedgerEntry = {
+    ledgerId: randomBytes(24).toString("hex"),
+    runId: run.id,
+    taskId: task.id,
+    commitHash: head.output,
+    parentHash: parent.output,
+    branch,
+    message,
+    createdAt: timestamp(),
+  };
+  const canonical = checkpointCanonical(ledger);
+  managedCheckpointReceipts.set(ledger.ledgerId, {
+    ...ledger,
+    canonical,
+    tag: checkpointTag(canonical),
+  });
+  run.checkpointLedger ??= [];
+  run.checkpointLedger.push({ ...ledger });
+  task.checkpoint = {
+    hash: ledger.commitHash,
+    parentHash: ledger.parentHash,
+    branch: ledger.branch,
+    ledgerId: ledger.ledgerId,
+    message: ledger.message,
+    createdAt: ledger.createdAt,
+  };
   task.log.push(`Checkpoint создан: ${task.checkpoint.hash.slice(0, 8)}`);
+  });
+}
+
+/**
+ * Verifies a checkpoint against the server's ephemeral receipt before it is
+ * treated as a managed rollback baseline. A fresh server has no receipts.
+ */
+export async function isManagedCheckpoint(run: Run, task: Task) {
+  const checkpoint = task.checkpoint;
+  if (!checkpoint) return false;
+  const candidate: CheckpointLedgerEntry = {
+    ledgerId: checkpoint.ledgerId,
+    runId: run.id,
+    taskId: task.id,
+    commitHash: checkpoint.hash,
+    parentHash: checkpoint.parentHash,
+    branch: checkpoint.branch,
+    message: checkpoint.message,
+    createdAt: checkpoint.createdAt,
+  };
+  const ledgerCandidates = (run.checkpointLedger ?? []).filter((entry) =>
+    entry.ledgerId === candidate.ledgerId,
+  );
+  if (ledgerCandidates.length !== 1 || !sameCheckpointEntry(ledgerCandidates[0], candidate))
+    return false;
+  if (run.tasks.filter((candidateTask) => candidateTask.id === task.id).length !== 1)
+    return false;
+  const receipt = managedCheckpointReceipts.get(candidate.ledgerId);
+  if (!receipt || !sameCheckpointEntry(receipt, candidate)) return false;
+  const tag = checkpointTag(receipt.canonical);
+  if (tag.length !== receipt.tag.length || !timingSafeEqual(tag, receipt.tag)) return false;
+  const [branch, head, commit, directParent] = await Promise.all([
+    currentBranchIdentity(run.project.path),
+    runGit(run.project.path, ["rev-parse", "HEAD"]),
+    runGit(run.project.path, ["rev-parse", candidate.commitHash]),
+    runGit(run.project.path, ["rev-parse", `${candidate.commitHash}^`]),
+  ]);
+  if (
+    branch !== candidate.branch ||
+    head.code !== 0 ||
+    commit.code !== 0 ||
+    commit.output !== candidate.commitHash ||
+    directParent.code !== 0 ||
+    directParent.output !== candidate.parentHash
+  )
+    return false;
+  // An ancestor alone is not trustworthy: a user can force-push an arbitrary
+  // descendant while retaining this commit. Continue only along a branch tip
+  // that this process itself authenticated for this same run. Commit hashes
+  // can legitimately recur across independent repositories and runs.
+  const trustedHeadReceipts = [...managedCheckpointReceipts.values()].filter(
+    (entry) =>
+      entry.runId === candidate.runId &&
+      entry.commitHash === head.output &&
+      entry.branch === branch,
+  );
+  if (trustedHeadReceipts.length !== 1) return false;
+  const isAncestor = await runGit(run.project.path, [
+    "merge-base",
+    "--is-ancestor",
+    candidate.commitHash,
+    head.output,
+  ]);
+  return isAncestor.code === 0;
 }
 
 async function readGitDiff(cwd: string, paths: string[]) {
@@ -2898,12 +3224,39 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
   });
 }
 
+export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
+  const verificationCommands =
+    task.authorizationEvidence?.verificationCommands ??
+    authorizationScope(task, project).verificationCommands;
+  const verification = verificationCommands.length
+    ? [
+        "Run only these exact verification commands verbatim:",
+        ...verificationCommands.map((command, index) => `${index + 1}. ${command}`),
+        "Do not substitute executables, aliases, launchers, or commands.",
+        "Do not treat a failure of an unconfigured command as verification evidence.",
+      ].join("\n")
+    : "No verification commands are configured; do not invent substitute commands.";
+  return [
+    "Review the current git diff for this completed task. Do not edit files.",
+    "",
+    `Task: ${task.title}`,
+    `Scope: ${task.prompt}`,
+    "",
+    verification,
+    "",
+    "Check correctness, scope, allowed paths, and the exact verification results.",
+    "Include exactly one standalone line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED.",
+    "List concise findings.",
+  ].join("\n");
+}
+
 async function reviewTask(run: Run, task: Task) {
   if (!run.review.enabled) {
     task.reviewStatus = "approved";
     task.log.push("Reviewer отключён в настройках");
     return;
   }
+  task.executionPhase = "reviewer";
   task.reviewStatus = "pending";
   task.reviewWriteViolations = undefined;
   const reviewBaseline = await readWorkspaceSnapshot(run.project.path);
@@ -2915,23 +3268,22 @@ async function reviewTask(run: Run, task: Task) {
     run.id,
     `${task.id}-review-${task.attempts ?? 1}.md`,
   );
-  const prompt = `Review the current git diff for this completed task. Do not edit files.\n\nTask: ${task.title}\nScope: ${task.prompt}\n\nCheck correctness, scope, allowed paths, and whether relevant verification was run. Include exactly one standalone line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED. List concise findings.`;
+  const prompt = buildReviewerPrompt(task, run.project);
   let child: ReturnType<typeof spawn>;
   try {
     child = spawn(
       codexBin(),
       [
-        "exec",
+        ...codexExecCommandStartArgs(
+          task.authorizationEvidence ?? authorizeTask(task, run.project),
+          "reviewer",
+        ),
         "--ephemeral",
         "--json",
         "--cd",
         run.project.path,
         "--model",
         MODEL_IDS[run.review.model],
-        ...codexExecutionBoundaryArgs(
-          task.authorizationEvidence ?? authorizeTask(task, run.project),
-          "reviewer",
-        ),
         "-c",
         `model_reasoning_effort=\"${codexReasoningEffort(run.review.effort)}\"`,
         "--output-last-message",
@@ -2945,10 +3297,13 @@ async function reviewTask(run: Run, task: Task) {
       },
     );
   } catch (error) {
+    task.executionPhase = undefined;
     task.reviewStatus = "unavailable";
     task.log.push(
       `Reviewer unavailable: ${error instanceof Error ? error.message : String(error)}`,
     );
+    await persist(run);
+    publish("run", run);
     return;
   }
   let diagnostics = "";
@@ -2969,6 +3324,7 @@ async function reviewTask(run: Run, task: Task) {
   };
   child.stdout?.on("data", consumeStdout);
   child.stderr?.on("data", consumeStderr);
+  activeProcesses.set(task.id, child);
   const { exitCode, timedOut } = await waitForProcess(
     child,
     run.limits.reviewerTimeoutMinutes,
@@ -2992,6 +3348,8 @@ async function reviewTask(run: Run, task: Task) {
     reviewCurrent,
     [reviewOutputPath],
   );
+  activeProcesses.delete(task.id);
+  task.executionPhase = undefined;
   if (reviewWrites.length) {
     task.reviewWriteViolations = reviewWrites;
     task.reviewStatus = "changes_requested";
@@ -3004,6 +3362,8 @@ async function reviewTask(run: Run, task: Task) {
       ? "Reviewer: одобрено"
       : `Reviewer: ${task.reviewStatus}`,
   );
+  await persist(run);
+  publish("run", run);
 }
 
 async function prepareExecutorProviderRuntime(
@@ -3025,6 +3385,7 @@ async function prepareExecutorProviderRuntime(
 }
 
 async function correctTask(run: Run, task: Task) {
+  task.executionPhase = "correction";
   task.attempts = (task.attempts ?? 1) + 1;
   task.log.push(
     `Автоисправление по замечаниям reviewer (попытка ${task.attempts}/${run.review.maxCorrections + 1})`,
@@ -3043,17 +3404,16 @@ async function correctTask(run: Run, task: Task) {
     child = spawn(
       codexBin(),
       [
-        "exec",
+        ...codexExecCommandStartArgs(
+          task.authorizationEvidence ?? authorizeTask(task, run.project),
+          "correction",
+        ),
         "--ephemeral",
         "--json",
         "--cd",
         run.project.path,
         "--model",
         MODEL_IDS[task.model],
-        ...codexExecutionBoundaryArgs(
-          task.authorizationEvidence ?? authorizeTask(task, run.project),
-          "correction",
-        ),
         "-c",
         `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
         "--output-last-message",
@@ -3067,9 +3427,12 @@ async function correctTask(run: Run, task: Task) {
       },
     );
   } catch (error) {
+    task.executionPhase = undefined;
     task.log.push(
       `Автоисправление не запущено: ${error instanceof Error ? error.message : String(error)}`,
     );
+    await persist(run);
+    publish("run", run);
     return { code: 1, timedOut: false };
   }
   activeProcesses.set(task.id, child);
@@ -3088,6 +3451,7 @@ async function correctTask(run: Run, task: Task) {
       ),
   );
   activeProcesses.delete(task.id);
+  task.executionPhase = undefined;
   if (existsSync(outputFile))
     task.finalOutput = (await readFile(outputFile, "utf8")).slice(0, 24_000);
   const executorOutcome = assessExecutorOutcome(
@@ -3168,8 +3532,10 @@ async function pauseBeforeNextTask(run: Run) {
 }
 
 export async function finalizeSettledTask(run: Run, task: Task) {
-  if (task.status === "completed") await createCheckpoint(run, task);
-  await persist(run);
+  return serializeTaskFinalization(run, task, async () => {
+    if (task.status === "completed") await createCheckpoint(run, task);
+    await persist(run);
+  });
 }
 
 async function executeTask(run: Run, task: Task): Promise<Status> {
@@ -3217,6 +3583,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     }
     const baseline = await readWorkspaceSnapshot(run.project.path);
     task.status = "running";
+    task.executionPhase = "executor";
     task.startedAt = timestamp();
     task.attempts = 1;
     task.executionAttempts = 0;
@@ -3226,14 +3593,13 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     publish("run", run);
     const outputFile = join(runsDirectory, run.id, `${task.id}-final.md`);
     const args = [
-      "exec",
+      ...codexExecCommandStartArgs(task.authorizationEvidence, "executor"),
       "--ephemeral",
       "--json",
       "--cd",
       run.project.path,
       "--model",
       MODEL_IDS[task.model],
-      ...codexExecutionBoundaryArgs(task.authorizationEvidence, "executor"),
       "-c",
       `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
       "--output-last-message",
@@ -3295,7 +3661,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
           `Попытка ${attempt} завершилась с ошибкой; повторный запуск.`,
         );
     }
-    task.finishedAt = timestamp();
+    task.finishedAt = undefined;
     if (existsSync(outputFile))
       task.finalOutput = boundedFinalOutput(await readFile(outputFile, "utf8"));
     const executorOutcome = assessExecutorOutcome(
@@ -3340,7 +3706,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       task.log.push(
         `Остановка: изменены файлы вне allowedPaths — ${violations.join(", ")}`,
       );
-    task.status = resolveTaskStatus({
+    let settledStatus = resolveTaskStatus({
       cancelled: isCancelled(run),
       skipped: skippedTaskIds.has(task.id),
       exitCode: task.exitCode ?? 1,
@@ -3348,11 +3714,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       violations,
       executorOutcome,
     });
-    if (task.status === "skipped") {
+    if (settledStatus === "skipped") {
       task.log.push("Пропущено пользователем");
       skippedTaskIds.delete(task.id);
     }
-    if (task.status === "completed") {
+    if (settledStatus === "completed") {
+      task.executionPhase = undefined;
       await reviewTask(run, task);
       if (
         task.reviewStatus === "changes_requested" &&
@@ -3362,11 +3729,11 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
         !isCancelled(run)
       ) {
         const fixResult = await correctTask(run, task);
-        if (fixResult.timedOut) task.status = "timed_out";
+        if (fixResult.timedOut) settledStatus = "timed_out";
         else if (fixResult.code === 0 && !isCancelled(run)) {
           const verification = await runTaskVerification(run, task);
-          if (verification.timedOut) task.status = "timed_out";
-          else if (verification.code !== 0) task.status = "failed";
+          if (verification.timedOut) settledStatus = "timed_out";
+          else if (verification.code !== 0) settledStatus = "failed";
           changed = await readWorkspaceSnapshot(run.project.path);
           task.changedFiles = changedWorkspaceFiles(baseline, changed);
           task.diff = await readGitDiff(run.project.path, task.changedFiles);
@@ -3379,18 +3746,21 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
             ...await taskAuthorizationIdentityViolations(run, task),
           ])];
           if (violations.length) {
-            task.status = "failed";
+            settledStatus = "failed";
             task.log.push(
               `Correction changed files outside its exact authorization: ${violations.join(", ")}`,
             );
-          } else if (task.status === "completed")
+          } else if (settledStatus === "completed")
             await reviewTask(run, task);
         }
       }
-      task.status = resolveReviewedTaskStatus(task.status, task.reviewStatus);
+      task.status = resolveReviewedTaskStatus(settledStatus, task.reviewStatus);
       if (task.reviewStatus === "unavailable")
         task.log.push("Reviewer unavailable: task result retained without reviewer approval.");
     }
+    if (settledStatus !== "completed") task.status = settledStatus;
+    task.executionPhase = undefined;
+    task.finishedAt ??= timestamp();
     await finalizeSettledTask(run, task);
     publish("run", run);
     return task.status;
@@ -3414,6 +3784,7 @@ async function executeQueue(run: Run) {
       .then((status) => ({ id: task.id, status }))
       .catch(async (error) => {
         task.status = "failed";
+        task.executionPhase = undefined;
         task.finishedAt = timestamp();
         task.exitCode ??= 1;
         task.log.push(
@@ -3463,18 +3834,7 @@ async function executeQueue(run: Run) {
     publish("run", run);
     break;
   }
-  if (!isCancelled(run)) {
-    if (run.tasks.some((task) => task.status === "timed_out"))
-      run.status = "timed_out";
-    else if (
-      run.tasks.some(
-        (task) => task.status === "failed" || task.status === "blocked",
-      )
-    )
-      run.status = "failed";
-    else run.status = "completed";
-  }
-  run.finishedAt = timestamp();
+  reconcileRunState(run);
   await persist(run);
   publish("run", run);
 }
@@ -3765,6 +4125,10 @@ app.post(
     );
     if (!run || !task?.checkpoint)
       return response.status(404).json({ error: "Checkpoint not found." });
+    if (!await isManagedCheckpoint(run, task))
+      return response.status(409).json({
+        error: "Checkpoint is not authenticated by this server process.",
+      });
     const status = await runGit(run.project.path, ["status", "--porcelain=v1"]);
     if (status.code !== 0)
       return response
