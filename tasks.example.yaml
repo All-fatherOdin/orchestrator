@@ -1,6 +1,13 @@
 project:
   name: My project
   path: D:\\work\\my-project
+  # Windows pytest example: use a fresh direct child of TEMP for every Codex
+  # process. Reusing pytest's default pytest-of-user directory, or a fixed
+  # basetemp across executor/reviewer sessions, can fail with WinError 5.
+  # verificationCommands:
+  #   - >-
+  #     .\.venv\Scripts\python.exe -m pytest -q
+  #     --basetemp="$env:TEMP\orchestrator-pytest-$PID"
 limits:
   taskTimeoutMinutes: 30
   reviewerTimeoutMinutes: 10
@@ -28,6 +35,16 @@ tasks:
     # timeoutMinutes: 45
     # maxRetries: 2
     allowedPaths: [src/notifications]
+    verificationCommands:
+      - npm run typecheck
+      # Ordinary `git diff --check -- <path>` does not inspect a new untracked
+      # file. For such files, use a content-aware PowerShell check like this
+      # (replace the example path). `git diff --no-index` normally exits 1
+      # when files differ, so validate its diagnostic output instead.
+      # - >-
+      #   $result = git diff --no-index --check -- NUL
+      #   'src/notifications/new-file.ts' 2>&1;
+      #   if ($result) { $result | ForEach-Object { Write-Output $_ }; exit 1 }
     # Optional Context Contract v1 selection through scripts/ai_context_helper.py.
     contextProfile: review
     maxSources: 8

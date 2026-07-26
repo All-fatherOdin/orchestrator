@@ -46,6 +46,15 @@ Repository agents receive the same routing rules from `AGENTS.md`, so a request 
 
 See [tasks.example.yaml](tasks.example.yaml). Models are intentionally restricted to `luna`, `terra`, and `sol`; effort is `light`, `medium`, or `high`. `light` maps to Codex `low`. Terra is the everyday route; Sol is an explicit quality-first escalation; Luna is available only when the installed Codex runtime has been verified and the server is started with `CODEX_LUNA_SUPPORTED=1`.
 
+On Windows, pytest verification should use a unique direct child of the
+authorized temp root for every Codex process, for example
+`--basetemp="$env:TEMP\orchestrator-pytest-$PID"`. Do not reuse a fixed
+basetemp between executor and reviewer sessions. Also remember that ordinary
+`git diff --check` does not inspect new untracked files. Use a read-only
+`git diff --no-index --check` wrapper that treats emitted whitespace
+diagnostics as failure, as shown in `tasks.example.yaml`; do not stage files
+merely to make verification see them.
+
 Set a task's `model` to `auto` to let the orchestrator choose before the run. It routes everyday implementation and verification work to Terra. Contained work uses Luna only when that runtime capability is enabled; otherwise it falls back to Terra. Use `minModel: sol` for the explicit quality-first Sol escalation and compare its preserved reasoning baseline with one lower effort before changing the setting. An explicit model always takes precedence, but an unsupported model, reasoning, or local-tool route is rejected rather than sent to Codex. The resolved model and routing reason are stored in the run record and report. See [GPT-5.6 routing](docs/gpt56-model-routing-v1.md) for source date and fallback behavior.
 
 To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
