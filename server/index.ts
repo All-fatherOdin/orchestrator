@@ -3228,6 +3228,12 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
   const verificationCommands =
     task.authorizationEvidence?.verificationCommands ??
     authorizationScope(task, project).verificationCommands;
+  const changedFiles = task.changedFiles ?? [];
+  const taskChangeSet = changedFiles.length
+    ? changedFiles.map((path) => `- ${path}`).join("\n")
+    : "- (no task-owned file changes detected)";
+  const taskDiff = task.diff?.trim() ||
+    "(No tracked diff is available. Inspect only the exact task-change paths listed above; a listed path may be newly untracked.)";
   const verification = verificationCommands.length
     ? [
         "Run only these exact verification commands verbatim:",
@@ -3237,10 +3243,19 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
       ].join("\n")
     : "No verification commands are configured; do not invent substitute commands.";
   return [
-    "Review the current git diff for this completed task. Do not edit files.",
+    "Review only the authoritative task change set below. Do not edit files.",
     "",
     `Task: ${task.title}`,
     `Scope: ${task.prompt}`,
+    "",
+    "Task change set (authoritative):",
+    taskChangeSet,
+    "",
+    "Task-scoped tracked diff:",
+    taskDiff,
+    "",
+    "Pre-existing modified, deleted, or untracked files outside this task change set are out of scope.",
+    "Do not request their removal or modification and do not treat them as task scope violations.",
     "",
     verification,
     "",

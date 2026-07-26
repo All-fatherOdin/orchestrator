@@ -2385,6 +2385,29 @@ test("reviewer prompt requires the exact configured verification commands", () =
   assert.doesNotMatch(prompt, /ignored fallback/);
 });
 
+test("reviewer prompt isolates the task change set from pre-existing workspace changes", () => {
+  const prompt = buildReviewerPrompt(
+    {
+      ...task("review-task-delta", "completed"),
+      title: "Review only the task delta",
+      prompt: "Create the requested contract.",
+      changedFiles: ["docs/planned/contract.md"],
+      diff: "diff --git a/docs/planned/contract.md b/docs/planned/contract.md",
+    },
+    {},
+  );
+
+  assert.match(prompt, /Task change set \(authoritative\)/);
+  assert.match(prompt, /docs\/planned\/contract\.md/);
+  assert.match(prompt, /diff --git a\/docs\/planned\/contract\.md/);
+  assert.match(
+    prompt,
+    /Pre-existing modified, deleted, or untracked files outside this task change set are out of scope/,
+  );
+  assert.match(prompt, /Do not request their removal or modification/);
+  assert.doesNotMatch(prompt, /Review the current git diff/);
+});
+
 test("nine reviewers returning no report cannot approve or complete tasks", () => {
   const results = Array.from({ length: 9 }, () =>
     assessReviewerResult({
