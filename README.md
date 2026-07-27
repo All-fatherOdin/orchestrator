@@ -49,7 +49,9 @@ See [tasks.example.yaml](tasks.example.yaml). Models are intentionally restricte
 On Windows, pytest verification should use a unique direct child of the
 authorized temp root for every Codex process, for example
 `--basetemp="$env:TEMP\orchestrator-pytest-$PID"`. Do not reuse a fixed
-basetemp between executor and reviewer sessions. Also remember that ordinary
+basetemp between executor and reviewer sessions. Queue preflight rejects
+Windows pytest verification commands that omit this isolated basetemp. Also
+remember that ordinary
 `git diff --check` does not inspect new untracked files. Use a read-only
 `git diff --no-index --check` wrapper that treats emitted whitespace
 diagnostics as failure, as shown in `tasks.example.yaml`; do not stage files

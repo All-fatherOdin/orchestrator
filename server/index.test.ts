@@ -51,6 +51,7 @@ const {
   loadRunSummary,
   writeTextAtomically,
   runInBackground,
+  windowsPytestBasetempViolation,
   app,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
@@ -1335,6 +1336,57 @@ test("validates YAML queue, models, limits, and explicit Sol high effort", async
           limits: { taskTimeoutMinutes: 0 },
         }),
       /taskTimeoutMinutes/,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("Windows pytest verification requires an isolated sandbox temp directory", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-pytest-validation-"));
+  const unsafe = ".\\.venv\\Scripts\\python.exe -m pytest -q tests\\test_acceptance.py";
+  const workspaceTemp =
+    ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=.pytest_cache\\review tests\\test_acceptance.py";
+  const sharedTemp =
+    ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review\" tests\\test_acceptance.py";
+  const nestedTemp =
+    ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator\\review-$PID\" tests\\test_acceptance.py";
+  const safe =
+    ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  try {
+    assert.match(windowsPytestBasetempViolation(unsafe) ?? "", /--basetemp/);
+    assert.match(windowsPytestBasetempViolation(workspaceTemp) ?? "", /\$env:TEMP/);
+    assert.match(windowsPytestBasetempViolation(sharedTemp) ?? "", /\$PID/);
+    assert.match(windowsPytestBasetempViolation(nestedTemp) ?? "", /direct child/);
+    assert.equal(windowsPytestBasetempViolation(safe), undefined);
+    assert.equal(windowsPytestBasetempViolation("git diff --check"), undefined);
+    assert.equal(windowsPytestBasetempViolation("rg -n pytest README.md"), undefined);
+
+    const base = {
+      project: { path: project },
+      tasks: [{ title: "Review", prompt: "Run exact checks" }],
+    };
+    assert.throws(
+      () =>
+        validateQueue({
+          ...base,
+          tasks: [{ ...base.tasks[0], verificationCommands: [unsafe] }],
+        }),
+      /Task 1.*Windows pytest.*--basetemp/,
+    );
+    assert.throws(
+      () =>
+        validateQueue({
+          ...base,
+          project: { ...base.project, verificationCommands: [unsafe] },
+        }),
+      /project\.verificationCommands.*Windows pytest.*--basetemp/,
+    );
+    assert.doesNotThrow(() =>
+      validateQueue({
+        ...base,
+        tasks: [{ ...base.tasks[0], verificationCommands: [safe] }],
+      })
     );
   } finally {
     await rm(project, { recursive: true, force: true });

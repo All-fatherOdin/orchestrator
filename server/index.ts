@@ -1963,6 +1963,37 @@ async function taskAuthorizationIdentityViolations(run: Run, task: Task) {
     : ["<authorization-identity-changed>"];
 }
 
+export function windowsPytestBasetempViolation(command: string) {
+  const invokesPytest =
+    /(?:python(?:\.exe)?["']?\s+-m\s+pytest\b|(?:^|[;&|]\s*|[\\/])pytest(?:\.exe)?(?=\s|$))/i;
+  if (!invokesPytest.test(command)) return undefined;
+  const match = command.match(
+    /--basetemp(?:=|\s+)(?:"([^"]*)"|'([^']*)'|([^\s;|]+))/i,
+  );
+  if (!match)
+    return "Windows pytest verification must set --basetemp to a unique direct child of $env:TEMP containing $PID.";
+  const basetemp = match[1] ?? match[2] ?? match[3] ?? "";
+  const tempPrefix = /\$(?:env:TEMP|\{env:TEMP\})[\\/]/i;
+  if (!tempPrefix.test(basetemp))
+    return "Windows pytest --basetemp must be a direct child of $env:TEMP, not the workspace or pytest's shared user-temp directory.";
+  if (/[\\/]/.test(basetemp.replace(tempPrefix, "")))
+    return "Windows pytest --basetemp must be a direct child of $env:TEMP without nested directories.";
+  if (!/\$PID\b/i.test(basetemp))
+    return "Windows pytest --basetemp must contain $PID so executor, reviewer, and correction processes never reuse it.";
+  return undefined;
+}
+
+function assertWindowsPytestVerificationCommands(
+  commands: string[] | undefined,
+  field: string,
+) {
+  if (process.platform !== "win32" || !commands) return;
+  for (const command of commands) {
+    const violation = windowsPytestBasetempViolation(command);
+    if (violation) throw new Error(`${field}: ${violation}`);
+  }
+}
+
 export function validateQueue(value: unknown): {
   project: { name: string; path: string } & ProjectSettings;
   tasks: ResolvedTask[];
@@ -1985,6 +2016,20 @@ export function validateQueue(value: unknown): {
   const projectPath = resolve(project.path!);
   if (!existsSync(projectPath))
     throw new Error(`Project path does not exist: ${projectPath}`);
+  if (
+    project.verificationCommands !== undefined &&
+    (!Array.isArray(project.verificationCommands) ||
+      project.verificationCommands.some(
+        (command) => typeof command !== "string" || !command.trim(),
+      ))
+  )
+    throw new Error(
+      "project.verificationCommands must be a list of non-empty strings.",
+    );
+  assertWindowsPytestVerificationCommands(
+    project.verificationCommands,
+    "project.verificationCommands",
+  );
   if (project.approvedApplyContracts !== undefined) {
     if (!Array.isArray(project.approvedApplyContracts))
       throw new Error("project.approvedApplyContracts must be a list.");
@@ -2001,6 +2046,10 @@ export function validateQueue(value: unknown): {
         throw new Error("project.approvedApplyContracts entries must declare one exact reversible local apply scope.");
       if (approvalIds.has(contract.approvalId))
         throw new Error("project.approvedApplyContracts approvalId values must be unique.");
+      assertWindowsPytestVerificationCommands(
+        contract.verificationCommands,
+        `project.approvedApplyContracts ${contract.approvalId}`,
+      );
       approvalIds.add(contract.approvalId);
     }
   }
@@ -2132,6 +2181,10 @@ export function validateQueue(value: unknown): {
       )
         throw new Error(`Task ${index + 1}: ${field} must be a list of non-empty strings.`);
     }
+    assertWindowsPytestVerificationCommands(
+      task.verificationCommands,
+      `Task ${index + 1} Windows pytest verification`,
+    );
     const authorization = task.authorization;
     if (authorization !== undefined) {
       if (!authorization || typeof authorization !== "object" || typeof authorization.enabled !== "boolean")
