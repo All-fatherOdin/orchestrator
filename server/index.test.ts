@@ -71,6 +71,7 @@ const {
   installedCodexModels,
   assertCodexRouteCompatible,
   authorizeTask,
+  runRequiresReplayAuthorization,
   replayTaskAuthorization,
   verifyStoredTaskAuthorization,
   taskSandbox,
@@ -90,6 +91,7 @@ const {
   normalizeProviderRuntimePersistenceV1,
   createCheckpoint,
   isManagedCheckpoint,
+  recoverPersistedRunForStartup,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
@@ -1292,6 +1294,8 @@ test("loading persisted runs verifies stored task authorization before replay", 
   try {
     const source = authorizedRunFixture("");
     source.id = "authorization-load-run";
+    source.status = "paused";
+    source.tasks[0].status = "pending";
     source.project.path = project;
     source.tasks[0].authorizationEvidence = authorizeTask(
       source.tasks[0],
@@ -1306,6 +1310,50 @@ test("loading persisted runs verifies stored task authorization before replay", 
     stored.tasks[0].prompt = "Changed after persistence";
     await writeFile(file, JSON.stringify(stored, null, 2));
     await assert.rejects(() => loadRun(source.id), /fresh contract/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("startup authorization is required only for replayable run states", () => {
+  assert.equal(runRequiresReplayAuthorization({ status: "idle" }), true);
+  assert.equal(runRequiresReplayAuthorization({ status: "running" }), true);
+  assert.equal(runRequiresReplayAuthorization({ status: "paused" }), true);
+  assert.equal(runRequiresReplayAuthorization({ status: "completed" }), false);
+  assert.equal(runRequiresReplayAuthorization({ status: "failed" }), false);
+  assert.equal(runRequiresReplayAuthorization({ status: "timed_out" }), false);
+  assert.equal(runRequiresReplayAuthorization({ status: "cancelled" }), false);
+});
+
+test("startup leaves a stale-authorized run inactive without aborting recovery", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-stale-startup-"));
+  try {
+    const source = authorizedRunFixture("");
+    source.id = `stale-startup-${Date.now()}-${Math.random()}`;
+    source.status = "paused";
+    source.tasks[0].status = "pending";
+    source.project.path = project;
+    source.tasks[0].authorizationEvidence = authorizeTask(
+      source.tasks[0],
+      source.project,
+      "",
+    );
+    await persistRun(source);
+
+    const file = join(testDataDirectory, "runs", source.id, "run.json");
+    const stored = JSON.parse(await readFile(file, "utf8"));
+    stored.tasks[0].prompt = "Changed after persistence";
+    await writeFile(file, JSON.stringify(stored, null, 2));
+
+    const diagnostics: string[] = [];
+    assert.equal(
+      await recoverPersistedRunForStartup(file, (message: string) => diagnostics.push(message)),
+      undefined,
+    );
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0], new RegExp(source.id));
+    assert.match(diagnostics[0], /fresh contract/);
+    assert.equal(JSON.parse(await readFile(file, "utf8")).status, "paused");
   } finally {
     await rm(project, { recursive: true, force: true });
   }

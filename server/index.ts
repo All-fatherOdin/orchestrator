@@ -1339,6 +1339,38 @@ export async function bindBeforeRecovery<T extends {
   }
 }
 
+export async function recoverPersistedRunForStartup(
+  file: string,
+  report: (message: string) => void = (message) => console.error(message),
+): Promise<Run | undefined> {
+  try {
+    const run = normalizeProviderRuntimePersistenceV1(
+      JSON.parse(await readFile(file, "utf8")) as Run,
+    );
+    const branch = await currentBranchIdentity(run.project.path);
+    if (runRequiresReplayAuthorization(run))
+      assertStoredRunAuthorizations(run, branch);
+    const hasLiveOwner = await reconcilePersistedRunOwner(run);
+    reconcileRunState(run, hasLiveOwner);
+    if (hasLiveOwner) return undefined;
+    if (run.status === "paused" && !run.tasks.some(taskOwnsExecution)) {
+      await persist(run);
+      return run;
+    }
+    if (run.status === "running") recoverRun(run, branch);
+    await persist(run);
+    return undefined;
+  } catch (error) {
+    const runId = basename(dirname(file));
+    report(
+      `Could not recover persisted run "${runId}"; it was left inactive: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return undefined;
+  }
+}
+
 async function recoverInterruptedRuns() {
   if (!existsSync(runsDirectory)) return;
   const pausedRuns: Run[] = [];
@@ -1346,21 +1378,8 @@ async function recoverInterruptedRuns() {
     if (!entry.isDirectory()) continue;
     const file = join(runsDirectory, entry.name, "run.json");
     if (!existsSync(file)) continue;
-    const run = normalizeProviderRuntimePersistenceV1(
-      JSON.parse(await readFile(file, "utf8")) as Run,
-    );
-    const branch = await currentBranchIdentity(run.project.path);
-    assertStoredRunAuthorizations(run, branch);
-    const hasLiveOwner = await reconcilePersistedRunOwner(run);
-    reconcileRunState(run, hasLiveOwner);
-    if (hasLiveOwner) continue;
-    if (run.status === "paused" && !run.tasks.some(taskOwnsExecution)) {
-      pausedRuns.push(run);
-      await persist(run);
-      continue;
-    }
-    if (run.status === "running") recoverRun(run, branch);
-    await persist(run);
+    const pausedRun = await recoverPersistedRunForStartup(file);
+    if (pausedRun) pausedRuns.push(pausedRun);
   }
   for (const run of pausedRuns.sort((left, right) =>
     (right.startedAt || "").localeCompare(left.startedAt || ""),
@@ -1385,7 +1404,8 @@ export async function loadRun(id: string) {
     JSON.parse(await readFile(file, "utf8")) as Run,
   );
   const branch = await currentBranchIdentity(run.project.path);
-  assertStoredRunAuthorizations(run, branch);
+  if (runRequiresReplayAuthorization(run))
+    assertStoredRunAuthorizations(run, branch);
   const before = JSON.stringify(run);
   const hasLiveOwner = await reconcilePersistedRunOwner(run);
   reconcileRunState(run, hasLiveOwner);
@@ -1949,6 +1969,14 @@ function assertStoredRunAuthorizations(run: Run, branch?: string) {
         `Stored authorization for task "${task.title}" is stale or mismatched; a fresh contract is required.`,
       );
   }
+}
+
+export function runRequiresReplayAuthorization(
+  run: Pick<Run, "status">,
+) {
+  return run.status === "idle" ||
+    run.status === "running" ||
+    run.status === "paused";
 }
 
 async function taskAuthorizationIdentityViolations(run: Run, task: Task) {
