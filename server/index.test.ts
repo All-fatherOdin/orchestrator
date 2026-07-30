@@ -104,6 +104,7 @@ const {
   isManagedCheckpoint,
   recoverPersistedRunForStartup,
   repositoryIdentityForGitRoot,
+  gitSnapshotObservationsMatch,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
@@ -595,7 +596,7 @@ test("planning contracts, authorizations, and architect receipts publish immutab
           evidenceRefs: ["drift:one"],
         },
       ],
-      proposedAt: "2026-07-30T09:05:00.000Z",
+      proposedAt: new Date().toISOString(),
       proposedBy: "architect:primary",
       authorizationState: "pending",
     };
@@ -872,7 +873,7 @@ test("planning publication rejects semantic mismatches atomically", async () => 
                 evidenceRefs: ["test:missing-reference"],
               },
             ],
-            proposedAt: "2026-07-30T09:05:00.000Z",
+            proposedAt: new Date().toISOString(),
             proposedBy: "architect:primary",
             authorizationState: "pending",
           },
@@ -891,6 +892,220 @@ test("planning publication rejects semantic mismatches atomically", async () => 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("planning revisions reject premature replans and recover after an explicit rejection", async () => {
+  const prematureRoot = await mkdtemp(
+    join(tmpdir(), "orchestrator-premature-replan-"),
+  );
+  const rejectedRoot = await mkdtemp(
+    join(tmpdir(), "orchestrator-rejected-replan-"),
+  );
+  try {
+    const prematureStore = new ChangeControlStore(prematureRoot, {
+      resolveRepositorySnapshot: async () =>
+        planningSnapshot({ sha: planningShaTwo }),
+    });
+    await authorizePlanningWave(prematureStore);
+    const prematureReplacement = planningContract({
+      planId: "plan-premature-replacement",
+      revision: 2,
+      predecessor: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+    });
+    await assert.rejects(
+      prematureStore.publishPlanningContract(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { contract: prematureReplacement },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CONFLICT" &&
+        /stale or rejected/.test(error.message),
+    );
+    assert.equal(
+      (
+        await prematureStore.getPlanningProjection(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+        )
+      ).plans.length,
+      1,
+    );
+    await assert.rejects(
+      prematureStore.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:drift-observer" },
+      ),
+    );
+    await prematureStore.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: prematureReplacement },
+    );
+    const rejectedReplacement =
+      await prematureStore.publishPlanAuthorization(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        {
+          authorization: planAuthorization({
+            authorizationId: "authorization-rejected-replacement",
+            plan: {
+              planId: prematureReplacement.planId,
+              revision: prematureReplacement.revision,
+              planBaseSha: prematureReplacement.planBase.sha,
+            },
+            decision: "rejected",
+          }),
+        },
+      );
+    assert.equal(rejectedReplacement.plans.at(-1)?.status, "rejected");
+    assert.equal(rejectedReplacement.replanReceipts.length, 0);
+
+    const rejectedStore = new ChangeControlStore(rejectedRoot);
+    await createPlanningWave(rejectedStore);
+    await rejectedStore.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    await rejectedStore.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        authorization: planAuthorization({ decision: "rejected" }),
+      },
+    );
+    const corrected = planningContract({
+      planId: "plan-after-rejection",
+      revision: 2,
+      predecessor: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      createdAt: "2026-07-30T09:03:00.000Z",
+    });
+    await rejectedStore.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: corrected },
+    );
+    const recovered = await rejectedStore.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        authorization: planAuthorization({
+          authorizationId: "authorization-after-rejection",
+          plan: {
+            planId: corrected.planId,
+            revision: corrected.revision,
+            planBaseSha: corrected.planBase.sha,
+          },
+          decidedAt: "2026-07-30T09:04:00.000Z",
+        }),
+      },
+    );
+    assert.deepEqual(
+      recovered.plans.map((plan) => [plan.contract.revision, plan.status]),
+      [
+        [1, "rejected"],
+        [2, "authorized"],
+      ],
+    );
+    assert.equal(recovered.replanReceipts.length, 0);
+  } finally {
+    await rm(prematureRoot, { recursive: true, force: true });
+    await rm(rejectedRoot, { recursive: true, force: true });
+  }
+});
+
+test("planning publication rejects impossible and causally inconsistent timestamps", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-planning-time-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-30T09:05:00.000Z",
+    });
+    await createPlanningWave(store);
+    for (const contract of [
+      planningContract({ createdAt: "2026-02-31T09:01:00.000Z" }),
+      planningContract({ createdAt: "2026-07-30T09:06:00.000Z" }),
+    ]) {
+      await assert.rejects(
+        store.publishPlanningContract(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+          { contract },
+        ),
+        (error: unknown) =>
+          error instanceof ChangeControlError &&
+          error.code === "INVALID_INPUT",
+      );
+    }
+
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    await assert.rejects(
+      store.publishPlanAuthorization(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        {
+          authorization: planAuthorization({
+            decidedAt: "2026-07-30T08:59:00.000Z",
+          }),
+        },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("trusted Git snapshot observations fail closed when repository state changes", () => {
+  const stable = {
+    topLevel: { code: 0, output: "D:/pet-projects/example" },
+    head: { code: 0, output: planningShaOne },
+    ref: { code: 0, output: "refs/heads/main" },
+    status: { code: 0, output: "" },
+  };
+  assert.equal(gitSnapshotObservationsMatch(stable, structuredClone(stable)), true);
+  assert.equal(
+    gitSnapshotObservationsMatch(stable, {
+      ...structuredClone(stable),
+      head: { code: 0, output: planningShaTwo },
+    }),
+    false,
+  );
+  assert.equal(
+    gitSnapshotObservationsMatch(stable, {
+      ...structuredClone(stable),
+      status: { code: 0, output: " M server/index.ts" },
+    }),
+    false,
+  );
 });
 
 test("planning replay rejects semantically corrupted exact authorization identity", async () => {
@@ -1019,7 +1234,7 @@ test("planning replay rejects architect receipts without stale prior-plan assess
               evidenceRefs: ["test:stale-assessment"],
             },
           ],
-          proposedAt: "2026-07-30T09:05:00.000Z",
+          proposedAt: new Date().toISOString(),
           proposedBy: "architect:primary",
           authorizationState: "pending",
         },
@@ -1110,7 +1325,6 @@ test("Phase 2 dispatch persists fresh drift and an allowed immutable gate receip
 test("Phase 2 dispatch persists every stable rejection reason and sendAnyway never bypasses planning state", async () => {
   type Scenario = {
     reason:
-      | "PLAN_CONTRACT_INVALID"
       | "PLAN_NOT_AUTHORIZED"
       | "CURRENT_BASE_UNREADABLE"
       | "CURRENT_WORKTREE_DIRTY"
@@ -1153,16 +1367,6 @@ test("Phase 2 dispatch persists every stable rejection reason and sendAnyway nev
     ),
   });
   const scenarios: Scenario[] = [
-    {
-      reason: "PLAN_CONTRACT_INVALID",
-      contract: planningContract({
-        planBase: {
-          ...planningContract().planBase,
-          capturedAt: "2026-07-30T09:02:00.000Z",
-        },
-        createdAt: "2026-07-30T09:01:00.000Z",
-      }),
-    },
     { reason: "PLAN_NOT_AUTHORIZED", authorize: false },
     {
       reason: "CURRENT_BASE_UNREADABLE",
@@ -1449,6 +1653,17 @@ test("Phase 2 gate records PLAN_REQUIRED, REPLAN_RECEIPT_REQUIRED, and WAVE_NOT_
         planningSnapshot({ sha: planningShaTwo }),
     });
     await authorizePlanningWave(replanStore);
+    await assert.rejects(
+      replanStore.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:drift-observer" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        assert.deepEqual(error.reasons, ["PLAN_BASE_MISMATCH"]) === undefined,
+    );
     const replacement = planningContract({
       planId: "plan-two",
       revision: 2,
@@ -1468,6 +1683,20 @@ test("Phase 2 gate records PLAN_REQUIRED, REPLAN_RECEIPT_REQUIRED, and WAVE_NOT_
       "planning-change",
       "planning-wave",
       { contract: replacement },
+    );
+    await assert.rejects(
+      replanStore.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:dispatcher" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        assert.deepEqual(error.reasons, [
+          "PLAN_NOT_AUTHORIZED",
+          "REPLAN_RECEIPT_REQUIRED",
+        ]) === undefined,
     );
     await assert.rejects(
       replanStore.publishArchitectReplanReceipt(
@@ -1501,7 +1730,7 @@ test("Phase 2 gate records PLAN_REQUIRED, REPLAN_RECEIPT_REQUIRED, and WAVE_NOT_
                 evidenceRefs: ["test:missing-drift"],
               },
             ],
-            proposedAt: "2026-07-30T09:05:00.000Z",
+            proposedAt: new Date().toISOString(),
             proposedBy: "architect:primary",
             authorizationState: "pending",
           },
@@ -1895,7 +2124,7 @@ test("planning HTTP APIs publish exact identities and reject unproven replan lin
           body: JSON.stringify({ contract: replacement }),
         })
       ).status,
-      201,
+      409,
     );
     const receiptResponse = await fetch(
       `${planningBase}/architect-replan-receipts`,
@@ -1929,7 +2158,7 @@ test("planning HTTP APIs publish exact identities and reject unproven replan lin
                 evidenceRefs: ["api:drift-one"],
               },
             ],
-            proposedAt: "2026-07-30T09:04:00.000Z",
+            proposedAt: new Date().toISOString(),
             proposedBy: "architect:api",
             authorizationState: "pending",
           },
@@ -1951,10 +2180,7 @@ test("planning HTTP APIs publish exact identities and reject unproven replan lin
     };
     assert.deepEqual(
       projection.plans.map((plan) => [plan.contract.revision, plan.status]),
-      [
-        [1, "authorized"],
-        [2, "proposed"],
-      ],
+      [[1, "authorized"]],
     );
     assert.equal(projection.authorizations.length, 1);
     assert.equal(projection.replanReceipts.length, 0);

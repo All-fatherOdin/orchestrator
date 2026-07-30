@@ -1022,6 +1022,40 @@ function planningSemanticFailure(stored: boolean, message: string): never {
   invalid(message);
 }
 
+const canonicalTimestampPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$/;
+
+function canonicalTimestampMillis(value: string) {
+  const match = canonicalTimestampPattern.exec(value);
+  const milliseconds = Date.parse(value);
+  if (!match || !Number.isFinite(milliseconds)) return undefined;
+  const parsed = new Date(milliseconds);
+  if (
+    parsed.getUTCFullYear() !== Number(match[1]) ||
+    parsed.getUTCMonth() + 1 !== Number(match[2]) ||
+    parsed.getUTCDate() !== Number(match[3]) ||
+    parsed.getUTCHours() !== Number(match[4]) ||
+    parsed.getUTCMinutes() !== Number(match[5]) ||
+    parsed.getUTCSeconds() !== Number(match[6])
+  )
+    return undefined;
+  return milliseconds;
+}
+
+function planningTimestamp(
+  value: string,
+  label: string,
+  stored: boolean,
+) {
+  const milliseconds = canonicalTimestampMillis(value);
+  if (milliseconds === undefined)
+    planningSemanticFailure(
+      stored,
+      `${label} must be a valid canonical UTC timestamp.`,
+    );
+  return milliseconds;
+}
+
 function assertPlanningContractSemantics(
   contract: PlanningContractV1,
   projectId: string,
@@ -1029,6 +1063,7 @@ function assertPlanningContractSemantics(
   waveId: string,
   tasks: ReadonlyMap<string, TaskProjection>,
   stored: boolean,
+  publishedAt: string,
 ) {
   if (
     contract.projectId !== projectId ||
@@ -1049,6 +1084,26 @@ function assertPlanningContractSemantics(
     planningSemanticFailure(
       stored,
       "PlanningContractV1 planBase.sha does not match hashAlgorithm.",
+    );
+  const capturedAt = planningTimestamp(
+    contract.planBase.capturedAt,
+    "PlanningContractV1 planBase.capturedAt",
+    stored,
+  );
+  const createdAt = planningTimestamp(
+    contract.createdAt,
+    "PlanningContractV1 createdAt",
+    stored,
+  );
+  const publicationTime = planningTimestamp(
+    publishedAt,
+    "PlanningContractV1 publication time",
+    stored,
+  );
+  if (capturedAt > createdAt || createdAt > publicationTime)
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 timestamps must satisfy capturedAt <= createdAt <= publication time.",
     );
   if (
     (contract.revision === 1 && contract.predecessor != null) ||
@@ -1122,6 +1177,34 @@ function assertAuthorizationScope(
     );
 }
 
+function assertAuthorizationTimestamps(
+  authorization: PlanAuthorizationV1,
+  plan: PlanningPlanProjection,
+  occurredAt: string,
+  stored: boolean,
+) {
+  const decidedAt = planningTimestamp(
+    authorization.decidedAt,
+    "PlanAuthorizationV1 decidedAt",
+    stored,
+  );
+  const planCreatedAt = planningTimestamp(
+    plan.contract.createdAt,
+    "PlanningContractV1 createdAt",
+    stored,
+  );
+  const publicationTime = planningTimestamp(
+    occurredAt,
+    "PlanAuthorizationV1 publication time",
+    stored,
+  );
+  if (decidedAt < planCreatedAt || decidedAt > publicationTime)
+    planningSemanticFailure(
+      stored,
+      "PlanAuthorizationV1 timestamps must satisfy plan createdAt <= decidedAt <= publication time.",
+    );
+}
+
 function assertReceiptScope(
   receipt: ArchitectReplanReceiptV1,
   projectId: string,
@@ -1147,6 +1230,44 @@ function assertReceiptScope(
     planningSemanticFailure(
       stored,
       "ArchitectReplanReceiptV1 replacement revision must be greater than its prior revision.",
+    );
+}
+
+function assertReceiptTimestamps(
+  receipt: ArchitectReplanReceiptV1,
+  priorAssessment: DriftAssessmentV1,
+  replacement: PlanningPlanProjection,
+  occurredAt: string,
+  stored: boolean,
+) {
+  const proposedAt = planningTimestamp(
+    receipt.proposedAt,
+    "ArchitectReplanReceiptV1 proposedAt",
+    stored,
+  );
+  const assessmentTime = planningTimestamp(
+    priorAssessment.assessedAt,
+    "DriftAssessmentV1 assessedAt",
+    stored,
+  );
+  const replacementCreatedAt = planningTimestamp(
+    replacement.contract.createdAt,
+    "Replacement PlanningContractV1 createdAt",
+    stored,
+  );
+  const publicationTime = planningTimestamp(
+    occurredAt,
+    "ArchitectReplanReceiptV1 publication time",
+    stored,
+  );
+  if (
+    proposedAt < assessmentTime ||
+    proposedAt < replacementCreatedAt ||
+    proposedAt > publicationTime
+  )
+    planningSemanticFailure(
+      stored,
+      "ArchitectReplanReceiptV1 proposedAt must follow its assessment and replacement plan and not exceed publication time.",
     );
 }
 
@@ -1178,10 +1299,14 @@ function executableBlockingOracles(contract: PlanningContractV1) {
 }
 
 function dispatchContractValid(contract: PlanningContractV1) {
+  const capturedAt = canonicalTimestampMillis(contract.planBase.capturedAt);
+  const createdAt = canonicalTimestampMillis(contract.createdAt);
   return (
     validatePlanningDriftContract(contract) &&
     contract.contractType === "PlanningContractV1" &&
-    Date.parse(contract.planBase.capturedAt) <= Date.parse(contract.createdAt)
+    capturedAt !== undefined &&
+    createdAt !== undefined &&
+    capturedAt <= createdAt
   );
 }
 
@@ -1358,27 +1483,32 @@ function validReplacementReceipt(
   projected: Pick<ProjectedLedger, "replanReceipts" | "driftAssessments" | "plans">,
 ) {
   if (plan.contract.revision === 1) return true;
-  const matches = [...projected.replanReceipts.values()].filter((receipt) =>
-    samePlanReference(receipt.replacementPlan, plan.contract),
-  );
-  if (matches.length !== 1) return false;
-  const receipt = matches[0];
+  if (!plan.contract.predecessor) return false;
   const prior = projected.plans.get(
     planKey(
       plan.contract.changeId,
       plan.contract.waveId,
-      receipt.priorPlan.planId,
-      receipt.priorPlan.revision,
+      plan.contract.predecessor.planId,
+      plan.contract.predecessor.revision,
     ),
   );
+  if (
+    !prior ||
+    !samePlanReference(plan.contract.predecessor, prior.contract)
+  )
+    return false;
+  const matches = [...projected.replanReceipts.values()].filter((receipt) =>
+    samePlanReference(receipt.replacementPlan, plan.contract),
+  );
+  if (prior.status === "rejected") return matches.length === 0;
+  if (matches.length !== 1) return false;
+  const receipt = matches[0];
   return Boolean(
-    prior &&
-      replanReceiptAssessmentIssue(
-        receipt,
-        prior,
-        projected.driftAssessments,
-      ) === undefined &&
-      plan.contract.predecessor &&
+    replanReceiptAssessmentIssue(
+      receipt,
+      prior,
+      projected.driftAssessments,
+    ) === undefined &&
       samePlanReference(receipt.priorPlan, prior.contract) &&
       samePlanReference(plan.contract.predecessor, prior.contract),
   );
@@ -1631,6 +1761,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           waveId,
           tasks,
           true,
+          event.occurredAt,
         );
         if (event.actor !== contract.createdBy)
           corrupt(`Plan proposal event ${event.id} has a mismatched creator.`);
@@ -1663,6 +1794,10 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           )
             corrupt(
               `Plan revision ${contract.revision} does not identify its exact predecessor.`,
+            );
+          if (!["stale", "rejected"].includes(latest.status))
+            corrupt(
+              `Plan revision ${contract.revision} follows a predecessor that is not stale or rejected.`,
             );
         }
         plans.set(key, {
@@ -1715,6 +1850,12 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(
             `Plan authorization ${authorization.authorizationId} has a missing or mismatched plan reference.`,
           );
+        assertAuthorizationTimestamps(
+          authorization,
+          plan,
+          event.occurredAt,
+          true,
+        );
         if (plan.status !== "proposed")
           corrupt(
             `Plan ${authorization.plan.planId} revision ${authorization.plan.revision} has a duplicate terminal decision.`,
@@ -1735,10 +1876,26 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(
             `Architect proposal ${authorization.plan.planId} revision ${authorization.plan.revision} is self-authorized.`,
           );
-        if (plan.contract.revision > 1 && matchingReceipts.length !== 1)
-          corrupt(
-            `Replacement plan ${authorization.plan.planId} revision ${authorization.plan.revision} requires exactly one architect replan receipt.`,
-          );
+        if (
+          plan.contract.revision > 1 &&
+          authorization.decision === "authorized"
+        ) {
+          const predecessor = plan.contract.predecessor
+            ? plans.get(
+                planKey(
+                  event.changeId,
+                  waveId,
+                  plan.contract.predecessor.planId,
+                  plan.contract.predecessor.revision,
+                ),
+              )
+            : undefined;
+          const expectedReceipts = predecessor?.status === "rejected" ? 0 : 1;
+          if (matchingReceipts.length !== expectedReceipts)
+            corrupt(
+              `Replacement plan ${authorization.plan.planId} revision ${authorization.plan.revision} requires ${expectedReceipts === 0 ? "no" : "exactly one architect"} replan receipt for its predecessor state.`,
+            );
+        }
         authorizations.set(authorization.authorizationId, authorization);
         plans.set(key, {
           ...plan,
@@ -1760,6 +1917,21 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         if (event.actor !== assessment.assessedBy)
           corrupt(
             `Drift assessment event ${event.id} has a mismatched assessor.`,
+          );
+        if (
+          planningTimestamp(
+            assessment.assessedAt,
+            "DriftAssessmentV1 assessedAt",
+            true,
+          ) !== planningTimestamp(event.occurredAt, "event occurredAt", true) ||
+          planningTimestamp(
+            assessment.observedBase.capturedAt,
+            "DriftAssessmentV1 observedBase.capturedAt",
+            true,
+          ) !== planningTimestamp(event.occurredAt, "event occurredAt", true)
+        )
+          corrupt(
+            `Drift assessment ${assessment.assessmentId} timestamps do not match its observation event.`,
           );
         if (driftAssessments.has(assessment.assessmentId))
           corrupt(`Duplicate drift assessment ID: ${assessment.assessmentId}.`);
@@ -1836,6 +2008,16 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         if (event.actor !== receipt.evaluatedBy)
           corrupt(
             `Dispatch gate receipt event ${event.id} has a mismatched evaluator.`,
+          );
+        if (
+          planningTimestamp(
+            receipt.evaluatedAt,
+            "DispatchGateReceiptV1 evaluatedAt",
+            true,
+          ) !== planningTimestamp(event.occurredAt, "event occurredAt", true)
+        )
+          corrupt(
+            `Dispatch gate receipt ${receipt.receiptId} timestamp does not match its event.`,
           );
         if (dispatchGateReceipts.has(receipt.receiptId))
           corrupt(`Duplicate dispatch gate receipt ID: ${receipt.receiptId}.`);
@@ -1966,6 +2148,13 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(
             `Architect receipt ${receipt.receiptId} does not reference a stale assessment for its prior plan.`,
           );
+        assertReceiptTimestamps(
+          receipt,
+          driftAssessments.get(receipt.driftAssessmentId)!,
+          replacement,
+          event.occurredAt,
+          true,
+        );
         if (
           [...replanReceipts.values()].some((candidate) =>
             samePlanReference(
@@ -2823,6 +3012,7 @@ export class ChangeControlStore {
           "NOT_FOUND",
           404,
         );
+      const occurredAt = this.now();
       assertPlanningContractSemantics(
         contract,
         projectId,
@@ -2830,6 +3020,7 @@ export class ChangeControlStore {
         waveId,
         projected.tasks,
         false,
+        occurredAt,
       );
       const key = planKey(changeId, waveId, contract.planId, contract.revision);
       const revisionKey = planRevisionKey(changeId, waveId, contract.revision);
@@ -2854,19 +3045,26 @@ export class ChangeControlStore {
         contract.revision <= latest.contract.revision ||
         !contract.predecessor ||
         !samePlanReference(contract.predecessor, latest.contract)
-      )
+      ) {
         throw new ChangeControlError(
           `Plan revision ${contract.revision} must increase and identify the exact latest predecessor.`,
           "CONFLICT",
           409,
         );
+      } else if (!["stale", "rejected"].includes(latest.status)) {
+        throw new ChangeControlError(
+          `Plan revision ${contract.revision} requires its exact predecessor to be stale or rejected.`,
+          "CONFLICT",
+          409,
+        );
+      }
 
       const waveEvents = projected.eventsByWave.get(scopedWaveKey)!;
       const id = requireIdentifier(this.createId(), "id");
       this.append(ledger, {
         id,
         type: "plan.proposed",
-        occurredAt: this.now(),
+        occurredAt,
         projectId,
         changeId,
         waveId,
@@ -2985,6 +3183,14 @@ export class ChangeControlStore {
           "CONFLICT",
           409,
         );
+      const occurredAt = this.now();
+      assertReceiptTimestamps(
+        receipt,
+        projected.driftAssessments.get(receipt.driftAssessmentId)!,
+        replacement,
+        occurredAt,
+        false,
+      );
       if (
         [...projected.replanReceipts.values()].some((candidate) =>
           samePlanReference(candidate.replacementPlan, replacement.contract),
@@ -3001,7 +3207,7 @@ export class ChangeControlStore {
       this.append(ledger, {
         id,
         type: "architect.replan-recorded",
-        occurredAt: this.now(),
+        occurredAt,
         projectId,
         changeId,
         waveId,
@@ -3080,6 +3286,13 @@ export class ChangeControlStore {
           "NOT_FOUND",
           404,
         );
+      const occurredAt = this.now();
+      assertAuthorizationTimestamps(
+        authorization,
+        plan,
+        occurredAt,
+        false,
+      );
       if (plan.status !== "proposed")
         throw new ChangeControlError(
           `Plan ${authorization.plan.planId} revision ${authorization.plan.revision} already has a terminal decision.`,
@@ -3105,12 +3318,28 @@ export class ChangeControlStore {
           "CONFLICT",
           409,
         );
-      if (plan.contract.revision > 1 && matchingReceipts.length !== 1)
-        throw new ChangeControlError(
-          `Replacement plan ${authorization.plan.planId} revision ${authorization.plan.revision} requires exactly one architect replan receipt.`,
-          "CONFLICT",
-          409,
-        );
+      if (
+        plan.contract.revision > 1 &&
+        authorization.decision === "authorized"
+      ) {
+        const predecessor = plan.contract.predecessor
+          ? projected.plans.get(
+              planKey(
+                changeId,
+                waveId,
+                plan.contract.predecessor.planId,
+                plan.contract.predecessor.revision,
+              ),
+            )
+          : undefined;
+        const expectedReceipts = predecessor?.status === "rejected" ? 0 : 1;
+        if (matchingReceipts.length !== expectedReceipts)
+          throw new ChangeControlError(
+            `Replacement plan ${authorization.plan.planId} revision ${authorization.plan.revision} requires ${expectedReceipts === 0 ? "no" : "exactly one architect"} replan receipt for its predecessor state.`,
+            "CONFLICT",
+            409,
+          );
+      }
 
       const waveEvents = projected.eventsByWave.get(scopedWaveKey)!;
       const id = requireIdentifier(this.createId(), "id");
@@ -3120,7 +3349,7 @@ export class ChangeControlStore {
           authorization.decision === "authorized"
             ? "plan.authorized"
             : "plan.rejected",
-        occurredAt: this.now(),
+        occurredAt,
         projectId,
         changeId,
         waveId,

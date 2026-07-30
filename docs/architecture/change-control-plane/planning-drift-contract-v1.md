@@ -1,6 +1,6 @@
 # Planning and Drift Contract v1
 
-Status: accepted contract, implementation queue ready
+Status: accepted and implemented
 
 This contract defines the accepted Phase 2 boundary for its implementation
 queue. Its canonical machine-readable form is
@@ -67,6 +67,14 @@ proposed -> authorized -> dispatched
 
 Authorization and dispatch are separate events. A later revision never inherits
 authorization from an earlier revision.
+
+A later revision may be proposed only after its exact latest predecessor is
+`stale` or `rejected`. A stale predecessor requires exactly one architect
+receipt tied to its drift assessment. A rejected predecessor may be corrected
+by a new revision without manufacturing drift evidence or an architect
+receipt; the corrected revision still requires independent authorization.
+Any proposed revision may itself be rejected without first manufacturing an
+architect receipt; the receipt is a prerequisite for authorization, not denial.
 
 ## Drift assessment and dispatch gate
 
@@ -166,6 +174,9 @@ The implementation validator must also enforce comparisons JSON Schema cannot:
 - `planBase.sha` length matches `hashAlgorithm`;
 - revision 1 has no predecessor, while later revisions have exactly one;
 - replacement revision is greater than the prior revision;
+- a later revision follows an exact latest predecessor that is stale or
+  rejected;
+- only stale-predecessor revisions require an architect replan receipt;
 - all plan, assessment, receipt, project, change, and wave references agree;
 - `fresh` means repository identity matches, the observed worktree is clean,
   and `observedBase.sha === plan.planBaseSha`;
@@ -173,6 +184,7 @@ The implementation validator must also enforce comparisons JSON Schema cannot:
 - task IDs are unique and exactly match the wave tasks;
 - acceptance claim IDs and declared write paths are unique within each task;
 - authorization targets the complete `(planId, revision, planBaseSha)` tuple.
+- embedded timestamps are valid UTC instants and respect publication causality.
 
 ## Acceptance evidence and implementation obligations
 
@@ -181,7 +193,7 @@ The implementation validator must also enforce comparisons JSON Schema cannot:
   authorization-free plan, a self-authorized replan receipt, and an allowed
   dispatch receipt without authorization/drift references.
 - Phase 1 projection and dispatch behavior remain unchanged.
-- The accepted implementation queue has two independently useful tasks:
+- The completed implementation queue has two independently useful tasks:
   contract publication/projection first, dispatch drift gate second.
 - Each queue task has concrete paths, verification commands, semantic negative
   tests, and fail-closed guards.

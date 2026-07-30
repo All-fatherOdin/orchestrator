@@ -1,7 +1,7 @@
 # Change Control Plane
 
-Status: evidence-backed target, foundation queue ready
-Last reviewed: 2026-07-29
+Status: evidence-backed target, Phase 2 implemented
+Last reviewed: 2026-07-30
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -18,7 +18,7 @@ were observed.
    be measured.
 5. [implementation-roadmap.md](implementation-roadmap.md) sequences the work.
 6. [planning-drift-contract-v1.md](planning-drift-contract-v1.md) defines the
-   proposed Phase 2 contract and fail-closed dispatch semantics.
+   implemented Phase 2 contract and fail-closed dispatch semantics.
 
 ## Current Boundary
 
@@ -35,9 +35,9 @@ It does not authorize agent execution, Git mutation, worktree management,
 merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
-The Phase 1 implementation evidence is now available. Phase 2 has an accepted
-contract. Its local implementation queue is
-`queues/planning-drift-v1.yaml`.
+Phase 1 and Phase 2 implementation evidence is now available. The completed
+local queues remain ignored execution history. Phase 3 Workspace and Merge is
+the next contract-first boundary; it has no implementation queue yet.
 
 ## Authority
 

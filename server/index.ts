@@ -3221,6 +3221,33 @@ export function repositoryIdentityForGitRoot(root: string) {
   return createHash("sha256").update(canonicalRoot).digest("hex");
 }
 
+type GitSnapshotObservation = Readonly<{
+  topLevel: Readonly<{ code: number; output: string }>;
+  head: Readonly<{ code: number; output: string }>;
+  ref: Readonly<{ code: number; output: string }>;
+  status: Readonly<{ code: number; output: string }>;
+}>;
+
+export function gitSnapshotObservationsMatch(
+  first: GitSnapshotObservation,
+  second: GitSnapshotObservation,
+) {
+  return (
+    first.topLevel.code === 0 &&
+    first.head.code === 0 &&
+    first.ref.code === 0 &&
+    first.status.code === 0 &&
+    second.topLevel.code === 0 &&
+    second.head.code === 0 &&
+    second.ref.code === 0 &&
+    second.status.code === 0 &&
+    first.topLevel.output === second.topLevel.output &&
+    first.head.output === second.head.output &&
+    first.ref.output === second.ref.output &&
+    first.status.output === second.status.output
+  );
+}
+
 async function resolvePersistedProjectSnapshot(
   projectId: string,
 ): Promise<TrustedRepositorySnapshotV1> {
@@ -3230,23 +3257,26 @@ async function resolvePersistedProjectSnapshot(
       `Project ${projectId} does not resolve to exactly one persisted Project Profile.`,
     );
   const profile = matches[0];
-  const [topLevel, head, ref, status] = await Promise.all([
-    runGit(profile.path, ["rev-parse", "--show-toplevel"]),
-    runGit(profile.path, ["rev-parse", "--verify", "HEAD^{commit}"]),
-    runGit(profile.path, ["rev-parse", "--symbolic-full-name", "HEAD"]),
-    runGit(profile.path, ["status", "--porcelain=v1", "-uall"]),
-  ]);
+  const observe = async (): Promise<GitSnapshotObservation> => {
+    const [topLevel, head, ref, status] = await Promise.all([
+      runGit(profile.path, ["rev-parse", "--show-toplevel"]),
+      runGit(profile.path, ["rev-parse", "--verify", "HEAD^{commit}"]),
+      runGit(profile.path, ["rev-parse", "--symbolic-full-name", "HEAD"]),
+      runGit(profile.path, ["status", "--porcelain=v1", "-uall"]),
+    ]);
+    return { topLevel, head, ref, status };
+  };
+  const first = await observe();
+  const second = await observe();
+  const { topLevel, head, ref, status } = second;
   if (
-    topLevel.code !== 0 ||
+    !gitSnapshotObservationsMatch(first, second) ||
     !topLevel.output ||
-    head.code !== 0 ||
     !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head.output) ||
-    ref.code !== 0 ||
-    !ref.output ||
-    status.code !== 0
+    !ref.output
   )
     throw new Error(
-      `The persisted Project Profile for ${projectId} does not resolve to a readable Git snapshot.`,
+      `The persisted Project Profile for ${projectId} does not resolve to a stable readable Git snapshot.`,
     );
   const changedPaths = status.output
     ? status.output

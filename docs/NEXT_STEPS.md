@@ -6,16 +6,16 @@ Last updated: 2026-07-30
 ## Current Priority
 
 The repo-centric secondary-memory foundation and the event-backed change/wave
-foundation are verified and merged into `main`. Codex prompts now travel over
-stdin instead of the Windows command line, and retry runs retain the
-authoritative task-owned path lineage for reviewer scope.
+foundation are verified and merged into `main`. Phase 2 Planning and Drift is
+implemented and verified, including immutable plan publication, authorization,
+deterministic replan lineage, trusted Git-state assessment, and fail-closed
+dispatch gating.
 
 ## Current Safe Step
 
-Run the accepted Phase 2 Planning and Drift implementation queue:
-`queues/planning-drift-v1.yaml`. It contains two sequential vertical tasks:
-event-backed planning publication/authorization first, then trusted
-repository-state drift assessment and fail-closed dispatch gating.
+Define and accept the Phase 3 Workspace and Merge contract before creating its
+implementation queue: Windows worktree/branch lifecycle, serialized merge,
+fresh-target revalidation, cleanup, and recovery semantics remain undecided.
 
 ## Source Boundaries
 
@@ -28,6 +28,7 @@ repository-state drift assessment and fail-closed dispatch gating.
   `docs/goals/change-control-foundation-execution-v1/state.yaml`.
 - Accepted Phase 2 contract:
   `docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
+- Phase 2 product evidence: current branch code and `server/index.test.ts`.
 
 ## Explicit Non-Goals
 
@@ -36,8 +37,10 @@ repository-state drift assessment and fail-closed dispatch gating.
 - Do not introduce a vector database, persistent search index, background
   capture, or autonomous memory promotion.
 - Do not claim that the full Nikolay-like system is implemented.
-- Do not begin worktree/merge, incident, auto-heal, prompt/eval lineage, or
-  operator UI behavior before the Planning and Drift contracts are accepted.
+- Do not implement worktree/merge behavior before its Phase 3 contract and
+  Windows recovery policy are accepted.
+- Incident, auto-heal, prompt/eval lineage, and operator UI remain later
+  independently authorized slices.
 
 ## Verification
 

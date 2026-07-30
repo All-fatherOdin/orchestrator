@@ -23,8 +23,10 @@ Phase 1 is complete:
 
 `docs/goals/change-control-foundation-execution-v1/state.yaml`
 
-The Phase 2 Planning and Drift contract is accepted. Its local two-task
-implementation queue is ready at `queues/planning-drift-v1.yaml`.
+Phase 2 Planning and Drift is implemented and verified. It provides canonical
+planning, authorization, replan, drift-assessment, and dispatch-gate events
+with deterministic replay. Phase 3 Workspace and Merge remains contract-first
+future work.
 
 Current boundary:
 
@@ -35,9 +37,8 @@ Current boundary:
 - `queues/` remains canonical for the local launch queue selected by the user.
 - this context pack and `docs/project_map/` are summaries/navigation only.
 
-The evidence ledger, target architecture, roadmap, and accepted Planning and
-Drift Contract v1 remain under `docs/architecture/change-control-plane/`. The
-completed local Phase 1 queue is retained in
-`queues/change-control-foundation-v1.yaml` as ignored execution input. The
-accepted Phase 2 queue is `queues/planning-drift-v1.yaml`; it remains ignored
-local execution input until explicitly launched.
+The evidence ledger, target architecture, roadmap, and implemented Planning
+and Drift Contract v1 remain under
+`docs/architecture/change-control-plane/`. Completed local Phase 1 and Phase 2
+queues remain ignored execution history under `queues/`; they are not the next
+operational step.

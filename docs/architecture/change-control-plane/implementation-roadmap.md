@@ -14,12 +14,12 @@ Define structured acceptance claims, evidence-backed blast radius, plan-base
 SHA, stale-plan detection, and architect replan receipts. Create this queue
 only after Phase 1 schemas and APIs are verified.
 
-Accepted contract:
+Implemented contract:
 `docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
 It fixes document schemas, task-level acceptance and blast-radius ownership,
 lifecycle, trusted repository-state resolution, dispatch rejection, and replan
-lineage. Runtime implementation is defined by the local two-task queue
-`queues/planning-drift-v1.yaml`.
+lineage. The completed local two-task queue is retained as ignored execution
+history at `queues/planning-drift-v1.yaml`.
 
 ## Phase 3: Workspace and Merge
 
@@ -43,5 +43,6 @@ incidents, commits, and versioned eval runs, then establish baseline cohorts.
 Build cross-project wave, bucket, incident, Warden, Doctor, and prompt-registry
 views from canonical APIs. UI never writes projection state directly.
 
-No sequential queue plan exists yet: only Phase 1 is fully defined and
-launch-ready. Later queue boundaries will be fixed from prior phase evidence.
+No sequential queue plan exists for the remaining phases. Phase 3 begins with
+contract and Windows lifecycle evidence; later queue boundaries will be fixed
+from prior phase evidence.
