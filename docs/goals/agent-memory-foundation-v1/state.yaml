@@ -1,0 +1,605 @@
+# GoalBuddy v2 state.yaml
+# Board truth lives here. goal.md is the editable charter; notes/ holds long receipts only.
+
+version: 2
+
+goal:
+  title: "Agent Memory Foundation and Control-Plane Blueprint v1"
+  slug: "agent-memory-foundation-v1"
+  kind: open_ended
+  tranche: "Integrate and prove the non-duplicative Kit foundation, then capture the evidence-backed target architecture and schema-valid launch queues."
+  status: done
+  oracle:
+    signal: "A clean-environment walkthrough proves the selected Kit capability inside Orchestrator, and project-owned evidence/architecture docs plus launch queues validate without unstated chat context."
+    cadence: "after each Worker package, at the integration phase gate, and at final audit"
+    final_proof: "Receipts must include the integration diff, repository-native test/check results, behavior-level demonstration, documentation paths, queue validator results, and a final evidence-to-outcome audit."
+  intake:
+    original_request: "Integrate AI-assisted_System_Design_and_Agent_Memory_Kit first, then fix the larger Nikolay-like system concept in the project and prepare an implementation plan and launch queue."
+    interpreted_outcome: "Orchestrator gains a verified memory/design foundation before the larger control-plane design and executable work queue are made durable."
+    input_shape: vague
+    audience: "Orchestrator owner and future implementation agents"
+    authority: requested
+    proof_type: artifact
+    completion_proof: "Working verified integration, source-backed project documentation, and schema-valid launch queues with explicit scopes and guards."
+    likely_misfire: "Copying the Kit or writing a speculative mega-plan without proving a useful integration or respecting current Orchestrator capabilities and queue constraints."
+    blind_spots_considered:
+      - "Overlap with existing context-contract, routing, prompt, persisted-state, telemetry, approval, GoalBuddy, and eval work."
+      - "Kit license, runtime, dependency, schema, storage, migration, and rollback constraints."
+      - "Canonical state ownership and the risk of introducing competing sources of truth."
+      - "Evidence provenance across Telegram text, screenshots, public research, implementation facts, and inference."
+      - "Unknown task boundaries prevent an ordinary Orchestrator queue from being safely created at intake."
+    existing_plan_facts:
+      - "The Kit integration must precede the final larger-system design."
+      - "User-created queues belong under queues/ and are ignored by Git."
+      - "Ordinary Orchestrator queues require at least two understood tasks with dependencies, allowedPaths, verificationCommands, and stop guards."
+      - "The current repository already contains prior goal artifacts for context, prompts, state, telemetry, approvals, and evals; discovery must avoid duplication."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: live
+    url: "http://goalbuddy.localhost:41737/agent-memory-foundation-v1/"
+    command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/agent-memory-foundation-v1"
+
+active_task: null
+
+tasks:
+  - id: T001
+    type: scout
+    assignee: Scout
+    status: done
+    reasoning_hint: high
+    objective: "Produce a read-only evidence map of both repositories that distinguishes existing Orchestrator capabilities from missing Kit capabilities and proposes the largest safe non-duplicative integration slices."
+    inputs:
+      - "D:/pet-projects/orchestrator/AGENTS.md"
+      - "D:/pet-projects/orchestrator/package.json"
+      - "D:/pet-projects/orchestrator/README.md"
+      - "D:/pet-projects/orchestrator/docs"
+      - "D:/pet-projects/orchestrator/server"
+      - "D:/pet-projects/orchestrator/src"
+      - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit"
+    constraints:
+      - "Read-only; do not edit either repository."
+      - "Inspect license, runtime, entrypoints, schemas, storage formats, tests, dependencies, and integration seams."
+      - "Map concrete overlap with existing Orchestrator context, prompt, persisted-state, GoalBuddy, telemetry, approval, and eval capabilities."
+      - "Preserve existing user changes and identify dirty-worktree risk."
+      - "Prefer file-path and command evidence over generic recommendations."
+      - "Do not design the full Nikolay-like system in this task."
+    expected_output:
+      - "Two-repository capability and dependency map with file evidence."
+      - "Overlap/gap matrix and canonical-state risks."
+      - "Verified build/test/check commands for both repositories."
+      - "Ranked vertical integration candidates with compatibility, migration, rollback, and licensing concerns."
+      - "Recommended integration contract and candidate exact Worker boundaries for Judge review."
+    receipt:
+      result: done
+      harness: codex
+      summary: "Orchestrator already vendors and runs the Kit Context Contract v1; the safest non-duplicative first slice is a self-hosted secondary Project Map, read-only helper, smoke cases, and a real provider integration test."
+      note: notes/T001-two-repository-evidence-map.md
+      evidence:
+        - README.md
+        - server/index.ts
+        - server/index.test.ts
+        - server/context-contract-v1/schemas
+        - docs/context-contract-ptc-v1.md
+        - docs/persisted-reasoning-working-state-v1.md
+        - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/README.md"
+        - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/EXISTING_PROJECT_ADOPTION_GUIDE.md"
+        - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/secondary_memory_governance/README.md"
+        - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_governance_helper.py"
+      facts:
+        - "All three Context Contract v1 schema files are byte-identical across the repositories."
+        - "Orchestrator check passed and 96 tests passed."
+        - "Kit governance tests passed: 13 tests."
+        - "Orchestrator lacks its own scripts/ai_context_helper.py and docs/project_map governance baseline."
+        - "The Kit has no checked-in LICENSE or SPDX grant."
+      contradictions: []
+      ambiguity_requiring_judge:
+        - "Whether to adapt the helper with provenance or copy the exact reference implementation under the user's local integration authority."
+        - "The exact minimum policy/document set needed for a coherent first vertical slice."
+      commands:
+        - "npm run check"
+        - "npm test"
+        - "python -m pytest \"Agent Kit/kit/tests\" -p no:cacheprovider --basetemp <temp>"
+      note_needed: true
+  - id: T002
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Validate the Scout evidence, define what counts as a real Kit integration, and select the largest safe first vertical Worker package."
+    inputs:
+      - "T001 receipt and note"
+      - "Goal oracle and non-negotiable constraints"
+    constraints:
+      - "Do not implement."
+      - "Reject wholesale copying, duplicate sources of truth, and documentation-only integration."
+      - "Specify exact allowed_files, verify commands, behavior-level proof, rollback expectations, and stop_if conditions."
+      - "If a license, destructive migration, or architecture choice requires owner authority, isolate that choice while preserving all safe local progress."
+    expected_output:
+      - "Decision and evidence gaps."
+      - "Definition of integrated for the selected capability."
+      - "Exact T003 objective, allowed_files, verify, demonstration, and stop_if."
+      - "Deferred integration slices and phase-gate criteria."
+    receipt:
+      result: done
+      harness: codex
+      decision: approved
+      full_outcome_complete: false
+      rationale: "The approved slice makes Orchestrator consume a bounded secondary-memory profile from its own repository through the already-shipped RepositoryContextHelperProvider. It is additive, reversible, and proves behavior without changing Context Contract schemas, production run-state ownership, queue semantics, or authorization enforcement."
+      worker_package:
+        objective: "Install an Orchestrator-specific repo-centric secondary-memory governance profile and Kit-compatible read-only context helper, then prove RepositoryContextHelperProvider consumes the real repository startup profile without fallback while canonical run, goal, and queue state remain authoritative."
+        allowed_files:
+          - AGENTS.md
+          - docs/NEXT_STEPS.md
+          - docs/source_of_truth_hierarchy.md
+          - docs/context_governance_rules.md
+          - docs/context_packs/current_status.md
+          - docs/project_map/README.md
+          - docs/project_map/current_map.md
+          - docs/project_map/context_index.yaml
+          - docs/project_map/source_authority.yaml
+          - docs/project_map/permissions_policy.yaml
+          - docs/project_map/retrieval_policy.yaml
+          - docs/project_map/retrieval_scoring_policy.yaml
+          - docs/project_map/working_state.yaml
+          - docs/project_map/memory_lifecycle_policy.yaml
+          - docs/project_map/eval_suite/context_selection_smoke_cases.yaml
+          - scripts/ai_context_helper.py
+          - server/index.test.ts
+        verify:
+          - "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json"
+          - "python scripts/ai_context_helper.py --root . smoke-check --format json"
+          - "npm run check"
+          - "npm test"
+          - "git diff --check"
+        stop_if:
+          - "A required change falls outside allowed_files."
+          - "Implementation requires changing Context Contract v1 schemas or production server behavior."
+          - "Project Map working state would become canonical execution, queue, goal, completion, approval, or durable run state."
+          - "The helper would write project files, create a persistent index/service, read high-risk paths by default, or expand external/data/runtime scope."
+          - "Exact upstream copying beyond the minimal helper and adapted governance contracts becomes necessary without a provenance note."
+          - "Publication or redistribution is required and cannot proceed without an explicit license decision."
+          - "The same verification failure remains unexplained after two focused attempts."
+      evidence:
+        - notes/T001-two-repository-evidence-map.md
+        - server/index.ts
+        - server/index.test.ts
+        - server/context-contract-v1/schemas
+        - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/secondary_memory_governance"
+        - "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_governance_helper.py"
+      subgoal_contract: null
+      parallel_safety: "One write Worker only; all allowed files form one integration behavior and should not be split."
+      blocked_tasks: []
+      missing_evidence:
+        - "No explicit LICENSE or SPDX grant exists in the local Kit tree; retain provenance and do not make a redistribution claim."
+      required_board_updates:
+        - "Copy worker_package fields to T003."
+        - "Activate T003."
+  - id: T003
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: high
+    objective: "Install an Orchestrator-specific repo-centric secondary-memory governance profile and Kit-compatible read-only context helper, then prove RepositoryContextHelperProvider consumes the real repository startup profile without fallback while canonical run, goal, and queue state remain authoritative."
+    allowed_files:
+      - "AGENTS.md"
+      - "docs/NEXT_STEPS.md"
+      - "docs/source_of_truth_hierarchy.md"
+      - "docs/context_governance_rules.md"
+      - "docs/context_packs/current_status.md"
+      - "docs/project_map/README.md"
+      - "docs/project_map/current_map.md"
+      - "docs/project_map/context_index.yaml"
+      - "docs/project_map/source_authority.yaml"
+      - "docs/project_map/permissions_policy.yaml"
+      - "docs/project_map/retrieval_policy.yaml"
+      - "docs/project_map/retrieval_scoring_policy.yaml"
+      - "docs/project_map/working_state.yaml"
+      - "docs/project_map/memory_lifecycle_policy.yaml"
+      - "docs/project_map/eval_suite/context_selection_smoke_cases.yaml"
+      - "scripts/ai_context_helper.py"
+      - "server/index.test.ts"
+    verify:
+      - "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json"
+      - "python scripts/ai_context_helper.py --root . smoke-check --format json"
+      - "npm run check"
+      - "npm test"
+      - "git diff --check"
+    stop_if:
+      - "A required change falls outside allowed_files."
+      - "Implementation requires changing Context Contract v1 schemas or production server behavior."
+      - "Project Map working state would become canonical execution, queue, goal, completion, approval, or durable run state."
+      - "The helper would write project files, create a persistent index/service, read high-risk paths by default, or expand external/data/runtime scope."
+      - "Exact upstream copying beyond the minimal helper and adapted governance contracts becomes necessary without a provenance note."
+      - "Publication or redistribution is required and cannot proceed without an explicit license decision."
+      - "The same verification failure remains unexplained after two focused attempts."
+    receipt:
+      result: done
+      harness: codex
+      changed_files:
+        - AGENTS.md
+        - docs/NEXT_STEPS.md
+        - docs/source_of_truth_hierarchy.md
+        - docs/context_governance_rules.md
+        - docs/context_packs/current_status.md
+        - docs/project_map/README.md
+        - docs/project_map/current_map.md
+        - docs/project_map/context_index.yaml
+        - docs/project_map/source_authority.yaml
+        - docs/project_map/permissions_policy.yaml
+        - docs/project_map/retrieval_policy.yaml
+        - docs/project_map/retrieval_scoring_policy.yaml
+        - docs/project_map/working_state.yaml
+        - docs/project_map/memory_lifecycle_policy.yaml
+        - docs/project_map/eval_suite/context_selection_smoke_cases.yaml
+        - scripts/ai_context_helper.py
+        - server/index.test.ts
+      commands:
+        - cmd: "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json"
+          status: pass
+        - cmd: "python scripts/ai_context_helper.py --root . smoke-check --format json"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm test"
+          status: pass
+          detail: "97 passed, 0 failed"
+        - cmd: "git diff --check"
+          status: pass
+      summary: "Installed an Orchestrator-specific secondary Project Map and a read-only Kit-compatible helper. Production RepositoryContextHelperProvider now consumes the real repository startup profile without fallback; smoke cases enforce bounded startup/review/project-map retrieval, while run, goal, queue, approval, and completion state remain outside Project Map authority."
+      deviations:
+        - "Implemented only the helper operations required by the current vertical slice: read-set, api-context, and smoke-check."
+        - "The first verification attempt exposed an existing production-surface naming guard and one expected-order mismatch; both were corrected within allowed_files before the passing full rerun."
+      remaining_blockers:
+        - "The local Kit has no explicit LICENSE/SPDX grant; provenance is recorded and no redistribution claim is made."
+      verification_attempts: 2
+      stopped_because: null
+  - id: T004
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Run the integration phase gate: audit T003 against the selected contract and the goal oracle, then either activate the next required integration package or authorize evidence/blueprint capture."
+    inputs:
+      - "T001-T003 receipts"
+      - "Current diff and dirty fingerprint"
+      - "Fresh repository-native verification"
+      - "Behavior-level demonstration"
+    constraints:
+      - "Do not implement."
+      - "Do not pass the gate for adapters, copied files, or tests that do not demonstrate integrated behavior."
+      - "If more safe integration work is required, define the next largest vertical Worker package before T005."
+    expected_output:
+      - "integration_gate: pass | fail"
+      - "Evidence mapped to the integration definition."
+      - "Next integration Worker package, or explicit authorization to activate T005."
+    receipt:
+      result: done
+      harness: codex
+      decision: approved
+      integration_gate: pass
+      full_outcome_complete: false
+      rationale: "The slice is behavioral, not documentation-only: the production RepositoryContextHelperProvider starts the real repository Python helper, receives a schema-valid startup bundle from five bounded sources, and does not fall back. Three smoke cases pass, high-risk paths remain excluded, the full 97-test suite and type check pass, all product writes are within the approved scope, and production server/schema/canonical-state ownership is unchanged."
+      worker_package: null
+      evidence:
+        - notes/T001-two-repository-evidence-map.md
+        - notes/T002-receipt.json
+        - notes/T003-receipt.json
+        - scripts/ai_context_helper.py
+        - docs/project_map/context_index.yaml
+        - docs/project_map/eval_suite/context_selection_smoke_cases.yaml
+        - server/index.test.ts
+        - "npm run check: pass"
+        - "npm test: 97 passed"
+        - "python scripts/ai_context_helper.py --root . smoke-check --format json: pass"
+      subgoal_contract: null
+      parallel_safety: "No additional integration Worker is required before evidence capture; T005 is read-only."
+      blocked_tasks: []
+      missing_evidence:
+        - "Kit redistribution rights remain unestablished; local provenance is recorded and the phase gate makes no publication claim."
+      required_board_updates:
+        - "Activate T005."
+  - id: T005
+    type: scout
+    assignee: Scout
+    status: done
+    reasoning_hint: high
+    objective: "After the integration gate passes, assemble the durable evidence map needed to document the Nikolay-like target system and generate safe implementation queues."
+    inputs:
+      - "T004 passing receipt"
+      - "C:/Users/Alexander Lozovoy/Downloads/Telegram Desktop/ChatExport_2026-07-29"
+      - "The integrated Orchestrator repository"
+      - "Prior public-source research questions from the user"
+    constraints:
+      - "Read-only."
+      - "Do not activate unless T004 records integration_gate: pass."
+      - "Inspect Nikolay's attached screenshots as primary evidence, not only message text."
+      - "Separate observed evidence, public-source evidence, current implementation facts, inference, decisions needed, and unknowns."
+      - "Re-check temporally unstable or precise public claims against primary sources."
+      - "Do not invent task boundaries that cannot yet receive allowedPaths, verificationCommands, dependencies, and stop guards."
+    expected_output:
+      - "Evidence ledger for messages, screenshots, public sources, and current implementation."
+      - "Capability map covering canonical state, transitions, planner criteria/blast radius, waves, isolation, merge/replanning, halt classes, incident/eval lineage, architect/human boundary, and quality metrics."
+      - "Confirmed, inferred, unknown, and decision-required classifications."
+      - "Candidate project documentation package and queue topology."
+    receipt:
+      result: done
+      harness: codex
+      summary: "Seven screenshots and the surrounding Telegram thread establish waves, bucket dispatch, dependency gates, halt attribution, Doctor/Warden controls, prompt version chains, and a safe-change workflow. Canonical storage, complete state machines, workspace isolation, merge/replan details, auto-heal allowlist, end-to-end lineage, and quality proof remain unknown."
+      note: notes/T005-nikolay-evidence-ledger.md
+      evidence:
+        - "messages9.html messages 9898-10030"
+        - "photos/photo_625@29-07-2026_13-08-58.jpg"
+        - "photos/photo_627@29-07-2026_13-17-49.jpg"
+        - "photos/photo_628@29-07-2026_13-24-29.jpg"
+        - "photos/photo_629@29-07-2026_13-25-21.jpg"
+        - "photos/photo_630@29-07-2026_14-09-29.jpg"
+        - "photos/photo_631@29-07-2026_14-14-43.jpg"
+        - "photos/photo_632@29-07-2026_14-26-26.jpg"
+        - "https://git-scm.com/docs/git-worktree"
+        - "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue"
+        - "https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/"
+        - "https://dora.dev/guides/dora-metrics/"
+        - README.md
+        - server/index.ts
+        - server/index.test.ts
+        - docs/project_map
+      facts:
+        - "A wave contains multiple typed subtasks and is distinct from the execution bucket."
+        - "Dependency readiness blocks normal dispatch but a human override is visible."
+        - "Halt attribution uses declared write_set and actual dirty/diff paths with exact/partial/none confidence."
+        - "Prompt versions carry role/layer/version/commit/parent/champion metadata, but the shown versions say eval not measured."
+        - "No evidence identifies the canonical storage engine or complete transition tables."
+        - "The first-pass/no-bugs claim lacks a baseline, denominator, observation window, and escaped-defect data."
+      contradictions:
+        - "Nikolay says dangerous Git resets are prohibited, while the UI command log shows controlled git restore/clean operations; this is compatible only if the policy distinguishes user/agent commands from trusted recovery actions."
+        - "The system is described as producing controlled quality, while the shown prompt version chain has no measured eval; controlled quality may rely on other tests/gates, but prompt-quality attribution is not yet demonstrated."
+      ambiguity_requiring_judge:
+        - "Choose the canonical change/event store and projection boundary."
+        - "Choose wave/task/attempt schemas and transition ownership."
+        - "Choose worktree/branch isolation and merge/replan strategy."
+        - "Choose halt taxonomy and auto-heal allowlist."
+        - "Choose immutable lineage identifiers and quality metrics."
+        - "Choose how many launch queues can be safely defined before implementation feedback."
+      commands:
+        - "Parsed messages9.html messages 9890-10040 and reply links."
+        - "Inspected seven full-resolution screenshots."
+        - "Reviewed primary Git, GitHub, OpenTelemetry, and DORA documentation."
+      note_needed: true
+  - id: T006
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Turn T005 evidence into an exact project-documentation package and a set of launch-ready Orchestrator queue files without overclaiming unknown behavior."
+    inputs:
+      - "T005 receipt and evidence note"
+      - "Current queue schemas and examples"
+      - "Goal oracle"
+    constraints:
+      - "Do not implement."
+      - "Keep facts, decisions, hypotheses, and open questions visibly separate."
+      - "Choose phased vertical capabilities rather than UI-only or infrastructure-only slices."
+      - "Specify exact allowed_files, verify commands, queue validator commands, dependencies, stop guards, and rollback expectations for T007."
+      - "Use a sequential queue plan only if several fully defined queue files genuinely must run one after another."
+    expected_output:
+      - "Exact T007 documentation paths and content contract."
+      - "Exact queue file set, task boundaries, and sequencing decision."
+      - "T007 allowed_files, verify, and stop_if."
+      - "Traceability from every queued capability to evidence or an explicit design decision."
+    receipt:
+      result: done
+      harness: codex
+      decision: approved
+      full_outcome_complete: false
+      rationale: "Approve one durable documentation package and one two-task launch queue. The queue implements only the first understood vertical milestone: an atomic event-backed change API followed by dependency-gated wave dispatch with audited override. Worktrees, merge/replan, halts, healing, lineage, eval metrics, and UI remain roadmap phases until the foundation produces implementation evidence."
+      worker_package:
+        objective: "Create the durable change-control-plane evidence and architecture package, update project navigation, and create one schema-valid local launch queue for the event-backed change/wave foundation."
+        allowed_files:
+          - docs/architecture/change-control-plane/README.md
+          - docs/architecture/change-control-plane/evidence-ledger.md
+          - docs/architecture/change-control-plane/target-architecture.md
+          - docs/architecture/change-control-plane/decisions.md
+          - docs/architecture/change-control-plane/metrics-and-evals.md
+          - docs/architecture/change-control-plane/implementation-roadmap.md
+          - docs/NEXT_STEPS.md
+          - docs/context_packs/current_status.md
+          - docs/project_map/current_map.md
+          - queues/change-control-foundation-v1.yaml
+        verify:
+          - "python scripts/ai_context_helper.py --root . smoke-check --format json"
+          - "$env:ORCHESTRATOR_TEST='1'; npx tsx -e \"import { readFileSync } from 'node:fs'; import { parse } from 'yaml'; import { validateTaskQueue } from './server/index.ts'; const queue=parse(readFileSync('queues/change-control-foundation-v1.yaml','utf8')); const validated=validateTaskQueue(queue); if(validated.tasks.length!==2) process.exit(1); console.log('queue valid', validated.tasks.map(t=>t.key).join(','));\""
+          - "$files=@('docs/architecture/change-control-plane/README.md','docs/architecture/change-control-plane/evidence-ledger.md','docs/architecture/change-control-plane/target-architecture.md','docs/architecture/change-control-plane/decisions.md','docs/architecture/change-control-plane/metrics-and-evals.md','docs/architecture/change-control-plane/implementation-roadmap.md','queues/change-control-foundation-v1.yaml'); foreach($file in $files){ if(!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0){ throw \"Missing or empty: $file\" } }"
+          - "npm run check"
+          - "npm test"
+          - "git diff --check"
+        stop_if:
+          - "A required write falls outside allowed_files."
+          - "Any architecture statement presents inference or unknown Nikolay behavior as observed fact."
+          - "The launch queue needs implementation details not fixed by the architecture decisions."
+          - "A queue task lacks exact allowedPaths, verificationCommands, dependencies, or executionGuards."
+          - "A second queue or sequential plan would depend on feedback from code that has not been implemented yet."
+          - "The queue validator or repository verification fails twice for the same unexplained cause."
+      evidence:
+        - notes/T005-nikolay-evidence-ledger.md
+        - tasks.example.yaml
+        - queues.plan.example.yaml
+        - AGENTS.md
+        - "server/index.ts queue validation and scheduling contracts"
+      subgoal_contract: null
+      parallel_safety: "T007 is one write Worker. The generated queue itself is sequential because both tasks own the same change-control server files."
+      blocked_tasks: []
+      missing_evidence:
+        - "Later queue boundaries depend on the persisted event-spine implementation and are intentionally not represented as launch-ready files."
+      required_board_updates:
+        - "Copy worker_package fields to T007."
+        - "Activate T007."
+        - "Do not create a sequential plan for a single queue."
+  - id: T007
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: high
+    objective: "Create the durable change-control-plane evidence and architecture package, update project navigation, and create one schema-valid local launch queue for the event-backed change/wave foundation."
+    allowed_files:
+      - "docs/architecture/change-control-plane/README.md"
+      - "docs/architecture/change-control-plane/evidence-ledger.md"
+      - "docs/architecture/change-control-plane/target-architecture.md"
+      - "docs/architecture/change-control-plane/decisions.md"
+      - "docs/architecture/change-control-plane/metrics-and-evals.md"
+      - "docs/architecture/change-control-plane/implementation-roadmap.md"
+      - "docs/NEXT_STEPS.md"
+      - "docs/context_packs/current_status.md"
+      - "docs/project_map/current_map.md"
+      - "queues/change-control-foundation-v1.yaml"
+    verify:
+      - "python scripts/ai_context_helper.py --root . smoke-check --format json"
+      - "$env:ORCHESTRATOR_TEST='1'; npx tsx -e \"import { readFileSync } from 'node:fs'; import { parse } from 'yaml'; import { validateTaskQueue } from './server/index.ts'; const queue=parse(readFileSync('queues/change-control-foundation-v1.yaml','utf8')); const validated=validateTaskQueue(queue); if(validated.tasks.length!==2) process.exit(1); console.log('queue valid', validated.tasks.map(t=>t.key).join(','));\""
+      - "$files=@('docs/architecture/change-control-plane/README.md','docs/architecture/change-control-plane/evidence-ledger.md','docs/architecture/change-control-plane/target-architecture.md','docs/architecture/change-control-plane/decisions.md','docs/architecture/change-control-plane/metrics-and-evals.md','docs/architecture/change-control-plane/implementation-roadmap.md','queues/change-control-foundation-v1.yaml'); foreach($file in $files){ if(!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0){ throw \"Missing or empty: $file\" } }"
+      - "npm run check"
+      - "npm test"
+      - "git diff --check"
+    stop_if:
+      - "A required change falls outside allowed_files."
+      - "Any architecture statement presents inference or unknown Nikolay behavior as observed fact."
+      - "The launch queue needs implementation details not fixed by the architecture decisions."
+      - "A queue task lacks exact allowedPaths, verificationCommands, dependencies, or executionGuards."
+      - "A second queue or sequential plan would depend on feedback from code that has not been implemented yet."
+      - "The queue validator or repository verification fails twice for the same unexplained cause."
+    receipt:
+      result: done
+      harness: "codex PM fallback after GoalBuddy Worker timeout"
+      summary: "Created the durable change-control-plane documentation package and one local two-task launch queue. The design distinguishes observed Nikolay behavior from inference and unknowns, selects an atomic append-only logical event spine with deterministic projections, separates wave/bucket/run identity, defines authority and metrics, and defers later queue boundaries until foundation implementation evidence exists."
+      changed_files:
+        - docs/architecture/change-control-plane/README.md
+        - docs/architecture/change-control-plane/evidence-ledger.md
+        - docs/architecture/change-control-plane/target-architecture.md
+        - docs/architecture/change-control-plane/decisions.md
+        - docs/architecture/change-control-plane/metrics-and-evals.md
+        - docs/architecture/change-control-plane/implementation-roadmap.md
+        - docs/NEXT_STEPS.md
+        - docs/context_packs/current_status.md
+        - docs/project_map/current_map.md
+        - queues/change-control-foundation-v1.yaml
+      commands:
+        - cmd: "python scripts/ai_context_helper.py --root . smoke-check --format json"
+          status: pass
+          detail: "3/3 context smoke cases passed; no runtime service or persistent index created"
+        - cmd: "$env:ORCHESTRATOR_TEST='1'; npx tsx -e queue validator"
+          status: pass
+          detail: "queue valid change-ledger-api,wave-dispatch-gate"
+        - cmd: "required documentation and queue non-empty check"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm test"
+          status: pass
+          detail: "97 passed, 0 failed"
+        - cmd: "git diff --check"
+          status: pass
+      deviations:
+        - "The assigned GoalBuddy Worker made no file changes before its single bounded wait timed out; the PM completed the exact approved package locally."
+        - "No sequential queue plan was created because only one queue is launch-ready."
+      remaining_blockers: []
+      verification_attempts: 1
+      stopped_because: null
+      evidence:
+        - docs/architecture/change-control-plane/
+        - queues/change-control-foundation-v1.yaml
+        - docs/goals/agent-memory-foundation-v1/notes/T005-nikolay-evidence-ledger.md
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Audit the bounded tranche against the original request and goal oracle."
+    inputs:
+      - "All completed task receipts and notes"
+      - "Final integration diff"
+      - "Fresh verification and behavior-level demonstration"
+      - "Durable evidence/architecture documentation"
+      - "All generated launch queues and validator results"
+    constraints:
+      - "Do not implement."
+      - "Reject completion if required Worker work remains queued, active, or hidden in prose."
+      - "Reject completion if the integration is cosmetic, duplicates an existing source of truth, or cannot be demonstrated."
+      - "Reject completion if screenshots were not incorporated into the evidence ledger."
+      - "Reject completion if launch queues are speculative or validator-invalid."
+      - "Do not require implementation of the entire Nikolay-like system in this bounded tranche."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Evidence-to-outcome mapping."
+      - "Missing evidence and exact next task if not complete."
+    receipt:
+      result: done
+      harness: "codex PM fallback after GoalBuddy Judge timeout"
+      decision: complete
+      integration_gate: pass
+      full_outcome_complete: true
+      rationale: "The bounded outcome is complete. Orchestrator now consumes its own Kit-compatible read-only context helper without fallback while preserving existing run, goal, queue, and Project Map authority boundaries. The Telegram thread, participant comments, and seven full-resolution screenshots are represented in a durable evidence ledger with observed, inferred, unknown, and decision-required claims separated. The target architecture answers the ten questions as far as evidence permits, defines Orchestrator-specific decisions and measurable quality criteria, and one schema-valid two-task queue provides the largest safe next vertical slice. Later speculative queues are correctly deferred."
+      worker_package: null
+      evidence:
+        - notes/T001-two-repository-evidence-map.md
+        - notes/T003-receipt.json
+        - notes/T004-receipt.json
+        - notes/T005-nikolay-evidence-ledger.md
+        - notes/T007-receipt.json
+        - docs/architecture/change-control-plane/README.md
+        - docs/architecture/change-control-plane/evidence-ledger.md
+        - docs/architecture/change-control-plane/target-architecture.md
+        - docs/architecture/change-control-plane/decisions.md
+        - docs/architecture/change-control-plane/metrics-and-evals.md
+        - docs/architecture/change-control-plane/implementation-roadmap.md
+        - queues/change-control-foundation-v1.yaml
+        - "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json: pass, 5 bounded sources"
+        - "python scripts/ai_context_helper.py --root . smoke-check --format json: pass, 3/3 cases"
+        - "queue validator: pass, two sequential tasks with exact scope, verification, guards, and dependency"
+        - "npm run check: pass"
+        - "npm test: 97 passed, 0 failed"
+        - "git diff --check: pass"
+      subgoal_contract: null
+      parallel_safety: "No required write task remains. The local launch queue is sequential because both tasks share server integration paths."
+      blocked_tasks: []
+      missing_evidence:
+        - "Nikolay's exact canonical store, complete transition tables, worktree policy, merge/replan algorithm, heal allowlist, end-to-end lineage key, and numeric quality proof remain unknown and are labelled as such."
+        - "Kit redistribution rights remain unestablished; the integration records provenance and makes no publication claim."
+      required_board_updates:
+        - "Mark T999 done."
+        - "Clear active_task."
+        - "Mark the goal done."
+checks:
+  dirty_fingerprint: "HEAD 7d65706837f7fc104ff9c0350e6bc7510fb0f375; pre-existing untracked .orchestrator-4319/, .orchestrator-4319.stderr.log, .orchestrator-4319.stdout.log"
+  last_verification:
+    result: "intake baseline known from prior inspection; must be rerun by active goal tasks"
+    task: null
+    commands:
+      - "npm run check"
+      - "npm test"

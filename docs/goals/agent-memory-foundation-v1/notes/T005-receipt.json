@@ -1,0 +1,52 @@
+{
+  "result": "done",
+  "task_id": "T005",
+  "board_path": "D:\\pet-projects\\orchestrator\\docs\\goals\\agent-memory-foundation-v1\\state.yaml",
+  "harness": "codex",
+  "summary": "Seven screenshots and the surrounding Telegram thread establish waves, bucket dispatch, dependency gates, halt attribution, Doctor/Warden controls, prompt version chains, and a safe-change workflow. Canonical storage, complete state machines, workspace isolation, merge/replan details, auto-heal allowlist, end-to-end lineage, and quality proof remain unknown.",
+  "note": "notes/T005-nikolay-evidence-ledger.md",
+  "evidence": [
+    "messages9.html messages 9898-10030",
+    "photos/photo_625@29-07-2026_13-08-58.jpg",
+    "photos/photo_627@29-07-2026_13-17-49.jpg",
+    "photos/photo_628@29-07-2026_13-24-29.jpg",
+    "photos/photo_629@29-07-2026_13-25-21.jpg",
+    "photos/photo_630@29-07-2026_14-09-29.jpg",
+    "photos/photo_631@29-07-2026_14-14-43.jpg",
+    "photos/photo_632@29-07-2026_14-26-26.jpg",
+    "https://git-scm.com/docs/git-worktree",
+    "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue",
+    "https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/",
+    "https://dora.dev/guides/dora-metrics/",
+    "README.md",
+    "server/index.ts",
+    "server/index.test.ts",
+    "docs/project_map"
+  ],
+  "facts": [
+    "A wave contains multiple typed subtasks and is distinct from the execution bucket.",
+    "Dependency readiness blocks normal dispatch but a human override is visible.",
+    "Halt attribution uses declared write_set and actual dirty/diff paths with exact/partial/none confidence.",
+    "Prompt versions carry role/layer/version/commit/parent/champion metadata, but the shown versions say eval not measured.",
+    "No evidence identifies the canonical storage engine or complete transition tables.",
+    "The first-pass/no-bugs claim lacks a baseline, denominator, observation window, and escaped-defect data."
+  ],
+  "contradictions": [
+    "Nikolay says dangerous Git resets are prohibited, while the UI command log shows controlled git restore/clean operations; this is compatible only if the policy distinguishes user/agent commands from trusted recovery actions.",
+    "The system is described as producing controlled quality, while the shown prompt version chain has no measured eval; controlled quality may rely on other tests/gates, but prompt-quality attribution is not yet demonstrated."
+  ],
+  "ambiguity_requiring_judge": [
+    "Choose the canonical change/event store and projection boundary.",
+    "Choose wave/task/attempt schemas and transition ownership.",
+    "Choose worktree/branch isolation and merge/replan strategy.",
+    "Choose halt taxonomy and auto-heal allowlist.",
+    "Choose immutable lineage identifiers and quality metrics.",
+    "Choose how many launch queues can be safely defined before implementation feedback."
+  ],
+  "commands": [
+    "Parsed messages9.html messages 9890-10040 and reply links.",
+    "Inspected seven full-resolution screenshots.",
+    "Reviewed primary Git, GitHub, OpenTelemetry, and DORA documentation."
+  ],
+  "note_needed": true
+}

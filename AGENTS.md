@@ -30,3 +30,17 @@ The Orchestrator rejects ordinary queues with fewer than two tasks.
 Use a plan from `queues.plan.example.yaml` only when several already-defined task queue files must run one after another. A plan sequences complete queue files; it does not discover or expand later scope.
 
 If classification is ambiguous, use the current session for one bounded task, an Orchestrator queue for two or more understood tasks, and a sequential queue plan only for multiple already-defined queues.
+
+# Project context and secondary memory
+
+- For non-trivial repository work, ground the task with
+  `docs/NEXT_STEPS.md`, `docs/source_of_truth_hierarchy.md`, and
+  `docs/context_packs/current_status.md`, then read only task-relevant sources.
+- `docs/project_map/` is secondary memory and navigation metadata. Current user
+  instructions, code, tests, operational docs, canonical run records, and
+  goal-board `state.yaml` files win on conflicts.
+- Do not update Project Map memory or working state unless the active task
+  explicitly includes those files in its mutation scope.
+- Use `scripts/ai_context_helper.py` for bounded read-set selection when an
+  Orchestrator task opts into a `contextProfile`. The helper is read-only and
+  does not grant mutation authority.

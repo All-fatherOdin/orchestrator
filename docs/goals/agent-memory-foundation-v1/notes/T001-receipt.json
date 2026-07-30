@@ -1,0 +1,38 @@
+{
+  "result": "done",
+  "task_id": "T001",
+  "board_path": "D:\\pet-projects\\orchestrator\\docs\\goals\\agent-memory-foundation-v1\\state.yaml",
+  "harness": "codex",
+  "summary": "Orchestrator already vendors and runs the Kit Context Contract v1; the safest non-duplicative first slice is a self-hosted secondary Project Map, read-only helper, smoke cases, and a real provider integration test.",
+  "note": "notes/T001-two-repository-evidence-map.md",
+  "evidence": [
+    "README.md",
+    "server/index.ts",
+    "server/index.test.ts",
+    "server/context-contract-v1/schemas",
+    "docs/context-contract-ptc-v1.md",
+    "docs/persisted-reasoning-working-state-v1.md",
+    "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/README.md",
+    "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/EXISTING_PROJECT_ADOPTION_GUIDE.md",
+    "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/secondary_memory_governance/README.md",
+    "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_governance_helper.py"
+  ],
+  "facts": [
+    "All three Context Contract v1 schema files are byte-identical across the repositories.",
+    "Orchestrator check passed and 96 tests passed.",
+    "Kit governance tests passed: 13 tests.",
+    "Orchestrator lacks its own scripts/ai_context_helper.py and docs/project_map governance baseline.",
+    "The Kit has no checked-in LICENSE or SPDX grant."
+  ],
+  "contradictions": [],
+  "ambiguity_requiring_judge": [
+    "Whether to adapt the helper with provenance or copy the exact reference implementation under the user's local integration authority.",
+    "The exact minimum policy/document set needed for a coherent first vertical slice."
+  ],
+  "commands": [
+    "npm run check",
+    "npm test",
+    "python -m pytest \"Agent Kit/kit/tests\" -p no:cacheprovider --basetemp <temp>"
+  ],
+  "note_needed": true
+}

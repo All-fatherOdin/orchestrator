@@ -1,0 +1,172 @@
+{
+  "schema_version": "1.0",
+  "package_profile": "orchestrator_secondary_memory_governance",
+  "project_id": "codex-orchestrator",
+  "status": "active",
+  "last_updated": "2026-07-29",
+  "authority": "Navigation metadata only; subordinate to current owner instructions, code, tests, operational docs, canonical run records, and GoalBuddy state.",
+  "task_profiles": {
+    "startup": "Bounded repository startup anchors.",
+    "review": "Read-only change and risk review.",
+    "implementation": "Scoped implementation after startup grounding.",
+    "context_governance": "Context helper, routing, and receipt work.",
+    "project_map_governance": "Explicit secondary-memory review or mutation."
+  },
+  "excluded_by_default": {
+    "path_globs": [
+      ".env",
+      ".env.*",
+      "**/.env",
+      "**/.env.*",
+      ".git/**",
+      ".orchestrator/**",
+      ".orchestrator-*/**",
+      "queues/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "release/**",
+      "runtime-evals-v1/**",
+      "**/*.log",
+      "**/*.db",
+      "**/*.sqlite",
+      "**/*.sqlite3",
+      "**/__pycache__/**",
+      "**/.pytest_cache/**"
+    ]
+  },
+  "entries": [
+    {
+      "path": "AGENTS.md",
+      "priority": "P0",
+      "authority": "machine_first_repository_entrypoint",
+      "status": "active",
+      "layer": "root",
+      "task_profiles": ["startup", "review", "implementation", "context_governance", "project_map_governance"],
+      "default_retrieval_mode": "startup_required",
+      "canonical_purpose": "Repository execution and queue routing rules.",
+      "mutation_boundary": "Repository-wide agent rules only."
+    },
+    {
+      "path": "docs/NEXT_STEPS.md",
+      "priority": "P0",
+      "authority": "primary_operational_handoff",
+      "status": "active",
+      "layer": "operations",
+      "task_profiles": ["startup", "implementation", "context_governance"],
+      "default_retrieval_mode": "startup_required",
+      "canonical_purpose": "Current priority, next safe step, and non-goals.",
+      "mutation_boundary": "Operational handoff only."
+    },
+    {
+      "path": "docs/source_of_truth_hierarchy.md",
+      "priority": "P0",
+      "authority": "source_authority_policy",
+      "status": "active",
+      "layer": "governance",
+      "task_profiles": ["startup", "review", "implementation", "context_governance", "project_map_governance"],
+      "default_retrieval_mode": "startup_required",
+      "canonical_purpose": "Authority and conflict rules.",
+      "mutation_boundary": "Source-authority governance only."
+    },
+    {
+      "path": "docs/context_packs/current_status.md",
+      "priority": "P0",
+      "authority": "compact_current_status",
+      "status": "active",
+      "layer": "context_pack",
+      "task_profiles": ["startup", "implementation"],
+      "default_retrieval_mode": "startup_required",
+      "canonical_purpose": "Compact current status and boundaries.",
+      "mutation_boundary": "Summary only."
+    },
+    {
+      "path": "README.md",
+      "priority": "P1",
+      "authority": "product_operating_guide",
+      "status": "active",
+      "layer": "product_docs",
+      "task_profiles": ["startup", "review", "implementation"],
+      "default_retrieval_mode": "startup_optional",
+      "canonical_purpose": "Supported product behavior and usage.",
+      "mutation_boundary": "Product documentation only."
+    },
+    {
+      "path": "docs/context_governance_rules.md",
+      "priority": "P1",
+      "authority": "context_governance_policy",
+      "status": "active",
+      "layer": "governance",
+      "task_profiles": ["review", "implementation", "context_governance", "project_map_governance"],
+      "default_retrieval_mode": "task_triggered",
+      "canonical_purpose": "Retrieval, high-risk exclusion, and promotion rules.",
+      "mutation_boundary": "Context governance only."
+    },
+    {
+      "path": "docs/project_map/README.md",
+      "priority": "P1",
+      "authority": "secondary_memory_entrypoint",
+      "status": "active",
+      "layer": "project_map",
+      "task_profiles": ["context_governance", "project_map_governance"],
+      "default_retrieval_mode": "secondary_memory_triggered",
+      "canonical_purpose": "Project Map role and provenance.",
+      "mutation_boundary": "Explicit Project Map scope required."
+    },
+    {
+      "path": "docs/project_map/source_authority.yaml",
+      "priority": "P1",
+      "authority": "secondary_memory_authority_model",
+      "status": "active",
+      "layer": "project_map",
+      "task_profiles": ["context_governance", "project_map_governance"],
+      "default_retrieval_mode": "secondary_memory_triggered",
+      "canonical_purpose": "Secondary-memory conflict rules.",
+      "mutation_boundary": "Explicit Project Map scope required."
+    },
+    {
+      "path": "docs/project_map/permissions_policy.yaml",
+      "priority": "P1",
+      "authority": "advisory_permission_model",
+      "status": "active",
+      "layer": "project_map",
+      "task_profiles": ["context_governance", "project_map_governance"],
+      "default_retrieval_mode": "secondary_memory_triggered",
+      "canonical_purpose": "Intent and mutation policy references.",
+      "mutation_boundary": "Advisory; never grants permission."
+    },
+    {
+      "path": "docs/project_map/retrieval_policy.yaml",
+      "priority": "P1",
+      "authority": "retrieval_policy",
+      "status": "active",
+      "layer": "project_map",
+      "task_profiles": ["context_governance", "project_map_governance"],
+      "default_retrieval_mode": "secondary_memory_triggered",
+      "canonical_purpose": "Hard retrieval gates.",
+      "mutation_boundary": "Retrieval policy only."
+    },
+    {
+      "path": "docs/project_map/working_state.yaml",
+      "priority": "P1",
+      "authority": "secondary_replay_pointer",
+      "status": "active",
+      "layer": "project_map",
+      "task_profiles": ["project_map_governance"],
+      "default_retrieval_mode": "secondary_memory_triggered",
+      "canonical_purpose": "Compact pointers to current canonical sources.",
+      "mutation_boundary": "Never execution or completion state."
+    },
+    {
+      "path": "docs/project_map/current_map.md",
+      "priority": "P2",
+      "authority": "secondary_memory",
+      "status": "active",
+      "layer": "project_map",
+      "task_profiles": ["project_map_governance"],
+      "default_retrieval_mode": "trigger_only",
+      "canonical_purpose": "Reviewed secondary facts, risks, and questions.",
+      "mutation_boundary": "Explicit candidate/promotion scope required."
+    }
+  ]
+}

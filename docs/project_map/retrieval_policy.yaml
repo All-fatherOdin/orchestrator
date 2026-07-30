@@ -1,0 +1,30 @@
+schema_version: "1.0"
+project_id: "codex-orchestrator"
+mode: "bounded_secondary_memory"
+
+hard_gates:
+  - task_profile
+  - source_authority
+  - lifecycle_status
+  - explicit_scope
+  - high_risk_exclusion
+  - trigger_only_boundary
+
+defaults:
+  max_sources: 12
+  include_triggered: false
+  whole_repo_scan: false
+  whole_project_map_load: false
+
+result_requirements:
+  - path
+  - priority
+  - authority
+  - status
+  - layer
+  - retrieval_mode
+  - inclusion_reason
+
+empty_result:
+  behavior: "report_missing_evidence"
+  may_invent_project_facts: false

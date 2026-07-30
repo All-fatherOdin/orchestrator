@@ -1,0 +1,58 @@
+{
+  "result": "done",
+  "task_id": "T003",
+  "board_path": "D:\\pet-projects\\orchestrator\\docs\\goals\\agent-memory-foundation-v1\\state.yaml",
+  "harness": "codex",
+  "changed_files": [
+    "AGENTS.md",
+    "docs/NEXT_STEPS.md",
+    "docs/source_of_truth_hierarchy.md",
+    "docs/context_governance_rules.md",
+    "docs/context_packs/current_status.md",
+    "docs/project_map/README.md",
+    "docs/project_map/current_map.md",
+    "docs/project_map/context_index.yaml",
+    "docs/project_map/source_authority.yaml",
+    "docs/project_map/permissions_policy.yaml",
+    "docs/project_map/retrieval_policy.yaml",
+    "docs/project_map/retrieval_scoring_policy.yaml",
+    "docs/project_map/working_state.yaml",
+    "docs/project_map/memory_lifecycle_policy.yaml",
+    "docs/project_map/eval_suite/context_selection_smoke_cases.yaml",
+    "scripts/ai_context_helper.py",
+    "server/index.test.ts"
+  ],
+  "commands": [
+    {
+      "cmd": "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json",
+      "status": "pass"
+    },
+    {
+      "cmd": "python scripts/ai_context_helper.py --root . smoke-check --format json",
+      "status": "pass"
+    },
+    {
+      "cmd": "npm run check",
+      "status": "pass"
+    },
+    {
+      "cmd": "npm test",
+      "status": "pass",
+      "detail": "97 passed, 0 failed"
+    },
+    {
+      "cmd": "git diff --check",
+      "status": "pass"
+    }
+  ],
+  "summary": "Installed an Orchestrator-specific secondary Project Map and a read-only Kit-compatible helper. Production RepositoryContextHelperProvider now consumes the real repository startup profile without fallback; smoke cases enforce bounded startup/review/project-map retrieval, while run, goal, queue, approval, and completion state remain outside Project Map authority.",
+  "deviations": [
+    "Implemented only the helper operations required by the current vertical slice: read-set, api-context, and smoke-check.",
+    "The first verification attempt exposed an existing production-surface naming guard and one expected-order mismatch; both were corrected within allowed_files before the passing full rerun."
+  ],
+  "remaining_blockers": [
+    "The local Kit has no explicit LICENSE/SPDX grant; provenance is recorded and no redistribution claim is made."
+  ],
+  "verification_attempts": 2,
+  "stopped_because": null
+}

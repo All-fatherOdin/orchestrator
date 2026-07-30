@@ -1,0 +1,58 @@
+{
+  "result": "done",
+  "task_id": "T006",
+  "board_path": "D:\\pet-projects\\orchestrator\\docs\\goals\\agent-memory-foundation-v1\\state.yaml",
+  "harness": "codex",
+  "decision": "approved",
+  "full_outcome_complete": false,
+  "rationale": "Approve one durable documentation package and one two-task launch queue. The queue implements only the first understood vertical milestone: an atomic event-backed change API followed by dependency-gated wave dispatch with audited override. Worktrees, merge/replan, halts, healing, lineage, eval metrics, and UI remain roadmap phases until the foundation produces implementation evidence.",
+  "worker_package": {
+    "objective": "Create the durable change-control-plane evidence and architecture package, update project navigation, and create one schema-valid local launch queue for the event-backed change/wave foundation.",
+    "allowed_files": [
+      "docs/architecture/change-control-plane/README.md",
+      "docs/architecture/change-control-plane/evidence-ledger.md",
+      "docs/architecture/change-control-plane/target-architecture.md",
+      "docs/architecture/change-control-plane/decisions.md",
+      "docs/architecture/change-control-plane/metrics-and-evals.md",
+      "docs/architecture/change-control-plane/implementation-roadmap.md",
+      "docs/NEXT_STEPS.md",
+      "docs/context_packs/current_status.md",
+      "docs/project_map/current_map.md",
+      "queues/change-control-foundation-v1.yaml"
+    ],
+    "verify": [
+      "python scripts/ai_context_helper.py --root . smoke-check --format json",
+      "$env:ORCHESTRATOR_TEST='1'; npx tsx -e \"import { readFileSync } from 'node:fs'; import { parse } from 'yaml'; import { validateTaskQueue } from './server/index.ts'; const queue=parse(readFileSync('queues/change-control-foundation-v1.yaml','utf8')); const validated=validateTaskQueue(queue); if(validated.tasks.length!==2) process.exit(1); console.log('queue valid', validated.tasks.map(t=>t.key).join(','));\"",
+      "$files=@('docs/architecture/change-control-plane/README.md','docs/architecture/change-control-plane/evidence-ledger.md','docs/architecture/change-control-plane/target-architecture.md','docs/architecture/change-control-plane/decisions.md','docs/architecture/change-control-plane/metrics-and-evals.md','docs/architecture/change-control-plane/implementation-roadmap.md','queues/change-control-foundation-v1.yaml'); foreach($file in $files){ if(!(Test-Path -LiteralPath $file) -or (Get-Item -LiteralPath $file).Length -eq 0){ throw \"Missing or empty: $file\" } }",
+      "npm run check",
+      "npm test",
+      "git diff --check"
+    ],
+    "stop_if": [
+      "A required write falls outside allowed_files.",
+      "Any architecture statement presents inference or unknown Nikolay behavior as observed fact.",
+      "The launch queue needs implementation details not fixed by the architecture decisions.",
+      "A queue task lacks exact allowedPaths, verificationCommands, dependencies, or executionGuards.",
+      "A second queue or sequential plan would depend on feedback from code that has not been implemented yet.",
+      "The queue validator or repository verification fails twice for the same unexplained cause."
+    ]
+  },
+  "evidence": [
+    "notes/T005-nikolay-evidence-ledger.md",
+    "tasks.example.yaml",
+    "queues.plan.example.yaml",
+    "AGENTS.md",
+    "server/index.ts queue validation and scheduling contracts"
+  ],
+  "subgoal_contract": null,
+  "parallel_safety": "T007 is one write Worker. The generated queue itself is sequential because both tasks own the same change-control server files.",
+  "blocked_tasks": [],
+  "missing_evidence": [
+    "Later queue boundaries depend on the persisted event-spine implementation and are intentionally not represented as launch-ready files."
+  ],
+  "required_board_updates": [
+    "Copy worker_package fields to T007.",
+    "Activate T007.",
+    "Do not create a sequential plan for a single queue."
+  ]
+}

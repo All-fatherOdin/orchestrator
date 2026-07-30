@@ -1,0 +1,29 @@
+schema_version: "1.0"
+project_id: "codex-orchestrator"
+runtime_capability: "advisory_reference_to_existing_enforcement"
+
+intent_defaults:
+  answer: read_only
+  analyze: read_only
+  review: read_only
+  plan: read_only
+  apply: exact_authorized_scope
+
+mutation_requires:
+  - explicit_user_or_active_task_intent
+  - exact_allowed_paths
+  - verification_commands
+  - execution_guards
+  - existing_orchestrator_authorization_when_applicable
+
+project_map_mutation_requires:
+  - explicit_project_map_scope
+  - evidence_refs
+  - lifecycle_status
+
+never_granted_by_this_file:
+  - product_write_permission
+  - external_write_permission
+  - destructive_action_permission
+  - publication_permission
+  - scope_expansion

@@ -1,0 +1,42 @@
+{
+  "result": "done",
+  "task_id": "T999",
+  "harness": "codex PM fallback after GoalBuddy Judge timeout",
+  "decision": "complete",
+  "integration_gate": "pass",
+  "full_outcome_complete": true,
+  "rationale": "The bounded outcome is complete. Orchestrator now consumes its own Kit-compatible read-only context helper without fallback while preserving existing run, goal, queue, and Project Map authority boundaries. The Telegram thread, participant comments, and seven full-resolution screenshots are represented in a durable evidence ledger with observed, inferred, unknown, and decision-required claims separated. The target architecture answers the ten questions as far as evidence permits, defines Orchestrator-specific decisions and measurable quality criteria, and one schema-valid two-task queue provides the largest safe next vertical slice. Later speculative queues are correctly deferred.",
+  "worker_package": null,
+  "evidence": [
+    "notes/T001-two-repository-evidence-map.md",
+    "notes/T003-receipt.json",
+    "notes/T004-receipt.json",
+    "notes/T005-nikolay-evidence-ledger.md",
+    "notes/T007-receipt.json",
+    "docs/architecture/change-control-plane/README.md",
+    "docs/architecture/change-control-plane/evidence-ledger.md",
+    "docs/architecture/change-control-plane/target-architecture.md",
+    "docs/architecture/change-control-plane/decisions.md",
+    "docs/architecture/change-control-plane/metrics-and-evals.md",
+    "docs/architecture/change-control-plane/implementation-roadmap.md",
+    "queues/change-control-foundation-v1.yaml",
+    "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json: pass, 5 bounded sources",
+    "python scripts/ai_context_helper.py --root . smoke-check --format json: pass, 3/3 cases",
+    "queue validator: pass, two sequential tasks with exact scope, verification, guards, and dependency",
+    "npm run check: pass",
+    "npm test: 97 passed, 0 failed",
+    "git diff --check: pass"
+  ],
+  "subgoal_contract": null,
+  "parallel_safety": "No required write task remains. The local launch queue is sequential because both tasks share server integration paths.",
+  "blocked_tasks": [],
+  "missing_evidence": [
+    "Nikolay's exact canonical store, complete transition tables, worktree policy, merge/replan algorithm, heal allowlist, end-to-end lineage key, and numeric quality proof remain unknown and are labelled as such.",
+    "Kit redistribution rights remain unestablished; the integration records provenance and makes no publication claim."
+  ],
+  "required_board_updates": [
+    "Mark T999 done.",
+    "Clear active_task.",
+    "Mark the goal done."
+  ]
+}

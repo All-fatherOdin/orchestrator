@@ -1,0 +1,32 @@
+{
+  "result": "done",
+  "task_id": "T004",
+  "board_path": "D:\\pet-projects\\orchestrator\\docs\\goals\\agent-memory-foundation-v1\\state.yaml",
+  "harness": "codex",
+  "decision": "approved",
+  "integration_gate": "pass",
+  "full_outcome_complete": false,
+  "rationale": "The slice is behavioral, not documentation-only: the production RepositoryContextHelperProvider starts the real repository Python helper, receives a schema-valid startup bundle from five bounded sources, and does not fall back. Three smoke cases pass, high-risk paths remain excluded, the full 97-test suite and type check pass, all product writes are within the approved scope, and production server/schema/canonical-state ownership is unchanged.",
+  "worker_package": null,
+  "evidence": [
+    "notes/T001-two-repository-evidence-map.md",
+    "notes/T002-receipt.json",
+    "notes/T003-receipt.json",
+    "scripts/ai_context_helper.py",
+    "docs/project_map/context_index.yaml",
+    "docs/project_map/eval_suite/context_selection_smoke_cases.yaml",
+    "server/index.test.ts",
+    "npm run check: pass",
+    "npm test: 97 passed",
+    "python scripts/ai_context_helper.py --root . smoke-check --format json: pass"
+  ],
+  "subgoal_contract": null,
+  "parallel_safety": "No additional integration Worker is required before evidence capture; T005 is read-only.",
+  "blocked_tasks": [],
+  "missing_evidence": [
+    "Kit redistribution rights remain unestablished; local provenance is recorded and the phase gate makes no publication claim."
+  ],
+  "required_board_updates": [
+    "Activate T005."
+  ]
+}

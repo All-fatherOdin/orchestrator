@@ -1,0 +1,31 @@
+schema_version: "1.0"
+project_id: "codex-orchestrator"
+
+statuses:
+  candidate: "Captured with evidence but not accepted as current."
+  current: "Reviewed and valid under source authority."
+  disputed: "Conflicts with another source and requires resolution."
+  stale: "Previously useful but no longer current."
+  superseded: "Replaced by an identified newer record."
+  rejected: "Reviewed and not accepted."
+  archived: "Retained for audit, excluded from normal retrieval."
+
+promotion:
+  requires:
+    - evidence_refs
+    - authority_classification
+    - explicit_project_map_mutation_scope
+    - reviewer_or_owner_acceptance
+  automatic: false
+
+normal_retrieval_excludes:
+  - candidate
+  - disputed
+  - stale
+  - superseded
+  - rejected
+  - archived
+
+deletion:
+  default: preserve_for_audit
+  secrets_or_illicit_data: remove_under_explicit_security_scope

@@ -1,0 +1,65 @@
+{
+  "result": "done",
+  "task_id": "T002",
+  "board_path": "D:\\pet-projects\\orchestrator\\docs\\goals\\agent-memory-foundation-v1\\state.yaml",
+  "harness": "codex",
+  "decision": "approved",
+  "full_outcome_complete": false,
+  "rationale": "The approved slice makes Orchestrator consume a bounded secondary-memory profile from its own repository through the already-shipped RepositoryContextHelperProvider. It is additive, reversible, and proves behavior without changing Context Contract schemas, production run-state ownership, queue semantics, or authorization enforcement.",
+  "worker_package": {
+    "objective": "Install an Orchestrator-specific repo-centric secondary-memory governance profile and Kit-compatible read-only context helper, then prove RepositoryContextHelperProvider consumes the real repository startup profile without fallback while canonical run, goal, and queue state remain authoritative.",
+    "allowed_files": [
+      "AGENTS.md",
+      "docs/NEXT_STEPS.md",
+      "docs/source_of_truth_hierarchy.md",
+      "docs/context_governance_rules.md",
+      "docs/context_packs/current_status.md",
+      "docs/project_map/README.md",
+      "docs/project_map/current_map.md",
+      "docs/project_map/context_index.yaml",
+      "docs/project_map/source_authority.yaml",
+      "docs/project_map/permissions_policy.yaml",
+      "docs/project_map/retrieval_policy.yaml",
+      "docs/project_map/retrieval_scoring_policy.yaml",
+      "docs/project_map/working_state.yaml",
+      "docs/project_map/memory_lifecycle_policy.yaml",
+      "docs/project_map/eval_suite/context_selection_smoke_cases.yaml",
+      "scripts/ai_context_helper.py",
+      "server/index.test.ts"
+    ],
+    "verify": [
+      "python scripts/ai_context_helper.py --root . read-set --profile startup --max-sources 8 --format json",
+      "python scripts/ai_context_helper.py --root . smoke-check --format json",
+      "npm run check",
+      "npm test",
+      "git diff --check"
+    ],
+    "stop_if": [
+      "A required change falls outside allowed_files.",
+      "Implementation requires changing Context Contract v1 schemas or production server behavior.",
+      "Project Map working state would become canonical execution, queue, goal, completion, approval, or durable run state.",
+      "The helper would write project files, create a persistent index/service, read high-risk paths by default, or expand external/data/runtime scope.",
+      "Exact upstream copying beyond the minimal helper and adapted governance contracts becomes necessary without a provenance note.",
+      "Publication or redistribution is required and cannot proceed without an explicit license decision.",
+      "The same verification failure remains unexplained after two focused attempts."
+    ]
+  },
+  "evidence": [
+    "notes/T001-two-repository-evidence-map.md",
+    "server/index.ts",
+    "server/index.test.ts",
+    "server/context-contract-v1/schemas",
+    "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/secondary_memory_governance",
+    "D:/pet-projects/AI-assisted_System_Design_and_Agent_Memory_Kit/Agent Kit/kit/tools/context_governance_helper.py"
+  ],
+  "subgoal_contract": null,
+  "parallel_safety": "One write Worker only; all allowed files form one integration behavior and should not be split.",
+  "blocked_tasks": [],
+  "missing_evidence": [
+    "No explicit LICENSE or SPDX grant exists in the local Kit tree; retain provenance and do not make a redistribution claim."
+  ],
+  "required_board_updates": [
+    "Copy worker_package fields to T003.",
+    "Activate T003."
+  ]
+}

@@ -1496,6 +1496,40 @@ test("safe fallback selects only fixed root entrypoints and emits ContextReceipt
   }
 });
 
+test("Orchestrator consumes its own bounded secondary-memory profile through the repository helper", async () => {
+  const result = await new RepositoryContextHelperProvider().provide({
+    projectPath: process.cwd(),
+    requestId: "request-orchestrator-startup",
+    task: "Start a grounded Orchestrator repository task",
+    profile: "startup",
+    maxSources: 8,
+  });
+  assert.equal(result.provider, "repository-helper");
+  assert.equal(result.fallbackReason, undefined);
+  assert.deepEqual(
+    result.bundle.sources.slice(0, 4).map((source: { path: string }) => source.path),
+    [
+      "AGENTS.md",
+      "docs/context_packs/current_status.md",
+      "docs/NEXT_STEPS.md",
+      "docs/source_of_truth_hierarchy.md",
+    ],
+  );
+  assert.equal(
+    result.bundle.sources.some(
+      (source: { path: string }) => source.path === "docs/project_map/current_map.md",
+    ),
+    false,
+  );
+  assert.ok(
+    result.bundle.selection.skipped_high_risk_context.some(
+      (item: { path_glob: string }) => item.path_glob === ".orchestrator/**",
+    ),
+  );
+  assert.equal(validateContextContractV1("bundle", result.bundle), result.bundle);
+  assert.equal(validateContextContractV1("receipt", result.receipt), result.receipt);
+});
+
 test("helper timeout, invalid JSON, and contract mismatch use observable safe fallback", async () => {
   const project = await mkdtemp(join(process.cwd(), ".orchestrator-context-helper-"));
   try {

@@ -1,0 +1,26 @@
+schema_version: "1.0"
+project_id: "codex-orchestrator"
+
+order:
+  - apply_hard_gates
+  - match_task_profile
+  - rank_priority
+  - rank_authority
+  - rank_task_fit
+  - truncate_to_max_sources
+
+priority_weights:
+  P0: 300
+  P1: 200
+  P2: 100
+
+non_overridable_boundaries:
+  - source_authority
+  - stale_or_rejected_status
+  - explicit_scope
+  - privacy_and_secret_exclusion
+  - mutation_permission
+  - owner_decision
+
+ties:
+  order_by: normalized_path

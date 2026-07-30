@@ -1,0 +1,27 @@
+schema_version: "1.0"
+project_id: "codex-orchestrator"
+project_map_mode: "secondary_memory"
+
+authority_order:
+  - current_owner_instruction
+  - current_code_tests_and_machine_records
+  - active_operational_docs_and_accepted_specs
+  - goal_state_for_its_owned_goal
+  - project_map_secondary_memory
+  - research_and_history
+
+conflict_policy:
+  use_higher_authority: true
+  report_conflict: true
+  mark_secondary_record_stale_or_disputed: true
+  silent_overwrite: false
+
+canonical_state_refs:
+  runs: ".orchestrator/runs/<run-id>/run.json"
+  goals: "docs/goals/<slug>/state.yaml"
+  local_queues: "queues/*.yaml"
+  product_behavior: "current code, schemas, and passing tests"
+
+external_research:
+  default_status: evidence_only
+  promotion_requires: reviewed_decision_or_accepted_spec
