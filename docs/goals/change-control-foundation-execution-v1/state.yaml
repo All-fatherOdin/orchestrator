@@ -5,7 +5,7 @@ goal:
   slug: "change-control-foundation-execution-v1"
   kind: existing_plan
   tranche: "Archive stale artifacts, publish the branch, execute the two-task foundation queue, and audit the result."
-  status: active
+  status: done
   oracle:
     signal: "Both exact queue tasks are accepted with scope compliance; focused and full tests prove deterministic change ledger and wave dispatch behavior."
     cadence: "after environment preparation, after the queue run, and at final audit"
@@ -62,7 +62,7 @@ visual_board:
     url: "http://goalbuddy.localhost:41737/change-control-foundation-execution-v1/"
     command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/change-control-foundation-execution-v1"
 
-active_task: T002
+active_task: null
 
 tasks:
   - id: T001
@@ -112,7 +112,7 @@ tasks:
   - id: T002
     type: pm
     assignee: PM
-    status: active
+    status: done
     reasoning_hint: high
     objective: "Run the exact two-task foundation queue through a fresh source server and monitor it to a terminal state."
     inputs:
@@ -127,12 +127,36 @@ tasks:
       - "Canonical run ID and data path"
       - "Terminal task states"
       - "Changed files and verification/review evidence"
-    receipt: null
-
+    receipt:
+      result: done
+      harness: codex
+      summary: "Executed the exact two-task foundation queue through a fresh source server, preserved the failed first run, retried only the unapproved second task, and obtained a completed canonical run with both tasks independently approved."
+      evidence:
+        - "Initial run ms78vqyv-9kacx: first task approved; second executor completed but reviewer spawn failed with ENAMETOOLONG"
+        - "Canonical retry run: D:/pet-projects/orchestrator-run-data/change-control-foundation-2026-07-30/runs/ms7a14zt-trfqi/run.json"
+        - "Retry run ms7a14zt-trfqi status: completed"
+        - "change-ledger-api: completed, review approved"
+        - "wave-dispatch-gate: completed, review approved"
+        - "Changed product paths: README.md, server/change-control-v1/index.ts, server/index.ts, server/index.test.ts"
+      commands:
+        - cmd: "POST /api/runs/ms78vqyv-9kacx/tasks/ms78vqyv-dsad2/retry"
+          status: pass
+        - cmd: "canonical retry run terminal-state inspection"
+          status: pass
+        - cmd: "npm run check"
+          status: pass
+        - cmd: "npm test"
+          status: pass
+          detail: 107/107
+        - cmd: "git diff --check"
+          status: pass
+        - cmd: "python scripts/ai_context_helper.py --root . smoke-check --format json"
+          status: pass
+      remaining_blockers: []
   - id: T999
     type: judge
     assignee: Judge
-    status: queued
+    status: done
     reasoning_hint: high
     objective: "Audit the implementation, run the full oracle, and decide whether the requested tranche is complete."
     inputs:
@@ -148,8 +172,23 @@ tasks:
       - "complete | not_complete"
       - "full_outcome_complete: true | false"
       - "findings and missing evidence"
-    receipt: null
-
+    receipt:
+      result: done
+      decision: complete
+      full_outcome_complete: true
+      rationale: "The full tranche is proven: the canonical retry run completed with both exact tasks independently approved, the implementation remains within the four authorized paths, and the fresh host oracle passed."
+      evidence:
+        - "Canonical retry run ms7a14zt-trfqi completed with both tasks completed and review approved"
+        - "npm run check passed"
+        - "npm test passed: 107/107"
+        - "git diff --check passed"
+        - "context smoke passed"
+        - "Scope is exactly README.md, server/change-control-v1/index.ts, server/index.ts, and server/index.test.ts"
+        - "Hash-chained ledger, atomic writes, deterministic replay, graph rejection, readiness, derived bucket, structured dispatch rejection, and audited overrides are implemented and tested"
+        - "No agent execution, Git mutation, UI, incident, healing, or canonical run-store behavior was added"
+      blocked_tasks: []
+      missing_evidence: []
+      required_board_updates: []
 checks:
   dirty_fingerprint: "untracked stale runtime artifacts plus new goal board"
   last_verification:

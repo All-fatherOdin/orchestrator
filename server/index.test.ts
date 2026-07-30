@@ -111,7 +111,703 @@ const {
   emptyQueue,
   optionalNumberValue,
 } = await import("../src/App.tsx");
+const {
+  ChangeControlError,
+  ChangeControlStore,
+} = await import("./change-control-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
+
+test("change-control ledger serializes project writes and rebuilds immutable projections", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
+  try {
+    const store = new ChangeControlStore(root);
+    const [first, second] = await Promise.all([
+      store.create("project-one", {
+        changeId: "change-one",
+        actor: "user:alice",
+        payload: { title: "First change", nested: { priority: 1 } },
+      }),
+      store.create("project-one", {
+        changeId: "change-two",
+        actor: "user:bob",
+        payload: { title: "Second change" },
+      }),
+    ]);
+    assert.deepEqual(
+      [first.change.sequence, second.change.sequence].sort((left, right) => left - right),
+      [1, 2],
+    );
+
+    const [planned, active] = await Promise.all([
+      store.transition("project-one", "change-one", {
+        to: "planned",
+        actor: "user:planner",
+      }),
+      store.transition("project-one", "change-one", {
+        to: "active",
+        actor: "user:operator",
+        payload: { note: "Started" },
+      }),
+    ]);
+    assert.equal(planned.change.status, "planned");
+    assert.equal(active.change.status, "active");
+    assert.deepEqual(active.change.details, {
+      title: "First change",
+      nested: { priority: 1 },
+    });
+    assert.deepEqual(active.events.map((event) => event.sequence), [1, 3, 4]);
+    assert.equal(active.events[0].previousHash, null);
+    assert.equal(active.events[1].previousHash, second.events[0].hash);
+    assert.equal(active.events[2].previousHash, active.events[1].hash);
+
+    for (const event of active.events) {
+      assert.deepEqual(Object.keys(event).sort(), [
+        "actor",
+        "causationId",
+        "changeId",
+        "correlationId",
+        "hash",
+        "id",
+        "occurredAt",
+        "payload",
+        "previousHash",
+        "projectId",
+        "sequence",
+        "type",
+      ]);
+      assert.match(event.id, /^[A-Za-z0-9][A-Za-z0-9._:-]+$/);
+      assert.equal(new Date(event.occurredAt).toISOString(), event.occurredAt);
+      assert.equal(event.projectId, "project-one");
+      assert.equal(event.changeId, "change-one");
+      assert.equal(typeof event.causationId, "string");
+      assert.equal(typeof event.correlationId, "string");
+      assert.equal(event.hash.length, 64);
+      assert.ok(Object.isFrozen(event));
+      assert.ok(Object.isFrozen(event.payload));
+    }
+    assert.equal(active.events[1].causationId, active.events[0].id);
+    assert.equal(active.events[2].causationId, active.events[1].id);
+    assert.deepEqual(active.events[1].payload, {
+      from: "draft",
+      to: "planned",
+      data: {},
+    });
+    assert.deepEqual(active.events[2].payload, {
+      from: "planned",
+      to: "active",
+      data: { note: "Started" },
+    });
+
+    const reloaded = new ChangeControlStore(root);
+    const rebuilt = await reloaded.get("project-one", "change-one");
+    assert.deepEqual(rebuilt, active);
+    assert.deepEqual(
+      (await reloaded.list("project-one")).map((change) => [
+        change.changeId,
+        change.status,
+      ]),
+      [
+        ["change-two", "draft"],
+        ["change-one", "active"],
+      ],
+    );
+
+    await assert.rejects(
+      reloaded.transition("project-one", "change-one", {
+        to: "planned",
+        actor: "user:operator",
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CONFLICT" &&
+        /Illegal change transition/.test(error.message),
+    );
+    await assert.rejects(
+      reloaded.transition("project-one", "change-one", {
+        to: "unknown" as "active",
+        actor: "user:operator",
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT",
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("project-one").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<{ type: string }>;
+    };
+    assert.equal(ledger.events.length, 4);
+    assert.deepEqual(await readdir(join(root, "projects")), [
+      `${createHash("sha256").update("project-one").digest("hex")}.json`,
+    ]);
+    ledger.events[0].type = "change.unknown";
+    await writeFile(projectFile, JSON.stringify(ledger));
+    await assert.rejects(
+      reloaded.get("project-one", "change-one"),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /Unknown change-control event type/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("change-control preserves a JSON __proto__ payload key", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
+  try {
+    const store = new ChangeControlStore(root);
+    const payload = JSON.parse(
+      '{"__proto__":{"polluted":true},"title":"Prototype-safe change"}',
+    ) as NonNullable<Parameters<typeof store.create>[1]["payload"]>;
+    const created = await store.create("prototype-project", {
+      changeId: "prototype-change",
+      actor: "user:creator",
+      payload,
+    });
+
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(created.change.details, "__proto__"),
+      true,
+    );
+    assert.deepEqual(created.change.details.__proto__, { polluted: true });
+    assert.equal(
+      (created.change.details as Record<string, unknown>).polluted,
+      undefined,
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("prototype-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<{ payload: { data: Record<string, unknown> } }>;
+    };
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(
+        ledger.events[0].payload.data,
+        "__proto__",
+      ),
+      true,
+    );
+    assert.deepEqual(ledger.events[0].payload.data.__proto__, {
+      polluted: true,
+    });
+
+    const reloaded = await new ChangeControlStore(root).get(
+      "prototype-project",
+      "prototype-change",
+    );
+    assert.deepEqual(reloaded, created);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("change-control create, list, get, and transition APIs fail closed", async () => {
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const base = `http://127.0.0.1:${address.port}/api/change-control/projects/api-project/changes`;
+    const createResponse = await fetch(base, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        changeId: "api-change",
+        actor: "user:creator",
+        correlationId: "request:one",
+        payload: { title: "API change" },
+      }),
+    });
+    assert.equal(createResponse.status, 201);
+    const created = await createResponse.json() as {
+      change: { status: string };
+      events: Array<{ type: string; correlationId: string }>;
+    };
+    assert.equal(created.change.status, "draft");
+    assert.equal(created.events[0].type, "change.created");
+    assert.equal(created.events[0].correlationId, "request:one");
+
+    const illegalResponse = await fetch(`${base}/api-change/transitions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ to: "active", actor: "user:operator" }),
+    });
+    assert.equal(illegalResponse.status, 409);
+    assert.equal(
+      (await illegalResponse.json() as { code: string }).code,
+      "CONFLICT",
+    );
+
+    for (const to of ["planned", "active", "completed"]) {
+      const response = await fetch(`${base}/api-change/transitions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to, actor: "user:operator" }),
+      });
+      assert.equal(response.status, 200);
+    }
+
+    const listResponse = await fetch(base);
+    assert.equal(listResponse.status, 200);
+    const listed = await listResponse.json() as Array<{
+      changeId: string;
+      status: string;
+    }>;
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].changeId, "api-change");
+    assert.equal(listed[0].status, "completed");
+
+    const getResponse = await fetch(`${base}/api-change`);
+    assert.equal(getResponse.status, 200);
+    const fetched = await getResponse.json() as {
+      change: { status: string };
+      events: Array<{ sequence: number }>;
+    };
+    assert.equal(fetched.change.status, "completed");
+    assert.deepEqual(fetched.events.map((event) => event.sequence), [1, 2, 3, 4]);
+
+    const terminalResponse = await fetch(`${base}/api-change/transitions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ to: "cancelled", actor: "user:operator" }),
+    });
+    assert.equal(terminalResponse.status, 409);
+
+    const unknownResponse = await fetch(`${base}/api-change/transitions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ to: "reopened", actor: "user:operator" }),
+    });
+    assert.equal(unknownResponse.status, 400);
+    assert.equal(
+      (await unknownResponse.json() as { code: string }).code,
+      "INVALID_INPUT",
+    );
+
+    const gatedBase = `http://127.0.0.1:${address.port}/api/change-control/projects/api-wave-project`;
+    assert.equal(
+      (
+        await fetch(`${gatedBase}/changes`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            changeId: "api-wave-change",
+            actor: "user:planner",
+          }),
+        })
+      ).status,
+      201,
+    );
+    for (const body of [
+      {
+        waveId: "api-blocker",
+        actor: "user:planner",
+        tasks: [{ taskId: "api-blocker-task" }],
+      },
+      {
+        waveId: "api-waiting",
+        actor: "user:planner",
+        dependsOn: ["api-blocker"],
+        tasks: [{ taskId: "api-waiting-task" }],
+      },
+    ]) {
+      const response = await fetch(
+        `${gatedBase}/changes/api-wave-change/waves`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      assert.equal(response.status, 201);
+    }
+    const gatedDispatch = await fetch(
+      `${gatedBase}/changes/api-wave-change/waves/api-waiting/dispatch`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actor: "user:dispatcher" }),
+      },
+    );
+    assert.equal(gatedDispatch.status, 409);
+    assert.deepEqual(await gatedDispatch.json(), {
+      error: "Wave api-waiting is not ready for dispatch.",
+      code: "NOT_READY",
+      reasons: [
+        { code: "WAVE_STATUS_NOT_READY", status: "draft" },
+        {
+          code: "WAVE_DEPENDENCY_NOT_COMPLETED",
+          dependencyWaveId: "api-blocker",
+          status: "ready",
+        },
+      ],
+    });
+    const overrideResponse = await fetch(
+      `${gatedBase}/changes/api-wave-change/waves/api-waiting/dispatch`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actor: "user:lead",
+          sendAnyway: true,
+          reason: "Approved API override",
+        }),
+      },
+    );
+    assert.equal(overrideResponse.status, 200);
+    const overridden = await overrideResponse.json() as {
+      wave: { status: string };
+      events: Array<{ type: string; actor: string }>;
+    };
+    assert.equal(overridden.wave.status, "dispatched");
+    assert.equal(overridden.events.at(-1)?.type, "wave.dispatch-overridden");
+    assert.equal(overridden.events.at(-1)?.actor, "user:lead");
+    const bucketResponse = await fetch(
+      `${gatedBase}/execution-bucket`,
+    );
+    assert.equal(bucketResponse.status, 200);
+    assert.deepEqual(
+      (await bucketResponse.json() as Array<{ waveId: string }>).map(
+        (item) => item.waveId,
+      ),
+      ["api-blocker"],
+    );
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  }
+});
+
+test("change-control rejects missing and cyclic task dependencies without publishing events", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await store.create("graph-project", {
+      changeId: "graph-change",
+      actor: "user:planner",
+    });
+
+    await assert.rejects(
+      store.createWave("graph-project", "graph-change", {
+        waveId: "missing-wave-dependency",
+        actor: "user:planner",
+        dependsOn: ["not-present-wave"],
+        tasks: [{ taskId: "valid-task" }],
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /missing dependency not-present-wave/.test(error.message),
+    );
+    await assert.rejects(
+      store.createWave("graph-project", "graph-change", {
+        waveId: "missing-wave",
+        actor: "user:planner",
+        tasks: [
+          {
+            taskId: "missing-task",
+            dependsOn: ["not-present"],
+          },
+        ],
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /missing dependency not-present/.test(error.message),
+    );
+    await assert.rejects(
+      store.createWave("graph-project", "graph-change", {
+        waveId: "cycle-wave",
+        actor: "user:planner",
+        tasks: [
+          { taskId: "cycle-a", dependsOn: ["cycle-b"] },
+          { taskId: "cycle-b", dependsOn: ["cycle-a"] },
+        ],
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /dependency cycle/.test(error.message),
+    );
+
+    assert.deepEqual(await store.listWaves("graph-project", "graph-change"), []);
+    const change = await store.get("graph-project", "graph-change");
+    assert.deepEqual(change.events.map((event) => event.type), ["change.created"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("wave and task readiness is deterministic and the execution bucket is derived", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await store.create("readiness-project", {
+      changeId: "readiness-change",
+      actor: "user:planner",
+    });
+    const first = await store.createWave(
+      "readiness-project",
+      "readiness-change",
+      {
+        waveId: "wave-one",
+        actor: "user:planner",
+        tasks: [
+          { taskId: "task-root", payload: { title: "Root" } },
+          {
+            taskId: "task-dependent",
+            dependsOn: ["task-root"],
+            payload: { title: "Dependent" },
+          },
+        ],
+      },
+    );
+    assert.equal(first.wave.status, "ready");
+    assert.deepEqual(
+      first.wave.tasks.map((task) => [task.taskId, task.status]),
+      [
+        ["task-root", "ready"],
+        ["task-dependent", "pending"],
+      ],
+    );
+    assert.deepEqual(
+      (await store.executionBucket("readiness-project")).map((item) => [
+        item.changeId,
+        item.waveId,
+      ]),
+      [["readiness-change", "wave-one"]],
+    );
+
+    await store.createWave("readiness-project", "readiness-change", {
+      waveId: "wave-two",
+      actor: "user:planner",
+      dependsOn: ["wave-one"],
+      tasks: [{ taskId: "task-two" }],
+    });
+    const waiting = await store.getWave(
+      "readiness-project",
+      "readiness-change",
+      "wave-two",
+    );
+    assert.equal(waiting.wave.status, "draft");
+    assert.deepEqual(waiting.wave.readiness.reasons, [
+      {
+        code: "WAVE_DEPENDENCY_NOT_COMPLETED",
+        dependencyWaveId: "wave-one",
+        status: "ready",
+      },
+    ]);
+
+    await store.dispatchWave(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      { actor: "user:dispatcher" },
+    );
+    await store.transitionWave(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      { actor: "user:operator", to: "running" },
+    );
+    await store.transitionTask(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      "task-root",
+      { actor: "user:operator", to: "running" },
+    );
+    const rootAccepted = await store.transitionTask(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      "task-root",
+      { actor: "user:reviewer", to: "accepted" },
+    );
+    assert.deepEqual(
+      rootAccepted.wave.tasks.map((task) => [task.taskId, task.status]),
+      [
+        ["task-root", "accepted"],
+        ["task-dependent", "ready"],
+      ],
+    );
+    await store.transitionTask(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      "task-dependent",
+      { actor: "user:operator", to: "running" },
+    );
+    await store.transitionTask(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      "task-dependent",
+      { actor: "user:reviewer", to: "accepted" },
+    );
+    await store.transitionWave(
+      "readiness-project",
+      "readiness-change",
+      "wave-one",
+      { actor: "user:operator", to: "completed" },
+    );
+
+    const unblocked = await store.getWave(
+      "readiness-project",
+      "readiness-change",
+      "wave-two",
+    );
+    assert.equal(unblocked.wave.status, "ready");
+    assert.deepEqual(unblocked.wave.readiness.reasons, []);
+    assert.deepEqual(
+      (await store.executionBucket("readiness-project")).map((item) => item.waveId),
+      ["wave-two"],
+    );
+
+    const reloaded = new ChangeControlStore(root);
+    assert.deepEqual(
+      await reloaded.executionBucket("readiness-project"),
+      await store.executionBucket("readiness-project"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dispatch rejects non-ready waves with reasons and audits send-anyway", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await store.create("dispatch-project", {
+      changeId: "dispatch-change",
+      actor: "user:planner",
+    });
+    await store.createWave("dispatch-project", "dispatch-change", {
+      waveId: "blocker-wave",
+      actor: "user:planner",
+      tasks: [{ taskId: "blocker-task" }],
+    });
+    await store.createWave("dispatch-project", "dispatch-change", {
+      waveId: "waiting-wave",
+      actor: "user:planner",
+      dependsOn: ["blocker-wave"],
+      tasks: [{ taskId: "waiting-task" }],
+    });
+
+    const expectedReasons = [
+      { code: "WAVE_STATUS_NOT_READY", status: "draft" },
+      {
+        code: "WAVE_DEPENDENCY_NOT_COMPLETED",
+        dependencyWaveId: "blocker-wave",
+        status: "ready",
+      },
+    ];
+    await assert.rejects(
+      store.dispatchWave(
+        "dispatch-project",
+        "dispatch-change",
+        "waiting-wave",
+        { actor: "user:dispatcher" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "NOT_READY" &&
+        error.status === 409 &&
+        assert.deepEqual(error.reasons, expectedReasons) === undefined,
+    );
+    await assert.rejects(
+      store.dispatchWave(
+        "dispatch-project",
+        "dispatch-change",
+        "waiting-wave",
+        { actor: "user:dispatcher", sendAnyway: true, reason: " " },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT",
+    );
+    const eventsBeforeInvalidOverrides = (
+      await store.getWave(
+        "dispatch-project",
+        "dispatch-change",
+        "waiting-wave",
+      )
+    ).events.length;
+    for (const input of [
+      {
+        sendAnyway: true,
+        reason: "Actor is required",
+      },
+      {
+        actor: "user:dispatcher",
+        sendAnyway: true,
+      },
+    ]) {
+      await assert.rejects(
+        store.dispatchWave(
+          "dispatch-project",
+          "dispatch-change",
+          "waiting-wave",
+          input as Parameters<typeof store.dispatchWave>[3],
+        ),
+        (error: unknown) =>
+          error instanceof ChangeControlError &&
+          error.code === "INVALID_INPUT",
+      );
+    }
+    assert.equal(
+      (
+        await store.getWave(
+          "dispatch-project",
+          "dispatch-change",
+          "waiting-wave",
+        )
+      ).events.length,
+      eventsBeforeInvalidOverrides,
+    );
+
+    const overridden = await store.dispatchWave(
+      "dispatch-project",
+      "dispatch-change",
+      "waiting-wave",
+      {
+        actor: "user:lead",
+        sendAnyway: true,
+        reason: "Approved urgent dependency bypass",
+      },
+    );
+    assert.equal(overridden.wave.status, "dispatched");
+    const overrideEvent = overridden.events.at(-1)!;
+    assert.equal(overrideEvent.type, "wave.dispatch-overridden");
+    assert.equal(overrideEvent.actor, "user:lead");
+    assert.deepEqual(overrideEvent.payload, {
+      from: "draft",
+      to: "dispatched",
+      reason: "Approved urgent dependency bypass",
+      reasons: expectedReasons,
+      data: {},
+    });
+    assert.ok(Object.isFrozen(overrideEvent));
+    assert.ok(Object.isFrozen(overrideEvent.payload));
+    assert.deepEqual(
+      (await store.executionBucket("dispatch-project")).map((item) => item.waveId),
+      ["blocker-wave"],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("maps the UI light effort to the Codex CLI low effort", () => {
   assert.equal(codexReasoningEffort("light"), "low");

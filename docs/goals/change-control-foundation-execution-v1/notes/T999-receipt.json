@@ -1,0 +1,23 @@
+{
+  "goalbuddy_receipt_v1": {
+    "result": "done",
+    "task_id": "T999",
+    "board_path": "docs/goals/change-control-foundation-execution-v1/state.yaml",
+    "decision": "complete",
+    "full_outcome_complete": true,
+    "rationale": "The full tranche is proven: the canonical retry run completed with both exact tasks independently approved, the implementation remains within the four authorized paths, and the fresh host oracle passed.",
+    "evidence": [
+      "Canonical retry run ms7a14zt-trfqi completed with both tasks completed and review approved",
+      "npm run check passed",
+      "npm test passed: 107/107",
+      "git diff --check passed",
+      "context smoke passed",
+      "Scope is exactly README.md, server/change-control-v1/index.ts, server/index.ts, and server/index.test.ts",
+      "Hash-chained ledger, atomic writes, deterministic replay, graph rejection, readiness, derived bucket, structured dispatch rejection, and audited overrides are implemented and tested",
+      "No agent execution, Git mutation, UI, incident, healing, or canonical run-store behavior was added"
+    ],
+    "blocked_tasks": [],
+    "missing_evidence": [],
+    "required_board_updates": []
+  }
+}

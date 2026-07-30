@@ -36,6 +36,16 @@ import {
   type ProviderRuntimeIdentityV1,
   type ProviderRuntimeStateV1,
 } from "./provider-runtime-state-v1/index.ts";
+import {
+  ChangeControlError,
+  ChangeControlStore,
+  type CreateChangeInput,
+  type CreateWaveInput,
+  type DispatchWaveInput,
+  type TransitionChangeInput,
+  type TransitionTaskInput,
+  type TransitionWaveInput,
+} from "./change-control-v1/index.ts";
 export {
   PROVIDER_RUNTIME_STATE_VERSION,
   changedProviderRuntimeIdentityV1,
@@ -903,6 +913,9 @@ const dataDirectory = resolve(
 const runsDirectory = join(dataDirectory, "runs");
 const pipelinesDirectory = join(dataDirectory, "plans");
 const projectsFile = join(dataDirectory, "projects.json");
+export const changeControlStore = new ChangeControlStore(
+  join(dataDirectory, "change-control-v1"),
+);
 const defaultReviewSettings: ReviewSettings = {
   enabled: true,
   model: "terra",
@@ -4326,6 +4339,191 @@ app.get("/api/health", (_, response) =>
     codexBin: codexBin(),
     cliModelIds: MODEL_IDS,
   }),
+);
+function sendChangeControlError(
+  response: express.Response,
+  error: unknown,
+) {
+  if (error instanceof ChangeControlError)
+    return response
+      .status(error.status)
+      .json({
+        error: error.message,
+        code: error.code,
+        ...(error.reasons ? { reasons: error.reasons } : {}),
+      });
+  return response
+    .status(500)
+    .json({ error: "Change-control storage failed.", code: "STORAGE_FAILURE" });
+}
+
+app.post(
+  "/api/change-control/projects/:projectId/changes",
+  async (request, response) => {
+    try {
+      const aggregate = await changeControlStore.create(
+        request.params.projectId,
+        request.body as CreateChangeInput,
+      );
+      return response.status(201).json(aggregate);
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/changes",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.list(request.params.projectId),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/changes/:changeId",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.get(
+          request.params.projectId,
+          request.params.changeId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/transitions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.transition(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as TransitionChangeInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.createWave(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as CreateWaveInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.listWaves(
+          request.params.projectId,
+          request.params.changeId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getWave(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/dispatch",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.dispatchWave(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.body as DispatchWaveInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/transitions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.transitionWave(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.body as TransitionWaveInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/tasks/:taskId/transitions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.transitionTask(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.params.taskId,
+          request.body as TransitionTaskInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/execution-bucket",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.executionBucket(request.params.projectId),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
 );
 app.get("/api/run", (_, response) => response.json(activeRun ?? null));
 app.get("/api/run/scheduler", (_, response) =>

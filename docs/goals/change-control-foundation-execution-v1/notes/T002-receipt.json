@@ -1,0 +1,42 @@
+{
+  "result": "done",
+  "task_id": "T002",
+  "harness": "codex",
+  "summary": "Executed the exact two-task foundation queue through a fresh source server, preserved the failed first run, retried only the unapproved second task, and obtained a completed canonical run with both tasks independently approved.",
+  "evidence": [
+    "Initial run ms78vqyv-9kacx: first task approved; second executor completed but reviewer spawn failed with ENAMETOOLONG",
+    "Canonical retry run: D:/pet-projects/orchestrator-run-data/change-control-foundation-2026-07-30/runs/ms7a14zt-trfqi/run.json",
+    "Retry run ms7a14zt-trfqi status: completed",
+    "change-ledger-api: completed, review approved",
+    "wave-dispatch-gate: completed, review approved",
+    "Changed product paths: README.md, server/change-control-v1/index.ts, server/index.ts, server/index.test.ts"
+  ],
+  "commands": [
+    {
+      "cmd": "POST /api/runs/ms78vqyv-9kacx/tasks/ms78vqyv-dsad2/retry",
+      "status": "pass"
+    },
+    {
+      "cmd": "canonical retry run terminal-state inspection",
+      "status": "pass"
+    },
+    {
+      "cmd": "npm run check",
+      "status": "pass"
+    },
+    {
+      "cmd": "npm test",
+      "status": "pass",
+      "detail": "107/107"
+    },
+    {
+      "cmd": "git diff --check",
+      "status": "pass"
+    },
+    {
+      "cmd": "python scripts/ai_context_helper.py --root . smoke-check --format json",
+      "status": "pass"
+    }
+  ],
+  "remaining_blockers": []
+}

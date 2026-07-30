@@ -20,6 +20,71 @@ The desktop app is single-instance. A second launch focuses the existing window 
 
 The target repository's `AGENTS.md` and `.codex/config.toml` remain the source of truth: each CLI process is launched with that repository as its working directory.
 
+## Change-control API
+
+Orchestrator keeps a separate change-control event ledger under its own data
+directory at `.orchestrator/change-control-v1/projects/` (or beneath
+`ORCHESTRATOR_DATA_DIR` when configured). Nothing is written to a target
+repository, and canonical run records under `.orchestrator/runs/` are
+unchanged.
+
+The first version supports distinct change, wave, and task entities. Their
+lifecycles fail closed:
+
+- change: `draft -> planned -> active -> completed | cancelled`
+- wave: `draft -> ready -> dispatched -> running -> completed | halted`
+- task: `pending -> ready -> running -> accepted | failed | halted`
+
+Every accepted write appends an immutable, hash-chained event with a
+project-wide monotonic sequence. Current state is rebuilt from the validated
+event stream; there are no update or delete endpoints for published events.
+Waves and tasks are planning entities only: dispatch changes ledger state but
+does not create a run or execute an agent.
+
+The JSON APIs are:
+
+- `POST /api/change-control/projects/:projectId/changes`
+- `GET /api/change-control/projects/:projectId/changes`
+- `GET /api/change-control/projects/:projectId/changes/:changeId`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/transitions`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves`
+- `GET /api/change-control/projects/:projectId/changes/:changeId/waves`
+- `GET /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/dispatch`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/transitions`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/tasks/:taskId/transitions`
+- `GET /api/change-control/projects/:projectId/execution-bucket`
+
+Create bodies require `actor` and may include `changeId`, `causationId`,
+`correlationId`, and a JSON-object `payload`. If omitted, the change ID,
+causation ID, and correlation ID receive server-generated defaults.
+Transition bodies require `actor` and `to`, may include the same causal fields
+and payload, and accept only `planned`, `active`, `completed`, or `cancelled`
+when legal from the current state. Change create, get, and transition responses
+contain `{ change, events }`; wave writes and gets contain `{ wave, events }`.
+List endpoints return deterministic projections.
+Invalid input returns `400`, missing changes return `404`, illegal transitions
+or duplicate IDs return `409`, and a corrupt or unknown persisted event fails
+with `500` instead of being projected.
+
+Wave creation requires `actor` and a non-empty `tasks` array. Each task has a
+stable `taskId` and may declare task IDs in `dependsOn`; a wave may likewise
+declare earlier wave IDs in `dependsOn`. Missing, duplicate, self, and cyclic
+task dependencies are rejected atomically. Root tasks become ready
+deterministically, dependent tasks become ready only after every prerequisite
+is accepted, and a dependent wave becomes ready only after every prerequisite
+wave is completed.
+
+The execution bucket endpoint is a deterministic, project-scoped projection
+of ready waves ordered by the ledger sequence of their readiness event. It is
+never persisted as a second queue or canonical store. Dispatching a non-ready
+wave returns `409` with code `NOT_READY` and structured `reasons` such as
+`WAVE_STATUS_NOT_READY`, `WAVE_DEPENDENCY_NOT_COMPLETED`, or
+`NO_READY_TASKS`. To override that gate, send `sendAnyway: true` with a
+non-empty `actor` and `reason`; the ledger records a
+`wave.dispatch-overridden` event containing the actor, reason, and exact
+readiness reasons that were bypassed.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.
