@@ -27,6 +27,9 @@ const {
   assessReviewerResult,
   buildReviewerPrompt,
   reviewerEvidencePreflight,
+  verificationCommandViolations,
+  powershellVerificationSyntaxPreflight,
+  verificationCommandInvocation,
   taskAllowsCorrection,
   boundedReviewerDiagnostics,
   resolveReviewedTaskStatus,
@@ -2557,6 +2560,106 @@ test("preflight rejects exact-line review requirements without line-readable ver
     ).ok,
     false,
   );
+});
+
+test("preflight requires content-readable evidence when the reviewer must inspect documents", () => {
+  const hashOnly = reviewerEvidencePreflight(
+    {
+      prompt: "Review the contents of all six documents and report any contradictions.",
+      verificationCommands: [
+        "Get-FileHash -Algorithm SHA256 docs/one.md, docs/two.md",
+        "Test-Path docs/one.md",
+      ],
+    },
+    {},
+  );
+  assert.equal(hashOnly.required, true);
+  assert.equal(hashOnly.ok, false);
+  assert.match(hashOnly.detail, /content-readable/i);
+
+  const targeted = reviewerEvidencePreflight(
+    {
+      prompt: "Review the contents of all six documents and report any contradictions.",
+      verificationCommands: [
+        "rg -n \"contract|invariant|decision\" docs/one.md docs/two.md",
+      ],
+    },
+    {},
+  );
+  assert.equal(targeted.ok, true);
+});
+
+test("verification policy rejects impossible clean-tree checks and unbounded document dumps", () => {
+  assert.deepEqual(
+    verificationCommandViolations(
+      {
+        allowedPaths: ["docs"],
+        verificationCommands: [
+          "git diff --quiet",
+          "if (git status --porcelain) { exit 1 }",
+          "Get-Content -LiteralPath docs/contract.md",
+        ],
+      },
+      {},
+    ),
+    [
+      "Writable tasks cannot use a post-change verification command that requires the Git worktree to be clean.",
+      "Document evidence must be bounded or targeted; do not emit an entire file with Get-Content.",
+    ],
+  );
+  assert.deepEqual(
+    verificationCommandViolations(
+      {
+        allowedPaths: ["docs"],
+        verificationCommands: [
+          "git diff --check",
+          "Get-Content -LiteralPath docs/contract.md -TotalCount 120",
+          "rg -n \"contract|decision\" docs/contract.md",
+        ],
+      },
+      {},
+    ),
+    [],
+  );
+});
+
+test("PowerShell verification syntax is parsed during preflight without executing it", async () => {
+  const valid = await powershellVerificationSyntaxPreflight([
+    "$paths = @('one.md', 'two.md'); foreach ($path in $paths) { Test-Path -LiteralPath $path }",
+    "npm test",
+  ]);
+  assert.equal(valid.required, true);
+  assert.equal(valid.ok, true);
+
+  const invalid = await powershellVerificationSyntaxPreflight([
+    "$paths = @('one.md', 'two.md'; foreach ($path in $paths) { Test-Path -LiteralPath $path }",
+  ]);
+  assert.equal(invalid.required, true);
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.detail, /PowerShell syntax/i);
+});
+
+test("detected PowerShell verification is executed by PowerShell rather than cmd", () => {
+  const powershell = verificationCommandInvocation(
+    "$paths = @('one.md'); Test-Path -LiteralPath $paths[0]",
+  );
+  assert.equal(powershell.shell, false);
+  assert.match(powershell.executable, /powershell|pwsh/i);
+  assert.deepEqual(powershell.args.slice(0, 3), [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+  ]);
+  assert.equal(
+    verificationCommandInvocation(
+      'python -m pytest --basetemp="$env:TEMP\\orchestrator-pytest-$PID"',
+    ).shell,
+    false,
+  );
+
+  const ordinary = verificationCommandInvocation("npm test");
+  assert.equal(ordinary.executable, "npm test");
+  assert.equal(ordinary.shell, true);
 });
 
 test("correction loop is disabled only for an explicitly empty allowedPaths scope", () => {

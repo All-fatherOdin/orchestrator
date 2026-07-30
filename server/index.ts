@@ -1594,7 +1594,7 @@ function authorizationScope(task: Pick<TaskInput, "allowedPaths" | "verification
   };
 }
 
-export function reviewerEvidencePreflight(
+function exactLineEvidencePreflight(
   task: Pick<TaskInput, "prompt" | "verificationCommands">,
   project: ProjectSettings,
 ) {
@@ -1637,6 +1637,160 @@ export function reviewerEvidencePreflight(
         detail:
           "Exact line evidence is required, but verificationCommands do not include a line-numbered content reader.",
       };
+}
+
+export function reviewerEvidencePreflight(
+  task: Pick<TaskInput, "prompt" | "verificationCommands">,
+  project: ProjectSettings,
+) {
+  const exactLineEvidence = exactLineEvidencePreflight(task, project);
+  if (exactLineEvidence.required) return exactLineEvidence;
+  const requiresContentInspection = [
+    /\b(?:review|inspect|read|validate|check)\b[^\r\n.]{0,80}\bcontents?\b/i,
+    /\b(?:review|inspect|read)\b[^\r\n.]{0,80}\b(?:documents?|artifacts?|files?)\b/i,
+    /\b(?:contents?|documents?|artifacts?|files?)\b[^\r\n.]{0,80}\b(?:review|inspection|validation)\b/i,
+  ].some((pattern) => pattern.test(task.prompt));
+  if (!requiresContentInspection) return exactLineEvidence;
+  const commands = [
+    ...(project.verificationCommands ?? []),
+    ...(task.verificationCommands ?? []),
+  ];
+  const hasContentReader = commands.some(
+    (command) =>
+      (/\brg(?:\.exe)?\b/i.test(command) &&
+        !/(?:^|\s)(?:-l\b|--files-with-matches\b|--files\b)/i.test(command)) ||
+      (/\bSelect-String\b/i.test(command) && !/\s-Quiet\b/i.test(command)) ||
+      /\bGet-Content\b/i.test(command) ||
+      (/\bfindstr(?:\.exe)?\b/i.test(command) && /\s\/n\b/i.test(command)),
+  );
+  return hasContentReader
+    ? {
+        required: true,
+        ok: true,
+        detail: "Document review has content-readable evidence.",
+      }
+    : {
+        required: true,
+        ok: false,
+        detail:
+          "Document content review is required, but verificationCommands do not include content-readable evidence.",
+      };
+}
+
+export function verificationCommandViolations(
+  task: Pick<TaskInput, "allowedPaths" | "verificationCommands">,
+  project: Pick<ProjectSettings, "verificationCommands">,
+) {
+  const commands = [
+    ...(project.verificationCommands ?? []),
+    ...(task.verificationCommands ?? []),
+  ];
+  const violations: string[] = [];
+  if (
+    task.allowedPaths?.length &&
+    commands.some(
+      (command) =>
+        /\bgit(?:\.exe)?\s+diff\b[^\r\n]*(?:--quiet\b|--exit-code\b)/i.test(command) ||
+        (/\bgit(?:\.exe)?\s+status\b[^\r\n]*--porcelain\b/i.test(command) &&
+          /\b(?:if|throw)\b|\bexit\s+1\b|\btest\s+-z\b|\[\s+-z\b/i.test(command)),
+    )
+  )
+    violations.push(
+      "Writable tasks cannot use a post-change verification command that requires the Git worktree to be clean.",
+    );
+  if (
+    commands.some(
+      (command) =>
+        /\bGet-Content\b/i.test(command) &&
+        !/\s-TotalCount\b/i.test(command) &&
+        !/\|\s*Select-Object\b[^\r\n]*(?:-First|-Last)\b/i.test(command) &&
+        !/\|\s*Select-String\b/i.test(command),
+    )
+  )
+    violations.push(
+      "Document evidence must be bounded or targeted; do not emit an entire file with Get-Content.",
+    );
+  return violations;
+}
+
+function isLikelyPowerShellCommand(command: string) {
+  return (
+    /\$env:[A-Za-z_]/i.test(command) ||
+    /(?:^|[;&|]\s*)\$[A-Za-z_]/i.test(command) ||
+    /\b(?:Get|Set|Test|Select|ForEach|Where|Write|Resolve|Join|Split|ConvertTo|ConvertFrom)-[A-Za-z]+\b/i.test(command) ||
+    /\b(?:foreach|param|try|catch)\s*\(/i.test(command) ||
+    /@\(/.test(command)
+  );
+}
+
+async function powershellSyntaxViolation(command: string) {
+  const encodedSource = Buffer.from(command, "utf8").toString("base64");
+  const parserScript = [
+    `$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedSource}'))`,
+    "$tokens = $null",
+    "$errors = $null",
+    "[System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors) | Out-Null",
+    "if ($errors.Count -gt 0) { $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }; exit 1 }",
+  ].join("; ");
+  return await new Promise<string | undefined>((resolveResult) => {
+    const child = spawn(
+      process.platform === "win32" ? "powershell.exe" : "pwsh",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", parserScript],
+      { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let diagnostics = "";
+    let settled = false;
+    const settle = (value: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      resolveResult(value);
+    };
+    child.stderr?.on("data", (chunk: Buffer) => {
+      diagnostics = `${diagnostics}${chunk.toString()}`.slice(-2_000);
+    });
+    child.once("error", (error) =>
+      settle(`PowerShell syntax parser could not start: ${error.message}`),
+    );
+    child.once("close", (code) =>
+      settle(
+        code === 0
+          ? undefined
+          : `PowerShell syntax error: ${diagnostics.trim() || `parser exited ${code}`}`,
+      ),
+    );
+  });
+}
+
+export async function powershellVerificationSyntaxPreflight(
+  commands: string[],
+) {
+  const powershellCommands = commands.filter(isLikelyPowerShellCommand);
+  if (!powershellCommands.length)
+    return {
+      required: false,
+      ok: true,
+      detail: "No PowerShell verification commands detected.",
+    };
+  for (const command of powershellCommands) {
+    const violation = await powershellSyntaxViolation(command);
+    if (violation)
+      return { required: true, ok: false, detail: violation };
+  }
+  return {
+    required: true,
+    ok: true,
+    detail: `${powershellCommands.length} PowerShell verification command(s) parsed successfully.`,
+  };
+}
+
+export function verificationCommandInvocation(command: string) {
+  if (isLikelyPowerShellCommand(command))
+    return {
+      executable: process.platform === "win32" ? "powershell.exe" : "pwsh",
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+      shell: false,
+    };
+  return { executable: command, args: [] as string[], shell: true };
 }
 
 export function taskAllowsCorrection(
@@ -2213,6 +2367,11 @@ export function validateQueue(value: unknown): {
       task.verificationCommands,
       `Task ${index + 1} Windows pytest verification`,
     );
+    const commandViolations = verificationCommandViolations(task, project);
+    if (commandViolations.length)
+      throw new Error(
+        `Task ${index + 1} verificationCommands: ${commandViolations.join(" ")}`,
+      );
     const authorization = task.authorization;
     if (authorization !== undefined) {
       if (!authorization || typeof authorization !== "object" || typeof authorization.enabled !== "boolean")
@@ -3279,24 +3438,37 @@ async function preflight(value: unknown) {
         )
       : Promise.resolve({}),
   ]);
-  const checks = queue.tasks.flatMap((task, index) => {
-    const modelOk = Object.hasOwn(MODEL_IDS, task.model ?? "terra");
-    const evidence = reviewerEvidencePreflight(task, queue.project);
-    return [
-      {
-        name: `Task ${index + 1} model`,
-        ok: modelOk,
-        detail: task.model ?? "terra",
-      },
-      ...(evidence.required
-        ? [{
-            name: `Task ${index + 1} reviewer evidence`,
-            ok: evidence.ok,
-            detail: evidence.detail,
-          }]
-        : []),
-    ];
-  });
+  const checks = (
+    await Promise.all(queue.tasks.map(async (task, index) => {
+      const modelOk = Object.hasOwn(MODEL_IDS, task.model ?? "terra");
+      const evidence = reviewerEvidencePreflight(task, queue.project);
+      const powershellSyntax = await powershellVerificationSyntaxPreflight([
+        ...(queue.project.verificationCommands ?? []),
+        ...(task.verificationCommands ?? []),
+      ]);
+      return [
+        {
+          name: `Task ${index + 1} model`,
+          ok: modelOk,
+          detail: task.model ?? "terra",
+        },
+        ...(evidence.required
+          ? [{
+              name: `Task ${index + 1} reviewer evidence`,
+              ok: evidence.ok,
+              detail: evidence.detail,
+            }]
+          : []),
+        ...(powershellSyntax.required
+          ? [{
+              name: `Task ${index + 1} PowerShell syntax`,
+              ok: powershellSyntax.ok,
+              detail: powershellSyntax.detail,
+            }]
+          : []),
+      ];
+    }))
+  ).flat();
   const contexts = await resolveQueueContexts(queue);
   if (contexts.some(Boolean)) {
     cachePreflightContexts(queue, contexts);
@@ -3641,9 +3813,10 @@ async function runTaskVerification(run: Run, task: Task) {
     task.log.push(`Orchestrator verification: ${command}`);
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(command, {
+      const invocation = verificationCommandInvocation(command);
+      child = spawn(invocation.executable, invocation.args, {
         cwd: run.project.path,
-        shell: true,
+        shell: invocation.shell,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       });

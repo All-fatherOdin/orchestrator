@@ -37,12 +37,21 @@ tasks:
     allowedPaths: [src/notifications]
     verificationCommands:
       - npm run typecheck
-      # If the prompt requires exact path/line evidence, include a command
-      # that actually emits numbered content. Preflight rejects existence- or
-      # whitespace-only evidence for that requirement. PowerShell example:
+      # These commands run after the task changes. Do not require the whole
+      # worktree to be clean (`git diff --quiet` / `--exit-code`) here: a
+      # successful writing task necessarily has an allowed diff.
+      #
+      # If the prompt requires document review or exact path/line evidence,
+      # include bounded or targeted content output. SHA-256 and Test-Path prove
+      # identity/existence, not content correctness. Preflight parses detected
+      # PowerShell commands and rejects syntax errors before execution.
       # - >-
-      #   $i = 0; Get-Content -LiteralPath 'src/notifications/result.ts' |
-      #   ForEach-Object { $i++; '{0}:{1}' -f $i, $_ }
+      #   rg -n "contract|invariant|decision"
+      #   'src/notifications/result.ts'
+      # For a bounded excerpt instead of a targeted search:
+      # - >-
+      #   Get-Content -LiteralPath 'src/notifications/result.ts'
+      #   -TotalCount 120
       # Ordinary `git diff --check -- <path>` does not inspect a new untracked
       # file. For such files, use a content-aware PowerShell check like this
       # (replace the example path). `git diff --no-index` normally exits 1
@@ -54,6 +63,10 @@ tasks:
     # Optional Context Contract v1 selection through scripts/ai_context_helper.py.
     contextProfile: review
     maxSources: 8
+    # Baseline-only guards belong here, before edits. A clean-tree guard may be
+    # appropriate here when the task truly requires a pristine starting state.
+    executionGuards:
+      - Stop if an allowed path has pre-existing user changes before work begins.
     # Named resources are exclusive across concurrently running tasks.
     resources: [typescript-check]
   - key: reconnect-logic
