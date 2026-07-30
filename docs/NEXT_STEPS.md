@@ -1,19 +1,23 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-07-29
+Last updated: 2026-07-30
 
 ## Current Priority
 
-The repo-centric secondary-memory foundation is verified. The next executable
-slice is the event-backed change/wave foundation described in
-`docs/architecture/change-control-plane/README.md`.
+The repo-centric secondary-memory foundation and the event-backed change/wave
+foundation are verified and merged into `main`. Codex prompts now travel over
+stdin instead of the Windows command line, and retry runs retain the
+authoritative task-owned path lineage for reviewer scope.
 
 ## Current Safe Step
 
-Review and launch `queues/change-control-foundation-v1.yaml`. It creates the
-canonical change ledger first and then adds dependency-gated wave dispatch.
-Do not create later queues until this slice fixes the event/API contracts.
+Define the Phase 2 Planning and Drift contracts before creating another queue:
+structured acceptance claims, evidence-backed blast radius, `planBaseSha`,
+stale-plan detection, dispatch rejection for stale plans, and architect replan
+receipts. Fix their schemas, ownership, transitions, and failure semantics
+against the Phase 1 ledger first; only then create the two-task implementation
+queue.
 
 ## Source Boundaries
 
@@ -22,6 +26,8 @@ Do not create later queues until this slice fixes the event/API contracts.
 - Goal execution truth: `docs/goals/<slug>/state.yaml`.
 - Local user queues: `queues/`, intentionally ignored by Git.
 - Project Map: secondary navigation and replay context only.
+- Phase 1 completion evidence:
+  `docs/goals/change-control-foundation-execution-v1/state.yaml`.
 
 ## Explicit Non-Goals
 
@@ -30,8 +36,8 @@ Do not create later queues until this slice fixes the event/API contracts.
 - Do not introduce a vector database, persistent search index, background
   capture, or autonomous memory promotion.
 - Do not claim that the full Nikolay-like system is implemented.
-- Do not add worktree, merge, incident, auto-heal, lineage, or operator UI
-  behavior in the foundation queue.
+- Do not begin worktree/merge, incident, auto-heal, prompt/eval lineage, or
+  operator UI behavior before the Planning and Drift contracts are accepted.
 
 ## Verification
 
