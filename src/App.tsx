@@ -109,10 +109,15 @@ type DraftTask = {
   minModel?: "luna" | "terra" | "sol";
   effort?: "light" | "medium" | "high";
   allowedPaths?: string[];
+  preconditions?: string[];
+  verificationCommands?: string[];
+  executionGuards?: string[];
+  requiresCheckpointsFrom?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
   contextProfile?: string;
   maxSources?: number;
+  requireRepositoryContext?: boolean;
 };
 type ContextPreview = {
   task: number;
@@ -135,10 +140,21 @@ type DraftQueue = {
   git?: Partial<GitSettings>;
   tasks?: DraftTask[];
 };
-export function contextProfileTaskPatch(value: string): Partial<Pick<DraftTask, "contextProfile" | "maxSources">> {
+export function contextProfileTaskPatch(
+  value: string,
+): Partial<
+  Pick<
+    DraftTask,
+    "contextProfile" | "maxSources" | "requireRepositoryContext"
+  >
+> {
   return value
     ? { contextProfile: value }
-    : { contextProfile: undefined, maxSources: undefined };
+    : {
+        contextProfile: undefined,
+        maxSources: undefined,
+        requireRepositoryContext: undefined,
+      };
 }
 
 export function optionalNumberValue(value: string): number | undefined {
@@ -178,6 +194,17 @@ export function TaskContextControls({
             maxSources: optionalNumberValue(event.target.value),
           })}
         />
+      </label>
+      <label>
+        <input
+          aria-label="Require repository context"
+          type="checkbox"
+          disabled={!task.contextProfile}
+          checked={task.requireRepositoryContext ?? false}
+          onChange={(event) =>
+            onChange({ requireRepositoryContext: event.target.checked })}
+        />
+        Require repository helper
       </label>
     </>
   );

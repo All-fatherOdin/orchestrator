@@ -208,6 +208,7 @@ export type TaskApplyApprovalContract = {
   technicalPermission: "reversible_local_write";
   sideEffectRisk: "reversible_local_write";
   allowedPaths: string[];
+  preconditions?: string[];
   verificationCommands: string[];
 };
 export type TaskAuthorizationEvidence = {
@@ -220,6 +221,7 @@ export type TaskAuthorizationEvidence = {
   sideEffectRisk?: SideEffectRisk;
   approvalId?: string;
   allowedPaths: string[];
+  preconditions?: string[];
   verificationCommands: string[];
   scopeFingerprint: string;
   goalFingerprint: string;
@@ -251,14 +253,20 @@ export type TaskInput = {
   minModel?: Model;
   effort?: Effort;
   allowedPaths?: string[];
+  /** Read-only commands executed by the orchestrator before the executor starts. */
+  preconditions?: string[];
   verificationCommands?: string[];
   executionGuards?: string[];
+  /** Direct predecessors whose successful task-owned checkpoint must exist. */
+  requiresCheckpointsFrom?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
   /** Opts the task into Context Contract v1 selection. */
   contextProfile?: string;
   /** Maximum number of context sources selected for this task. */
   maxSources?: number;
+  /** Fail preflight instead of using the controlled context fallback. */
+  requireRepositoryContext?: boolean;
   /** Configuration-gated task-level authorization boundary. Disabled by default. */
   authorization?: TaskAuthorization;
   /** Exact Phase 2 scope that opts a newly authorized task into Phase 3 isolation. */
@@ -664,7 +672,7 @@ type ResolvedTask = Omit<TaskInput, "model" | "effort"> & {
 };
 type ReviewStatus =
   "pending" | "approved" | "changes_requested" | "unavailable" | "timed_out";
-type ExecutionPhase = "executor" | "reviewer" | "correction";
+type ExecutionPhase = "precondition" | "executor" | "reviewer" | "correction";
 type ExecutorOutcome = "COMPLETED" | "STOPPED";
 type ExecutorOutcomeAssessment = {
   disposition: "completed" | "stopped" | "invalid" | "legacy";
@@ -1874,9 +1882,14 @@ export function outsideAllowedPaths(
   );
 }
 
-function authorizationScope(task: Pick<TaskInput, "allowedPaths" | "verificationCommands">, project: ProjectSettings) {
+function authorizationScope(
+  task: Pick<TaskInput, "allowedPaths" | "preconditions" | "verificationCommands">,
+  project: ProjectSettings,
+) {
+  const preconditions = [...(task.preconditions ?? [])];
   return {
     allowedPaths: [...(task.allowedPaths ?? [])],
+    ...(preconditions.length ? { preconditions } : {}),
     verificationCommands: [...new Set([...(project.verificationCommands ?? []), ...(task.verificationCommands ?? [])])],
   };
 }
@@ -1988,6 +2001,17 @@ export function verificationCommandViolations(
   if (
     commands.some(
       (command) =>
+        /\bgit(?:\.exe)?\s+diff\b[^\r\n]*--no-index\b[^\r\n]*--check\b/i.test(
+          command,
+        ) && !/\bexit\s+0\b/i.test(command),
+    )
+  )
+    violations.push(
+      "PowerShell git diff --no-index --check wrappers must end with an explicit exit 0 after handling expected native exit code 1.",
+    );
+  if (
+    commands.some(
+      (command) =>
         /\bGet-Content\b/i.test(command) &&
         !/\s-TotalCount\b/i.test(command) &&
         !/\|\s*Select-Object\b[^\r\n]*(?:-First|-Last)\b/i.test(command) &&
@@ -2017,6 +2041,34 @@ function isLikelyPowerShellCommand(command: string) {
     /\b(?:foreach|param|try|catch)\s*\(/i.test(command) ||
     /@\(/.test(command)
   );
+}
+
+export function inlineCommandViolations(commands: readonly string[]) {
+  const violations: string[] = [];
+  if (
+    commands.some(
+      (command) =>
+        command.length > 400 &&
+        /\bpython(?:\.exe)?\b[^\r\n]*\s-c(?:\s|$)/i.test(command),
+    )
+  )
+    violations.push(
+      "Long inline Python -c verification is not supported; move it to a versioned script.",
+    );
+  if (
+    commands.some(
+      (command) =>
+        command.length > 1_200 &&
+        isLikelyPowerShellCommand(command) &&
+        !/^\s*(?:&\s*)?(?:"[^"]+\.ps1"|'[^']+\.ps1'|[^\s"';&|]+\.ps1)(?:\s|$)/i.test(
+          command,
+        ),
+    )
+  )
+    violations.push(
+      "Long inline PowerShell verification is not supported; move it to a versioned .ps1 script.",
+    );
+  return violations;
 }
 
 async function powershellSyntaxViolation(command: string) {
@@ -2104,7 +2156,26 @@ export function taskAllowsCorrection(
   return task.allowedPaths === undefined || task.allowedPaths.length > 0;
 }
 
-function scopeFingerprint(scope: { allowedPaths: string[]; verificationCommands: string[] }) {
+export function checkpointRequirementViolation(
+  tasks: ReadonlyArray<{
+    key?: string;
+    checkpoint?: { hash?: string };
+  }>,
+  task: Pick<TaskInput, "requiresCheckpointsFrom">,
+) {
+  for (const key of task.requiresCheckpointsFrom ?? []) {
+    const predecessor = tasks.find((candidate) => candidate.key === key);
+    if (!predecessor?.checkpoint?.hash)
+      return `Required predecessor "${key}" did not create a checkpoint.`;
+  }
+  return undefined;
+}
+
+function scopeFingerprint(scope: {
+  allowedPaths: string[];
+  preconditions?: string[];
+  verificationCommands: string[];
+}) {
   return createHash("sha256").update(JSON.stringify(scope)).digest("hex");
 }
 
@@ -2135,7 +2206,11 @@ function applyContractFingerprint(contract: TaskApplyApprovalContract) {
 
 function matchingApplyContract(
   authorization: TaskAuthorization,
-  scope: { allowedPaths: string[]; verificationCommands: string[] },
+  scope: {
+    allowedPaths: string[];
+    preconditions?: string[];
+    verificationCommands: string[];
+  },
   project: ProjectSettings,
 ) {
   const contract = project.approvedApplyContracts?.find(
@@ -2144,6 +2219,9 @@ function matchingApplyContract(
   if (!contract) return undefined;
   const contractScope = {
     allowedPaths: contract.allowedPaths,
+    ...(contract.preconditions?.length
+      ? { preconditions: contract.preconditions }
+      : {}),
     verificationCommands: contract.verificationCommands,
   };
   return contract.intent === "apply" &&
@@ -2159,7 +2237,7 @@ function matchingApplyContract(
  * capability from the task prompt. All non-local or ambiguous effects fail closed.
  */
 export function authorizeTask(
-  task: Pick<TaskInput, "authorization" | "allowedPaths" | "verificationCommands"> &
+  task: Pick<TaskInput, "authorization" | "allowedPaths" | "preconditions" | "verificationCommands"> &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
   branch = "",
@@ -2210,7 +2288,7 @@ export function authorizeTask(
 /** Replay only succeeds when current inputs and the configured approval reproduce stored evidence. */
 export function replayTaskAuthorization(
   evidence: TaskAuthorizationEvidence,
-  task: Pick<TaskInput, "authorization" | "allowedPaths" | "verificationCommands"> &
+  task: Pick<TaskInput, "authorization" | "allowedPaths" | "preconditions" | "verificationCommands"> &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
   branch = evidence.branch,
@@ -2222,7 +2300,7 @@ export function replayTaskAuthorization(
 /** Verifies loaded evidence against the current task, contract, branch, and authority. */
 export function verifyStoredTaskAuthorization(
   evidence: TaskAuthorizationEvidence | undefined,
-  task: Pick<TaskInput, "authorization" | "allowedPaths" | "verificationCommands"> &
+  task: Pick<TaskInput, "authorization" | "allowedPaths" | "preconditions" | "verificationCommands"> &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
   branch = evidence?.branch ?? "",
@@ -2517,6 +2595,13 @@ export function validateQueue(value: unknown): {
     project.verificationCommands,
     "project.verificationCommands",
   );
+  const projectInlineViolations = inlineCommandViolations(
+    project.verificationCommands ?? [],
+  );
+  if (projectInlineViolations.length)
+    throw new Error(
+      `project.verificationCommands: ${projectInlineViolations.join(" ")}`,
+    );
   if (project.approvedApplyContracts !== undefined) {
     if (!Array.isArray(project.approvedApplyContracts))
       throw new Error("project.approvedApplyContracts must be a list.");
@@ -2528,11 +2613,20 @@ export function validateQueue(value: unknown): {
         contract.technicalPermission !== "reversible_local_write" ||
         contract.sideEffectRisk !== "reversible_local_write" ||
         !Array.isArray(contract.allowedPaths) || !contract.allowedPaths.length ||
+        (contract.preconditions !== undefined &&
+          (!Array.isArray(contract.preconditions) ||
+            contract.preconditions.some(
+              (item) => typeof item !== "string" || !item.trim(),
+            ))) ||
         !Array.isArray(contract.verificationCommands) || !contract.verificationCommands.length ||
         [...contract.allowedPaths, ...contract.verificationCommands].some((item) => typeof item !== "string" || !item.trim()))
         throw new Error("project.approvedApplyContracts entries must declare one exact reversible local apply scope.");
       if (approvalIds.has(contract.approvalId))
         throw new Error("project.approvedApplyContracts approvalId values must be unique.");
+      assertWindowsPytestVerificationCommands(
+        contract.preconditions,
+        `project.approvedApplyContracts ${contract.approvalId} preconditions`,
+      );
       assertWindowsPytestVerificationCommands(
         contract.verificationCommands,
         `project.approvedApplyContracts ${contract.approvalId}`,
@@ -2653,14 +2747,27 @@ export function validateQueue(value: unknown): {
     if (task.maxSources !== undefined && task.contextProfile === undefined)
       throw new Error(`Task ${index + 1}: maxSources requires contextProfile.`);
     if (
+      task.requireRepositoryContext !== undefined &&
+      typeof task.requireRepositoryContext !== "boolean"
+    )
+      throw new Error(
+        `Task ${index + 1}: requireRepositoryContext must be true or false.`,
+      );
+    if (task.requireRepositoryContext && task.contextProfile === undefined)
+      throw new Error(
+        `Task ${index + 1}: requireRepositoryContext requires contextProfile.`,
+      );
+    if (
       task.maxSources !== undefined &&
       (!Number.isInteger(task.maxSources) || task.maxSources < 1 || task.maxSources > 50)
     )
       throw new Error(`Task ${index + 1}: maxSources must be an integer from 1 to 50.`);
     for (const [field, value] of [
       ["allowedPaths", task.allowedPaths],
+      ["preconditions", task.preconditions],
       ["verificationCommands", task.verificationCommands],
       ["executionGuards", task.executionGuards],
+      ["requiresCheckpointsFrom", task.requiresCheckpointsFrom],
     ] as const) {
       if (
         value !== undefined &&
@@ -2669,6 +2776,10 @@ export function validateQueue(value: unknown): {
         throw new Error(`Task ${index + 1}: ${field} must be a list of non-empty strings.`);
     }
     assertWindowsPytestVerificationCommands(
+      task.preconditions,
+      `Task ${index + 1} Windows pytest precondition`,
+    );
+    assertWindowsPytestVerificationCommands(
       task.verificationCommands,
       `Task ${index + 1} Windows pytest verification`,
     );
@@ -2676,6 +2787,25 @@ export function validateQueue(value: unknown): {
     if (commandViolations.length)
       throw new Error(
         `Task ${index + 1} verificationCommands: ${commandViolations.join(" ")}`,
+      );
+    const inlineViolations = inlineCommandViolations([
+      ...(task.preconditions ?? []),
+      ...(task.verificationCommands ?? []),
+    ]);
+    if (inlineViolations.length)
+      throw new Error(
+        `Task ${index + 1} commands: ${inlineViolations.join(" ")}`,
+      );
+    const preconditionViolations = verificationCommandViolations(
+      {
+        allowedPaths: [],
+        verificationCommands: task.preconditions,
+      },
+      {},
+    );
+    if (preconditionViolations.length)
+      throw new Error(
+        `Task ${index + 1} preconditions: ${preconditionViolations.join(" ")}`,
       );
     const authorization = task.authorization;
     if (authorization !== undefined) {
@@ -2733,12 +2863,15 @@ export function validateQueue(value: unknown): {
       minModel: task.minModel,
       effort,
       allowedPaths: task.allowedPaths,
+      preconditions: task.preconditions,
       verificationCommands: task.verificationCommands,
       executionGuards: task.executionGuards,
+      requiresCheckpointsFrom: task.requiresCheckpointsFrom,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
+      requireRepositoryContext: task.requireRepositoryContext,
       authorization: task.authorization,
       workspace: task.workspace,
       requestedModel: selection.requestedModel,
@@ -2768,6 +2901,39 @@ export function validateQueue(value: unknown): {
         throw new Error(`Task ${index + 1}: a task cannot depend on itself.`);
     });
     dependencies.set(task.key, task.dependsOn);
+  });
+  const tasksByKey = new Map(
+    tasks.flatMap((task) => task.key ? [[task.key, task] as const] : []),
+  );
+  tasks.forEach((task, index) => {
+    if (!task.requiresCheckpointsFrom?.length) return;
+    if (!task.key)
+      throw new Error(
+        `Task ${index + 1}: key is required when requiresCheckpointsFrom is used.`,
+      );
+    if (new Set(task.requiresCheckpointsFrom).size !== task.requiresCheckpointsFrom.length)
+      throw new Error(
+        `Task ${index + 1}: requiresCheckpointsFrom must not contain duplicates.`,
+      );
+    for (const predecessorKey of task.requiresCheckpointsFrom) {
+      if (!task.dependsOn?.includes(predecessorKey))
+        throw new Error(
+          `Task ${index + 1}: requiresCheckpointsFrom "${predecessorKey}" must also be a direct dependsOn entry.`,
+        );
+      const predecessor = tasksByKey.get(predecessorKey);
+      if (!predecessor)
+        throw new Error(
+          `Task ${index + 1}: requiresCheckpointsFrom references unknown task key "${predecessorKey}".`,
+        );
+      if (queue.git?.checkpointCommits !== true && !predecessor.workspace)
+        throw new Error(
+          `Task ${index + 1}: requiresCheckpointsFrom requires git.checkpointCommits: true for ordinary predecessor "${predecessorKey}".`,
+        );
+      if (predecessor.allowedPaths?.length === 0)
+        throw new Error(
+          `Task ${index + 1}: read-only predecessor "${predecessorKey}" cannot produce a checkpoint.`,
+        );
+    }
   });
   const visiting = new Set<string>();
   const visited = new Set<string>();
@@ -3205,12 +3371,15 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       minModel: task.minModel,
       effort: task.effort,
       allowedPaths: task.allowedPaths,
+      preconditions: task.preconditions,
       verificationCommands: task.verificationCommands,
       executionGuards: task.executionGuards,
+      requiresCheckpointsFrom: task.requiresCheckpointsFrom,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
+      requireRepositoryContext: task.requireRepositoryContext,
       authorization: task.authorization,
       workspace: task.workspace,
       requestedModel: task.requestedModel,
@@ -4203,6 +4372,7 @@ async function preflight(value: unknown) {
       const evidence = reviewerEvidencePreflight(task, queue.project);
       const powershellSyntax = await powershellVerificationSyntaxPreflight([
         ...(queue.project.verificationCommands ?? []),
+        ...(task.preconditions ?? []),
         ...(task.verificationCommands ?? []),
       ]);
       return [
@@ -4255,9 +4425,12 @@ async function preflight(value: unknown) {
       ...checks,
       ...contexts.flatMap((context, index) => context ? [{
         name: `Task ${index + 1} context`,
-        ok: true,
+        ok: !queue.tasks[index].requireRepositoryContext ||
+          !context.fallbackReason,
         detail: context.fallbackReason
-          ? `Controlled fallback: ${context.fallbackReason}`
+          ? queue.tasks[index].requireRepositoryContext
+            ? `Repository context required; fallback rejected: ${context.fallbackReason}`
+            : `Controlled fallback: ${context.fallbackReason}`
           : `${context.bundle.sources.length} source(s) from repository helper`,
       }] : []),
       ...(pipeline
@@ -4588,12 +4761,15 @@ async function correctTask(run: Run, task: Task) {
   return { code: effectiveCode, timedOut };
 }
 
-async function runTaskVerification(run: Run, task: Task) {
-  const evidence = task.authorizationEvidence;
-  if (!evidence) return { code: 0, timedOut: false };
-  for (const command of orchestratorVerificationCommands(evidence)) {
+async function runConfiguredTaskCommands(
+  run: Run,
+  task: Task,
+  commands: readonly string[],
+  label: string,
+) {
+  for (const command of commands) {
     const executionPath = await taskExecutionPathV1(run, task);
-    task.log.push(`Orchestrator verification: ${command}`);
+    task.log.push(`${label}: ${command}`);
     let child: ReturnType<typeof spawn>;
     try {
       const invocation = verificationCommandInvocation(command);
@@ -4627,6 +4803,26 @@ async function runTaskVerification(run: Run, task: Task) {
     };
   }
   return { code: 0, timedOut: false };
+}
+
+async function runTaskVerification(run: Run, task: Task) {
+  const evidence = task.authorizationEvidence;
+  if (!evidence) return { code: 0, timedOut: false };
+  return runConfiguredTaskCommands(
+    run,
+    task,
+    orchestratorVerificationCommands(evidence),
+    "Orchestrator verification",
+  );
+}
+
+async function runTaskPreconditions(run: Run, task: Task) {
+  return runConfiguredTaskCommands(
+    run,
+    task,
+    task.preconditions ?? [],
+    "Orchestrator precondition",
+  );
 }
 
 async function pauseBeforeNextTask(run: Run) {
@@ -4744,14 +4940,55 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       publish("run", run);
       return task.status;
     }
+    const checkpointViolation = checkpointRequirementViolation(run.tasks, task);
+    if (checkpointViolation) {
+      task.status = "blocked";
+      task.startedAt = timestamp();
+      task.finishedAt = task.startedAt;
+      task.exitCode = 1;
+      task.log.push(`Checkpoint precondition failed: ${checkpointViolation}`);
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
     const executionPath = await taskExecutionPathV1(run, task);
-    const baseline = await readWorkspaceSnapshot(executionPath);
+    const preconditionBaseline = await readWorkspaceSnapshot(executionPath);
     task.status = "running";
-    task.executionPhase = "executor";
+    task.executionPhase = "precondition";
     task.startedAt = timestamp();
+    task.timedOut = false;
+    await persist(run);
+    publish("run", run);
+    const preconditionResult = await runTaskPreconditions(run, task);
+    const preconditionCurrent = await readWorkspaceSnapshot(executionPath);
+    const preconditionWrites = changedWorkspaceFiles(
+      preconditionBaseline,
+      preconditionCurrent,
+    );
+    task.executionPhase = undefined;
+    if (
+      preconditionResult.code !== 0 ||
+      preconditionResult.timedOut ||
+      preconditionWrites.length
+    ) {
+      task.status = "blocked";
+      task.finishedAt = timestamp();
+      task.exitCode = preconditionResult.code || 1;
+      task.timedOut = preconditionResult.timedOut;
+      if (preconditionWrites.length)
+        task.log.push(
+          `Preconditions violated their read-only boundary: ${preconditionWrites.join(", ")}`,
+        );
+      else
+        task.log.push("Task blocked because an executable precondition failed.");
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
+    const baseline = await readWorkspaceSnapshot(executionPath);
+    task.executionPhase = "executor";
     task.attempts = 1;
     task.executionAttempts = 0;
-    task.timedOut = false;
     task.log.push(`Запущено: ${task.model} / ${task.effort}`);
     await persist(run);
     publish("run", run);

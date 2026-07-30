@@ -35,8 +35,10 @@ const {
   buildReviewerPrompt,
   reviewerEvidencePreflight,
   verificationCommandViolations,
+  inlineCommandViolations,
   powershellVerificationSyntaxPreflight,
   verificationCommandInvocation,
+  checkpointRequirementViolation,
   taskAllowsCorrection,
   boundedReviewerDiagnostics,
   resolveReviewedTaskStatus,
@@ -3555,6 +3557,7 @@ test("executor, reviewer, and correction phases carry the enforced sandbox bound
 test("exact changed-file and orchestrator verification boundaries fail closed", () => {
   const task = {
     allowedPaths: ["server/index.ts"],
+    preconditions: ["git rev-parse --verify HEAD"],
     verificationCommands: ["node local-check.mjs", "git diff --check"],
     authorization: {
       enabled: true,
@@ -3571,6 +3574,7 @@ test("exact changed-file and orchestrator verification boundaries fail closed", 
       technicalPermission: "reversible_local_write",
       sideEffectRisk: "reversible_local_write",
       allowedPaths: ["server/index.ts"],
+      preconditions: ["git rev-parse --verify HEAD"],
       verificationCommands: ["node local-check.mjs", "git diff --check"],
     }],
   });
@@ -3583,6 +3587,21 @@ test("exact changed-file and orchestrator verification boundaries fail closed", 
     "node local-check.mjs",
     "git diff --check",
   ]);
+  assert.deepEqual(evidence.preconditions, ["git rev-parse --verify HEAD"]);
+  assert.equal(authorizeTask(
+    { ...task, preconditions: ["git rev-parse --verify main"] },
+    {
+      approvedApplyContracts: [{
+        approvalId: "approval-scope",
+        intent: "apply",
+        technicalPermission: "reversible_local_write",
+        sideEffectRisk: "reversible_local_write",
+        allowedPaths: ["server/index.ts"],
+        preconditions: ["git rev-parse --verify HEAD"],
+        verificationCommands: ["node local-check.mjs", "git diff --check"],
+      }],
+    },
+  ).reason, "APPROVAL_CONTRACT_MISMATCH");
 });
 
 test("disabled-by-default fallback does not invent approval or verification authority", () => {
@@ -6308,6 +6327,7 @@ test("visual task editor exposes accessible optional context controls", () => {
   assert.match(markup, /<label[^>]*>Maximum context sources/);
   assert.match(markup, /aria-label="Context profile"/);
   assert.match(markup, /aria-label="Maximum context sources"/);
+  assert.match(markup, /aria-label="Require repository context"/);
   assert.match(markup, /type="number"[^>]*min="1"[^>]*max="50"[^>]*step="1"/);
 });
 
@@ -6378,6 +6398,9 @@ test("versioned queue template keeps one production contract outcome in one cohe
   assert.match(template, /same task.*implementation.*tests.*benchmark/i);
   assert.match(template, /allowedPaths.*all production and test files/i);
   assert.match(template, /independently useful/i);
+  const parsed = parse(template);
+  parsed.project.path = process.cwd();
+  assert.doesNotThrow(() => validateTaskQueue(parsed));
 });
 
 test("ordinary YAML queues contain only ordinary task fields", () => {
@@ -6884,6 +6907,17 @@ test("validates opt-in context profile and bounded maxSources", async () => {
       validateQueue({ ...base, tasks: [{ ...base.tasks[0], contextProfile: "review", maxSources: 7 }] }).tasks[0].maxSources,
       7,
     );
+    assert.equal(
+      validateQueue({
+        ...base,
+        tasks: [{
+          ...base.tasks[0],
+          contextProfile: "review",
+          requireRepositoryContext: true,
+        }],
+      }).tasks[0].requireRepositoryContext,
+      true,
+    );
     assert.throws(
       () => validateQueue({ ...base, tasks: [{ ...base.tasks[0], maxSources: 7 }] }),
       /contextProfile/,
@@ -6895,6 +6929,13 @@ test("validates opt-in context profile and bounded maxSources", async () => {
     assert.throws(
       () => validateQueue({ ...base, tasks: [{ ...base.tasks[0], contextProfile: "review", maxSources: 0 }] }),
       /maxSources/,
+    );
+    assert.throws(
+      () => validateQueue({
+        ...base,
+        tasks: [{ ...base.tasks[0], requireRepositoryContext: true }],
+      }),
+      /requireRepositoryContext.*contextProfile/,
     );
   } finally {
     await rm(project, { recursive: true, force: true });
@@ -8111,6 +8152,158 @@ test("verification policy rejects impossible clean-tree checks and unbounded doc
       },
       {},
     ),
+    [],
+  );
+});
+
+test("queue validation separates executable preconditions from post-change verification", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-preconditions-"));
+  try {
+    const queue = validateQueue({
+      project: { path: project },
+      tasks: [{
+        title: "Write",
+        prompt: "Change one file",
+        allowedPaths: ["result.md"],
+        preconditions: [
+          "$status = @(git status --short); if ($status.Count) { exit 1 }; exit 0",
+        ],
+        verificationCommands: ["Test-Path -LiteralPath result.md"],
+      }],
+    });
+    assert.deepEqual(queue.tasks[0].preconditions, [
+      "$status = @(git status --short); if ($status.Count) { exit 1 }; exit 0",
+    ]);
+    assert.throws(
+      () => validateQueue({
+        project: { path: project },
+        tasks: [{
+          title: "Invalid",
+          prompt: "Invalid",
+          preconditions: [""],
+        }],
+      }),
+      /preconditions.*non-empty strings/,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint requirements reject read-only or non-checkpoint predecessors", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-checkpoint-contract-"));
+  const writer = {
+    key: "writer",
+    title: "Write",
+    prompt: "Write output",
+    allowedPaths: ["result.md"],
+  };
+  const consumer = {
+    key: "consumer",
+    title: "Consume",
+    prompt: "Inspect the committed output",
+    dependsOn: ["writer"],
+    requiresCheckpointsFrom: ["writer"],
+    allowedPaths: [],
+  };
+  try {
+    assert.doesNotThrow(() => validateQueue({
+      project: { path: project },
+      git: { checkpointCommits: true },
+      tasks: [writer, consumer],
+    }));
+    assert.throws(
+      () => validateQueue({
+        project: { path: project },
+        git: { checkpointCommits: false },
+        tasks: [writer, consumer],
+      }),
+      /requiresCheckpointsFrom.*checkpointCommits/,
+    );
+    assert.throws(
+      () => validateQueue({
+        project: { path: project },
+        git: { checkpointCommits: true },
+        tasks: [{ ...writer, allowedPaths: [] }, consumer],
+      }),
+      /read-only.*checkpoint/i,
+    );
+    assert.throws(
+      () => validateQueue({
+        project: { path: project },
+        git: { checkpointCommits: true },
+        tasks: [writer, { ...consumer, dependsOn: [] }],
+      }),
+      /requiresCheckpointsFrom.*dependsOn/,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("runtime checkpoint requirements fail closed when a completed predecessor made no commit", () => {
+  const predecessor = {
+    key: "writer",
+    title: "Write",
+    status: "completed",
+  };
+  const consumer = {
+    key: "consumer",
+    title: "Consume",
+    requiresCheckpointsFrom: ["writer"],
+  };
+  assert.match(
+    checkpointRequirementViolation([predecessor, consumer], consumer) ?? "",
+    /writer.*did not create a checkpoint/i,
+  );
+  assert.equal(
+    checkpointRequirementViolation(
+      [{ ...predecessor, checkpoint: { hash: "abc" } }, consumer],
+      consumer,
+    ),
+    undefined,
+  );
+});
+
+test("verification policy rejects no-index PowerShell wrappers that leak exit code one", () => {
+  const unsafe =
+    "$result = git diff --no-index --check -- NUL 'new.md' 2>&1; if (@($result).Count) { exit 1 }";
+  const safe =
+    "$result = git diff --no-index --check -- NUL 'new.md' 2>&1; if (@($result).Count) { exit 1 }; exit 0";
+  assert.match(
+    verificationCommandViolations(
+      { allowedPaths: ["new.md"], verificationCommands: [unsafe] },
+      {},
+    ).join(" "),
+    /exit 0/,
+  );
+  assert.deepEqual(
+    verificationCommandViolations(
+      { allowedPaths: ["new.md"], verificationCommands: [safe] },
+      {},
+    ),
+    [],
+  );
+});
+
+test("queue validation rejects unstable long inline Python and PowerShell commands", () => {
+  assert.match(
+    inlineCommandViolations([
+      `python -c "${"assert True;".repeat(50)}"`,
+    ]).join(" "),
+    /versioned script/,
+  );
+  assert.match(
+    inlineCommandViolations([
+      `$paths = @('one.md'); ${"Get-Content -LiteralPath $paths[0] -TotalCount 1;".repeat(30)}`,
+    ]).join(" "),
+    /\.ps1 script/,
+  );
+  assert.deepEqual(
+    inlineCommandViolations([
+      "python scripts/verify_queue.py",
+      ".\\scripts\\verify-queue.ps1",
+    ]),
     [],
   );
 });

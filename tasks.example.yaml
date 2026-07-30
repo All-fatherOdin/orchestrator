@@ -35,8 +35,20 @@ tasks:
     # timeoutMinutes: 45
     # maxRetries: 2
     allowedPaths: [src/notifications]
+    # Machine-executed, read-only baseline checks belong in `preconditions`.
+    # They run before Codex. A non-zero exit, timeout, or worktree mutation
+    # blocks the task without starting the executor.
+    preconditions:
+      - >-
+        $status = @(git status --short);
+        if ($status.Count -ne 0) {
+        Write-Error "Expected a clean baseline: $($status -join ', ')";
+        exit 1 };
+        exit 0
     verificationCommands:
       - npm run typecheck
+      # Keep substantial logic in a versioned script. Preflight rejects long
+      # inline `python -c` and PowerShell programs.
       # These commands run after the task changes. Do not require the whole
       # worktree to be clean (`git diff --quiet` / `--exit-code`) here: a
       # successful writing task necessarily has an allowed diff.
@@ -59,12 +71,16 @@ tasks:
       # - >-
       #   $result = git diff --no-index --check -- NUL
       #   'src/notifications/new-file.ts' 2>&1;
-      #   if ($result) { $result | ForEach-Object { Write-Output $_ }; exit 1 }
+      #   if ($result) {
+      #   $result | ForEach-Object { Write-Output $_ }; exit 1 };
+      #   exit 0
     # Optional Context Contract v1 selection through scripts/ai_context_helper.py.
     contextProfile: review
     maxSources: 8
-    # Baseline-only guards belong here, before edits. A clean-tree guard may be
-    # appropriate here when the task truly requires a pristine starting state.
+    # Opt in when a controlled fallback would be too small for this task.
+    requireRepositoryContext: true
+    # Human-readable stop rules still belong in executionGuards. Put any
+    # machine-testable baseline condition in `preconditions` above.
     executionGuards:
       - Stop if an allowed path has pre-existing user changes before work begins.
     # Named resources are exclusive across concurrently running tasks.
@@ -84,6 +100,11 @@ tasks:
     effort: medium
     # This task waits for both independent implementation branches.
     dependsOn: [typecheck-fixes, reconnect-logic]
+    # When this task requires actual checkpoint commits rather than only
+    # successful predecessors, enable git.checkpointCommits above and list
+    # those direct dependencies here. Runtime blocks if a predecessor had no
+    # task-owned diff and therefore produced no checkpoint.
+    # requiresCheckpointsFrom: [typecheck-fixes, reconnect-logic]
     # Use `allowedPaths: []` for a read-only task; reviewer rejection then
     # fails closed without an automatic correction attempt.
     allowedPaths: [tests/integration]
