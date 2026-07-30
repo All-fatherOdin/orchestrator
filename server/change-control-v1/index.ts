@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import Ajv2020 from "ajv8/dist/2020.js";
+import planningDriftV1Schema from "./schemas/planning-drift-v1.schema.json";
 
 export const CHANGE_CONTROL_EVENT_TYPES = [
   "change.created",
@@ -21,6 +23,14 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   "task.accepted",
   "task.failed",
   "task.halted",
+  "plan.proposed",
+  "plan.authorized",
+  "plan.rejected",
+  "plan.drift-assessed",
+  "plan.marked-stale",
+  "plan.superseded",
+  "plan.dispatch-validated",
+  "architect.replan-recorded",
 ] as const;
 
 export type ChangeControlEventType =
@@ -54,6 +64,187 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+export type PlanReferenceV1 = Readonly<{
+  planId: string;
+  revision: number;
+  planBaseSha: string;
+}>;
+
+export type PlanningContractV1 = Readonly<{
+  contractType: "PlanningContractV1";
+  contractVersion: "1.0";
+  planId: string;
+  revision: number;
+  projectId: string;
+  changeId: string;
+  waveId: string;
+  predecessor?: PlanReferenceV1 | null;
+  planBase: Readonly<{
+    repositoryId: string;
+    sha: string;
+    hashAlgorithm: "sha1" | "sha256";
+    ref?: string;
+    capturedAt: string;
+    worktreeState: "clean";
+  }>;
+  taskPlans: readonly Readonly<{
+    taskId: string;
+    acceptanceClaims: readonly Readonly<{
+      claimId: string;
+      observableOutcome: string;
+      oracle: Readonly<{
+        kind: "command" | "artifact" | "state_transition" | "human_observation";
+        instruction: string;
+      }>;
+      expectedEvidence: readonly Readonly<{
+        kind: "command_exit" | "artifact" | "diff" | "state" | "human_observation";
+        description: string;
+        locator?: string;
+      }>[];
+      failureSeverity: "blocking" | "warning";
+    }>[];
+    blastRadius: Readonly<{
+      declaredWriteSet: readonly Readonly<{
+        path: string;
+        mode: "create" | "modify" | "delete";
+        evidenceRefs: readonly string[];
+      }>[];
+      dependencyImpacts: readonly PlanningImpactV1[];
+      publicApiChanges: readonly PlanningImpactV1[];
+      schemaMigrationEffects: readonly PlanningImpactV1[];
+      externalSideEffects: readonly PlanningImpactV1[];
+      impactedTests: readonly PlanningImpactV1[];
+      assessmentEvidenceRefs: readonly string[];
+    }>;
+  }>[];
+  replanTriggers: readonly (
+    | "base_sha_changed"
+    | "write_set_overlap"
+    | "dependency_changed"
+    | "acceptance_oracle_changed"
+    | "policy_changed"
+    | "unknown_drift"
+  )[];
+  createdAt: string;
+  createdBy: string;
+  authorizationRequired: true;
+}>;
+
+export type PlanningImpactV1 = Readonly<{
+  description: string;
+  evidenceRefs: readonly string[];
+}>;
+
+export type PlanAuthorizationV1 = Readonly<{
+  contractType: "PlanAuthorizationV1";
+  contractVersion: "1.0";
+  authorizationId: string;
+  projectId: string;
+  changeId: string;
+  waveId: string;
+  plan: PlanReferenceV1;
+  decision: "authorized" | "rejected";
+  reason: string;
+  decidedAt: string;
+  decidedBy: string;
+}>;
+
+export type ArchitectReplanReceiptV1 = Readonly<{
+  contractType: "ArchitectReplanReceiptV1";
+  contractVersion: "1.0";
+  receiptId: string;
+  projectId: string;
+  changeId: string;
+  waveId: string;
+  driftAssessmentId: string;
+  priorPlan: PlanReferenceV1;
+  replacementPlan: PlanReferenceV1;
+  changes: readonly Readonly<{
+    area: "base" | "scope" | "dependencies" | "acceptance" | "policy";
+    summary: string;
+    rationale: string;
+    evidenceRefs: readonly string[];
+  }>[];
+  proposedAt: string;
+  proposedBy: string;
+  authorizationState: "pending";
+}>;
+
+export type ReplanTriggerV1 = PlanningContractV1["replanTriggers"][number];
+
+export type TrustedRepositorySnapshotV1 = Readonly<{
+  repositoryId: string;
+  sha: string;
+  hashAlgorithm: "sha1" | "sha256";
+  ref: string;
+  worktreeState: "clean" | "dirty";
+  changedPaths: readonly string[];
+  triggeredReplanTriggers?: readonly ReplanTriggerV1[];
+  unknownDrift?: boolean;
+}>;
+
+export type DriftAssessmentV1 = Readonly<{
+  contractType: "DriftAssessmentV1";
+  contractVersion: "1.0";
+  assessmentId: string;
+  plan: PlanReferenceV1;
+  observedBase: Readonly<{
+    repositoryId: string;
+    sha: string;
+    hashAlgorithm: "sha1" | "sha256";
+    ref?: string;
+    capturedAt: string;
+    worktreeState: "clean" | "dirty";
+  }>;
+  status: "fresh" | "stale";
+  reasons: readonly Readonly<{
+    code:
+      | "BASE_SHA_MISMATCH"
+      | "WRITE_SET_OVERLAP"
+      | "DEPENDENCY_DRIFT"
+      | "ACCEPTANCE_ORACLE_DRIFT"
+      | "POLICY_DRIFT"
+      | "WORKTREE_DIRTY"
+      | "UNKNOWN_DRIFT";
+    description: string;
+    evidenceRefs: readonly string[];
+  }>[];
+  changedPaths: readonly string[];
+  evidenceRefs: readonly string[];
+  requiresReplan: boolean;
+  assessedAt: string;
+  assessedBy: string;
+}>;
+
+export type DispatchGateReasonV1 =
+  | "PLAN_REQUIRED"
+  | "PLAN_CONTRACT_INVALID"
+  | "PLAN_NOT_AUTHORIZED"
+  | "CURRENT_BASE_UNREADABLE"
+  | "CURRENT_WORKTREE_DIRTY"
+  | "PLAN_BASE_MISMATCH"
+  | "PLAN_STALE"
+  | "ACCEPTANCE_ORACLE_UNEXECUTABLE"
+  | "BLAST_RADIUS_UNEVIDENCED"
+  | "REPLAN_RECEIPT_REQUIRED"
+  | "WAVE_NOT_READY";
+
+export type DispatchGateReceiptV1 = Readonly<{
+  contractType: "DispatchGateReceiptV1";
+  contractVersion: "1.0";
+  receiptId: string;
+  projectId: string;
+  changeId: string;
+  waveId: string;
+  plan?: PlanReferenceV1;
+  authorizationId?: string;
+  driftAssessmentId?: string;
+  result: "allowed" | "rejected";
+  reasons: readonly DispatchGateReasonV1[];
+  evaluatedAt: string;
+  evaluatedBy: string;
+}>;
+
 export type ChangeControlEvent = Readonly<{
   id: string;
   sequence: number;
@@ -69,6 +260,88 @@ export type ChangeControlEvent = Readonly<{
   payload: Readonly<JsonObject>;
   previousHash: string | null;
   hash: string;
+}>;
+
+export type PlanningContractProposedEvent = ChangeControlEvent &
+  Readonly<{
+    type: "plan.proposed";
+    waveId: string;
+    payload: Readonly<{ contract: PlanningContractV1 }>;
+  }>;
+
+export type PlanAuthorizationEvent = ChangeControlEvent &
+  Readonly<{
+    type: "plan.authorized" | "plan.rejected";
+    waveId: string;
+    payload: Readonly<{ authorization: PlanAuthorizationV1 }>;
+  }>;
+
+export type ArchitectReplanRecordedEvent = ChangeControlEvent &
+  Readonly<{
+    type: "architect.replan-recorded";
+    waveId: string;
+    payload: Readonly<{ receipt: ArchitectReplanReceiptV1 }>;
+  }>;
+
+export type PlanSupersededEvent = ChangeControlEvent &
+  Readonly<{
+    type: "plan.superseded";
+    waveId: string;
+    payload: Readonly<{
+      priorPlan: PlanReferenceV1;
+      replacementPlan: PlanReferenceV1;
+    }>;
+  }>;
+
+export type DriftAssessmentEvent = ChangeControlEvent &
+  Readonly<{
+    type: "plan.drift-assessed" | "plan.marked-stale";
+    waveId: string;
+    payload: Readonly<{ assessment: DriftAssessmentV1 }>;
+  }>;
+
+export type DispatchGateEvaluatedEvent = ChangeControlEvent &
+  Readonly<{
+    type: "plan.dispatch-validated";
+    waveId: string;
+    payload: Readonly<{ receipt: DispatchGateReceiptV1 }>;
+  }>;
+
+export type PlanningChangeControlEvent =
+  | PlanningContractProposedEvent
+  | PlanAuthorizationEvent
+  | PlanSupersededEvent
+  | DriftAssessmentEvent
+  | DispatchGateEvaluatedEvent
+  | ArchitectReplanRecordedEvent;
+
+export type PlanPublicationStatus =
+  | "proposed"
+  | "authorized"
+  | "rejected"
+  | "stale"
+  | "dispatched"
+  | "superseded";
+
+export type PlanningPlanProjection = Readonly<{
+  contract: PlanningContractV1;
+  status: PlanPublicationStatus;
+  sequence: number;
+  updatedSequence: number;
+  proposedEventId: string;
+  authorization?: PlanAuthorizationV1;
+}>;
+
+export type WavePlanningProjectionV1 = Readonly<{
+  projectId: string;
+  changeId: string;
+  waveId: string;
+  plans: readonly PlanningPlanProjection[];
+  authorizations: readonly PlanAuthorizationV1[];
+  driftAssessments: readonly DriftAssessmentV1[];
+  dispatchGateReceipts: readonly DispatchGateReceiptV1[];
+  replanReceipts: readonly ArchitectReplanReceiptV1[];
+  events: readonly PlanningChangeControlEvent[];
 }>;
 
 export type ChangeProjection = Readonly<{
@@ -170,7 +443,10 @@ export class ChangeControlError extends Error {
       | "NOT_READY"
       | "CORRUPT_LEDGER",
     readonly status: 400 | 404 | 409 | 500,
-    readonly reasons?: readonly DispatchReadinessReason[],
+    readonly reasons?: readonly (
+      | DispatchReadinessReason
+      | DispatchGateReasonV1
+    )[],
   ) {
     super(message);
     this.name = "ChangeControlError";
@@ -234,9 +510,30 @@ export type DispatchWaveInput = {
   payload?: JsonObject;
 };
 
+export type PublishPlanningContractInput = Readonly<{
+  contract: PlanningContractV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type PublishPlanAuthorizationInput = Readonly<{
+  authorization: PlanAuthorizationV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type PublishArchitectReplanReceiptInput = Readonly<{
+  receipt: ArchitectReplanReceiptV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
 export type ChangeControlStoreOptions = {
   now?: () => string;
   createId?: () => string;
+  resolveRepositorySnapshot?: (
+    projectId: string,
+  ) => Promise<TrustedRepositorySnapshotV1>;
 };
 
 const eventTypeSet = new Set<string>(CHANGE_CONTROL_EVENT_TYPES);
@@ -255,6 +552,16 @@ const waveEventTypes = new Set<ChangeControlEventType>([
   "wave.started",
   "wave.completed",
   "wave.halted",
+]);
+const planningEventTypes = new Set<ChangeControlEventType>([
+  "plan.proposed",
+  "plan.authorized",
+  "plan.rejected",
+  "plan.drift-assessed",
+  "plan.marked-stale",
+  "plan.superseded",
+  "plan.dispatch-validated",
+  "architect.replan-recorded",
 ]);
 const changeTargetForType = {
   "change.created": "draft",
@@ -392,6 +699,67 @@ function normalizePayload(value: unknown): JsonObject {
   return normalized;
 }
 
+type PlanningContractType =
+  | PlanningContractV1["contractType"]
+  | DriftAssessmentV1["contractType"]
+  | PlanAuthorizationV1["contractType"]
+  | ArchitectReplanReceiptV1["contractType"]
+  | DispatchGateReceiptV1["contractType"];
+
+type PlanningContractByType = {
+  PlanningContractV1: PlanningContractV1;
+  DriftAssessmentV1: DriftAssessmentV1;
+  PlanAuthorizationV1: PlanAuthorizationV1;
+  ArchitectReplanReceiptV1: ArchitectReplanReceiptV1;
+  DispatchGateReceiptV1: DispatchGateReceiptV1;
+};
+
+const planningContractAjv = new Ajv2020({ allErrors: true, strict: true });
+const validatePlanningDriftContract =
+  planningContractAjv.compile(planningDriftV1Schema);
+
+function validatePlanningContractSchema<T extends PlanningContractType>(
+  value: unknown,
+  expectedType: T,
+  stored: boolean,
+): PlanningContractByType[T] {
+  const valid =
+    validatePlanningDriftContract(value) &&
+    (value as { contractType?: unknown }).contractType === expectedType;
+  if (!valid) {
+    const details = planningContractAjv.errorsText(
+      validatePlanningDriftContract.errors,
+      { separator: "; " },
+    );
+    if (stored)
+      corrupt(
+        `A persisted ${expectedType} contract is invalid${
+          details ? `: ${details}` : "."
+        }`,
+      );
+    invalid(
+      `${expectedType} does not satisfy Planning and Drift Contract v1${
+        details ? `: ${details}` : "."
+      }`,
+    );
+  }
+  return value as PlanningContractByType[T];
+}
+
+function normalizePlanningContract<T extends PlanningContractType>(
+  value: unknown,
+  expectedType: T,
+): PlanningContractByType[T] {
+  const normalized = normalizeJson(value, expectedType);
+  if (
+    normalized === null ||
+    Array.isArray(normalized) ||
+    typeof normalized !== "object"
+  )
+    invalid(`${expectedType} must be a JSON object.`);
+  return validatePlanningContractSchema(normalized, expectedType, false);
+}
+
 function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value))
@@ -448,9 +816,16 @@ type ProjectedLedger = {
   projections: Map<string, ChangeProjection>;
   waves: Map<string, StoredWaveProjection>;
   tasks: Map<string, TaskProjection>;
+  plans: Map<string, PlanningPlanProjection>;
+  planKeysByRevision: Map<string, string>;
+  authorizations: Map<string, PlanAuthorizationV1>;
+  driftAssessments: Map<string, DriftAssessmentV1>;
+  dispatchGateReceipts: Map<string, DispatchGateReceiptV1>;
+  replanReceipts: Map<string, ArchitectReplanReceiptV1>;
   taskCreatedSequences: Map<string, number>;
   eventsByChange: Map<string, ChangeControlEvent[]>;
   eventsByWave: Map<string, ChangeControlEvent[]>;
+  planningEventsByWave: Map<string, PlanningChangeControlEvent[]>;
 };
 
 function waveKey(changeId: string, waveId: string) {
@@ -459,6 +834,48 @@ function waveKey(changeId: string, waveId: string) {
 
 function taskKey(changeId: string, waveId: string, taskId: string) {
   return `${changeId}\u0000${waveId}\u0000${taskId}`;
+}
+
+function planKey(
+  changeId: string,
+  waveId: string,
+  planId: string,
+  revision: number,
+) {
+  return `${changeId}\u0000${waveId}\u0000${revision}\u0000${planId}`;
+}
+
+function planRevisionKey(changeId: string, waveId: string, revision: number) {
+  return `${changeId}\u0000${waveId}\u0000${revision}`;
+}
+
+function samePlanReference(
+  reference: PlanReferenceV1,
+  contract: PlanningContractV1,
+) {
+  return (
+    reference.planId === contract.planId &&
+    reference.revision === contract.revision &&
+    reference.planBaseSha === contract.planBase.sha
+  );
+}
+
+function wavePlans(
+  projected: Pick<ProjectedLedger, "plans">,
+  changeId: string,
+  waveId: string,
+) {
+  return [...projected.plans.values()]
+    .filter(
+      (plan) =>
+        plan.contract.changeId === changeId &&
+        plan.contract.waveId === waveId,
+    )
+    .sort(
+      (left, right) =>
+        left.contract.revision - right.contract.revision ||
+        left.sequence - right.sequence,
+    );
 }
 
 function requireStoredStringArray(value: unknown, field: string) {
@@ -474,6 +891,36 @@ function requireStoredData(event: ChangeControlEvent) {
   if (data === null || Array.isArray(data) || typeof data !== "object")
     corrupt(`Event ${event.id} has an invalid typed payload.`);
   return data as JsonObject;
+}
+
+function requireStoredPlanReference(
+  value: unknown,
+  field: string,
+): PlanReferenceV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    corrupt(`An event has an invalid ${field}.`);
+  const reference = value as Record<string, unknown>;
+  if (
+    Object.keys(reference).sort().join(",") !==
+    "planBaseSha,planId,revision"
+  )
+    corrupt(`An event has an invalid ${field}.`);
+  const planId = requireStoredIdentifier(reference.planId, `${field}.planId`);
+  if (
+    !Number.isInteger(reference.revision) ||
+    (reference.revision as number) < 1
+  )
+    corrupt(`An event has an invalid ${field}.revision.`);
+  if (
+    typeof reference.planBaseSha !== "string" ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(reference.planBaseSha)
+  )
+    corrupt(`An event has an invalid ${field}.planBaseSha.`);
+  return {
+    planId,
+    revision: reference.revision as number,
+    planBaseSha: reference.planBaseSha,
+  };
 }
 
 function assertPayloadKeys(
@@ -570,6 +1017,373 @@ function assertTaskGraph(
   for (const task of waveTasks) visit(task.taskId);
 }
 
+function planningSemanticFailure(stored: boolean, message: string): never {
+  if (stored) corrupt(message);
+  invalid(message);
+}
+
+function assertPlanningContractSemantics(
+  contract: PlanningContractV1,
+  projectId: string,
+  changeId: string,
+  waveId: string,
+  tasks: ReadonlyMap<string, TaskProjection>,
+  stored: boolean,
+) {
+  if (
+    contract.projectId !== projectId ||
+    contract.changeId !== changeId ||
+    contract.waveId !== waveId
+  )
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 project, change, and wave references must match the publication scope.",
+    );
+  if (!contract.createdBy.startsWith("planner:"))
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 createdBy must identify a planner.",
+    );
+  const expectedShaLength = contract.planBase.hashAlgorithm === "sha1" ? 40 : 64;
+  if (contract.planBase.sha.length !== expectedShaLength)
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 planBase.sha does not match hashAlgorithm.",
+    );
+  if (
+    (contract.revision === 1 && contract.predecessor != null) ||
+    (contract.revision > 1 && contract.predecessor == null)
+  )
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 revision 1 must have no predecessor and later revisions must have one.",
+    );
+
+  const expectedTaskIds = [...tasks.values()]
+    .filter(
+      (task) => task.changeId === changeId && task.waveId === waveId,
+    )
+    .map((task) => task.taskId)
+    .sort();
+  const actualTaskIds = contract.taskPlans.map((task) => task.taskId);
+  if (new Set(actualTaskIds).size !== actualTaskIds.length)
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 contains duplicate taskPlan task IDs.",
+    );
+  if (
+    expectedTaskIds.length !== actualTaskIds.length ||
+    expectedTaskIds.some((taskId, index) => taskId !== [...actualTaskIds].sort()[index])
+  )
+    planningSemanticFailure(
+      stored,
+      "PlanningContractV1 taskPlans must cover the exact wave task set.",
+    );
+
+  for (const taskPlan of contract.taskPlans) {
+    const claimIds = taskPlan.acceptanceClaims.map((claim) => claim.claimId);
+    if (new Set(claimIds).size !== claimIds.length)
+      planningSemanticFailure(
+        stored,
+        `PlanningContractV1 task ${taskPlan.taskId} contains duplicate acceptance claim IDs.`,
+      );
+    const paths = taskPlan.blastRadius.declaredWriteSet.map((entry) => entry.path);
+    if (new Set(paths).size !== paths.length)
+      planningSemanticFailure(
+        stored,
+        `PlanningContractV1 task ${taskPlan.taskId} contains duplicate declared write paths.`,
+      );
+  }
+}
+
+function assertAuthorizationScope(
+  authorization: PlanAuthorizationV1,
+  projectId: string,
+  changeId: string,
+  waveId: string,
+  stored: boolean,
+) {
+  if (
+    authorization.projectId !== projectId ||
+    authorization.changeId !== changeId ||
+    authorization.waveId !== waveId
+  )
+    planningSemanticFailure(
+      stored,
+      "PlanAuthorizationV1 project, change, and wave references must match the publication scope.",
+    );
+  if (
+    !authorization.decidedBy.startsWith("human:") &&
+    !authorization.decidedBy.startsWith("policy:")
+  )
+    planningSemanticFailure(
+      stored,
+      "PlanAuthorizationV1 decidedBy must identify a human or policy authorizer.",
+    );
+}
+
+function assertReceiptScope(
+  receipt: ArchitectReplanReceiptV1,
+  projectId: string,
+  changeId: string,
+  waveId: string,
+  stored: boolean,
+) {
+  if (
+    receipt.projectId !== projectId ||
+    receipt.changeId !== changeId ||
+    receipt.waveId !== waveId
+  )
+    planningSemanticFailure(
+      stored,
+      "ArchitectReplanReceiptV1 project, change, and wave references must match the publication scope.",
+    );
+  if (!receipt.proposedBy.startsWith("architect:"))
+    planningSemanticFailure(
+      stored,
+      "ArchitectReplanReceiptV1 proposedBy must identify an architect.",
+    );
+  if (receipt.replacementPlan.revision <= receipt.priorPlan.revision)
+    planningSemanticFailure(
+      stored,
+      "ArchitectReplanReceiptV1 replacement revision must be greater than its prior revision.",
+    );
+}
+
+const replanTriggerReasonCode: Readonly<
+  Record<
+    Exclude<ReplanTriggerV1, "base_sha_changed" | "unknown_drift">,
+    DriftAssessmentV1["reasons"][number]["code"]
+  >
+> = {
+  write_set_overlap: "WRITE_SET_OVERLAP",
+  dependency_changed: "DEPENDENCY_DRIFT",
+  acceptance_oracle_changed: "ACCEPTANCE_ORACLE_DRIFT",
+  policy_changed: "POLICY_DRIFT",
+};
+
+function executableBlockingOracles(contract: PlanningContractV1) {
+  return contract.taskPlans.every(
+    (taskPlan) =>
+      taskPlan.acceptanceClaims.some(
+        (claim) => claim.failureSeverity === "blocking",
+      ) &&
+      taskPlan.acceptanceClaims.every(
+        (claim) =>
+          claim.failureSeverity !== "blocking" ||
+          (claim.oracle.kind !== "human_observation" &&
+            claim.oracle.instruction.trim().length > 0),
+      ),
+  );
+}
+
+function dispatchContractValid(contract: PlanningContractV1) {
+  return (
+    validatePlanningDriftContract(contract) &&
+    contract.contractType === "PlanningContractV1" &&
+    Date.parse(contract.planBase.capturedAt) <= Date.parse(contract.createdAt)
+  );
+}
+
+function evidencedBlastRadius(contract: PlanningContractV1) {
+  return contract.taskPlans.every((taskPlan) => {
+    const blastRadius = taskPlan.blastRadius;
+    const impacts = [
+      ...blastRadius.dependencyImpacts,
+      ...blastRadius.publicApiChanges,
+      ...blastRadius.schemaMigrationEffects,
+      ...blastRadius.externalSideEffects,
+      ...blastRadius.impactedTests,
+    ];
+    return (
+      blastRadius.assessmentEvidenceRefs.length > 0 &&
+      blastRadius.assessmentEvidenceRefs.every((reference) => reference.trim()) &&
+      blastRadius.declaredWriteSet.every(
+        (entry) =>
+          entry.evidenceRefs.length > 0 &&
+          entry.evidenceRefs.every((reference) => reference.trim()),
+      ) &&
+      impacts.every(
+        (impact) =>
+          impact.evidenceRefs.length > 0 &&
+          impact.evidenceRefs.every((reference) => reference.trim()),
+      )
+    );
+  });
+}
+
+function validTrustedRepositorySnapshot(
+  value: unknown,
+): value is TrustedRepositorySnapshotV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const snapshot = value as Partial<TrustedRepositorySnapshotV1>;
+  const expectedShaLength = snapshot.hashAlgorithm === "sha256" ? 64 : 40;
+  return (
+    typeof snapshot.repositoryId === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(snapshot.repositoryId) &&
+    typeof snapshot.sha === "string" &&
+    /^[0-9a-f]+$/.test(snapshot.sha) &&
+    snapshot.sha.length === expectedShaLength &&
+    (snapshot.hashAlgorithm === "sha1" ||
+      snapshot.hashAlgorithm === "sha256") &&
+    typeof snapshot.ref === "string" &&
+    snapshot.ref.trim().length > 0 &&
+    (snapshot.worktreeState === "clean" ||
+      snapshot.worktreeState === "dirty") &&
+    Array.isArray(snapshot.changedPaths) &&
+    snapshot.changedPaths.every(
+      (path) => typeof path === "string" && path.trim().length > 0,
+    ) &&
+    (snapshot.triggeredReplanTriggers === undefined ||
+      (Array.isArray(snapshot.triggeredReplanTriggers) &&
+        snapshot.triggeredReplanTriggers.every((trigger) =>
+          [
+            "base_sha_changed",
+            "write_set_overlap",
+            "dependency_changed",
+            "acceptance_oracle_changed",
+            "policy_changed",
+            "unknown_drift",
+          ].includes(trigger),
+        ))) &&
+    (snapshot.unknownDrift === undefined ||
+      typeof snapshot.unknownDrift === "boolean")
+  );
+}
+
+function driftAssessmentFor(
+  assessmentId: string,
+  plan: PlanningPlanProjection,
+  snapshot: TrustedRepositorySnapshotV1,
+  assessedAt: string,
+): DriftAssessmentV1 {
+  const evidenceRefs = [
+    `git:repository:${snapshot.repositoryId}`,
+    `git:head:${snapshot.sha}`,
+    `git:ref:${snapshot.ref}`,
+    `git:worktree:${snapshot.worktreeState}`,
+  ];
+  const reasons: DriftAssessmentV1["reasons"][number][] = [];
+  if (
+    snapshot.repositoryId !== plan.contract.planBase.repositoryId ||
+    snapshot.sha !== plan.contract.planBase.sha ||
+    snapshot.hashAlgorithm !== plan.contract.planBase.hashAlgorithm
+  )
+    reasons.push({
+      code: "BASE_SHA_MISMATCH",
+      description:
+        "The trusted repository identity or full HEAD SHA does not match the authorized plan base.",
+      evidenceRefs,
+    });
+  if (snapshot.worktreeState === "dirty")
+    reasons.push({
+      code: "WORKTREE_DIRTY",
+      description: "The trusted Project Profile resolves to a dirty worktree.",
+      evidenceRefs: [
+        `git:worktree:${snapshot.worktreeState}`,
+        ...snapshot.changedPaths.map((path) => `git:path:${path}`),
+      ],
+    });
+  for (const trigger of snapshot.triggeredReplanTriggers ?? []) {
+    if (trigger === "unknown_drift") {
+      reasons.push({
+        code: "UNKNOWN_DRIFT",
+        description: "The trusted drift guard reported unknown drift.",
+        evidenceRefs,
+      });
+      continue;
+    }
+    if (!plan.contract.replanTriggers.includes(trigger)) continue;
+    if (trigger === "base_sha_changed") continue;
+    reasons.push({
+      code: replanTriggerReasonCode[trigger],
+      description: `The declared ${trigger} replan trigger fired.`,
+      evidenceRefs,
+    });
+  }
+  if (
+    snapshot.unknownDrift &&
+    !reasons.some((reason) => reason.code === "UNKNOWN_DRIFT")
+  )
+    reasons.push({
+      code: "UNKNOWN_DRIFT",
+      description: "The trusted repository observation contains unknown drift.",
+      evidenceRefs,
+    });
+  const stale = reasons.length > 0;
+  return {
+    contractType: "DriftAssessmentV1",
+    contractVersion: "1.0",
+    assessmentId,
+    plan: {
+      planId: plan.contract.planId,
+      revision: plan.contract.revision,
+      planBaseSha: plan.contract.planBase.sha,
+    },
+    observedBase: {
+      repositoryId: snapshot.repositoryId,
+      sha: snapshot.sha,
+      hashAlgorithm: snapshot.hashAlgorithm,
+      ref: snapshot.ref,
+      capturedAt: assessedAt,
+      worktreeState: snapshot.worktreeState,
+    },
+    status: stale ? "stale" : "fresh",
+    reasons,
+    changedPaths: [...snapshot.changedPaths],
+    evidenceRefs,
+    requiresReplan: stale,
+    assessedAt,
+    assessedBy: "drift-guard:v1",
+  };
+}
+
+function replanReceiptAssessmentIssue(
+  receipt: ArchitectReplanReceiptV1,
+  prior: PlanningPlanProjection,
+  driftAssessments: ReadonlyMap<string, DriftAssessmentV1>,
+) {
+  const assessment = driftAssessments.get(receipt.driftAssessmentId);
+  if (!assessment) return "missing" as const;
+  if (
+    assessment.status !== "stale" ||
+    !samePlanReference(assessment.plan, prior.contract)
+  )
+    return "not-stale-prior" as const;
+  return undefined;
+}
+
+function validReplacementReceipt(
+  plan: PlanningPlanProjection,
+  projected: Pick<ProjectedLedger, "replanReceipts" | "driftAssessments" | "plans">,
+) {
+  if (plan.contract.revision === 1) return true;
+  const matches = [...projected.replanReceipts.values()].filter((receipt) =>
+    samePlanReference(receipt.replacementPlan, plan.contract),
+  );
+  if (matches.length !== 1) return false;
+  const receipt = matches[0];
+  const prior = projected.plans.get(
+    planKey(
+      plan.contract.changeId,
+      plan.contract.waveId,
+      receipt.priorPlan.planId,
+      receipt.priorPlan.revision,
+    ),
+  );
+  return Boolean(
+    prior &&
+      replanReceiptAssessmentIssue(
+        receipt,
+        prior,
+        projected.driftAssessments,
+      ) === undefined &&
+      plan.contract.predecessor &&
+      samePlanReference(receipt.priorPlan, prior.contract) &&
+      samePlanReference(plan.contract.predecessor, prior.contract),
+  );
+}
+
 function validateAndProject(ledger: Ledger): ProjectedLedger {
   if (ledger.version !== 1 || !Array.isArray(ledger.events))
     corrupt("Unsupported change-control ledger format.");
@@ -578,9 +1392,19 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   const projections = new Map<string, ChangeProjection>();
   const waves = new Map<string, StoredWaveProjection>();
   const tasks = new Map<string, TaskProjection>();
+  const plans = new Map<string, PlanningPlanProjection>();
+  const planKeysByRevision = new Map<string, string>();
+  const authorizations = new Map<string, PlanAuthorizationV1>();
+  const driftAssessments = new Map<string, DriftAssessmentV1>();
+  const dispatchGateReceipts = new Map<string, DispatchGateReceiptV1>();
+  const replanReceipts = new Map<string, ArchitectReplanReceiptV1>();
   const taskCreatedSequences = new Map<string, number>();
   const eventsByChange = new Map<string, ChangeControlEvent[]>();
   const eventsByWave = new Map<string, ChangeControlEvent[]>();
+  const planningEventsByWave = new Map<
+    string,
+    PlanningChangeControlEvent[]
+  >();
   const eventIds = new Set<string>();
   let previousHash: string | null = null;
 
@@ -706,6 +1530,21 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(`Wave transition ${event.id} precedes wave creation.`);
         const target =
           waveTargetForType[event.type as keyof typeof waveTargetForType];
+        if (
+          (event.type === "wave.dispatched" ||
+            event.type === "wave.dispatch-overridden") &&
+          plans.size > 0
+        ) {
+          const latestPlan = wavePlans(
+            { plans },
+            event.changeId,
+            waveId,
+          ).at(-1);
+          if (!latestPlan || latestPlan.status !== "dispatched")
+            corrupt(
+              `Wave ${waveId} was dispatched without an allowed Phase 2 gate receipt.`,
+            );
+        }
         if (event.type === "wave.dispatch-overridden") {
           assertPayloadKeys(event, [
             "data",
@@ -769,6 +1608,426 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         });
         eventsByWave.get(key)!.push(event);
       }
+    } else if (planningEventTypes.has(event.type)) {
+      const waveId = requireStoredIdentifier(event.waveId, "waveId");
+      if (event.taskId !== undefined)
+        corrupt(`Planning event ${event.id} has an unexpected taskId.`);
+      const scopedWaveKey = waveKey(event.changeId, waveId);
+      if (!waves.has(scopedWaveKey))
+        corrupt(`Planning event ${event.id} precedes wave creation.`);
+      let planningEvent: PlanningChangeControlEvent;
+
+      if (event.type === "plan.proposed") {
+        assertPayloadKeys(event, ["contract"]);
+        const contract = validatePlanningContractSchema(
+          event.payload.contract,
+          "PlanningContractV1",
+          true,
+        );
+        assertPlanningContractSemantics(
+          contract,
+          event.projectId,
+          event.changeId,
+          waveId,
+          tasks,
+          true,
+        );
+        if (event.actor !== contract.createdBy)
+          corrupt(`Plan proposal event ${event.id} has a mismatched creator.`);
+        const key = planKey(
+          event.changeId,
+          waveId,
+          contract.planId,
+          contract.revision,
+        );
+        const revisionKey = planRevisionKey(
+          event.changeId,
+          waveId,
+          contract.revision,
+        );
+        if (plans.has(key) || planKeysByRevision.has(revisionKey))
+          corrupt(
+            `Plan revision ${contract.revision} is duplicated in wave ${waveId}.`,
+          );
+        const priorPlans = wavePlans({ plans }, event.changeId, waveId);
+        const latest = priorPlans.at(-1);
+        if (!latest) {
+          if (contract.revision !== 1)
+            corrupt(`The first plan for wave ${waveId} must be revision 1.`);
+        } else {
+          if (contract.revision <= latest.contract.revision)
+            corrupt(`Plan revision regression in wave ${waveId}.`);
+          if (
+            !contract.predecessor ||
+            !samePlanReference(contract.predecessor, latest.contract)
+          )
+            corrupt(
+              `Plan revision ${contract.revision} does not identify its exact predecessor.`,
+            );
+        }
+        plans.set(key, {
+          contract,
+          status: "proposed",
+          sequence: event.sequence,
+          updatedSequence: event.sequence,
+          proposedEventId: event.id,
+        });
+        planKeysByRevision.set(revisionKey, key);
+        planningEvent = event as PlanningContractProposedEvent;
+      } else if (
+        event.type === "plan.authorized" ||
+        event.type === "plan.rejected"
+      ) {
+        assertPayloadKeys(event, ["authorization"]);
+        const authorization = validatePlanningContractSchema(
+          event.payload.authorization,
+          "PlanAuthorizationV1",
+          true,
+        );
+        assertAuthorizationScope(
+          authorization,
+          event.projectId,
+          event.changeId,
+          waveId,
+          true,
+        );
+        if (event.actor !== authorization.decidedBy)
+          corrupt(
+            `Plan authorization event ${event.id} has a mismatched decider.`,
+          );
+        if (
+          (event.type === "plan.authorized") !==
+          (authorization.decision === "authorized")
+        )
+          corrupt(`Plan authorization event ${event.id} has a mismatched decision.`);
+        if (authorizations.has(authorization.authorizationId))
+          corrupt(
+            `Duplicate plan authorization ID: ${authorization.authorizationId}.`,
+          );
+        const key = planKey(
+          event.changeId,
+          waveId,
+          authorization.plan.planId,
+          authorization.plan.revision,
+        );
+        const plan = plans.get(key);
+        if (!plan || !samePlanReference(authorization.plan, plan.contract))
+          corrupt(
+            `Plan authorization ${authorization.authorizationId} has a missing or mismatched plan reference.`,
+          );
+        if (plan.status !== "proposed")
+          corrupt(
+            `Plan ${authorization.plan.planId} revision ${authorization.plan.revision} has a duplicate terminal decision.`,
+          );
+        if (authorization.decidedBy === plan.contract.createdBy)
+          corrupt(
+            `Plan ${authorization.plan.planId} revision ${authorization.plan.revision} is self-authorized.`,
+          );
+        const matchingReceipts = [...replanReceipts.values()].filter(
+          (receipt) =>
+            samePlanReference(receipt.replacementPlan, plan.contract),
+        );
+        if (
+          matchingReceipts.some(
+            (receipt) => receipt.proposedBy === authorization.decidedBy,
+          )
+        )
+          corrupt(
+            `Architect proposal ${authorization.plan.planId} revision ${authorization.plan.revision} is self-authorized.`,
+          );
+        if (plan.contract.revision > 1 && matchingReceipts.length !== 1)
+          corrupt(
+            `Replacement plan ${authorization.plan.planId} revision ${authorization.plan.revision} requires exactly one architect replan receipt.`,
+          );
+        authorizations.set(authorization.authorizationId, authorization);
+        plans.set(key, {
+          ...plan,
+          status: authorization.decision,
+          updatedSequence: event.sequence,
+          authorization,
+        });
+        planningEvent = event as PlanAuthorizationEvent;
+      } else if (
+        event.type === "plan.drift-assessed" ||
+        event.type === "plan.marked-stale"
+      ) {
+        assertPayloadKeys(event, ["assessment"]);
+        const assessment = validatePlanningContractSchema(
+          event.payload.assessment,
+          "DriftAssessmentV1",
+          true,
+        );
+        if (event.actor !== assessment.assessedBy)
+          corrupt(
+            `Drift assessment event ${event.id} has a mismatched assessor.`,
+          );
+        if (driftAssessments.has(assessment.assessmentId))
+          corrupt(`Duplicate drift assessment ID: ${assessment.assessmentId}.`);
+        const key = planKey(
+          event.changeId,
+          waveId,
+          assessment.plan.planId,
+          assessment.plan.revision,
+        );
+        const plan = plans.get(key);
+        if (!plan || !samePlanReference(assessment.plan, plan.contract))
+          corrupt(
+            `Drift assessment ${assessment.assessmentId} has a missing or mismatched plan reference.`,
+          );
+        if (plan.status !== "authorized")
+          corrupt(
+            `Drift assessment ${assessment.assessmentId} does not target an authorized plan.`,
+          );
+        if (
+          (event.type === "plan.drift-assessed") !==
+          (assessment.status === "fresh")
+        )
+          corrupt(
+            `Drift assessment event ${event.id} has a mismatched freshness status.`,
+          );
+        const exactBase =
+          assessment.observedBase.repositoryId ===
+            plan.contract.planBase.repositoryId &&
+          assessment.observedBase.sha === plan.contract.planBase.sha &&
+          assessment.observedBase.hashAlgorithm ===
+            plan.contract.planBase.hashAlgorithm;
+        if (
+          assessment.status === "fresh" &&
+          (!exactBase ||
+            assessment.observedBase.worktreeState !== "clean" ||
+            assessment.requiresReplan ||
+            assessment.reasons.length > 0)
+        )
+          corrupt(
+            `Fresh drift assessment ${assessment.assessmentId} does not match the exact clean plan base.`,
+          );
+        if (
+          assessment.status === "stale" &&
+          exactBase &&
+          assessment.observedBase.worktreeState === "clean" &&
+          assessment.reasons.length === 0
+        )
+          corrupt(
+            `Stale drift assessment ${assessment.assessmentId} has no drift evidence.`,
+          );
+        driftAssessments.set(assessment.assessmentId, assessment);
+        if (assessment.status === "stale")
+          plans.set(key, {
+            ...plan,
+            status: "stale",
+            updatedSequence: event.sequence,
+          });
+        planningEvent = event as DriftAssessmentEvent;
+      } else if (event.type === "plan.dispatch-validated") {
+        assertPayloadKeys(event, ["receipt"]);
+        const receipt = validatePlanningContractSchema(
+          event.payload.receipt,
+          "DispatchGateReceiptV1",
+          true,
+        );
+        if (
+          receipt.projectId !== event.projectId ||
+          receipt.changeId !== event.changeId ||
+          receipt.waveId !== waveId
+        )
+          corrupt(
+            `Dispatch gate receipt ${receipt.receiptId} has mismatched project, change, or wave scope.`,
+          );
+        if (event.actor !== receipt.evaluatedBy)
+          corrupt(
+            `Dispatch gate receipt event ${event.id} has a mismatched evaluator.`,
+          );
+        if (dispatchGateReceipts.has(receipt.receiptId))
+          corrupt(`Duplicate dispatch gate receipt ID: ${receipt.receiptId}.`);
+        const plan = receipt.plan
+          ? plans.get(
+              planKey(
+                event.changeId,
+                waveId,
+                receipt.plan.planId,
+                receipt.plan.revision,
+              ),
+            )
+          : undefined;
+        const authorization = receipt.authorizationId
+          ? authorizations.get(receipt.authorizationId)
+          : undefined;
+        const assessment = receipt.driftAssessmentId
+          ? driftAssessments.get(receipt.driftAssessmentId)
+          : undefined;
+        if (receipt.plan && (!plan || !samePlanReference(receipt.plan, plan.contract)))
+          corrupt(
+            `Dispatch gate receipt ${receipt.receiptId} has a missing or mismatched plan reference.`,
+          );
+        if (receipt.authorizationId && !authorization)
+          corrupt(
+            `Dispatch gate receipt ${receipt.receiptId} has a missing authorization reference.`,
+          );
+        if (receipt.driftAssessmentId && !assessment)
+          corrupt(
+            `Dispatch gate receipt ${receipt.receiptId} has a missing drift assessment reference.`,
+          );
+        if (receipt.result === "allowed") {
+          if (
+            !plan ||
+            plan.status !== "authorized" ||
+            !authorization ||
+            !assessment ||
+            assessment.status !== "fresh" ||
+            !samePlanReference(authorization.plan, plan.contract) ||
+            !samePlanReference(assessment.plan, plan.contract)
+          )
+            corrupt(
+              `Allowed dispatch gate receipt ${receipt.receiptId} lacks exact authorized fresh-plan evidence.`,
+            );
+          plans.set(
+            planKey(
+              event.changeId,
+              waveId,
+              plan.contract.planId,
+              plan.contract.revision,
+            ),
+            {
+              ...plan,
+              status: "dispatched",
+              updatedSequence: event.sequence,
+            },
+          );
+        }
+        dispatchGateReceipts.set(receipt.receiptId, receipt);
+        planningEvent = event as DispatchGateEvaluatedEvent;
+      } else if (event.type === "architect.replan-recorded") {
+        assertPayloadKeys(event, ["receipt"]);
+        const receipt = validatePlanningContractSchema(
+          event.payload.receipt,
+          "ArchitectReplanReceiptV1",
+          true,
+        );
+        assertReceiptScope(
+          receipt,
+          event.projectId,
+          event.changeId,
+          waveId,
+          true,
+        );
+        if (event.actor !== receipt.proposedBy)
+          corrupt(`Architect receipt event ${event.id} has a mismatched proposer.`);
+        if (replanReceipts.has(receipt.receiptId))
+          corrupt(`Duplicate architect receipt ID: ${receipt.receiptId}.`);
+        const prior = plans.get(
+          planKey(
+            event.changeId,
+            waveId,
+            receipt.priorPlan.planId,
+            receipt.priorPlan.revision,
+          ),
+        );
+        const replacement = plans.get(
+          planKey(
+            event.changeId,
+            waveId,
+            receipt.replacementPlan.planId,
+            receipt.replacementPlan.revision,
+          ),
+        );
+        if (
+          !prior ||
+          !samePlanReference(receipt.priorPlan, prior.contract) ||
+          !replacement ||
+          !samePlanReference(receipt.replacementPlan, replacement.contract)
+        )
+          corrupt(
+            `Architect receipt ${receipt.receiptId} has a missing or mismatched plan reference.`,
+          );
+        if (
+          !replacement.contract.predecessor ||
+          !samePlanReference(
+            replacement.contract.predecessor,
+            prior.contract,
+          )
+        )
+          corrupt(
+            `Architect receipt ${receipt.receiptId} does not match replacement predecessor lineage.`,
+          );
+        if (replacement.status !== "proposed")
+          corrupt(
+            `Architect receipt ${receipt.receiptId} was recorded after a plan decision.`,
+          );
+        const assessmentIssue = replanReceiptAssessmentIssue(
+          receipt,
+          prior,
+          driftAssessments,
+        );
+        if (assessmentIssue === "missing")
+          corrupt(
+            `Architect receipt ${receipt.receiptId} has a missing drift assessment.`,
+          );
+        if (assessmentIssue === "not-stale-prior")
+          corrupt(
+            `Architect receipt ${receipt.receiptId} does not reference a stale assessment for its prior plan.`,
+          );
+        if (
+          [...replanReceipts.values()].some((candidate) =>
+            samePlanReference(
+              candidate.replacementPlan,
+              replacement.contract,
+            ),
+          )
+        )
+          corrupt(
+            `Replacement plan ${replacement.contract.planId} revision ${replacement.contract.revision} has duplicate architect receipts.`,
+          );
+        replanReceipts.set(receipt.receiptId, receipt);
+        planningEvent = event as ArchitectReplanRecordedEvent;
+      } else {
+        assertPayloadKeys(event, ["priorPlan", "replacementPlan"]);
+        const priorReference = requireStoredPlanReference(
+          event.payload.priorPlan,
+          "priorPlan",
+        );
+        const replacementReference = requireStoredPlanReference(
+          event.payload.replacementPlan,
+          "replacementPlan",
+        );
+        const priorKey = planKey(
+          event.changeId,
+          waveId,
+          priorReference.planId,
+          priorReference.revision,
+        );
+        const replacementKey = planKey(
+          event.changeId,
+          waveId,
+          replacementReference.planId,
+          replacementReference.revision,
+        );
+        const prior = plans.get(priorKey);
+        const replacement = plans.get(replacementKey);
+        if (
+          !prior ||
+          !samePlanReference(priorReference, prior.contract) ||
+          !replacement ||
+          !samePlanReference(replacementReference, replacement.contract)
+        )
+          corrupt(`Plan supersession event ${event.id} has a missing reference.`);
+        if (
+          !["authorized", "stale"].includes(prior.status) ||
+          replacement.status !== "authorized" ||
+          !replacement.contract.predecessor ||
+          !samePlanReference(replacement.contract.predecessor, prior.contract)
+        )
+          corrupt(`Plan supersession event ${event.id} is semantically invalid.`);
+        plans.set(priorKey, {
+          ...prior,
+          status: "superseded",
+          updatedSequence: event.sequence,
+        });
+        planningEvent = event as PlanSupersededEvent;
+      }
+      eventsByWave.get(scopedWaveKey)!.push(event);
+      const scopedEvents = planningEventsByWave.get(scopedWaveKey) ?? [];
+      scopedEvents.push(planningEvent);
+      planningEventsByWave.set(scopedWaveKey, scopedEvents);
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
       const taskId = requireStoredIdentifier(event.taskId, "taskId");
@@ -845,9 +2104,16 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     projections,
     waves,
     tasks,
+    plans,
+    planKeysByRevision,
+    authorizations,
+    driftAssessments,
+    dispatchGateReceipts,
+    replanReceipts,
     taskCreatedSequences,
     eventsByChange,
     eventsByWave,
+    planningEventsByWave,
   };
 }
 
@@ -903,6 +2169,62 @@ function immutableWaveAggregate(
     wave: structuredClone(publicWaveProjection(wave, projected)),
     events: structuredClone(events),
   });
+}
+
+function immutablePlanningProjection(
+  projectId: string,
+  changeId: string,
+  waveId: string,
+  projected: ProjectedLedger,
+): WavePlanningProjectionV1 {
+  const plans = wavePlans(projected, changeId, waveId);
+  const authorizations = [...projected.authorizations.values()]
+    .filter(
+      (authorization) =>
+        authorization.changeId === changeId &&
+        authorization.waveId === waveId,
+    )
+    .sort((left, right) => {
+      const leftPlan = plans.find((plan) =>
+        samePlanReference(left.plan, plan.contract),
+      )!;
+      const rightPlan = plans.find((plan) =>
+        samePlanReference(right.plan, plan.contract),
+      )!;
+      return leftPlan.updatedSequence - rightPlan.updatedSequence;
+    });
+  const replanReceipts = [...projected.replanReceipts.values()]
+    .filter(
+      (receipt) =>
+        receipt.changeId === changeId && receipt.waveId === waveId,
+    )
+    .sort(
+      (left, right) =>
+      left.replacementPlan.revision - right.replacementPlan.revision,
+    );
+  const driftAssessments = [...projected.driftAssessments.values()].filter(
+    (assessment) =>
+      plans.some((plan) => samePlanReference(assessment.plan, plan.contract)),
+  );
+  const dispatchGateReceipts = [
+    ...projected.dispatchGateReceipts.values(),
+  ].filter(
+    (receipt) =>
+      receipt.changeId === changeId && receipt.waveId === waveId,
+  );
+  return deepFreeze(
+    structuredClone({
+      projectId,
+      changeId,
+      waveId,
+      plans,
+      authorizations,
+      driftAssessments,
+      dispatchGateReceipts,
+      replanReceipts,
+      events: projected.planningEventsByWave.get(waveKey(changeId, waveId)) ?? [],
+    }),
+  );
 }
 
 async function readLedger(file: string, projectId: string): Promise<Ledger> {
@@ -1014,6 +2336,9 @@ export class ChangeControlStore {
   private readonly writeChains = new Map<string, Promise<void>>();
   private readonly now: () => string;
   private readonly createId: () => string;
+  private readonly resolveRepositorySnapshot?: (
+    projectId: string,
+  ) => Promise<TrustedRepositorySnapshotV1>;
 
   constructor(
     private readonly rootDirectory: string,
@@ -1021,6 +2346,7 @@ export class ChangeControlStore {
   ) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? randomUUID;
+    this.resolveRepositorySnapshot = options.resolveRepositorySnapshot;
   }
 
   private file(projectId: string) {
@@ -1448,6 +2774,421 @@ export class ChangeControlStore {
     );
   }
 
+  async getPlanningProjection(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+  ): Promise<WavePlanningProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    if (!projected.waves.has(waveKey(changeId, waveId)))
+      throw new ChangeControlError(
+        `Wave ${waveId} was not found in change ${changeId}.`,
+        "NOT_FOUND",
+        404,
+      );
+    return immutablePlanningProjection(
+      projectId,
+      changeId,
+      waveId,
+      projected,
+    );
+  }
+
+  async publishPlanningContract(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+    input: PublishPlanningContractInput,
+  ): Promise<WavePlanningProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    const contract = normalizePlanningContract(
+      input?.contract,
+      "PlanningContractV1",
+    );
+
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const scopedWaveKey = waveKey(changeId, waveId);
+      if (!projected.waves.has(scopedWaveKey))
+        throw new ChangeControlError(
+          `Wave ${waveId} was not found in change ${changeId}.`,
+          "NOT_FOUND",
+          404,
+        );
+      assertPlanningContractSemantics(
+        contract,
+        projectId,
+        changeId,
+        waveId,
+        projected.tasks,
+        false,
+      );
+      const key = planKey(changeId, waveId, contract.planId, contract.revision);
+      const revisionKey = planRevisionKey(changeId, waveId, contract.revision);
+      if (
+        projected.plans.has(key) ||
+        projected.planKeysByRevision.has(revisionKey)
+      )
+        throw new ChangeControlError(
+          `Plan revision ${contract.revision} already exists in wave ${waveId}.`,
+          "CONFLICT",
+          409,
+        );
+      const latest = wavePlans(projected, changeId, waveId).at(-1);
+      if (!latest) {
+        if (contract.revision !== 1)
+          throw new ChangeControlError(
+            `The first plan for wave ${waveId} must be revision 1.`,
+            "CONFLICT",
+            409,
+          );
+      } else if (
+        contract.revision <= latest.contract.revision ||
+        !contract.predecessor ||
+        !samePlanReference(contract.predecessor, latest.contract)
+      )
+        throw new ChangeControlError(
+          `Plan revision ${contract.revision} must increase and identify the exact latest predecessor.`,
+          "CONFLICT",
+          409,
+        );
+
+      const waveEvents = projected.eventsByWave.get(scopedWaveKey)!;
+      const id = requireIdentifier(this.createId(), "id");
+      this.append(ledger, {
+        id,
+        type: "plan.proposed",
+        occurredAt: this.now(),
+        projectId,
+        changeId,
+        waveId,
+        actor: contract.createdBy,
+        causationId: requireIdentity(
+          input.causationId ?? waveEvents.at(-1)!.id,
+          "causationId",
+        ),
+        correlationId: requireIdentity(
+          input.correlationId ?? waveEvents[0].correlationId,
+          "correlationId",
+        ),
+        payload: {
+          contract: structuredClone(contract) as unknown as JsonValue,
+        },
+      });
+      const next = validateAndProject(ledger);
+      await writeAtomically(file, ledger);
+      return immutablePlanningProjection(
+        projectId,
+        changeId,
+        waveId,
+        next,
+      );
+    });
+  }
+
+  async publishArchitectReplanReceipt(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+    input: PublishArchitectReplanReceiptInput,
+  ): Promise<WavePlanningProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    const receipt = normalizePlanningContract(
+      input?.receipt,
+      "ArchitectReplanReceiptV1",
+    );
+
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const scopedWaveKey = waveKey(changeId, waveId);
+      if (!projected.waves.has(scopedWaveKey))
+        throw new ChangeControlError(
+          `Wave ${waveId} was not found in change ${changeId}.`,
+          "NOT_FOUND",
+          404,
+        );
+      assertReceiptScope(receipt, projectId, changeId, waveId, false);
+      if (projected.replanReceipts.has(receipt.receiptId))
+        throw new ChangeControlError(
+          `Architect receipt ${receipt.receiptId} already exists.`,
+          "CONFLICT",
+          409,
+        );
+      const prior = projected.plans.get(
+        planKey(
+          changeId,
+          waveId,
+          receipt.priorPlan.planId,
+          receipt.priorPlan.revision,
+        ),
+      );
+      const replacement = projected.plans.get(
+        planKey(
+          changeId,
+          waveId,
+          receipt.replacementPlan.planId,
+          receipt.replacementPlan.revision,
+        ),
+      );
+      if (
+        !prior ||
+        !samePlanReference(receipt.priorPlan, prior.contract) ||
+        !replacement ||
+        !samePlanReference(receipt.replacementPlan, replacement.contract)
+      )
+        throw new ChangeControlError(
+          `Architect receipt ${receipt.receiptId} has a missing or mismatched plan reference.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (
+        !replacement.contract.predecessor ||
+        !samePlanReference(replacement.contract.predecessor, prior.contract)
+      )
+        throw new ChangeControlError(
+          `Architect receipt ${receipt.receiptId} does not match replacement predecessor lineage.`,
+          "CONFLICT",
+          409,
+        );
+      if (replacement.status !== "proposed")
+        throw new ChangeControlError(
+          `Architect receipt ${receipt.receiptId} cannot be recorded after a plan decision.`,
+          "CONFLICT",
+          409,
+        );
+      const assessmentIssue = replanReceiptAssessmentIssue(
+        receipt,
+        prior,
+        projected.driftAssessments,
+      );
+      if (assessmentIssue === "missing")
+        throw new ChangeControlError(
+          `Architect receipt ${receipt.receiptId} has a missing drift assessment.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (assessmentIssue === "not-stale-prior")
+        throw new ChangeControlError(
+          `Architect receipt ${receipt.receiptId} does not reference a stale assessment for its prior plan.`,
+          "CONFLICT",
+          409,
+        );
+      if (
+        [...projected.replanReceipts.values()].some((candidate) =>
+          samePlanReference(candidate.replacementPlan, replacement.contract),
+        )
+      )
+        throw new ChangeControlError(
+          `Replacement plan ${replacement.contract.planId} revision ${replacement.contract.revision} already has an architect receipt.`,
+          "CONFLICT",
+          409,
+        );
+
+      const waveEvents = projected.eventsByWave.get(scopedWaveKey)!;
+      const id = requireIdentifier(this.createId(), "id");
+      this.append(ledger, {
+        id,
+        type: "architect.replan-recorded",
+        occurredAt: this.now(),
+        projectId,
+        changeId,
+        waveId,
+        actor: receipt.proposedBy,
+        causationId: requireIdentity(
+          input.causationId ?? replacement.proposedEventId,
+          "causationId",
+        ),
+        correlationId: requireIdentity(
+          input.correlationId ?? waveEvents[0].correlationId,
+          "correlationId",
+        ),
+        payload: {
+          receipt: structuredClone(receipt) as unknown as JsonValue,
+        },
+      });
+      const next = validateAndProject(ledger);
+      await writeAtomically(file, ledger);
+      return immutablePlanningProjection(
+        projectId,
+        changeId,
+        waveId,
+        next,
+      );
+    });
+  }
+
+  async publishPlanAuthorization(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+    input: PublishPlanAuthorizationInput,
+  ): Promise<WavePlanningProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    const authorization = normalizePlanningContract(
+      input?.authorization,
+      "PlanAuthorizationV1",
+    );
+
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const scopedWaveKey = waveKey(changeId, waveId);
+      if (!projected.waves.has(scopedWaveKey))
+        throw new ChangeControlError(
+          `Wave ${waveId} was not found in change ${changeId}.`,
+          "NOT_FOUND",
+          404,
+        );
+      assertAuthorizationScope(
+        authorization,
+        projectId,
+        changeId,
+        waveId,
+        false,
+      );
+      if (projected.authorizations.has(authorization.authorizationId))
+        throw new ChangeControlError(
+          `Plan authorization ${authorization.authorizationId} already exists.`,
+          "CONFLICT",
+          409,
+        );
+      const key = planKey(
+        changeId,
+        waveId,
+        authorization.plan.planId,
+        authorization.plan.revision,
+      );
+      const plan = projected.plans.get(key);
+      if (!plan || !samePlanReference(authorization.plan, plan.contract))
+        throw new ChangeControlError(
+          `Plan authorization ${authorization.authorizationId} has a missing or mismatched plan reference.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (plan.status !== "proposed")
+        throw new ChangeControlError(
+          `Plan ${authorization.plan.planId} revision ${authorization.plan.revision} already has a terminal decision.`,
+          "CONFLICT",
+          409,
+        );
+      if (authorization.decidedBy === plan.contract.createdBy)
+        throw new ChangeControlError(
+          `Plan ${authorization.plan.planId} revision ${authorization.plan.revision} cannot authorize itself.`,
+          "CONFLICT",
+          409,
+        );
+      const matchingReceipts = [...projected.replanReceipts.values()].filter(
+        (receipt) => samePlanReference(receipt.replacementPlan, plan.contract),
+      );
+      if (
+        matchingReceipts.some(
+          (receipt) => receipt.proposedBy === authorization.decidedBy,
+        )
+      )
+        throw new ChangeControlError(
+          `Architect proposal ${authorization.plan.planId} revision ${authorization.plan.revision} cannot authorize itself.`,
+          "CONFLICT",
+          409,
+        );
+      if (plan.contract.revision > 1 && matchingReceipts.length !== 1)
+        throw new ChangeControlError(
+          `Replacement plan ${authorization.plan.planId} revision ${authorization.plan.revision} requires exactly one architect replan receipt.`,
+          "CONFLICT",
+          409,
+        );
+
+      const waveEvents = projected.eventsByWave.get(scopedWaveKey)!;
+      const id = requireIdentifier(this.createId(), "id");
+      this.append(ledger, {
+        id,
+        type:
+          authorization.decision === "authorized"
+            ? "plan.authorized"
+            : "plan.rejected",
+        occurredAt: this.now(),
+        projectId,
+        changeId,
+        waveId,
+        actor: authorization.decidedBy,
+        causationId: requireIdentity(
+          input.causationId ?? plan.proposedEventId,
+          "causationId",
+        ),
+        correlationId: requireIdentity(
+          input.correlationId ?? waveEvents[0].correlationId,
+          "correlationId",
+        ),
+        payload: {
+          authorization:
+            structuredClone(authorization) as unknown as JsonValue,
+        },
+      });
+      let next = validateAndProject(ledger);
+      if (
+        authorization.decision === "authorized" &&
+        plan.contract.predecessor
+      ) {
+        const prior = next.plans.get(
+          planKey(
+            changeId,
+            waveId,
+            plan.contract.predecessor.planId,
+            plan.contract.predecessor.revision,
+          ),
+        );
+        if (
+          prior &&
+          ["authorized", "stale"].includes(prior.status) &&
+          samePlanReference(plan.contract.predecessor, prior.contract)
+        ) {
+          this.append(ledger, {
+            id: requireIdentifier(this.createId(), "id"),
+            type: "plan.superseded",
+            occurredAt: this.now(),
+            projectId,
+            changeId,
+            waveId,
+            actor: authorization.decidedBy,
+            causationId: id,
+            correlationId: requireIdentity(
+              input.correlationId ?? waveEvents[0].correlationId,
+              "correlationId",
+            ),
+            payload: {
+              priorPlan:
+                structuredClone(plan.contract.predecessor) as unknown as JsonValue,
+              replacementPlan:
+                structuredClone(authorization.plan) as unknown as JsonValue,
+            },
+          });
+          next = validateAndProject(ledger);
+        }
+      }
+      await writeAtomically(file, ledger);
+      return immutablePlanningProjection(
+        projectId,
+        changeId,
+        waveId,
+        next,
+      );
+    });
+  }
+
   async dispatchWave(
     projectIdValue: string,
     changeIdValue: string,
@@ -1476,30 +3217,224 @@ export class ChangeControlStore {
           "NOT_FOUND",
           404,
         );
-      const reasons = dispatchReadinessReasons(
+      const phaseOneReasons = dispatchReadinessReasons(
         wave,
         projected.waves,
         projected.tasks,
       );
-      if (reasons.length > 0 && !sendAnyway)
+      const waveEvents = projected.eventsByWave.get(key)!;
+
+      // A project ledger opts into Planning and Drift Contract v1 when its
+      // first planning contract is published. Ledgers with no planning events
+      // retain the exact Phase 1 dispatch behavior for replay compatibility.
+      if (projected.plans.size === 0) {
+        if (phaseOneReasons.length > 0 && !sendAnyway)
+          throw new ChangeControlError(
+            `Wave ${waveId} is not ready for dispatch.`,
+            "NOT_READY",
+            409,
+            deepFreeze(structuredClone(phaseOneReasons)),
+          );
+        if (phaseOneReasons.length > 0 && wave.status !== "draft")
+          throw new ChangeControlError(
+            `Send-anyway cannot dispatch a ${wave.status} wave.`,
+            "CONFLICT",
+            409,
+          );
+        const id = requireIdentifier(this.createId(), "id");
+        this.append(ledger, {
+          id,
+          type:
+            phaseOneReasons.length > 0
+              ? "wave.dispatch-overridden"
+              : "wave.dispatched",
+          occurredAt: this.now(),
+          projectId,
+          changeId,
+          waveId,
+          actor,
+          causationId: requireIdentity(
+            input.causationId ?? waveEvents.at(-1)!.id,
+            "causationId",
+          ),
+          correlationId: requireIdentity(
+            input.correlationId ?? waveEvents[0].correlationId,
+            "correlationId",
+          ),
+          payload:
+            phaseOneReasons.length > 0
+              ? {
+                  from: wave.status,
+                  to: "dispatched",
+                  reason: reason!,
+                  reasons:
+                    structuredClone(phaseOneReasons) as unknown as JsonValue,
+                  data,
+                }
+              : { from: "ready", to: "dispatched", data },
+        });
+        const next = validateAndProject(ledger);
+        await writeAtomically(file, ledger);
+        return immutableWaveAggregate(
+          next.waves.get(key)!,
+          next.eventsByWave.get(key)!,
+          next,
+        );
+      }
+
+      const gateReasons = new Set<DispatchGateReasonV1>();
+      const latestPlan = wavePlans(projected, changeId, waveId).at(-1);
+      if (!latestPlan) gateReasons.add("PLAN_REQUIRED");
+      if (
+        latestPlan &&
+        !dispatchContractValid(latestPlan.contract)
+      )
+        gateReasons.add("PLAN_CONTRACT_INVALID");
+      if (latestPlan?.status === "stale") gateReasons.add("PLAN_STALE");
+      else if (latestPlan && latestPlan.status !== "authorized")
+        gateReasons.add("PLAN_NOT_AUTHORIZED");
+      if (
+        latestPlan &&
+        !validReplacementReceipt(latestPlan, projected)
+      )
+        gateReasons.add("REPLAN_RECEIPT_REQUIRED");
+      if (latestPlan && !executableBlockingOracles(latestPlan.contract))
+        gateReasons.add("ACCEPTANCE_ORACLE_UNEXECUTABLE");
+      if (latestPlan && !evidencedBlastRadius(latestPlan.contract))
+        gateReasons.add("BLAST_RADIUS_UNEVIDENCED");
+
+      let assessment: DriftAssessmentV1 | undefined;
+      if (latestPlan?.status === "authorized") {
+        let snapshot: TrustedRepositorySnapshotV1 | undefined;
+        try {
+          snapshot = await this.resolveRepositorySnapshot?.(projectId);
+        } catch {
+          snapshot = undefined;
+        }
+        if (!validTrustedRepositorySnapshot(snapshot))
+          gateReasons.add("CURRENT_BASE_UNREADABLE");
+        else {
+          assessment = driftAssessmentFor(
+            requireIdentifier(this.createId(), "assessmentId"),
+            latestPlan,
+            snapshot,
+            this.now(),
+          );
+          if (snapshot.worktreeState === "dirty")
+            gateReasons.add("CURRENT_WORKTREE_DIRTY");
+          if (
+            snapshot.repositoryId !==
+              latestPlan.contract.planBase.repositoryId ||
+            snapshot.sha !== latestPlan.contract.planBase.sha ||
+            snapshot.hashAlgorithm !==
+              latestPlan.contract.planBase.hashAlgorithm
+          )
+            gateReasons.add("PLAN_BASE_MISMATCH");
+          if (
+            assessment.reasons.some(
+              (driftReason) =>
+                !["BASE_SHA_MISMATCH", "WORKTREE_DIRTY"].includes(
+                  driftReason.code,
+                ),
+            )
+          )
+            gateReasons.add("PLAN_STALE");
+        }
+      }
+
+      const dependencyOverride =
+        sendAnyway && phaseOneReasons.length > 0 && wave.status === "draft";
+      if (phaseOneReasons.length > 0 && !dependencyOverride)
+        gateReasons.add("WAVE_NOT_READY");
+
+      const correlationId = requireIdentity(
+        input.correlationId ?? waveEvents[0].correlationId,
+        "correlationId",
+      );
+      let causationId = requireIdentity(
+        input.causationId ?? waveEvents.at(-1)!.id,
+        "causationId",
+      );
+      if (assessment) {
+        const assessmentEvent = this.append(ledger, {
+          id: requireIdentifier(this.createId(), "id"),
+          type:
+            assessment.status === "fresh"
+              ? "plan.drift-assessed"
+              : "plan.marked-stale",
+          occurredAt: assessment.assessedAt,
+          projectId,
+          changeId,
+          waveId,
+          actor: assessment.assessedBy,
+          causationId,
+          correlationId,
+          payload: {
+            assessment:
+              structuredClone(assessment) as unknown as JsonValue,
+          },
+        });
+        causationId = assessmentEvent.id;
+      }
+
+      const orderedGateReasons = [...gateReasons].sort();
+      const gateReceipt: DispatchGateReceiptV1 = {
+        contractType: "DispatchGateReceiptV1",
+        contractVersion: "1.0",
+        receiptId: requireIdentifier(this.createId(), "receiptId"),
+        projectId,
+        changeId,
+        waveId,
+        ...(latestPlan
+          ? {
+              plan: {
+                planId: latestPlan.contract.planId,
+                revision: latestPlan.contract.revision,
+                planBaseSha: latestPlan.contract.planBase.sha,
+              },
+            }
+          : {}),
+        ...(latestPlan?.authorization
+          ? { authorizationId: latestPlan.authorization.authorizationId }
+          : {}),
+        ...(assessment
+          ? { driftAssessmentId: assessment.assessmentId }
+          : {}),
+        result: orderedGateReasons.length === 0 ? "allowed" : "rejected",
+        reasons: orderedGateReasons,
+        evaluatedAt: this.now(),
+        evaluatedBy: "dispatch-gate:v1",
+      };
+      const gateEvent = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "plan.dispatch-validated",
+        occurredAt: gateReceipt.evaluatedAt,
+        projectId,
+        changeId,
+        waveId,
+        actor: gateReceipt.evaluatedBy,
+        causationId,
+        correlationId,
+        payload: {
+          receipt: structuredClone(gateReceipt) as unknown as JsonValue,
+        },
+      });
+      let next = validateAndProject(ledger);
+      if (gateReceipt.result === "rejected") {
+        await writeAtomically(file, ledger);
         throw new ChangeControlError(
-          `Wave ${waveId} is not ready for dispatch.`,
+          `Wave ${waveId} was rejected by the Planning and Drift v1 dispatch gate.`,
           "NOT_READY",
           409,
-          deepFreeze(structuredClone(reasons)),
+          deepFreeze(structuredClone(orderedGateReasons)),
         );
-      if (reasons.length > 0 && wave.status !== "draft")
-        throw new ChangeControlError(
-          `Send-anyway cannot dispatch a ${wave.status} wave.`,
-          "CONFLICT",
-          409,
-        );
-      const waveEvents = projected.eventsByWave.get(key)!;
+      }
+
       const id = requireIdentifier(this.createId(), "id");
       this.append(ledger, {
         id,
         type:
-          reasons.length > 0
+          phaseOneReasons.length > 0
             ? "wave.dispatch-overridden"
             : "wave.dispatched",
         occurredAt: this.now(),
@@ -1507,26 +3442,21 @@ export class ChangeControlStore {
         changeId,
         waveId,
         actor,
-        causationId: requireIdentity(
-          input.causationId ?? waveEvents.at(-1)!.id,
-          "causationId",
-        ),
-        correlationId: requireIdentity(
-          input.correlationId ?? waveEvents[0].correlationId,
-          "correlationId",
-        ),
+        causationId: gateEvent.id,
+        correlationId,
         payload:
-          reasons.length > 0
+          phaseOneReasons.length > 0
             ? {
                 from: wave.status,
                 to: "dispatched",
                 reason: reason!,
-                reasons: structuredClone(reasons) as unknown as JsonValue,
+                reasons:
+                  structuredClone(phaseOneReasons) as unknown as JsonValue,
                 data,
               }
             : { from: "ready", to: "dispatched", data },
       });
-      const next = validateAndProject(ledger);
+      next = validateAndProject(ledger);
       await writeAtomically(file, ledger);
       return immutableWaveAggregate(
         next.waves.get(key)!,

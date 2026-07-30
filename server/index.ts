@@ -42,6 +42,10 @@ import {
   type CreateChangeInput,
   type CreateWaveInput,
   type DispatchWaveInput,
+  type PublishArchitectReplanReceiptInput,
+  type PublishPlanAuthorizationInput,
+  type PublishPlanningContractInput,
+  type TrustedRepositorySnapshotV1,
   type TransitionChangeInput,
   type TransitionTaskInput,
   type TransitionWaveInput,
@@ -917,6 +921,7 @@ const pipelinesDirectory = join(dataDirectory, "plans");
 const projectsFile = join(dataDirectory, "projects.json");
 export const changeControlStore = new ChangeControlStore(
   join(dataDirectory, "change-control-v1"),
+  { resolveRepositorySnapshot: resolvePersistedProjectSnapshot },
 );
 const defaultReviewSettings: ReviewSettings = {
   enabled: true,
@@ -3209,6 +3214,56 @@ async function runGit(cwd: string, args: string[]) {
   });
 }
 
+export function repositoryIdentityForGitRoot(root: string) {
+  const resolvedRoot = resolve(root);
+  const canonicalRoot =
+    process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
+  return createHash("sha256").update(canonicalRoot).digest("hex");
+}
+
+async function resolvePersistedProjectSnapshot(
+  projectId: string,
+): Promise<TrustedRepositorySnapshotV1> {
+  const matches = savedProjects.filter((profile) => profile.id === projectId);
+  if (matches.length !== 1)
+    throw new Error(
+      `Project ${projectId} does not resolve to exactly one persisted Project Profile.`,
+    );
+  const profile = matches[0];
+  const [topLevel, head, ref, status] = await Promise.all([
+    runGit(profile.path, ["rev-parse", "--show-toplevel"]),
+    runGit(profile.path, ["rev-parse", "--verify", "HEAD^{commit}"]),
+    runGit(profile.path, ["rev-parse", "--symbolic-full-name", "HEAD"]),
+    runGit(profile.path, ["status", "--porcelain=v1", "-uall"]),
+  ]);
+  if (
+    topLevel.code !== 0 ||
+    !topLevel.output ||
+    head.code !== 0 ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head.output) ||
+    ref.code !== 0 ||
+    !ref.output ||
+    status.code !== 0
+  )
+    throw new Error(
+      `The persisted Project Profile for ${projectId} does not resolve to a readable Git snapshot.`,
+    );
+  const changedPaths = status.output
+    ? status.output
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => line.slice(3).split("\\").join("/"))
+    : [];
+  return {
+    repositoryId: repositoryIdentityForGitRoot(topLevel.output),
+    sha: head.output,
+    hashAlgorithm: head.output.length === 64 ? "sha256" : "sha1",
+    ref: ref.output,
+    worktreeState: changedPaths.length > 0 ? "dirty" : "clean",
+    changedPaths,
+  };
+}
+
 async function readWorkspaceSnapshot(cwd: string) {
   const paths = await readGitStatus(cwd);
   const snapshot = new Map<string, string>();
@@ -4496,6 +4551,73 @@ app.get(
           request.params.projectId,
           request.params.changeId,
           request.params.waveId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getPlanningProjection(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning/contracts",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishPlanningContract(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.body as PublishPlanningContractInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning/authorizations",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishPlanAuthorization(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.body as PublishPlanAuthorizationInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning/architect-replan-receipts",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishArchitectReplanReceipt(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.body as PublishArchitectReplanReceiptInput,
         ),
       );
     } catch (error) {

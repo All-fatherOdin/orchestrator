@@ -53,6 +53,10 @@ The JSON APIs are:
 - `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/dispatch`
 - `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/transitions`
 - `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/tasks/:taskId/transitions`
+- `GET /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning/contracts`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning/authorizations`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/planning/architect-replan-receipts`
 - `GET /api/change-control/projects/:projectId/execution-bucket`
 
 Create bodies require `actor` and may include `changeId`, `causationId`,
@@ -84,6 +88,77 @@ wave returns `409` with code `NOT_READY` and structured `reasons` such as
 non-empty `actor` and `reason`; the ledger records a
 `wave.dispatch-overridden` event containing the actor, reason, and exact
 readiness reasons that were bypassed.
+
+### Planning Contract v1 publication
+
+The wave-scoped planning endpoints publish the canonical
+`PlanningContractV1`, `PlanAuthorizationV1`, and
+`ArchitectReplanReceiptV1` objects defined by
+`server/change-control-v1/schemas/planning-drift-v1.schema.json`. Request
+bodies wrap the canonical object as `contract`, `authorization`, or `receipt`;
+they may also supply `causationId` and `correlationId`. The read endpoint
+returns an immutable projection containing revision-ordered plans, their
+authorization state, architect receipts, and the typed planning events.
+
+Schema validation is followed by semantic validation. A plan must cover the
+exact existing wave task set, use unique task IDs, acceptance claim IDs, and
+declared write paths, and bind a full Git SHA whose length matches its hash
+algorithm. Revision 1 has no predecessor. Every later revision must increase
+monotonically and name the exact latest `(planId, revision, planBaseSha)`
+predecessor. Replacement authorization additionally requires exactly one
+architect receipt linking the published prior and replacement revisions.
+
+Only `human:*` and `policy:*` identities may publish
+`PlanAuthorizationV1`; a plan creator or architect proposer cannot authorize
+its own output. Authorization binds the exact
+`(planId, revision, planBaseSha)` tuple and is never inherited. Accepted
+replacement authorization appends a `plan.superseded` event for an authorized
+predecessor in the same atomic ledger write. Unknown contract versions,
+missing or mismatched references, duplicate terminal decisions, revision
+regressions, and self-authorization fail without persisting any partial event.
+
+These records extend the existing project hash chain and deterministic replay;
+they are not a second scheduler or run store. There are no update or delete
+endpoints. `.orchestrator/runs/<run-id>/run.json` remains authoritative for
+concrete execution, and the planning publication APIs do not create runs or
+execute agents.
+
+### Planning and Drift v1 dispatch gate
+
+Publishing the first planning contract opts that project ledger into the
+Planning and Drift v1 dispatch gate. From that point, every wave dispatch in
+the project requires the latest exact plan revision to be valid and authorized.
+Project ledgers with no planning contracts retain the Phase 1 dispatch
+behavior, including the existing dependency-only `sendAnyway` override.
+
+At dispatch, `projectId` must resolve to exactly one persisted Orchestrator
+Project Profile. The server runs read-only Git queries in that profile's
+persisted path to obtain the top-level repository identity, clean/dirty state,
+full `HEAD` SHA, hash algorithm, and ref. Repository identity is the SHA-256
+fingerprint of the normalized path returned by
+`git rev-parse --show-toplevel`. Request fields, planning payloads, and files
+inside the target repository are never path authority. Missing, ambiguous,
+non-Git, or unreadable profiles reject with `CURRENT_BASE_UNREADABLE`.
+
+The gate requires an executable blocking acceptance oracle and evidence-backed
+blast radius for every task, a valid stale-predecessor receipt for replacement
+plans, an exact clean repository identity and base SHA, and the existing wave
+and task dependency readiness. A dirty worktree is marked stale and rejected
+with `CURRENT_WORKTREE_DIRTY`; repository identity or SHA drift is marked stale
+and rejected with `PLAN_BASE_MISMATCH`; fired declared triggers or unknown
+drift reject with `PLAN_STALE`. `sendAnyway` can still override only Phase 1
+dependency readiness and cannot bypass any Phase 2 reason.
+
+Every Phase 2 attempt appends an immutable `DispatchGateReceiptV1`, including
+rejections. Readable authorized plans also append an immutable
+`DriftAssessmentV1`; stale assessments use `plan.marked-stale`, fresh
+assessments use `plan.drift-assessed`, and all gate decisions use
+`plan.dispatch-validated`. The planning read endpoint projects
+`driftAssessments` and `dispatchGateReceipts` alongside plans,
+authorizations, architect receipts, and typed events. Allowed dispatch is
+persisted atomically with its fresh assessment, gate receipt, and wave
+transition; a rejected attempt persists its assessment when available and its
+gate receipt before returning the stable rejection reasons.
 
 ## Sequential queue plans
 

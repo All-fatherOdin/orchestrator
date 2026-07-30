@@ -9,6 +9,12 @@ import { parse, stringify } from "yaml";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import Ajv2020 from "ajv8/dist/2020.js";
+import type {
+  ArchitectReplanReceiptV1,
+  PlanAuthorizationV1,
+  PlanningContractV1,
+  TrustedRepositorySnapshotV1,
+} from "./change-control-v1/index.ts";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -97,6 +103,7 @@ const {
   createCheckpoint,
   isManagedCheckpoint,
   recoverPersistedRunForStartup,
+  repositoryIdentityForGitRoot,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
@@ -118,6 +125,180 @@ const {
   ChangeControlStore,
 } = await import("./change-control-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
+
+const planningShaOne = "1".repeat(40);
+const planningShaTwo = "2".repeat(40);
+
+function planningContract(
+  overrides: Partial<PlanningContractV1> = {},
+): PlanningContractV1 {
+  return {
+    contractType: "PlanningContractV1",
+    contractVersion: "1.0",
+    planId: "plan-one",
+    revision: 1,
+    projectId: "planning-project",
+    changeId: "planning-change",
+    waveId: "planning-wave",
+    predecessor: null,
+    planBase: {
+      repositoryId: "planning-repository",
+      sha: planningShaOne,
+      hashAlgorithm: "sha1",
+      ref: "refs/heads/main",
+      capturedAt: "2026-07-30T09:00:00.000Z",
+      worktreeState: "clean",
+    },
+    taskPlans: ["task-one", "task-two"].map((taskId) => ({
+      taskId,
+      acceptanceClaims: [
+        {
+          claimId: `claim-${taskId}`,
+          observableOutcome: `${taskId} has its observable result.`,
+          oracle: {
+            kind: "command",
+            instruction: `npm test -- ${taskId}`,
+          },
+          expectedEvidence: [
+            {
+              kind: "command_exit",
+              description: "The command exits successfully.",
+            },
+          ],
+          failureSeverity: "blocking",
+        },
+      ],
+      blastRadius: {
+        declaredWriteSet: [
+          {
+            path: `server/${taskId}.ts`,
+            mode: "modify",
+            evidenceRefs: [`queue:${taskId}`],
+          },
+        ],
+        dependencyImpacts: [],
+        publicApiChanges: [],
+        schemaMigrationEffects: [],
+        externalSideEffects: [],
+        impactedTests: [
+          {
+            description: `${taskId} contract coverage`,
+            evidenceRefs: [`test:${taskId}`],
+          },
+        ],
+        assessmentEvidenceRefs: [`assessment:${taskId}`],
+      },
+    })),
+    replanTriggers: ["base_sha_changed", "unknown_drift"],
+    createdAt: "2026-07-30T09:01:00.000Z",
+    createdBy: "planner:primary",
+    authorizationRequired: true,
+    ...overrides,
+  };
+}
+
+function planAuthorization(
+  overrides: Partial<PlanAuthorizationV1> = {},
+): PlanAuthorizationV1 {
+  return {
+    contractType: "PlanAuthorizationV1",
+    contractVersion: "1.0",
+    authorizationId: "authorization-one",
+    projectId: "planning-project",
+    changeId: "planning-change",
+    waveId: "planning-wave",
+    plan: {
+      planId: "plan-one",
+      revision: 1,
+      planBaseSha: planningShaOne,
+    },
+    decision: "authorized",
+    reason: "The exact plan revision and base were reviewed.",
+    decidedAt: "2026-07-30T09:02:00.000Z",
+    decidedBy: "human:reviewer",
+    ...overrides,
+  };
+}
+
+async function createPlanningWave(
+  store: InstanceType<typeof ChangeControlStore>,
+) {
+  await store.create("planning-project", {
+    changeId: "planning-change",
+    actor: "user:creator",
+  });
+  await store.createWave("planning-project", "planning-change", {
+    waveId: "planning-wave",
+    actor: "user:creator",
+    tasks: [{ taskId: "task-one" }, { taskId: "task-two" }],
+  });
+}
+
+function planningSnapshot(
+  overrides: Partial<TrustedRepositorySnapshotV1> = {},
+): TrustedRepositorySnapshotV1 {
+  return {
+    repositoryId: "planning-repository",
+    sha: planningShaOne,
+    hashAlgorithm: "sha1",
+    ref: "refs/heads/main",
+    worktreeState: "clean",
+    changedPaths: [],
+    ...overrides,
+  };
+}
+
+async function authorizePlanningWave(
+  store: InstanceType<typeof ChangeControlStore>,
+  contract = planningContract(),
+) {
+  await createPlanningWave(store);
+  await store.publishPlanningContract(
+    "planning-project",
+    "planning-change",
+    "planning-wave",
+    { contract },
+  );
+  await store.publishPlanAuthorization(
+    "planning-project",
+    "planning-change",
+    "planning-wave",
+    {
+      authorization: planAuthorization({
+        plan: {
+          planId: contract.planId,
+          revision: contract.revision,
+          planBaseSha: contract.planBase.sha,
+        },
+      }),
+    },
+  );
+}
+
+function canonicalTestJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map((item) => canonicalTestJson(item)).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function rehashTestLedger(ledger: {
+  events: Array<Record<string, unknown>>;
+}) {
+  let previousHash: string | null = null;
+  for (const event of ledger.events) {
+    event.previousHash = previousHash;
+    const { hash: _discardedHash, ...hashInput } = event;
+    event.hash = createHash("sha256")
+      .update(canonicalTestJson(hashInput))
+      .digest("hex");
+    previousHash = event.hash as string;
+  }
+}
 
 test("change-control ledger serializes project writes and rebuilds immutable projections", async () => {
   const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
@@ -312,6 +493,1122 @@ test("change-control preserves a JSON __proto__ payload key", async () => {
   }
 });
 
+test("planning contracts, authorizations, and architect receipts publish immutably and replay deterministically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-planning-contract-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      resolveRepositorySnapshot: async () =>
+        planningSnapshot({ sha: planningShaTwo }),
+    });
+    await createPlanningWave(store);
+
+    const proposed = await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    assert.equal(proposed.plans.length, 1);
+    assert.equal(proposed.plans[0].status, "proposed");
+    assert.equal(proposed.plans[0].contract.planBase.sha, planningShaOne);
+    assert.ok(Object.isFrozen(proposed));
+    assert.ok(Object.isFrozen(proposed.plans));
+    assert.ok(Object.isFrozen(proposed.plans[0].contract.taskPlans));
+    assert.equal(proposed.events.at(-1)?.type, "plan.proposed");
+
+    const authorized = await store.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { authorization: planAuthorization() },
+    );
+    assert.equal(authorized.plans[0].status, "authorized");
+    assert.equal(
+      authorized.plans[0].authorization?.plan.planBaseSha,
+      planningShaOne,
+    );
+    assert.equal(authorized.events.at(-1)?.type, "plan.authorized");
+    await assert.rejects(
+      store.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:drift-observer" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        assert.deepEqual(error.reasons, ["PLAN_BASE_MISMATCH"]) === undefined,
+    );
+    const staleAssessment = (
+      await store.getPlanningProjection(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+      )
+    ).driftAssessments.at(-1)!;
+    assert.equal(staleAssessment.status, "stale");
+
+    const replacement = planningContract({
+      planId: "plan-two",
+      revision: 2,
+      predecessor: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      planBase: {
+        ...planningContract().planBase,
+        sha: planningShaTwo,
+        capturedAt: "2026-07-30T09:03:00.000Z",
+      },
+      createdAt: "2026-07-30T09:04:00.000Z",
+    });
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: replacement },
+    );
+    const receipt: ArchitectReplanReceiptV1 = {
+      contractType: "ArchitectReplanReceiptV1",
+      contractVersion: "1.0",
+      receiptId: "receipt-one",
+      projectId: "planning-project",
+      changeId: "planning-change",
+      waveId: "planning-wave",
+      driftAssessmentId: staleAssessment.assessmentId,
+      priorPlan: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      replacementPlan: {
+        planId: "plan-two",
+        revision: 2,
+        planBaseSha: planningShaTwo,
+      },
+      changes: [
+        {
+          area: "base",
+          summary: "Moved the proposal to the newly observed base.",
+          rationale: "The prior base is no longer current.",
+          evidenceRefs: ["drift:one"],
+        },
+      ],
+      proposedAt: "2026-07-30T09:05:00.000Z",
+      proposedBy: "architect:primary",
+      authorizationState: "pending",
+    };
+    const replanned = await store.publishArchitectReplanReceipt(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { receipt },
+    );
+    assert.equal(replanned.replanReceipts.length, 1);
+    assert.equal(
+      replanned.replanReceipts[0].replacementPlan.planBaseSha,
+      planningShaTwo,
+    );
+    assert.equal(replanned.events.at(-1)?.type, "architect.replan-recorded");
+
+    const replacementAuthorized = await store.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        authorization: planAuthorization({
+          authorizationId: "authorization-two",
+          plan: {
+            planId: "plan-two",
+            revision: 2,
+            planBaseSha: planningShaTwo,
+          },
+          decidedAt: "2026-07-30T09:06:00.000Z",
+        }),
+      },
+    );
+    assert.deepEqual(
+      replacementAuthorized.plans.map((plan) => [
+        plan.contract.revision,
+        plan.status,
+      ]),
+      [
+        [1, "superseded"],
+        [2, "authorized"],
+      ],
+    );
+    assert.equal(
+      replacementAuthorized.events.at(-1)?.type,
+      "plan.superseded",
+    );
+
+    await store.createWave("planning-project", "planning-change", {
+      waveId: "rejected-wave",
+      actor: "user:creator",
+      tasks: [{ taskId: "task-one" }, { taskId: "task-two" }],
+    });
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "rejected-wave",
+      {
+        contract: planningContract({
+          planId: "rejected-plan",
+          waveId: "rejected-wave",
+        }),
+      },
+    );
+    const rejected = await store.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "rejected-wave",
+      {
+        authorization: planAuthorization({
+          authorizationId: "authorization-rejected",
+          waveId: "rejected-wave",
+          plan: {
+            planId: "rejected-plan",
+            revision: 1,
+            planBaseSha: planningShaOne,
+          },
+          decision: "rejected",
+        }),
+      },
+    );
+    assert.equal(rejected.plans[0].status, "rejected");
+    assert.equal(rejected.events.at(-1)?.type, "plan.rejected");
+
+    const replayed = await new ChangeControlStore(root).getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.deepEqual(replayed, replacementAuthorized);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("planning publication rejects semantic mismatches atomically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-planning-negative-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await createPlanningWave(store);
+    const before = await store.getWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+
+    const invalidPlans: PlanningContractV1[] = [
+      planningContract({
+        contractVersion: "2.0" as "1.0",
+      }),
+      planningContract({
+        taskPlans: planningContract().taskPlans.slice(0, 1),
+      }),
+      planningContract({
+        planBase: {
+          ...planningContract().planBase,
+          hashAlgorithm: "sha256",
+        },
+      }),
+      planningContract({
+        taskPlans: planningContract().taskPlans.map((taskPlan, index) =>
+          index === 0
+            ? {
+                ...taskPlan,
+                acceptanceClaims: [
+                  taskPlan.acceptanceClaims[0],
+                  taskPlan.acceptanceClaims[0],
+                ],
+              }
+            : taskPlan,
+        ),
+      }),
+      planningContract({
+        taskPlans: planningContract().taskPlans.map((taskPlan, index) =>
+          index === 0
+            ? {
+                ...taskPlan,
+                blastRadius: {
+                  ...taskPlan.blastRadius,
+                  declaredWriteSet: [
+                    taskPlan.blastRadius.declaredWriteSet[0],
+                    taskPlan.blastRadius.declaredWriteSet[0],
+                  ],
+                },
+              }
+            : taskPlan,
+        ),
+      }),
+    ];
+    for (const contract of invalidPlans) {
+      await assert.rejects(
+        store.publishPlanningContract(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+          { contract },
+        ),
+        (error: unknown) =>
+          error instanceof ChangeControlError &&
+          error.code === "INVALID_INPUT",
+      );
+    }
+    assert.equal(
+      (
+        await store.getWave(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+        )
+      ).events.length,
+      before.events.length,
+    );
+
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    for (const contract of [
+      planningContract({
+        planId: "plan-regressed",
+        revision: 1,
+      }),
+      planningContract({
+        planId: "plan-missing-predecessor",
+        revision: 2,
+        predecessor: {
+          planId: "missing-plan",
+          revision: 1,
+          planBaseSha: planningShaOne,
+        },
+      }),
+    ]) {
+      await assert.rejects(
+        store.publishPlanningContract(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+          { contract },
+        ),
+        (error: unknown) =>
+          error instanceof ChangeControlError &&
+          error.code === "CONFLICT",
+      );
+    }
+
+    for (const authorization of [
+      planAuthorization({
+        authorizationId: "wrong-base",
+        plan: {
+          planId: "plan-one",
+          revision: 1,
+          planBaseSha: planningShaTwo,
+        },
+      }),
+      planAuthorization({
+        authorizationId: "missing-plan",
+        plan: {
+          planId: "not-published",
+          revision: 1,
+          planBaseSha: planningShaOne,
+        },
+      }),
+      planAuthorization({
+        authorizationId: "self-authorized",
+        decidedBy: "planner:primary",
+      }),
+      planAuthorization({
+        authorizationId: "architect-authorized",
+        decidedBy: "architect:primary",
+      }),
+    ]) {
+      await assert.rejects(
+        store.publishPlanAuthorization(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+          { authorization },
+        ),
+        (error: unknown) =>
+        error instanceof ChangeControlError &&
+          ["INVALID_INPUT", "NOT_FOUND", "CONFLICT"].includes(error.code),
+      );
+    }
+    await assert.rejects(
+      store.publishArchitectReplanReceipt(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        {
+          receipt: {
+            contractType: "ArchitectReplanReceiptV1",
+            contractVersion: "1.0",
+            receiptId: "missing-replacement-receipt",
+            projectId: "planning-project",
+            changeId: "planning-change",
+            waveId: "planning-wave",
+            driftAssessmentId: "drift-missing-replacement",
+            priorPlan: {
+              planId: "plan-one",
+              revision: 1,
+              planBaseSha: planningShaOne,
+            },
+            replacementPlan: {
+              planId: "not-published",
+              revision: 2,
+              planBaseSha: planningShaTwo,
+            },
+            changes: [
+              {
+                area: "base",
+                summary: "Proposed an unpublished replacement.",
+                rationale: "Exercises missing-reference validation.",
+                evidenceRefs: ["test:missing-reference"],
+              },
+            ],
+            proposedAt: "2026-07-30T09:05:00.000Z",
+            proposedBy: "architect:primary",
+            authorizationState: "pending",
+          },
+        },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError && error.code === "NOT_FOUND",
+    );
+    const projection = await store.getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.equal(projection.plans[0].status, "proposed");
+    assert.equal(projection.authorizations.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("planning replay rejects semantically corrupted exact authorization identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-planning-corrupt-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await createPlanningWave(store);
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    await store.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { authorization: planAuthorization() },
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    const authorizationEvent = ledger.events.find(
+      (event) => event.type === "plan.authorized",
+    )!;
+    const authorizationPayload = authorizationEvent.payload as {
+      authorization: { plan: { planBaseSha: string } };
+    };
+    authorizationPayload.authorization.plan.planBaseSha = planningShaTwo;
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+
+    await assert.rejects(
+      new ChangeControlStore(root).getPlanningProjection(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /missing or mismatched plan reference/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("planning replay rejects architect receipts without stale prior-plan assessment lineage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-replan-corrupt-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      resolveRepositorySnapshot: async () =>
+        planningSnapshot({ sha: planningShaTwo }),
+    });
+    await authorizePlanningWave(store);
+    await assert.rejects(
+      store.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:drift-observer" },
+      ),
+    );
+    const assessment = (
+      await store.getPlanningProjection(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+      )
+    ).driftAssessments.at(-1)!;
+    const replacement = planningContract({
+      planId: "plan-two",
+      revision: 2,
+      predecessor: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      planBase: {
+        ...planningContract().planBase,
+        sha: planningShaTwo,
+      },
+      createdAt: "2026-07-30T09:04:00.000Z",
+    });
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: replacement },
+    );
+    await store.publishArchitectReplanReceipt(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        receipt: {
+          contractType: "ArchitectReplanReceiptV1",
+          contractVersion: "1.0",
+          receiptId: "receipt-corrupt",
+          projectId: "planning-project",
+          changeId: "planning-change",
+          waveId: "planning-wave",
+          driftAssessmentId: assessment.assessmentId,
+          priorPlan: {
+            planId: "plan-one",
+            revision: 1,
+            planBaseSha: planningShaOne,
+          },
+          replacementPlan: {
+            planId: "plan-two",
+            revision: 2,
+            planBaseSha: planningShaTwo,
+          },
+          changes: [
+            {
+              area: "base",
+              summary: "Move to the observed replacement base.",
+              rationale: "The prior plan has a persisted stale assessment.",
+              evidenceRefs: ["test:stale-assessment"],
+            },
+          ],
+          proposedAt: "2026-07-30T09:05:00.000Z",
+          proposedBy: "architect:primary",
+          authorizationState: "pending",
+        },
+      },
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    const receiptEvent = ledger.events.find(
+      (event) => event.type === "architect.replan-recorded",
+    )!;
+    const payload = receiptEvent.payload as {
+      receipt: { driftAssessmentId: string };
+    };
+    payload.receipt.driftAssessmentId = "missing-drift";
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+
+    await assert.rejects(
+      new ChangeControlStore(root).getPlanningProjection(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /missing drift assessment/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 2 dispatch persists fresh drift and an allowed immutable gate receipt across restart replay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-drift-allowed-"));
+  try {
+    const resolveRepositorySnapshot = async () => planningSnapshot();
+    const store = new ChangeControlStore(root, { resolveRepositorySnapshot });
+    await authorizePlanningWave(store);
+
+    const dispatched = await store.dispatchWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { actor: "user:dispatcher" },
+    );
+    assert.equal(dispatched.wave.status, "dispatched");
+    assert.equal(dispatched.events.at(-1)?.type, "wave.dispatched");
+
+    const projection = await store.getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.equal(projection.plans[0].status, "dispatched");
+    assert.equal(projection.driftAssessments.length, 1);
+    assert.equal(projection.driftAssessments[0].status, "fresh");
+    assert.equal(projection.dispatchGateReceipts.length, 1);
+    assert.deepEqual(projection.dispatchGateReceipts[0].reasons, []);
+    assert.equal(projection.dispatchGateReceipts[0].result, "allowed");
+    assert.equal(
+      projection.dispatchGateReceipts[0].driftAssessmentId,
+      projection.driftAssessments[0].assessmentId,
+    );
+    assert.ok(Object.isFrozen(projection.driftAssessments[0]));
+    assert.ok(Object.isFrozen(projection.dispatchGateReceipts[0]));
+
+    const replayed = await new ChangeControlStore(root, {
+      resolveRepositorySnapshot,
+    }).getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.deepEqual(replayed, projection);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 2 dispatch persists every stable rejection reason and sendAnyway never bypasses planning state", async () => {
+  type Scenario = {
+    reason:
+      | "PLAN_CONTRACT_INVALID"
+      | "PLAN_NOT_AUTHORIZED"
+      | "CURRENT_BASE_UNREADABLE"
+      | "CURRENT_WORKTREE_DIRTY"
+      | "PLAN_BASE_MISMATCH"
+      | "PLAN_STALE"
+      | "ACCEPTANCE_ORACLE_UNEXECUTABLE"
+      | "BLAST_RADIUS_UNEVIDENCED";
+    contract?: PlanningContractV1;
+    authorize?: boolean;
+    snapshot?: () => Promise<TrustedRepositorySnapshotV1>;
+    sendAnyway?: boolean;
+  };
+  const humanOracleContract = planningContract({
+    taskPlans: planningContract().taskPlans.map((taskPlan, index) =>
+      index === 0
+        ? {
+            ...taskPlan,
+            acceptanceClaims: taskPlan.acceptanceClaims.map((claim) => ({
+              ...claim,
+              oracle: {
+                kind: "human_observation" as const,
+                instruction: "A human must inspect the result.",
+              },
+            })),
+          }
+        : taskPlan,
+    ),
+  });
+  const unevidencedContract = planningContract({
+    taskPlans: planningContract().taskPlans.map((taskPlan, index) =>
+      index === 0
+        ? {
+            ...taskPlan,
+            blastRadius: {
+              ...taskPlan.blastRadius,
+              assessmentEvidenceRefs: [" "],
+            },
+          }
+        : taskPlan,
+    ),
+  });
+  const scenarios: Scenario[] = [
+    {
+      reason: "PLAN_CONTRACT_INVALID",
+      contract: planningContract({
+        planBase: {
+          ...planningContract().planBase,
+          capturedAt: "2026-07-30T09:02:00.000Z",
+        },
+        createdAt: "2026-07-30T09:01:00.000Z",
+      }),
+    },
+    { reason: "PLAN_NOT_AUTHORIZED", authorize: false },
+    {
+      reason: "CURRENT_BASE_UNREADABLE",
+      snapshot: async () => {
+        throw new Error("profile missing");
+      },
+      sendAnyway: true,
+    },
+    {
+      reason: "CURRENT_WORKTREE_DIRTY",
+      snapshot: async () =>
+        planningSnapshot({
+          worktreeState: "dirty",
+          changedPaths: ["spoofed/request/path.ts"],
+        }),
+    },
+    {
+      reason: "PLAN_BASE_MISMATCH",
+      snapshot: async () =>
+        planningSnapshot({
+          repositoryId: "different-repository",
+          sha: planningShaTwo,
+        }),
+    },
+    {
+      reason: "PLAN_STALE",
+      contract: planningContract({
+        replanTriggers: ["policy_changed"],
+      }),
+      snapshot: async () =>
+        planningSnapshot({
+          triggeredReplanTriggers: ["policy_changed"],
+        }),
+    },
+    {
+      reason: "PLAN_STALE",
+      contract: planningContract({
+        replanTriggers: ["base_sha_changed"],
+      }),
+      snapshot: async () =>
+        planningSnapshot({
+          triggeredReplanTriggers: ["unknown_drift"],
+        }),
+    },
+    {
+      reason: "ACCEPTANCE_ORACLE_UNEXECUTABLE",
+      contract: humanOracleContract,
+    },
+    {
+      reason: "BLAST_RADIUS_UNEVIDENCED",
+      contract: unevidencedContract,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const root = await mkdtemp(
+      join(tmpdir(), `orchestrator-gate-${scenario.reason.toLowerCase()}-`),
+    );
+    try {
+      const store = new ChangeControlStore(root, {
+        resolveRepositorySnapshot:
+          scenario.snapshot ?? (async () => planningSnapshot()),
+      });
+      await createPlanningWave(store);
+      const contract = scenario.contract ?? planningContract();
+      await store.publishPlanningContract(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { contract },
+      );
+      if (scenario.authorize !== false)
+        await store.publishPlanAuthorization(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+          {
+            authorization: planAuthorization({
+              plan: {
+                planId: contract.planId,
+                revision: contract.revision,
+                planBaseSha: contract.planBase.sha,
+              },
+            }),
+          },
+        );
+
+      await assert.rejects(
+        store.dispatchWave(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+          {
+            actor: "user:dispatcher",
+            ...(scenario.sendAnyway
+              ? { sendAnyway: true, reason: "Dependency override only" }
+              : {}),
+          },
+        ),
+        (error: unknown) =>
+          error instanceof ChangeControlError &&
+          error.code === "NOT_READY" &&
+          assert.deepEqual(error.reasons, [scenario.reason]) === undefined,
+      );
+      const projection = await store.getPlanningProjection(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+      );
+      const receipt = projection.dispatchGateReceipts.at(-1)!;
+      assert.equal(receipt.result, "rejected");
+      assert.deepEqual(receipt.reasons, [scenario.reason]);
+      assert.ok(Object.isFrozen(receipt));
+      assert.notEqual(
+        (await store.getWave(
+          "planning-project",
+          "planning-change",
+          "planning-wave",
+        )).wave.status,
+        "dispatched",
+      );
+      if (
+        scenario.reason === "CURRENT_WORKTREE_DIRTY" ||
+        scenario.reason === "PLAN_BASE_MISMATCH" ||
+        scenario.reason === "PLAN_STALE"
+      )
+        assert.equal(projection.plans[0].status, "stale");
+      if (scenario.reason === "PLAN_STALE") {
+        await assert.rejects(
+          store.dispatchWave(
+            "planning-project",
+            "planning-change",
+            "planning-wave",
+            {
+              actor: "user:dispatcher",
+              sendAnyway: true,
+              reason: "A stale plan cannot be overridden.",
+            },
+          ),
+          (error: unknown) =>
+            error instanceof ChangeControlError &&
+            assert.deepEqual(error.reasons, ["PLAN_STALE"]) === undefined,
+        );
+        assert.equal(
+          (
+            await store.getPlanningProjection(
+              "planning-project",
+              "planning-change",
+              "planning-wave",
+            )
+          ).dispatchGateReceipts.length,
+          2,
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Phase 2 dispatch rejects a task plan with only warning acceptance claims", async () => {
+  const root = await mkdtemp(
+    join(tmpdir(), "orchestrator-gate-warning-only-oracles-"),
+  );
+  try {
+    const store = new ChangeControlStore(root, {
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    });
+    await createPlanningWave(store);
+    const contract = planningContract({
+      taskPlans: planningContract().taskPlans.map((taskPlan, index) =>
+        index === 0
+          ? {
+              ...taskPlan,
+              acceptanceClaims: taskPlan.acceptanceClaims.map((claim) => ({
+                ...claim,
+                failureSeverity: "warning" as const,
+              })),
+            }
+          : taskPlan,
+      ),
+    });
+    await store.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract },
+    );
+    await store.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        authorization: planAuthorization({
+          plan: {
+            planId: contract.planId,
+            revision: contract.revision,
+            planBaseSha: contract.planBase.sha,
+          },
+        }),
+      },
+    );
+
+    await assert.rejects(
+      store.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:dispatcher" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "NOT_READY" &&
+        assert.deepEqual(error.reasons, [
+          "ACCEPTANCE_ORACLE_UNEXECUTABLE",
+        ]) === undefined,
+    );
+    const projection = await store.getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.equal(projection.dispatchGateReceipts.length, 1);
+    assert.equal(projection.dispatchGateReceipts[0].result, "rejected");
+    assert.deepEqual(projection.dispatchGateReceipts[0].reasons, [
+      "ACCEPTANCE_ORACLE_UNEXECUTABLE",
+    ]);
+    assert.ok(Object.isFrozen(projection.dispatchGateReceipts[0]));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 2 gate records PLAN_REQUIRED, REPLAN_RECEIPT_REQUIRED, and WAVE_NOT_READY while Phase 1 remains compatible", async () => {
+  const roots: string[] = [];
+  try {
+    const requiredRoot = await mkdtemp(
+      join(tmpdir(), "orchestrator-gate-required-"),
+    );
+    roots.push(requiredRoot);
+    const requiredStore = new ChangeControlStore(requiredRoot, {
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    });
+    await createPlanningWave(requiredStore);
+    await requiredStore.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    await requiredStore.createWave("planning-project", "planning-change", {
+      waveId: "missing-plan-wave",
+      actor: "user:creator",
+      tasks: [{ taskId: "missing-plan-task" }],
+    });
+    await assert.rejects(
+      requiredStore.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "missing-plan-wave",
+        { actor: "user:dispatcher" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        assert.deepEqual(error.reasons, ["PLAN_REQUIRED"]) === undefined,
+    );
+    assert.deepEqual(
+      (
+        await requiredStore.getPlanningProjection(
+          "planning-project",
+          "planning-change",
+          "missing-plan-wave",
+        )
+      ).dispatchGateReceipts.at(-1)?.reasons,
+      ["PLAN_REQUIRED"],
+    );
+
+    const replanRoot = await mkdtemp(
+      join(tmpdir(), "orchestrator-gate-replan-"),
+    );
+    roots.push(replanRoot);
+    const replanStore = new ChangeControlStore(replanRoot, {
+      resolveRepositorySnapshot: async () =>
+        planningSnapshot({ sha: planningShaTwo }),
+    });
+    await authorizePlanningWave(replanStore);
+    const replacement = planningContract({
+      planId: "plan-two",
+      revision: 2,
+      predecessor: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      planBase: {
+        ...planningContract().planBase,
+        sha: planningShaTwo,
+      },
+      createdAt: "2026-07-30T09:04:00.000Z",
+    });
+    await replanStore.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: replacement },
+    );
+    await assert.rejects(
+      replanStore.publishArchitectReplanReceipt(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        {
+          receipt: {
+            contractType: "ArchitectReplanReceiptV1",
+            contractVersion: "1.0",
+            receiptId: "replan-without-drift",
+            projectId: "planning-project",
+            changeId: "planning-change",
+            waveId: "planning-wave",
+            driftAssessmentId: "missing-drift",
+            priorPlan: {
+              planId: "plan-one",
+              revision: 1,
+              planBaseSha: planningShaOne,
+            },
+            replacementPlan: {
+              planId: "plan-two",
+              revision: 2,
+              planBaseSha: planningShaTwo,
+            },
+            changes: [
+              {
+                area: "base",
+                summary: "Changed base without a persisted stale assessment.",
+                rationale: "Exercises publication-time lineage validation.",
+                evidenceRefs: ["test:missing-drift"],
+              },
+            ],
+            proposedAt: "2026-07-30T09:05:00.000Z",
+            proposedBy: "architect:primary",
+            authorizationState: "pending",
+          },
+        },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "NOT_FOUND" &&
+        /missing drift assessment/.test(error.message),
+    );
+
+    const readinessRoot = await mkdtemp(
+      join(tmpdir(), "orchestrator-gate-readiness-"),
+    );
+    roots.push(readinessRoot);
+    const readinessStore = new ChangeControlStore(readinessRoot, {
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    });
+    await readinessStore.create("planning-project", {
+      changeId: "planning-change",
+      actor: "user:creator",
+    });
+    await readinessStore.createWave("planning-project", "planning-change", {
+      waveId: "blocker-wave",
+      actor: "user:creator",
+      tasks: [{ taskId: "blocker-task" }],
+    });
+    await readinessStore.createWave("planning-project", "planning-change", {
+      waveId: "planning-wave",
+      actor: "user:creator",
+      dependsOn: ["blocker-wave"],
+      tasks: [{ taskId: "task-one" }, { taskId: "task-two" }],
+    });
+    await readinessStore.publishPlanningContract(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { contract: planningContract() },
+    );
+    await readinessStore.publishPlanAuthorization(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { authorization: planAuthorization() },
+    );
+    await assert.rejects(
+      readinessStore.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "user:dispatcher" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        assert.deepEqual(error.reasons, ["WAVE_NOT_READY"]) === undefined,
+    );
+    const overridden = await readinessStore.dispatchWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        actor: "user:lead",
+        sendAnyway: true,
+        reason: "Only Phase 1 dependencies are overridden.",
+      },
+    );
+    assert.equal(overridden.wave.status, "dispatched");
+    assert.equal(overridden.events.at(-1)?.type, "wave.dispatch-overridden");
+
+    const legacyRoot = await mkdtemp(
+      join(tmpdir(), "orchestrator-phase1-compatibility-"),
+    );
+    roots.push(legacyRoot);
+    const legacyStore = new ChangeControlStore(legacyRoot, {
+      resolveRepositorySnapshot: async () => {
+        throw new Error("Phase 1 must not resolve a planning snapshot.");
+      },
+    });
+    await legacyStore.create("legacy-project", {
+      changeId: "legacy-change",
+      actor: "user:creator",
+    });
+    await legacyStore.createWave("legacy-project", "legacy-change", {
+      waveId: "legacy-wave",
+      actor: "user:creator",
+      tasks: [{ taskId: "legacy-task" }],
+    });
+    const legacyDispatch = await legacyStore.dispatchWave(
+      "legacy-project",
+      "legacy-change",
+      "legacy-wave",
+      { actor: "user:dispatcher" },
+    );
+    assert.equal(legacyDispatch.wave.status, "dispatched");
+    assert.deepEqual(
+      legacyDispatch.events.filter((event) =>
+        event.type.startsWith("plan."),
+      ),
+      [],
+    );
+  } finally {
+    await Promise.all(
+      roots.map((root) => rm(root, { recursive: true, force: true })),
+    );
+  }
+});
+
 test("change-control create, list, get, and transition APIs fail closed", async () => {
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolveListen, rejectListen) => {
@@ -488,6 +1785,540 @@ test("change-control create, list, get, and transition APIs fail closed", async 
     );
   } finally {
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  }
+});
+
+test("planning HTTP APIs publish exact identities and reject unproven replan lineage", async () => {
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const projectId = "api-planning-project";
+    const changeId = "api-planning-change";
+    const waveId = "api-planning-wave";
+    const changeBase = `http://127.0.0.1:${address.port}/api/change-control/projects/${projectId}/changes`;
+    assert.equal(
+      (
+        await fetch(changeBase, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            changeId,
+            actor: "user:api-planning",
+          }),
+        })
+      ).status,
+      201,
+    );
+    assert.equal(
+      (
+        await fetch(`${changeBase}/${changeId}/waves`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            waveId,
+            actor: "user:api-planning",
+            tasks: [{ taskId: "task-one" }, { taskId: "task-two" }],
+          }),
+        })
+      ).status,
+      201,
+    );
+    const planningBase = `${changeBase}/${changeId}/waves/${waveId}/planning`;
+    const apiContract = planningContract({
+      planId: "api-plan-one",
+      projectId,
+      changeId,
+      waveId,
+    });
+    const proposedResponse = await fetch(`${planningBase}/contracts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contract: apiContract }),
+    });
+    assert.equal(proposedResponse.status, 201);
+    const proposed = await proposedResponse.json() as {
+      plans: Array<{ status: string }>;
+      events: Array<{ type: string }>;
+    };
+    assert.equal(proposed.plans[0].status, "proposed");
+    assert.equal(proposed.events.at(-1)?.type, "plan.proposed");
+
+    const authorizationResponse = await fetch(
+      `${planningBase}/authorizations`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          authorization: planAuthorization({
+            authorizationId: "api-authorization-one",
+            projectId,
+            changeId,
+            waveId,
+            plan: {
+              planId: "api-plan-one",
+              revision: 1,
+              planBaseSha: planningShaOne,
+            },
+          }),
+        }),
+      },
+    );
+    assert.equal(authorizationResponse.status, 201);
+
+    const replacement = planningContract({
+      planId: "api-plan-two",
+      revision: 2,
+      projectId,
+      changeId,
+      waveId,
+      predecessor: {
+        planId: "api-plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      planBase: {
+        ...apiContract.planBase,
+        sha: planningShaTwo,
+      },
+      createdAt: "2026-07-30T09:03:00.000Z",
+    });
+    assert.equal(
+      (
+        await fetch(`${planningBase}/contracts`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contract: replacement }),
+        })
+      ).status,
+      201,
+    );
+    const receiptResponse = await fetch(
+      `${planningBase}/architect-replan-receipts`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          receipt: {
+            contractType: "ArchitectReplanReceiptV1",
+            contractVersion: "1.0",
+            receiptId: "api-receipt-one",
+            projectId,
+            changeId,
+            waveId,
+            driftAssessmentId: "api-drift-one",
+            priorPlan: {
+              planId: "api-plan-one",
+              revision: 1,
+              planBaseSha: planningShaOne,
+            },
+            replacementPlan: {
+              planId: "api-plan-two",
+              revision: 2,
+              planBaseSha: planningShaTwo,
+            },
+            changes: [
+              {
+                area: "base",
+                summary: "Proposed the API replacement base.",
+                rationale: "The API contract must preserve lineage.",
+                evidenceRefs: ["api:drift-one"],
+              },
+            ],
+            proposedAt: "2026-07-30T09:04:00.000Z",
+            proposedBy: "architect:api",
+            authorizationState: "pending",
+          },
+        }),
+      },
+    );
+    assert.equal(receiptResponse.status, 404);
+    assert.equal(
+      (await receiptResponse.json() as { code: string }).code,
+      "NOT_FOUND",
+    );
+
+    const readResponse = await fetch(planningBase);
+    assert.equal(readResponse.status, 200);
+    const projection = await readResponse.json() as {
+      plans: Array<{ contract: { revision: number }; status: string }>;
+      authorizations: unknown[];
+      replanReceipts: unknown[];
+    };
+    assert.deepEqual(
+      projection.plans.map((plan) => [plan.contract.revision, plan.status]),
+      [
+        [1, "authorized"],
+        [2, "proposed"],
+      ],
+    );
+    assert.equal(projection.authorizations.length, 1);
+    assert.equal(projection.replanReceipts.length, 0);
+
+    const mismatchedResponse = await fetch(
+      `${planningBase}/authorizations`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          authorization: planAuthorization({
+            authorizationId: "api-wrong-base",
+            projectId,
+            changeId,
+            waveId,
+            plan: {
+              planId: "api-plan-two",
+              revision: 2,
+              planBaseSha: planningShaOne,
+            },
+          }),
+        }),
+      },
+    );
+    assert.equal(mismatchedResponse.status, 404);
+    assert.equal(
+      (await mismatchedResponse.json() as { code: string }).code,
+      "NOT_FOUND",
+    );
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+  }
+});
+
+test("HTTP dispatch trusts only the persisted Project Profile path and rejects dirty, drifted, or missing profile state", async () => {
+  const repository = await mkdtemp(
+    join(tmpdir(), "orchestrator-http-profile-repository-"),
+  );
+  const spoofedRepository = await mkdtemp(
+    join(tmpdir(), "orchestrator-http-spoofed-repository-"),
+  );
+  git(repository, "init", "-b", "main");
+  git(repository, "config", "user.email", "orchestrator@example.test");
+  git(repository, "config", "user.name", "Orchestrator Test");
+  await writeFile(join(repository, "tracked.txt"), "trusted\n", "utf8");
+  git(repository, "add", "tracked.txt");
+  git(repository, "commit", "-m", "trusted base");
+  git(spoofedRepository, "init", "-b", "main");
+  git(
+    spoofedRepository,
+    "config",
+    "user.email",
+    "orchestrator@example.test",
+  );
+  git(spoofedRepository, "config", "user.name", "Orchestrator Test");
+  await writeFile(join(spoofedRepository, "spoofed.txt"), "spoofed\n", "utf8");
+  git(spoofedRepository, "add", "spoofed.txt");
+  git(spoofedRepository, "commit", "-m", "spoofed base");
+  const trustedRepositoryId = repositoryIdentityForGitRoot(
+    git(repository, "rev-parse", "--show-toplevel"),
+  );
+
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  let profileId: string | undefined;
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const profileResponse = await fetch(`${origin}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "Trusted dispatch profile",
+        path: repository,
+      }),
+    });
+    assert.equal(profileResponse.status, 201);
+    profileId = (
+      (await profileResponse.json()) as { id: string }
+    ).id;
+    const changeId = "http-drift-change";
+    const changesBase = `${origin}/api/change-control/projects/${profileId}/changes`;
+    assert.equal(
+      (
+        await fetch(changesBase, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            changeId,
+            actor: "user:http-planner",
+          }),
+        })
+      ).status,
+      201,
+    );
+
+    const publishWave = async (
+      waveId: string,
+      planId: string,
+      sha: string,
+    ) => {
+      assert.equal(
+        (
+          await fetch(`${changesBase}/${changeId}/waves`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              waveId,
+              actor: "user:http-planner",
+              tasks: [{ taskId: "task-one" }, { taskId: "task-two" }],
+            }),
+          })
+        ).status,
+        201,
+      );
+      const planningBase = `${changesBase}/${changeId}/waves/${waveId}/planning`;
+      const contract = planningContract({
+        planId,
+        projectId: profileId!,
+        changeId,
+        waveId,
+        planBase: {
+          ...planningContract().planBase,
+          repositoryId: trustedRepositoryId,
+          sha,
+          ref: "refs/heads/main",
+        },
+      });
+      assert.equal(
+        (
+          await fetch(`${planningBase}/contracts`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ contract }),
+          })
+        ).status,
+        201,
+      );
+      assert.equal(
+        (
+          await fetch(`${planningBase}/authorizations`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              authorization: planAuthorization({
+                authorizationId: `authorization-${planId}`,
+                projectId: profileId!,
+                changeId,
+                waveId,
+                plan: {
+                  planId,
+                  revision: 1,
+                  planBaseSha: sha,
+                },
+              }),
+            }),
+          })
+        ).status,
+        201,
+      );
+      return {
+        dispatch: `${changesBase}/${changeId}/waves/${waveId}/dispatch`,
+        planning: planningBase,
+      };
+    };
+
+    const trustedHead = git(repository, "rev-parse", "HEAD");
+    const allowed = await publishWave(
+      "trusted-wave",
+      "trusted-plan",
+      trustedHead,
+    );
+    const allowedResponse = await fetch(allowed.dispatch, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor: "user:http-dispatcher",
+        path: spoofedRepository,
+        projectPath: spoofedRepository,
+        payload: {
+          repositoryPath: spoofedRepository,
+          targetPath: spoofedRepository,
+        },
+      }),
+    });
+    const allowedBody = await allowedResponse.json();
+    const rejectedProjection =
+      allowedResponse.status === 200
+        ? undefined
+        : await (await fetch(allowed.planning)).json();
+    assert.equal(
+      allowedResponse.status,
+      200,
+      JSON.stringify({ allowedBody, rejectedProjection }),
+    );
+    const allowedProjection = (await (
+      await fetch(allowed.planning)
+    ).json()) as {
+      driftAssessments: Array<{
+        observedBase: { repositoryId: string; sha: string };
+      }>;
+      dispatchGateReceipts: Array<{ result: string }>;
+    };
+    assert.equal(
+      allowedProjection.driftAssessments[0].observedBase.repositoryId,
+      trustedRepositoryId,
+    );
+    assert.equal(
+      allowedProjection.driftAssessments[0].observedBase.sha,
+      trustedHead,
+    );
+    assert.equal(
+      allowedProjection.dispatchGateReceipts[0].result,
+      "allowed",
+    );
+
+    await writeFile(join(repository, "dirty.txt"), "dirty\n", "utf8");
+    const dirty = await publishWave("dirty-wave", "dirty-plan", trustedHead);
+    const dirtyResponse = await fetch(dirty.dispatch, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor: "user:http-dispatcher",
+        sendAnyway: true,
+        reason: "Cannot override planning state.",
+        path: spoofedRepository,
+      }),
+    });
+    assert.equal(dirtyResponse.status, 409);
+    assert.deepEqual(
+      (await dirtyResponse.json() as { reasons: string[] }).reasons,
+      ["CURRENT_WORKTREE_DIRTY"],
+    );
+
+    git(repository, "add", "dirty.txt");
+    git(repository, "commit", "-m", "move trusted head");
+    const drifted = await publishWave(
+      "drifted-wave",
+      "drifted-plan",
+      trustedHead,
+    );
+    const driftedResponse = await fetch(drifted.dispatch, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actor: "user:http-dispatcher" }),
+    });
+    assert.equal(driftedResponse.status, 409);
+    assert.deepEqual(
+      (await driftedResponse.json() as { reasons: string[] }).reasons,
+      ["PLAN_BASE_MISMATCH"],
+    );
+
+    const missingProjectId = "missing-profile-project";
+    const missingChangeId = "missing-profile-change";
+    const missingWaveId = "missing-profile-wave";
+    const missingChanges = `${origin}/api/change-control/projects/${missingProjectId}/changes`;
+    assert.equal(
+      (
+        await fetch(missingChanges, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            changeId: missingChangeId,
+            actor: "user:http-planner",
+          }),
+        })
+      ).status,
+      201,
+    );
+    assert.equal(
+      (
+        await fetch(`${missingChanges}/${missingChangeId}/waves`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            waveId: missingWaveId,
+            actor: "user:http-planner",
+            tasks: [{ taskId: "task-one" }, { taskId: "task-two" }],
+          }),
+        })
+      ).status,
+      201,
+    );
+    const missingPlanning = `${missingChanges}/${missingChangeId}/waves/${missingWaveId}/planning`;
+    const missingContract = planningContract({
+      projectId: missingProjectId,
+      changeId: missingChangeId,
+      waveId: missingWaveId,
+      planBase: {
+        ...planningContract().planBase,
+        sha: trustedHead,
+      },
+    });
+    assert.equal(
+      (
+        await fetch(`${missingPlanning}/contracts`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ contract: missingContract }),
+        })
+      ).status,
+      201,
+    );
+    assert.equal(
+      (
+        await fetch(`${missingPlanning}/authorizations`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            authorization: planAuthorization({
+              authorizationId: "missing-profile-authorization",
+              projectId: missingProjectId,
+              changeId: missingChangeId,
+              waveId: missingWaveId,
+              plan: {
+                planId: missingContract.planId,
+                revision: 1,
+                planBaseSha: trustedHead,
+              },
+            }),
+          }),
+        })
+      ).status,
+      201,
+    );
+    const missingResponse = await fetch(
+      `${missingChanges}/${missingChangeId}/waves/${missingWaveId}/dispatch`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ actor: "user:http-dispatcher" }),
+      },
+    );
+    assert.equal(missingResponse.status, 409);
+    assert.deepEqual(
+      (await missingResponse.json() as { reasons: string[] }).reasons,
+      ["CURRENT_BASE_UNREADABLE"],
+    );
+    assert.equal(
+      (
+        (await (await fetch(missingPlanning)).json()) as {
+          dispatchGateReceipts: unknown[];
+        }
+      ).dispatchGateReceipts.length,
+      1,
+    );
+  } finally {
+    if (profileId) {
+      const address = server.address();
+      if (address && typeof address === "object")
+        await fetch(
+          `http://127.0.0.1:${address.port}/api/projects/${profileId}`,
+          { method: "DELETE" },
+        ).catch(() => undefined);
+    }
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await Promise.all([
+      rm(repository, { recursive: true, force: true }),
+      rm(spoofedRepository, { recursive: true, force: true }),
+    ]);
   }
 });
 
