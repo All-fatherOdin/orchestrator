@@ -23,9 +23,13 @@ history at `queues/planning-drift-v1.yaml`.
 
 ## Phase 3: Workspace and Merge
 
-Evaluate worktree/branch isolation on Windows, implement workspace lifecycle,
-and serialize merge with fresh-base revalidation. Depends on Phase 2 plan/base
-identity.
+Implemented contract:
+`docs/architecture/change-control-plane/workspace-merge-contract-v1.md`.
+Managed attempts use owned Windows-capable worktrees and branches bound to the
+exact Phase 2 plan/base identity. Canonical workspace and merge transitions,
+fresh-target validation, cross-process serialized merge, deterministic replan
+on target drift, crash recovery, and bounded non-force cleanup are implemented
+and covered by the repository integration suite.
 
 ## Phase 4: Halts and Incidents
 
@@ -43,6 +47,6 @@ incidents, commits, and versioned eval runs, then establish baseline cohorts.
 Build cross-project wave, bucket, incident, Warden, Doctor, and prompt-registry
 views from canonical APIs. UI never writes projection state directly.
 
-No sequential queue plan exists for the remaining phases. Phase 3 begins with
-contract and Windows lifecycle evidence; later queue boundaries will be fixed
-from prior phase evidence.
+No sequential queue plan exists for the remaining phases. Phase 4 begins with
+an accepted halt/incident contract; later queue boundaries will be fixed from
+prior phase evidence.

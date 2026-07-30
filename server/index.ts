@@ -39,6 +39,9 @@ import {
 import {
   ChangeControlError,
   ChangeControlStore,
+  type DriftAssessmentV1,
+  type MergeRequestV1,
+  type PlanReferenceV1,
   type CreateChangeInput,
   type CreateWaveInput,
   type DispatchWaveInput,
@@ -50,6 +53,49 @@ import {
   type TransitionTaskInput,
   type TransitionWaveInput,
 } from "./change-control-v1/index.ts";
+import {
+  canonicalWorkspaceRunFieldsV1,
+  checkpointWorkspaceAttemptV1 as checkpointOwnedWorkspaceAttemptV1,
+  cleanupWorkspaceAttemptV1 as cleanupOwnedWorkspaceAttemptV1,
+  executeMergeRequestV1 as executeOwnedMergeRequestV1,
+  inspectWorkspaceAttemptV1 as inspectOwnedWorkspaceAttemptV1,
+  provisionWorkspaceAttemptV1 as provisionOwnedWorkspaceAttemptV1,
+  recoverWorkspaceAttemptV1 as recoverOwnedWorkspaceAttemptV1,
+  recoverMergeRequestV1 as recoverOwnedMergeRequestV1,
+  replayWorkspaceAttemptEventsV1 as replayOwnedWorkspaceAttemptEventsV1,
+  replayWorkspaceMutationAuthorityEventsV1,
+  repositoryIdentityV1 as ownedRepositoryIdentityV1,
+  sealWorkspaceAttemptV1 as sealOwnedWorkspaceAttemptV1,
+  serializeWorkspaceRunStateV1,
+  workspaceMutationContextV1,
+  workspaceReadContextV1,
+  type WorkspaceAttemptTransitionEventV1,
+  type WorkspaceMutationAuthorityEventV1,
+  type WorkspaceMutationAuthorityV1,
+  type MergeRequestTransitionEventV1,
+} from "./workspace-merge-v1/index.ts";
+export {
+  canonicalWorkspaceRunFieldsV1,
+  checkpointWorkspaceAttemptV1,
+  cleanupWorkspaceAttemptV1,
+  executeInWorkspaceAttemptV1,
+  executeMergeRequestV1,
+  inspectWorkspaceAttemptV1,
+  provisionWorkspaceAttemptV1,
+  recoverWorkspaceAttemptV1,
+  recoverMergeRequestV1,
+  recoverWorkspaceAttemptLeaseV1,
+  replayWorkspaceAttemptEventsV1,
+  replayMergeRequestEventsV1,
+  replayWorkspaceMutationAuthorityEventsV1,
+  repositoryIdentityV1,
+  sealWorkspaceAttemptV1,
+  workspacePathContainedV1,
+  workspaceMutationContextV1,
+  workspaceReadContextV1,
+  type MergeRequestTransitionEventV1,
+  WorkspaceLifecycleErrorV1,
+} from "./workspace-merge-v1/index.ts";
 export {
   PROVIDER_RUNTIME_STATE_VERSION,
   changedProviderRuntimeIdentityV1,
@@ -215,6 +261,15 @@ export type TaskInput = {
   maxSources?: number;
   /** Configuration-gated task-level authorization boundary. Disabled by default. */
   authorization?: TaskAuthorization;
+  /** Exact Phase 2 scope that opts a newly authorized task into Phase 3 isolation. */
+  workspace?: {
+    contractType: "ManagedWorkspaceBindingV1";
+    contractVersion: "1.0";
+    projectId: string;
+    changeId: string;
+    waveId: string;
+    taskId: string;
+  };
 };
 
 type ContextPolicyRefs = {
@@ -662,6 +717,8 @@ type Task = ResolvedTask & {
   /** Last bounded selection persisted before an executor continuation. */
   providerRuntimeDecision?: ProviderRuntimeDecisionV1;
   providerRuntimeIdentity?: ProviderRuntimeIdentityV1;
+  workspaceAttemptId?: string;
+  workspacePath?: string;
 };
 type UsageRecord = {
   phase: "executor" | "reviewer" | "correction";
@@ -702,6 +759,13 @@ type Run = {
     kind?: "queues";
   };
   contextReceipts?: ContextReceiptV1[];
+  workspaceAttempts?: import("./change-control-v1/index.ts").WorkspaceAttemptV1[];
+  workspaceAttemptEvents?: WorkspaceAttemptTransitionEventV1[];
+  workspaceMutationAuthorities?: WorkspaceMutationAuthorityV1[];
+  workspaceMutationAuthorityEvents?: WorkspaceMutationAuthorityEventV1[];
+  mergeRequests?: import("./change-control-v1/index.ts").MergeRequestV1[];
+  mergeRequestEvents?: MergeRequestTransitionEventV1[];
+  mergeReceipts?: import("./change-control-v1/index.ts").MergeReceiptV1[];
 };
 type PipelineInput = { queues: Array<{ file: string }> };
 type LoadedPipelineEntry = {
@@ -1024,10 +1088,13 @@ function serializeCheckpointWrite<T>(
 
 function serializeTaskFinalization<T>(
   run: Run,
-  task: Task,
+  _task: Task,
   operation: () => Promise<T>,
 ) {
-  const key = `${run.id}\0${task.id}`;
+  // Finalization includes the repository-target merge. Serialize all tasks
+  // in one run/project so a second same-base attempt observes the first
+  // committed target after its lease is released, then records drift.
+  const key = `${run.id}\0${resolve(run.project.path)}`;
   const previous = taskFinalizationChains.get(key) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(operation);
   const settled = next.then(() => undefined, () => undefined);
@@ -1153,8 +1220,15 @@ export function reconcileRunState(
 }
 
 async function persist(run: Run) {
-  reconcileRunState(run);
-  await writeJsonAtomically(join(runsDirectory, run.id, "run.json"), run);
+  const file = join(runsDirectory, run.id, "run.json");
+  await serializeWorkspaceRunStateV1(file, async () => {
+    if (existsSync(file)) {
+      const fields = await canonicalWorkspaceRunFieldsV1(file);
+      Object.assign(run, fields);
+    }
+    reconcileRunState(run);
+    await writeJsonAtomically(file, run);
+  });
 }
 export const persistRun = persist;
 function processIsAlive(pid: number) {
@@ -1359,20 +1433,215 @@ export async function bindBeforeRecovery<T extends {
   }
 }
 
+async function recoverManagedWorkspacesForStartupV1(
+  run: Run,
+  file: string,
+) {
+  const fields = await canonicalWorkspaceRunFieldsV1(file);
+  Object.assign(run, fields);
+  const replayed = replayOwnedWorkspaceAttemptEventsV1(
+    fields.workspaceAttemptEvents,
+  );
+  replayWorkspaceMutationAuthorityEventsV1(
+    fields.workspaceMutationAuthorityEvents,
+  );
+  const mergeRequests = fields.mergeRequests;
+  for (const attempt of replayed.values()) {
+    const matches = run.tasks.filter(
+      (task) =>
+        task.workspaceAttemptId === attempt.workspaceAttemptId ||
+        (task.workspace?.taskId === attempt.taskId &&
+          task.id === attempt.attemptId),
+    );
+    if (matches.length !== 1)
+      throw new Error(
+        `Workspace attempt ${attempt.workspaceAttemptId} has no unique managed task binding.`,
+      );
+    const task = matches[0];
+    task.workspaceAttemptId = attempt.workspaceAttemptId;
+    task.workspacePath = attempt.workspacePath;
+    if (attempt.state === "cleaned" || attempt.state === "quarantined")
+      continue;
+    const request = mergeRequests.find(
+      (candidate) =>
+        candidate.workspaceAttemptId === attempt.workspaceAttemptId,
+    );
+    if (
+      request &&
+      !fields.mergeReceipts.some(
+        (receipt) => receipt.mergeRequestId === request.mergeRequestId,
+      )
+    ) {
+      const persistedDrift = await persistedManagedMergeDriftV1(
+        task,
+        request,
+      );
+      if (persistedDrift) {
+        const receipt = await recoverOwnedMergeRequestV1(
+          {
+            statePath: file,
+            repositoryPath: run.project.path,
+            workspaceAttemptId: attempt.workspaceAttemptId,
+            plan: request.plan,
+            verificationCommands: request.verificationCommands.map(
+              ({ command }) => command,
+            ),
+            replanOnly: true,
+            transitionedBy: "managed-startup:v1",
+            onReplanRequired: (evidence) =>
+              recordManagedMergeDriftV1(evidence),
+          },
+          request.mergeRequestId,
+        );
+        if (
+          receipt.result !== "replan_required" ||
+          receipt.driftAssessmentId !== persistedDrift.assessmentId
+        )
+          throw new Error(
+            `Managed startup did not converge the exact persisted Phase 2 drift assessment: result=${receipt.result}, receiptAssessment=${receipt.driftAssessmentId ?? "missing"}, persistedAssessment=${persistedDrift.assessmentId}.`,
+          );
+        task.status = "blocked";
+        task.log.push(
+          "Managed merge recovery requires architect replan and fresh human authorization.",
+        );
+        continue;
+      }
+      const authorized = await authorizedWorkspacePlanV1(run, task);
+      // Legacy records and records whose live Phase 2 authority was removed
+      // remain sealed. Startup must not synthesize replacement authority or
+      // touch the target merely because a merge request was persisted.
+      if (!authorized) {
+        try {
+          await workspaceReadContextV1(
+            file,
+            run.project.path,
+            attempt.workspaceAttemptId,
+          );
+        } catch {
+          await recoverOwnedWorkspaceAttemptV1(
+            file,
+            run.project.path,
+            attempt.workspaceAttemptId,
+          );
+        }
+        continue;
+      }
+      const receipt = await recoverOwnedMergeRequestV1(
+        {
+          statePath: file,
+          repositoryPath: run.project.path,
+          workspaceAttemptId: attempt.workspaceAttemptId,
+          plan: authorized.reference,
+          verificationCommands: managedVerificationCommandsV1(task),
+          transitionedBy: "managed-startup:v1",
+          onReplanRequired: (evidence) =>
+            recordManagedMergeDriftV1(evidence),
+        },
+        request.mergeRequestId,
+      );
+      if (receipt.result === "merged")
+        await cleanupOwnedWorkspaceAttemptV1(
+          file,
+          run.project.path,
+          attempt.workspaceAttemptId,
+        );
+      else {
+        task.status = "blocked";
+        task.log.push(
+          `Managed merge recovery requires intervention: ${receipt.result}.`,
+        );
+      }
+      continue;
+    }
+    if (attempt.state === "merged") {
+      await cleanupOwnedWorkspaceAttemptV1(
+        file,
+        run.project.path,
+        attempt.workspaceAttemptId,
+      );
+      continue;
+    }
+    if (attempt.state === "sealed" && task.status === "completed") {
+      const authorized = await authorizedWorkspacePlanV1(run, task);
+      // A sealed source is evidence, not merge authority. Preserve legacy
+      // sealed attempts exactly until a current Phase 2 authorization exists.
+      if (!authorized) {
+        try {
+          await workspaceReadContextV1(
+            file,
+            run.project.path,
+            attempt.workspaceAttemptId,
+          );
+        } catch {
+          await recoverOwnedWorkspaceAttemptV1(
+            file,
+            run.project.path,
+            attempt.workspaceAttemptId,
+          );
+        }
+        continue;
+      }
+      const receipt = await executeOwnedMergeRequestV1({
+        statePath: file,
+        repositoryPath: run.project.path,
+        workspaceAttemptId: attempt.workspaceAttemptId,
+        plan: authorized.reference,
+        verificationCommands: managedVerificationCommandsV1(task),
+        transitionedBy: "managed-startup:v1",
+        onReplanRequired: (evidence) =>
+          recordManagedMergeDriftV1(evidence),
+      });
+      if (receipt.result === "merged")
+        await cleanupOwnedWorkspaceAttemptV1(
+          file,
+          run.project.path,
+          attempt.workspaceAttemptId,
+        );
+      else task.status = "blocked";
+      continue;
+    }
+    if (
+      attempt.state === "cleanup_pending" ||
+      (attempt.state === "recovery_pending" &&
+        attempt.evidenceRefs.includes("cleanup:requested"))
+    ) {
+      await cleanupOwnedWorkspaceAttemptV1(
+        file,
+        run.project.path,
+        attempt.workspaceAttemptId,
+      );
+      continue;
+    }
+    await recoverOwnedWorkspaceAttemptV1(
+      file,
+      run.project.path,
+      attempt.workspaceAttemptId,
+    );
+  }
+  Object.assign(run, await canonicalWorkspaceRunFieldsV1(file));
+}
+
+async function loadCanonicalRunRecordV1(file: string): Promise<Run> {
+  const run = normalizeProviderRuntimePersistenceV1(
+    JSON.parse(await readFile(file, "utf8")) as Run,
+  );
+  Object.assign(run, await canonicalWorkspaceRunFieldsV1(file));
+  return run;
+}
+
 export async function recoverPersistedRunForStartup(
   file: string,
   report: (message: string) => void = (message) => console.error(message),
 ): Promise<Run | undefined> {
   try {
-    const run = normalizeProviderRuntimePersistenceV1(
-      JSON.parse(await readFile(file, "utf8")) as Run,
-    );
+    const run = await loadCanonicalRunRecordV1(file);
     const branch = await currentBranchIdentity(run.project.path);
     if (runRequiresReplayAuthorization(run))
       assertStoredRunAuthorizations(run, branch);
     const hasLiveOwner = await reconcilePersistedRunOwner(run);
     reconcileRunState(run, hasLiveOwner);
     if (hasLiveOwner) return undefined;
+    await recoverManagedWorkspacesForStartupV1(run, file);
     if (run.status === "paused" && !run.tasks.some(taskOwnsExecution)) {
       await persist(run);
       return run;
@@ -1420,9 +1689,7 @@ async function recoverInterruptedRuns() {
 export async function loadRun(id: string) {
   const file = join(runsDirectory, id, "run.json");
   if (!existsSync(file)) return undefined;
-  const run = normalizeProviderRuntimePersistenceV1(
-    JSON.parse(await readFile(file, "utf8")) as Run,
-  );
+  const run = await loadCanonicalRunRecordV1(file);
   const branch = await currentBranchIdentity(run.project.path);
   if (runRequiresReplayAuthorization(run))
     assertStoredRunAuthorizations(run, branch);
@@ -2425,6 +2692,37 @@ export function validateQueue(value: unknown): {
       if (authorization.approvalId !== undefined && (typeof authorization.approvalId !== "string" || !authorization.approvalId.trim()))
         throw new Error(`Task ${index + 1}: authorization.approvalId must be a non-empty string.`);
     }
+    const workspace = task.workspace;
+    if (workspace !== undefined) {
+      const identifiers = [
+        workspace?.projectId,
+        workspace?.changeId,
+        workspace?.waveId,
+        workspace?.taskId,
+      ];
+      if (
+        !workspace ||
+        workspace.contractType !== "ManagedWorkspaceBindingV1" ||
+        workspace.contractVersion !== "1.0" ||
+        identifiers.some(
+          (value) =>
+            typeof value !== "string" ||
+            !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value),
+        )
+      )
+        throw new Error(
+          `Task ${index + 1}: workspace must be a complete ManagedWorkspaceBindingV1.`,
+        );
+      if (
+        !authorization?.enabled ||
+        authorization.intent !== "apply" ||
+        authorization.technicalPermission !== "reversible_local_write" ||
+        authorization.sideEffectRisk !== "reversible_local_write"
+      )
+        throw new Error(
+          `Task ${index + 1}: Phase 3 workspace isolation requires an enabled reversible apply authorization.`,
+        );
+    }
     return {
       key: task.key,
       dependsOn: task.dependsOn,
@@ -2442,6 +2740,7 @@ export function validateQueue(value: unknown): {
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
       authorization: task.authorization,
+      workspace: task.workspace,
       requestedModel: selection.requestedModel,
       modelSelectionReason: selection.reason,
     };
@@ -2493,6 +2792,7 @@ export function validateQueue(value: unknown): {
       defaultModel: project.defaultModel,
       defaultEffort: project.defaultEffort,
       allowedModels: project.allowedModels,
+      approvedApplyContracts: project.approvedApplyContracts,
     },
     tasks,
     limits,
@@ -2912,6 +3212,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
       authorization: task.authorization,
+      workspace: task.workspace,
       requestedModel: task.requestedModel,
       modelSelectionReason: task.modelSelectionReason,
     })),
@@ -3052,6 +3353,8 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     attempts: undefined,
     executionAttempts: undefined,
     checkpoint: undefined,
+    workspaceAttemptId: undefined,
+    workspacePath: undefined,
     providerRuntimeDecision: undefined,
     providerRuntimeIdentity: undefined,
   };
@@ -3132,6 +3435,8 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
       attempts: undefined,
       executionAttempts: undefined,
       checkpoint: undefined,
+      workspaceAttemptId: undefined,
+      workspacePath: undefined,
       providerRuntimeDecision: undefined,
       providerRuntimeIdentity: undefined,
     }));
@@ -3294,6 +3599,292 @@ async function resolvePersistedProjectSnapshot(
   };
 }
 
+const runStatePath = (runId: string) =>
+  join(runsDirectory, runId, "run.json");
+
+function managedVerificationCommandsV1(task: Task) {
+  if (!task.authorizationEvidence)
+    throw new Error(
+      "Managed workspace merge requires persisted authorization evidence.",
+    );
+  const commands = orchestratorVerificationCommands(
+    task.authorizationEvidence,
+  );
+  if (!commands.length)
+    throw new Error(
+      "Managed workspace merge requires recorded verification commands.",
+    );
+  return commands;
+}
+
+function samePlanReferenceV1(
+  left: PlanReferenceV1 | undefined,
+  right: PlanReferenceV1,
+) {
+  return Boolean(
+    left &&
+      left.planId === right.planId &&
+      left.revision === right.revision &&
+      left.planBaseSha === right.planBaseSha,
+  );
+}
+
+async function authorizedWorkspacePlanV1(run: Run, task: Task) {
+  const binding = task.workspace;
+  if (!binding) return undefined;
+  if (
+    !task.authorizationEvidence?.enabled ||
+    task.authorizationEvidence.decision !== "authorized" ||
+    task.authorizationEvidence.intent !== "apply"
+  )
+    throw new Error(
+      "Phase 3 workspace provisioning requires the exact authorized reversible apply evidence.",
+    );
+  const projection = await changeControlStore.getPlanningProjection(
+    binding.projectId,
+    binding.changeId,
+    binding.waveId,
+  );
+  const plan = projection.plans.at(-1);
+  if (!plan || plan.status !== "dispatched")
+    throw new Error(
+      "Phase 3 workspace provisioning requires the latest Phase 2 plan to be dispatched.",
+    );
+  const reference: PlanReferenceV1 = {
+    planId: plan.contract.planId,
+    revision: plan.contract.revision,
+    planBaseSha: plan.contract.planBase.sha,
+  };
+  const allowedReceipts = projection.dispatchGateReceipts.filter(
+    (receipt) =>
+      receipt.result === "allowed" &&
+      samePlanReferenceV1(receipt.plan, reference),
+  );
+  if (
+    allowedReceipts.length !== 1 ||
+    !plan.authorization ||
+    plan.authorization.decision !== "authorized" ||
+    !plan.contract.taskPlans.some(
+      (plannedTask) => plannedTask.taskId === binding.taskId,
+    ) ||
+    !plan.contract.planBase.ref
+  )
+    throw new Error(
+      "Phase 3 binding disagrees with the exact authorized Phase 2 plan, task, or dispatch receipt.",
+    );
+  const repositoryId = await ownedRepositoryIdentityV1(run.project.path);
+  if (repositoryId !== plan.contract.planBase.repositoryId)
+    throw new Error(
+      "Phase 3 repository identity disagrees with the authorized Phase 2 plan.",
+    );
+  return {
+    binding,
+    reference,
+    repositoryId,
+    targetRef: plan.contract.planBase.ref,
+    baseSha: plan.contract.planBase.sha,
+  };
+}
+
+async function recordManagedMergeDriftV1(evidence: {
+  driftAssessmentId: string;
+  mergeRequestId: string;
+  projectId: string;
+  changeId: string;
+  waveId: string;
+  taskId: string;
+  plan: PlanReferenceV1;
+  expectedTargetSha: string;
+  observedTargetSha: string;
+  sourceSha: string;
+  requiresArchitectReplan: true;
+  requiresFreshHumanAuthorization: true;
+}) {
+  const assessment = await changeControlStore.recordMergeTargetDrift(
+    evidence.projectId,
+    evidence.changeId,
+    evidence.waveId,
+    {
+      actor: "merge-controller:v1",
+      assessmentId: evidence.driftAssessmentId,
+      plan: evidence.plan,
+      taskId: evidence.taskId,
+      mergeRequestId: evidence.mergeRequestId,
+      expectedTargetSha: evidence.expectedTargetSha,
+      observedTargetSha: evidence.observedTargetSha,
+      sealedSourceSha: evidence.sourceSha,
+    },
+  );
+  if (
+    assessment.status !== "stale" ||
+    assessment.observedBase.sha !== evidence.observedTargetSha ||
+    assessment.plan.planId !== evidence.plan.planId ||
+    assessment.plan.revision !== evidence.plan.revision ||
+    assessment.plan.planBaseSha !== evidence.plan.planBaseSha ||
+    !assessment.evidenceRefs.includes(
+      `merge:request:${evidence.mergeRequestId}`,
+    ) ||
+    !assessment.evidenceRefs.includes(`merge:task:${evidence.taskId}`) ||
+    !assessment.evidenceRefs.includes(
+      `git:prior-head:${evidence.expectedTargetSha}`,
+    ) ||
+    !assessment.evidenceRefs.includes(
+      `git:head:${evidence.observedTargetSha}`,
+    ) ||
+    !assessment.evidenceRefs.includes(
+      "requirement:fresh-human-authorization",
+    )
+  )
+    throw new Error(
+      "Phase 2 did not persist the exact linked target-drift assessment required for architect replan.",
+    );
+  return {
+    driftAssessmentId: assessment.assessmentId,
+    evidenceRefs: assessment.evidenceRefs,
+  };
+}
+
+async function persistedManagedMergeDriftV1(
+  task: Task,
+  request: MergeRequestV1,
+): Promise<DriftAssessmentV1 | undefined> {
+  const binding = task.workspace;
+  if (
+    !binding ||
+    binding.projectId !== request.projectId ||
+    binding.changeId !== request.changeId ||
+    binding.waveId !== request.waveId ||
+    binding.taskId !== request.taskId
+  )
+    throw new Error(
+      "Persisted merge request disagrees with its managed Phase 2 task binding.",
+    );
+  const projection = await changeControlStore.getPlanningProjection(
+    binding.projectId,
+    binding.changeId,
+    binding.waveId,
+  );
+  const matches = projection.driftAssessments.filter((assessment) =>
+    assessment.evidenceRefs.includes(
+      `merge:request:${request.mergeRequestId}`,
+    ),
+  );
+  if (matches.length > 1)
+    throw new Error(
+      "Persisted merge request has multiple Phase 2 drift assessments.",
+    );
+  const assessment = matches[0];
+  if (!assessment) return undefined;
+  if (
+    request.state !== "validating" ||
+    assessment.status !== "stale" ||
+    assessment.requiresReplan !== true ||
+    !samePlanReferenceV1(assessment.plan, request.plan) ||
+    assessment.observedBase.repositoryId !== request.repositoryId ||
+    assessment.observedBase.sha === request.expectedTargetSha ||
+    assessment.changedPaths.length !== 0 ||
+    assessment.reasons.length !== 1 ||
+    assessment.reasons[0].code !== "BASE_SHA_MISMATCH" ||
+    !assessment.evidenceRefs.includes(`merge:task:${request.taskId}`) ||
+    !assessment.evidenceRefs.includes(
+      `git:prior-head:${request.expectedTargetSha}`,
+    ) ||
+    !assessment.evidenceRefs.includes(
+      `git:head:${assessment.observedBase.sha}`,
+    ) ||
+    !assessment.evidenceRefs.includes(
+      `git:sealed-source:${request.sealedSourceSha}`,
+    ) ||
+    !assessment.evidenceRefs.includes(
+      `plan:${request.plan.planId}:${request.plan.revision}:${request.plan.planBaseSha}`,
+    ) ||
+    !assessment.evidenceRefs.includes("requirement:architect-replan") ||
+    !assessment.evidenceRefs.includes(
+      "requirement:fresh-human-authorization",
+    )
+  )
+    throw new Error(
+      "Persisted Phase 2 drift assessment conflicts with the canonical merge request.",
+    );
+  return assessment;
+}
+
+async function provisionManagedTaskWorkspaceV1(run: Run, task: Task) {
+  const authorized = await authorizedWorkspacePlanV1(run, task);
+  if (!authorized) return undefined;
+  const statePath = runStatePath(run.id);
+  if (!task.workspaceAttemptId) {
+    await persist(run);
+    const attemptId = task.id;
+    const ownedRoot = join(
+      dirname(resolve(run.project.path)),
+      ".orchestrator-workspaces-v1",
+      authorized.repositoryId,
+    );
+    const attempt = await provisionOwnedWorkspaceAttemptV1({
+      statePath,
+      repositoryPath: run.project.path,
+      ownedRoot,
+      workspacePath: join(ownedRoot, run.id, attemptId),
+      projectId: authorized.binding.projectId,
+      repositoryId: authorized.repositoryId,
+      changeId: authorized.binding.changeId,
+      waveId: authorized.binding.waveId,
+      taskId: authorized.binding.taskId,
+      runId: run.id,
+      attemptId,
+      plan: authorized.reference,
+      targetRef: authorized.targetRef,
+      baseSha: authorized.baseSha,
+      transitionedBy: "managed-execution:v1",
+    });
+    task.workspaceAttemptId = attempt.workspaceAttemptId;
+    task.workspacePath = attempt.workspacePath;
+    await persist(run);
+  }
+  const attempt = await inspectOwnedWorkspaceAttemptV1(
+    statePath,
+    task.workspaceAttemptId,
+  );
+  if (
+    attempt.runId !== run.id ||
+    attempt.taskId !== authorized.binding.taskId ||
+    !samePlanReferenceV1(attempt.plan, authorized.reference)
+  )
+    throw new Error(
+      "Persisted workspace attempt disagrees with current Phase 2 authorization.",
+    );
+  task.workspacePath = attempt.workspacePath;
+  return workspaceMutationContextV1(
+    statePath,
+    run.project.path,
+    attempt.workspaceAttemptId,
+  );
+}
+
+async function taskExecutionPathV1(run: Run, task: Task) {
+  if (!task.workspace) return run.project.path;
+  const context = await provisionManagedTaskWorkspaceV1(run, task);
+  if (!context)
+    throw new Error("Managed workspace binding did not produce an owned workspace.");
+  return context.workspacePath;
+}
+
+async function taskReadPathV1(run: Run, task: Task) {
+  if (!task.workspace) return run.project.path;
+  if (!task.workspaceAttemptId)
+    throw new Error(
+      "Managed task has no canonical owned workspace attempt for reading.",
+    );
+  return (
+    await workspaceReadContextV1(
+      runStatePath(run.id),
+      run.project.path,
+      task.workspaceAttemptId,
+    )
+  ).workspacePath;
+}
+
 async function readWorkspaceSnapshot(cwd: string) {
   const paths = await readGitStatus(cwd);
   const snapshot = new Map<string, string>();
@@ -3353,23 +3944,50 @@ async function currentBranchIdentity(cwd: string) {
 
 export async function createCheckpoint(run: Run, task: Task) {
   return serializeCheckpointWrite(resolve(run.project.path), async () => {
-  if (task.checkpoint || !run.git?.checkpointCommits || !task.changedFiles?.length) return;
+  if (
+    task.checkpoint ||
+    (!task.workspaceAttemptId && !run.git?.checkpointCommits) ||
+    !task.changedFiles?.length
+  ) return;
   const paths = task.changedFiles.filter((path) =>
     path !== "<git-head-changed>" && path !== "<git-branch-changed>",
   );
   if (!paths.length) return;
-  const branch = await currentBranchIdentity(run.project.path);
+  const cwd = await taskExecutionPathV1(run, task);
+  const branch = await currentBranchIdentity(cwd);
   if (!branch) {
     task.log.push("Checkpoint was not created: branch identity is unavailable.");
     return;
   }
-  const parent = await runGit(run.project.path, ["rev-parse", "HEAD"]);
+  const parent = await runGit(cwd, ["rev-parse", "HEAD"]);
   if (parent.code !== 0 || !parent.output) {
     task.log.push("Checkpoint was not created: parent commit is unavailable.");
     return;
   }
   const message = `orchestrator: ${task.title}`.slice(0, 200);
-  const stage = await runGit(run.project.path, [
+  let head: { code: number; output: string };
+  if (task.workspaceAttemptId) {
+    try {
+      head = {
+        code: 0,
+        output: await checkpointOwnedWorkspaceAttemptV1(
+          runStatePath(run.id),
+          run.project.path,
+          task.workspaceAttemptId,
+          paths,
+          message,
+        ),
+      };
+    } catch (error) {
+      task.log.push(
+        `Checkpoint was not created in the owned workspace: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+  } else {
+  const stage = await runGit(cwd, [
     "add",
     "--",
     ...paths,
@@ -3378,7 +3996,7 @@ export async function createCheckpoint(run: Run, task: Task) {
     task.log.push(`Checkpoint не создан: git add: ${stage.output || "ошибка"}`);
     return;
   }
-  const commit = await runGit(run.project.path, [
+  const commit = await runGit(cwd, [
     "commit",
     "--only",
     "-m",
@@ -3392,7 +4010,8 @@ export async function createCheckpoint(run: Run, task: Task) {
     );
     return;
   }
-  const head = await runGit(run.project.path, ["rev-parse", "HEAD"]);
+  head = await runGit(cwd, ["rev-parse", "HEAD"]);
+  }
   if (head.code !== 0) {
     task.log.push("Checkpoint создан, но hash не получен.");
     return;
@@ -3689,11 +4308,19 @@ function spawnCodexWithPrompt(
   cwd: string,
 ) {
   const invocation = codexPromptInvocation(args, prompt);
-  const child = spawn(codexBin(), invocation.args, {
+  const testScript =
+    process.env.ORCHESTRATOR_TEST === "1"
+      ? process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT
+      : undefined;
+  const child = spawn(
+    codexBin(),
+    [...(testScript ? [testScript] : []), ...invocation.args],
+    {
     cwd,
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
-  });
+    },
+  );
   child.stdin?.on("error", () => undefined);
   child.stdin?.end(invocation.stdin);
   return child;
@@ -3749,7 +4376,8 @@ async function reviewTask(run: Run, task: Task) {
   task.executionPhase = "reviewer";
   task.reviewStatus = "pending";
   task.reviewWriteViolations = undefined;
-  const reviewBaseline = await readWorkspaceSnapshot(run.project.path);
+  const executionPath = await taskExecutionPathV1(run, task);
+  const reviewBaseline = await readWorkspaceSnapshot(executionPath);
   task.log.push("Запущена независимая проверка reviewer");
   await persist(run);
   publish("run", run);
@@ -3770,7 +4398,7 @@ async function reviewTask(run: Run, task: Task) {
         "--ephemeral",
         "--json",
         "--cd",
-        run.project.path,
+        executionPath,
         "--model",
         MODEL_IDS[run.review.model],
         "-c",
@@ -3779,7 +4407,7 @@ async function reviewTask(run: Run, task: Task) {
         outputFile,
       ],
       prompt,
-      run.project.path,
+      executionPath,
     );
   } catch (error) {
     task.executionPhase = undefined;
@@ -3826,8 +4454,8 @@ async function reviewTask(run: Run, task: Task) {
   task.reviewStatus = assessment.status;
   if (task.reviewStatus !== "approved") task.log.push(assessment.reason);
   if (diagnostics) task.log.push(`Reviewer diagnostics:\n${diagnostics}`);
-  const reviewCurrent = await readWorkspaceSnapshot(run.project.path);
-  const reviewOutputPath = relative(run.project.path, outputFile);
+  const reviewCurrent = await readWorkspaceSnapshot(executionPath);
+  const reviewOutputPath = relative(executionPath, outputFile);
   const reviewWrites = changedWorkspaceFiles(
     reviewBaseline,
     reviewCurrent,
@@ -3859,7 +4487,7 @@ async function prepareExecutorProviderRuntime(
   const selected = prepareProviderRuntimeContinuationForTaskV1({
     task,
     project: run.project,
-    branch: await currentBranchIdentity(run.project.path),
+    branch: await currentBranchIdentity(await taskExecutionPathV1(run, task)),
   });
   task.providerRuntimeIdentity = selected.identity;
   task.providerRuntimeDecision = selected.decision;
@@ -3883,6 +4511,7 @@ async function correctTask(run: Run, task: Task) {
     `${task.id}-fix-${task.attempts}.md`,
   );
   const prompt = `${buildPrompt(task, run.project)}\n\nReviewer found these issues:\n${task.reviewOutput ?? "No report available."}\n\nFix only the reviewer findings. Do not create a git commit.`;
+  const executionPath = await taskExecutionPathV1(run, task);
   await prepareExecutorProviderRuntime(run, task, "correction");
   let child: ReturnType<typeof spawn>;
   try {
@@ -3895,7 +4524,7 @@ async function correctTask(run: Run, task: Task) {
         "--ephemeral",
         "--json",
         "--cd",
-        run.project.path,
+        executionPath,
         "--model",
         MODEL_IDS[task.model],
         "-c",
@@ -3904,7 +4533,7 @@ async function correctTask(run: Run, task: Task) {
         outputFile,
       ],
       prompt,
-      run.project.path,
+      executionPath,
     );
   } catch (error) {
     task.executionPhase = undefined;
@@ -3963,12 +4592,13 @@ async function runTaskVerification(run: Run, task: Task) {
   const evidence = task.authorizationEvidence;
   if (!evidence) return { code: 0, timedOut: false };
   for (const command of orchestratorVerificationCommands(evidence)) {
+    const executionPath = await taskExecutionPathV1(run, task);
     task.log.push(`Orchestrator verification: ${command}`);
     let child: ReturnType<typeof spawn>;
     try {
       const invocation = verificationCommandInvocation(command);
       child = spawn(invocation.executable, invocation.args, {
-        cwd: run.project.path,
+        cwd: executionPath,
         shell: invocation.shell,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -4014,7 +4644,59 @@ async function pauseBeforeNextTask(run: Run) {
 
 export async function finalizeSettledTask(run: Run, task: Task) {
   return serializeTaskFinalization(run, task, async () => {
-    if (task.status === "completed") await createCheckpoint(run, task);
+    if (task.status === "completed") {
+      await createCheckpoint(run, task);
+      if (task.workspaceAttemptId) {
+        const attempt = await inspectOwnedWorkspaceAttemptV1(
+          runStatePath(run.id),
+          task.workspaceAttemptId,
+        );
+        let sealed = attempt;
+        if (attempt.state === "active")
+          sealed = await sealOwnedWorkspaceAttemptV1(
+            runStatePath(run.id),
+            run.project.path,
+            task.workspaceAttemptId,
+          );
+        else if (attempt.state !== "sealed")
+          throw new Error(
+            `Completed managed task cannot finalize from workspace state ${attempt.state}.`,
+          );
+        const authorized = await authorizedWorkspacePlanV1(run, task);
+        if (
+          !authorized ||
+          !samePlanReferenceV1(sealed.plan, authorized.reference)
+        )
+          throw new Error(
+            "Managed merge requires the exact current Phase 2 plan and fresh authorization.",
+          );
+        const receipt = await executeOwnedMergeRequestV1({
+          statePath: runStatePath(run.id),
+          repositoryPath: run.project.path,
+          workspaceAttemptId: task.workspaceAttemptId,
+          plan: authorized.reference,
+          verificationCommands: managedVerificationCommandsV1(task),
+          transitionedBy: "managed-completion:v1",
+          onReplanRequired: (evidence) =>
+            recordManagedMergeDriftV1(evidence),
+        });
+        if (receipt.result === "merged") {
+          await cleanupOwnedWorkspaceAttemptV1(
+            runStatePath(run.id),
+            run.project.path,
+            task.workspaceAttemptId,
+          );
+          task.log.push(
+            `Managed merge completed: ${receipt.mergeCommitSha}.`,
+          );
+        } else {
+          task.status = "blocked";
+          task.log.push(
+            `Managed merge stopped safely: ${receipt.result}; fresh planning/authorization is required.`,
+          );
+        }
+      }
+    }
     await persist(run);
   });
 }
@@ -4062,7 +4744,8 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       publish("run", run);
       return task.status;
     }
-    const baseline = await readWorkspaceSnapshot(run.project.path);
+    const executionPath = await taskExecutionPathV1(run, task);
+    const baseline = await readWorkspaceSnapshot(executionPath);
     task.status = "running";
     task.executionPhase = "executor";
     task.startedAt = timestamp();
@@ -4079,7 +4762,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       "--ephemeral",
       "--json",
       "--cd",
-      run.project.path,
+      executionPath,
       "--model",
       MODEL_IDS[task.model],
       "-c",
@@ -4096,7 +4779,13 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       await prepareExecutorProviderRuntime(run, task, "executor");
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawnCodexWithPrompt(args, prompt, run.project.path);
+        if (task.workspaceAttemptId)
+          await workspaceMutationContextV1(
+            runStatePath(run.id),
+            run.project.path,
+            task.workspaceAttemptId,
+          );
+        child = spawnCodexWithPrompt(args, prompt, executionPath);
       } catch (error) {
         task.exitCode = 1;
         task.log.push(
@@ -4152,7 +4841,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       executorOutcome.disposition === "invalid"
     )
       task.log.push(`Executor outcome rejected: ${executorOutcome.reason}`);
-    let changed = await readWorkspaceSnapshot(run.project.path);
+    let changed = await readWorkspaceSnapshot(executionPath);
     task.changedFiles = authoritativeTaskChangedFiles(
       task,
       changedWorkspaceFiles(baseline, changed),
@@ -4174,12 +4863,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       if (verification.timedOut) task.timedOut = true;
       if (verification.code !== 0) task.exitCode = verification.code;
     }
-    changed = await readWorkspaceSnapshot(run.project.path);
+    changed = await readWorkspaceSnapshot(executionPath);
     task.changedFiles = authoritativeTaskChangedFiles(
       task,
       changedWorkspaceFiles(baseline, changed),
     );
-    task.diff = await readGitDiff(run.project.path, task.changedFiles);
+    task.diff = await readGitDiff(executionPath, task.changedFiles);
     violations = [...new Set([
       ...taskWriteViolations(task, task.changedFiles),
       ...authorizationWriteViolations(task.authorizationEvidence, task.changedFiles),
@@ -4218,12 +4907,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
           const verification = await runTaskVerification(run, task);
           if (verification.timedOut) settledStatus = "timed_out";
           else if (verification.code !== 0) settledStatus = "failed";
-          changed = await readWorkspaceSnapshot(run.project.path);
+          changed = await readWorkspaceSnapshot(executionPath);
           task.changedFiles = authoritativeTaskChangedFiles(
             task,
             changedWorkspaceFiles(baseline, changed),
           );
-          task.diff = await readGitDiff(run.project.path, task.changedFiles);
+          task.diff = await readGitDiff(executionPath, task.changedFiles);
           violations = [...new Set([
             ...taskWriteViolations(task, task.changedFiles),
             ...authorizationWriteViolations(
@@ -4260,7 +4949,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     return task.status;
 }
 
-async function executeQueue(run: Run) {
+export async function executeQueue(run: Run) {
   const branch = await currentBranchIdentity(run.project.path);
   for (const task of run.tasks) {
     if (!task.authorization?.enabled || task.authorizationEvidence) continue;
@@ -4847,10 +5536,11 @@ app.get("/api/runs/:runId/tasks/:taskId/diff", async (request, response) => {
     return response.status(404).json({ error: "Task not found." });
   const file =
     typeof request.query.file === "string" ? request.query.file : undefined;
+  const diffPath = file ? await taskReadPathV1(run, task) : undefined;
   return response.json({
     files: task.changedFiles ?? [],
     diff: file
-      ? await readGitDiff(run.project.path, [file])
+      ? await readGitDiff(diffPath!, [file])
       : (task.diff ?? ""),
   });
 });

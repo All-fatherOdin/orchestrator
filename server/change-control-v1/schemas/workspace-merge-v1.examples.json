@@ -1,0 +1,208 @@
+[
+  {
+    "contractType": "WorkspaceAttemptV1",
+    "contractVersion": "1.0",
+    "workspaceAttemptId": "workspace-success",
+    "projectId": "orchestrator",
+    "repositoryId": "repo-orchestrator",
+    "changeId": "change-phase3",
+    "waveId": "wave-phase3",
+    "taskId": "task-workspace",
+    "runId": "run-success",
+    "attemptId": "attempt-success",
+    "plan": {
+      "planId": "plan-phase3",
+      "revision": 1,
+      "planBaseSha": "1111111111111111111111111111111111111111"
+    },
+    "ownedRoot": "C:/orchestrator-owned",
+    "workspacePath": "C:/orchestrator-owned/run-success/attempt-success",
+    "branchRef": "refs/heads/orchestrator/attempt/run-success/attempt-success",
+    "targetRef": "refs/heads/main",
+    "baseSha": "1111111111111111111111111111111111111111",
+    "sealedSourceSha": "2222222222222222222222222222222222222222",
+    "mergeRequestId": "merge-success",
+    "ownershipMarker": {
+      "runId": "run-success",
+      "attemptId": "attempt-success",
+      "repositoryId": "repo-orchestrator",
+      "normalizedWorkspacePath": "C:/orchestrator-owned/run-success/attempt-success",
+      "branchRef": "refs/heads/orchestrator/attempt/run-success/attempt-success",
+      "creationNonce": "nonce-success",
+      "markerSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "previousState": "merge_queued",
+    "state": "merged",
+    "cleanup": {
+      "mode": "non_destructive",
+      "maxAttempts": 3,
+      "attemptOrdinal": 0
+    },
+    "evidenceRefs": [
+      "git:merge:3333333333333333333333333333333333333333"
+    ],
+    "transitionedAt": "2026-07-30T10:00:00.000Z",
+    "transitionedBy": "workspace-controller:v1"
+  },
+  {
+    "contractType": "MergeRequestV1",
+    "contractVersion": "1.0",
+    "mergeRequestId": "merge-target-drift",
+    "workspaceAttemptId": "workspace-drift",
+    "projectId": "orchestrator",
+    "repositoryId": "repo-orchestrator",
+    "changeId": "change-phase3",
+    "waveId": "wave-phase3",
+    "taskId": "task-workspace",
+    "runId": "run-drift",
+    "attemptId": "attempt-drift",
+    "plan": {
+      "planId": "plan-phase3",
+      "revision": 1,
+      "planBaseSha": "1111111111111111111111111111111111111111"
+    },
+    "targetRef": "refs/heads/main",
+    "expectedTargetSha": "1111111111111111111111111111111111111111",
+    "sourceRef": "refs/heads/orchestrator/attempt/run-drift/attempt-drift",
+    "sealedSourceSha": "2222222222222222222222222222222222222222",
+    "integrationStrategy": "merge_no_ff_no_commit",
+    "verificationCommands": [
+      {
+        "command": "npm test",
+        "expectedExitCode": 0
+      }
+    ],
+    "previousState": "validating",
+    "state": "replan_required",
+    "driftAssessmentId": "drift-target-moved",
+    "safeAbortEvidenceRef": "git:merge:not-started",
+    "reason": "Target HEAD changed after authorization; v1 requires deterministic replan.",
+    "evidenceRefs": [
+      "git:target:4444444444444444444444444444444444444444"
+    ],
+    "transitionedAt": "2026-07-30T10:05:00.000Z",
+    "transitionedBy": "merge-controller:v1"
+  },
+  {
+    "contractType": "MergeReceiptV1",
+    "contractVersion": "1.0",
+    "mergeReceiptId": "receipt-crash-after-commit",
+    "mergeRequestId": "merge-crash-after-commit",
+    "workspaceAttemptId": "workspace-crash",
+    "projectId": "orchestrator",
+    "repositoryId": "repo-orchestrator",
+    "runId": "run-crash",
+    "attemptId": "attempt-crash",
+    "targetRef": "refs/heads/main",
+    "expectedTargetSha": "1111111111111111111111111111111111111111",
+    "sealedSourceSha": "2222222222222222222222222222222222222222",
+    "result": "merged",
+    "mergeCommitSha": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "1111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222"
+    ],
+    "verificationResults": [
+      {
+        "command": "npm test",
+        "exitCode": 0,
+        "evidenceRef": "command:npm-test:exit-0"
+      }
+    ],
+    "evidenceRefs": [
+      "recovery:identified-merge-commit"
+    ],
+    "persistedRunRef": "run:.orchestrator/runs/run-crash/run.json",
+    "transitionEventRef": "event:merge-finalized-after-restart",
+    "recordedAt": "2026-07-30T10:10:00.000Z",
+    "recordedBy": "merge-recovery:v1"
+  },
+  {
+    "contractType": "WorkspaceAttemptV1",
+    "contractVersion": "1.0",
+    "workspaceAttemptId": "workspace-dirty-quarantine",
+    "projectId": "orchestrator",
+    "repositoryId": "repo-orchestrator",
+    "changeId": "change-phase3",
+    "waveId": "wave-phase3",
+    "taskId": "task-workspace",
+    "runId": "run-dirty",
+    "attemptId": "attempt-dirty",
+    "plan": {
+      "planId": "plan-phase3",
+      "revision": 1,
+      "planBaseSha": "1111111111111111111111111111111111111111"
+    },
+    "ownedRoot": "C:/orchestrator-owned",
+    "workspacePath": "C:/orchestrator-owned/run-dirty/attempt-dirty",
+    "branchRef": "refs/heads/orchestrator/attempt/run-dirty/attempt-dirty",
+    "targetRef": "refs/heads/main",
+    "baseSha": "1111111111111111111111111111111111111111",
+    "ownershipMarker": {
+      "runId": "run-dirty",
+      "attemptId": "attempt-dirty",
+      "repositoryId": "repo-orchestrator",
+      "normalizedWorkspacePath": "C:/orchestrator-owned/run-dirty/attempt-dirty",
+      "branchRef": "refs/heads/orchestrator/attempt/run-dirty/attempt-dirty",
+      "creationNonce": "nonce-dirty",
+      "markerSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "previousState": "active",
+    "state": "quarantined",
+    "cleanup": {
+      "mode": "non_destructive",
+      "maxAttempts": 3,
+      "attemptOrdinal": 1
+    },
+    "reason": "Owned workspace is dirty; automatic cleanup retained all files.",
+    "evidenceRefs": [
+      "git:status:dirty"
+    ],
+    "transitionedAt": "2026-07-30T10:15:00.000Z",
+    "transitionedBy": "workspace-cleanup:v1"
+  },
+  {
+    "contractType": "WorkspaceAttemptV1",
+    "contractVersion": "1.0",
+    "workspaceAttemptId": "workspace-cleanup-contention",
+    "projectId": "orchestrator",
+    "repositoryId": "repo-orchestrator",
+    "changeId": "change-phase3",
+    "waveId": "wave-phase3",
+    "taskId": "task-workspace",
+    "runId": "run-contention",
+    "attemptId": "attempt-contention",
+    "plan": {
+      "planId": "plan-phase3",
+      "revision": 1,
+      "planBaseSha": "1111111111111111111111111111111111111111"
+    },
+    "ownedRoot": "C:/orchestrator-owned",
+    "workspacePath": "C:/orchestrator-owned/run-contention/attempt-contention",
+    "branchRef": "refs/heads/orchestrator/attempt/run-contention/attempt-contention",
+    "targetRef": "refs/heads/main",
+    "baseSha": "1111111111111111111111111111111111111111",
+    "ownershipMarker": {
+      "runId": "run-contention",
+      "attemptId": "attempt-contention",
+      "repositoryId": "repo-orchestrator",
+      "normalizedWorkspacePath": "C:/orchestrator-owned/run-contention/attempt-contention",
+      "branchRef": "refs/heads/orchestrator/attempt/run-contention/attempt-contention",
+      "creationNonce": "nonce-contention",
+      "markerSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "previousState": "cleanup_pending",
+    "state": "recovery_pending",
+    "cleanup": {
+      "mode": "non_destructive",
+      "maxAttempts": 3,
+      "attemptOrdinal": 2
+    },
+    "reason": "Filesystem contention prevented bounded non-force removal; artifacts were retained.",
+    "evidenceRefs": [
+      "filesystem:sharing-violation"
+    ],
+    "transitionedAt": "2026-07-30T10:20:00.000Z",
+    "transitionedBy": "workspace-cleanup:v1"
+  }
+]

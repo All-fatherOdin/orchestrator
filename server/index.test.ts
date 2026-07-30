@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { parse, stringify } from "yaml";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
@@ -63,12 +63,14 @@ const {
   runInBackground,
   windowsPytestBasetempViolation,
   app,
+  changeControlStore,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
   resolveTaskContext,
   cachePreflightContexts,
   contextsForRun,
   createRun,
+  executeQueue,
   buildPrompt,
   createContextRequestV1,
   validateContextContractV1,
@@ -105,6 +107,22 @@ const {
   recoverPersistedRunForStartup,
   repositoryIdentityForGitRoot,
   gitSnapshotObservationsMatch,
+  checkpointWorkspaceAttemptV1,
+  canonicalWorkspaceRunFieldsV1,
+  cleanupWorkspaceAttemptV1,
+  executeMergeRequestV1,
+  executeInWorkspaceAttemptV1,
+  inspectWorkspaceAttemptV1,
+  provisionWorkspaceAttemptV1,
+  recoverWorkspaceAttemptLeaseV1,
+  recoverWorkspaceAttemptV1,
+  recoverMergeRequestV1,
+  replayMergeRequestEventsV1,
+  replayWorkspaceAttemptEventsV1,
+  replayWorkspaceMutationAuthorityEventsV1,
+  repositoryIdentityV1,
+  sealWorkspaceAttemptV1,
+  workspacePathContainedV1,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
@@ -285,6 +303,70 @@ function canonicalTestJson(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`)
     .join(",")}}`;
+}
+
+function ajvErrors(
+  errors: ReadonlyArray<{ instancePath?: string; message?: string }> | null | undefined,
+): string {
+  return errors
+    ?.map((error) => `${error.instancePath ?? ""} ${error.message ?? ""}`.trim())
+    .join("; ") ?? "";
+}
+
+function gitForWorkspaceContract(cwd: string, args: string[]): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function windowsPathContained(root: string, candidate: string): boolean {
+  const normalizedRoot = win32.resolve(root).replace(/[\\/]+$/, "").toLowerCase();
+  const normalizedCandidate = win32.resolve(candidate).replace(/[\\/]+$/, "").toLowerCase();
+  return normalizedCandidate === normalizedRoot
+    || normalizedCandidate.startsWith(`${normalizedRoot}\\`);
+}
+
+function windowsWorkspaceCapability(): "supported" | "unsupported_fail_closed" {
+  return process.platform === "win32" ? "supported" : "unsupported_fail_closed";
+}
+
+async function waitForLine(
+  child: ReturnType<typeof spawn>,
+  expected: string,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let output = "";
+    const timeout = setTimeout(
+      () => reject(new Error(`Timed out waiting for child output ${expected}`)),
+      10_000,
+    );
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (!output.includes(expected)) {
+        clearTimeout(timeout);
+        reject(new Error(`Child exited ${code} before output ${expected}`));
+      }
+    });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      if (output.includes(expected)) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+}
+
+async function stopChild(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) return;
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  child.kill();
+  await exited;
 }
 
 function rehashTestLedger(ledger: {
@@ -3673,6 +3755,2550 @@ test("Planning and Drift Contract v1 examples validate and unsafe variants fail 
   assert.equal(validate(allowedWithoutAuthorization), false);
 });
 
+test("Workspace and Merge Contract v1 examples validate and partial ownership fails closed", async () => {
+  const schema = JSON.parse(
+    await readFile(
+      join(
+        "server",
+        "change-control-v1",
+        "schemas",
+        "workspace-merge-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const examples = JSON.parse(
+    await readFile(
+      join(
+        "server",
+        "change-control-v1",
+        "schemas",
+        "workspace-merge-v1.examples.json",
+      ),
+      "utf8",
+    ),
+  ) as Record<string, unknown>[];
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const validate = ajv.compile(schema);
+
+  assert.deepEqual(
+    examples.map((example) => example.contractType),
+    [
+      "WorkspaceAttemptV1",
+      "MergeRequestV1",
+      "MergeReceiptV1",
+      "WorkspaceAttemptV1",
+      "WorkspaceAttemptV1",
+    ],
+  );
+  for (const example of examples)
+    assert.equal(validate(example), true, ajv.errorsText(validate.errors));
+
+  const partialWorkspace = structuredClone(examples[0]);
+  delete partialWorkspace.ownershipMarker;
+  assert.equal(validate(partialWorkspace), false);
+
+  const unknownVersion = structuredClone(examples[1]);
+  unknownVersion.contractVersion = "2.0";
+  assert.equal(validate(unknownVersion), false);
+
+  const implicitOwnership = planningContract() as unknown as Record<string, unknown>;
+  assert.equal(validate(implicitOwnership), false);
+  assert.equal("workspaceAttemptId" in implicitOwnership, false);
+
+  const mergedWithoutParents = structuredClone(examples[2]);
+  delete mergedWithoutParents.mergeParents;
+  assert.equal(validate(mergedWithoutParents), false);
+
+  const cleanupWithoutReason = structuredClone(examples[4]);
+  delete cleanupWithoutReason.reason;
+  assert.equal(validate(cleanupWithoutReason), false);
+});
+
+test("Workspace and Merge v1 schema enforces the exact workspace transition matrix", async () => {
+  const schema = JSON.parse(
+    await readFile(
+      join("server", "change-control-v1", "schemas", "workspace-merge-v1.schema.json"),
+      "utf8",
+    ),
+  );
+  const examples = JSON.parse(
+    await readFile(
+      join("server", "change-control-v1", "schemas", "workspace-merge-v1.examples.json"),
+      "utf8",
+    ),
+  ) as Record<string, unknown>[];
+  const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+  const states = [
+    "provisioning",
+    "active",
+    "sealed",
+    "merge_queued",
+    "merged",
+    "replan_required",
+    "cleanup_pending",
+    "recovery_pending",
+    "quarantined",
+    "cleaned",
+  ] as const;
+  const allowed = new Set([
+    "null->provisioning",
+    "provisioning->active",
+    "provisioning->recovery_pending",
+    "provisioning->quarantined",
+    "active->sealed",
+    "active->cleanup_pending",
+    "active->recovery_pending",
+    "active->quarantined",
+    "sealed->merge_queued",
+    "sealed->replan_required",
+    "sealed->cleanup_pending",
+    "sealed->recovery_pending",
+    "sealed->quarantined",
+    "merge_queued->merged",
+    "merge_queued->replan_required",
+    "merge_queued->recovery_pending",
+    "merge_queued->quarantined",
+    "merged->cleanup_pending",
+    "merged->cleaned",
+    "merged->recovery_pending",
+    "merged->quarantined",
+    "replan_required->cleanup_pending",
+    "replan_required->recovery_pending",
+    "replan_required->quarantined",
+    "cleanup_pending->cleaned",
+    "cleanup_pending->recovery_pending",
+    "cleanup_pending->quarantined",
+    "recovery_pending->active",
+    "recovery_pending->sealed",
+    "recovery_pending->merge_queued",
+    "recovery_pending->merged",
+    "recovery_pending->replan_required",
+    "recovery_pending->cleanup_pending",
+    "recovery_pending->cleaned",
+    "recovery_pending->quarantined",
+  ]);
+  const base = {
+    ...structuredClone(examples[0]),
+    reason: "Required fail-closed transition reason.",
+    recoveryReceiptRef: "recovery:cleanup-complete",
+    driftAssessmentId: "drift-transition",
+  };
+
+  for (const previousState of [null, ...states]) {
+    for (const state of states) {
+      const candidate = { ...base, previousState, state };
+      assert.equal(
+        validate(candidate),
+        allowed.has(`${previousState}->${state}`),
+        `${previousState}->${state}: ${ajvErrors(validate.errors)}`,
+      );
+    }
+  }
+});
+
+test("Workspace and Merge v1 schema enforces the exact merge transition matrix", async () => {
+  const schema = JSON.parse(
+    await readFile(
+      join("server", "change-control-v1", "schemas", "workspace-merge-v1.schema.json"),
+      "utf8",
+    ),
+  );
+  const examples = JSON.parse(
+    await readFile(
+      join("server", "change-control-v1", "schemas", "workspace-merge-v1.examples.json"),
+      "utf8",
+    ),
+  ) as Record<string, unknown>[];
+  const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+  const states = [
+    "queued",
+    "validating",
+    "applying",
+    "verifying",
+    "committed",
+    "replan_required",
+    "recovery_pending",
+    "quarantined",
+  ] as const;
+  const allowed = new Set([
+    "null->queued",
+    "queued->validating",
+    "queued->replan_required",
+    "queued->recovery_pending",
+    "queued->quarantined",
+    "validating->applying",
+    "validating->replan_required",
+    "validating->recovery_pending",
+    "validating->quarantined",
+    "applying->verifying",
+    "applying->replan_required",
+    "applying->recovery_pending",
+    "applying->quarantined",
+    "verifying->committed",
+    "verifying->replan_required",
+    "verifying->recovery_pending",
+    "verifying->quarantined",
+    "recovery_pending->queued",
+    "recovery_pending->validating",
+    "recovery_pending->applying",
+    "recovery_pending->verifying",
+    "recovery_pending->committed",
+    "recovery_pending->replan_required",
+    "recovery_pending->quarantined",
+  ]);
+  const base = {
+    ...structuredClone(examples[1]),
+    observedTargetSha: planningShaOne,
+    mergeCommitSha: planningShaTwo,
+    lease: {
+      leaseId: "lease-transition",
+      repositoryId: "repo-orchestrator",
+      targetRef: "refs/heads/main",
+      ownerRunId: "run-drift",
+      ownerAttemptId: "attempt-drift",
+      epoch: 1,
+      acquiredAt: "2026-07-30T10:04:00.000Z",
+    },
+  };
+
+  for (const previousState of [null, ...states]) {
+    for (const state of states) {
+      const candidate = { ...base, previousState, state };
+      assert.equal(
+        validate(candidate),
+        allowed.has(`${previousState}->${state}`),
+        `${previousState}->${state}: ${ajvErrors(validate.errors)}`,
+      );
+    }
+  }
+});
+
+test("Workspace and Merge v1 Windows experiments prove owned worktree isolation, dirty preservation, stale metadata, and 100+ commit merge", async () => {
+  if (process.platform !== "win32") {
+    assert.equal(
+      windowsWorkspaceCapability(),
+      "unsupported_fail_closed",
+      "non-Windows hosts must explicitly fail closed rather than imply Windows proof",
+    );
+    return;
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "orchestrator workspace merge "));
+  const repository = join(root, "repository with spaces");
+  const ownedRoot = join(
+    root,
+    "owned workspaces",
+    "long-segment-aaaaaaaaaaaaaaaaaaaaaaaa",
+    "long-segment-bbbbbbbbbbbbbbbbbbbbbbbb",
+  );
+  const workspace = join(ownedRoot, "run-one", "attempt-one");
+  try {
+    await mkdir(repository, { recursive: true });
+    await mkdir(ownedRoot, { recursive: true });
+    gitForWorkspaceContract(repository, ["init", "-b", "main"]);
+    gitForWorkspaceContract(repository, ["config", "user.email", "phase3@example.invalid"]);
+    gitForWorkspaceContract(repository, ["config", "user.name", "Phase 3 Test"]);
+    await writeFile(join(repository, "base.txt"), "base\n");
+    gitForWorkspaceContract(repository, ["add", "base.txt"]);
+    gitForWorkspaceContract(repository, ["commit", "-m", "base"]);
+    const targetBefore = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+
+    gitForWorkspaceContract(repository, [
+      "worktree",
+      "add",
+      "-b",
+      "orchestrator/attempt/run-one/attempt-one",
+      workspace,
+      targetBefore,
+    ]);
+    assert.equal(
+      gitForWorkspaceContract(workspace, ["symbolic-ref", "HEAD"]),
+      "refs/heads/orchestrator/attempt/run-one/attempt-one",
+    );
+    assert.equal(windowsPathContained(ownedRoot, workspace), true);
+    assert.equal(
+      windowsPathContained(ownedRoot, `${ownedRoot}-sibling\\attempt-one`),
+      false,
+      "sibling-prefix paths are not owned",
+    );
+    assert.ok(workspace.length > 100, "experiment uses a long path as well as spaces");
+
+    for (let index = 1; index <= 101; index += 1)
+      gitForWorkspaceContract(workspace, [
+        "commit",
+        "--allow-empty",
+        "-m",
+        `attempt commit ${index}`,
+      ]);
+    const sealedSource = gitForWorkspaceContract(workspace, ["rev-parse", "HEAD"]);
+    assert.equal(
+      Number(gitForWorkspaceContract(workspace, ["rev-list", "--count", `${targetBefore}..${sealedSource}`])),
+      101,
+    );
+
+    gitForWorkspaceContract(repository, ["merge", "--no-ff", "--no-commit", sealedSource]);
+    gitForWorkspaceContract(repository, ["commit", "-m", "merge attempt run-one attempt-one"]);
+    const mergeCommit = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+    const parents = gitForWorkspaceContract(repository, ["show", "-s", "--format=%P", mergeCommit]).split(" ");
+    assert.deepEqual(parents, [targetBefore, sealedSource]);
+    assert.equal(
+      gitForWorkspaceContract(repository, ["merge-base", "--is-ancestor", sealedSource, mergeCommit]),
+      "",
+    );
+
+    const expectedTarget = mergeCommit;
+    gitForWorkspaceContract(repository, ["commit", "--allow-empty", "-m", "concurrent target movement"]);
+    const observedTarget = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+    assert.notEqual(observedTarget, expectedTarget);
+    assert.equal(
+      expectedTarget === observedTarget ? "fresh" : "replan_required",
+      "replan_required",
+    );
+
+    await writeFile(join(workspace, "uncommitted-user-file.txt"), "preserve me\n");
+    assert.throws(
+      () => gitForWorkspaceContract(repository, ["worktree", "remove", workspace]),
+      /failed|modified|untracked/i,
+    );
+    assert.equal(
+      await readFile(join(workspace, "uncommitted-user-file.txt"), "utf8"),
+      "preserve me\n",
+    );
+
+    await rm(workspace, { recursive: true, force: true });
+    assert.match(
+      gitForWorkspaceContract(repository, ["worktree", "list", "--porcelain"]),
+      /worktree .*attempt-one/,
+      "a crash-deleted worktree leaves stale metadata for bounded recovery",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Workspace and Merge v1 Windows experiments reject junction escapes and retain contended files", async () => {
+  if (process.platform !== "win32") {
+    assert.equal(windowsWorkspaceCapability(), "unsupported_fail_closed");
+    return;
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "orchestrator junction experiment "));
+  const ownedRoot = join(root, "owned");
+  const outside = join(root, "outside");
+  const junction = join(ownedRoot, "attempt-junction");
+  const lockedFile = join(ownedRoot, "cleanup-contended.txt");
+  let locker: ReturnType<typeof spawn> | undefined;
+  try {
+    await mkdir(ownedRoot, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, "outside.txt"), "outside\n");
+    try {
+      execFileSync(process.env.ComSpec ?? "cmd.exe", [
+        "/d",
+        "/c",
+        "mklink",
+        "/J",
+        junction,
+        outside,
+      ], { stdio: "pipe" });
+    } catch (error) {
+      assert.fail(`junction capability unavailable; fail closed: ${String(error)}`);
+    }
+    assert.equal(windowsPathContained(ownedRoot, junction), true);
+    assert.equal(
+      windowsPathContained(await realpath(ownedRoot), await realpath(junction)),
+      false,
+      "resolved junction target escapes the owned root",
+    );
+
+    await writeFile(lockedFile, "retain while locked\n");
+    const quotedLockedFile = lockedFile.replace(/'/g, "''");
+    locker = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$stream=[IO.File]::Open('${quotedLockedFile}',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None); [Console]::Out.WriteLine('READY'); Start-Sleep -Seconds 30; $stream.Dispose()`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    await waitForLine(locker, "READY");
+    await assert.rejects(
+      rm(lockedFile),
+      /EPERM|EBUSY|permission|being used/i,
+    );
+    await stopChild(locker);
+    locker = undefined;
+    assert.equal(await readFile(lockedFile, "utf8"), "retain while locked\n");
+  } finally {
+    if (locker) await stopChild(locker);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Workspace and Merge v1 Windows recovery handles every merge crash boundary", async () => {
+  if (process.platform !== "win32") {
+    assert.equal(
+      windowsWorkspaceCapability(),
+      "unsupported_fail_closed",
+      "Windows crash recovery evidence is unavailable and must fail closed",
+    );
+    return;
+  }
+
+  const crashPoints = [
+    "before_apply",
+    "during_merge",
+    "after_commit",
+    "before_receipt",
+  ] as const;
+  const observedOutcomes = new Map<string, string>();
+
+  for (const crashPoint of crashPoints) {
+    const root = await mkdtemp(join(tmpdir(), `orchestrator crash ${crashPoint} `));
+    const repository = join(root, "temporary repository");
+    const durableStatePath = join(root, "merge-state.json");
+    const receiptPath = join(root, "merge-receipt.json");
+    try {
+      await mkdir(repository, { recursive: true });
+      gitForWorkspaceContract(repository, ["init", "-b", "main"]);
+      gitForWorkspaceContract(repository, ["config", "user.email", "recovery@example.invalid"]);
+      gitForWorkspaceContract(repository, ["config", "user.name", "Recovery Test"]);
+      await writeFile(join(repository, "base.txt"), "base\n");
+      gitForWorkspaceContract(repository, ["add", "base.txt"]);
+      gitForWorkspaceContract(repository, ["commit", "-m", "base"]);
+      const expectedTargetSha = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+      gitForWorkspaceContract(repository, ["checkout", "-b", "orchestrator/attempt/run-crash/attempt-one"]);
+      await writeFile(join(repository, "source.txt"), `${crashPoint}\n`);
+      gitForWorkspaceContract(repository, ["add", "source.txt"]);
+      gitForWorkspaceContract(repository, ["commit", "-m", `source ${crashPoint}`]);
+      const sealedSourceSha = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+      gitForWorkspaceContract(repository, ["checkout", "main"]);
+
+      const durableState: {
+        crashPoint: typeof crashPoint;
+        expectedTargetSha: string;
+        sealedSourceSha: string;
+        state: "validating" | "applying" | "committed";
+        mergeCommitSha?: string;
+      } = {
+        crashPoint,
+        expectedTargetSha,
+        sealedSourceSha,
+        state: crashPoint === "before_apply" ? "validating" : "applying",
+      };
+
+      if (crashPoint === "during_merge") {
+        gitForWorkspaceContract(repository, [
+          "merge",
+          "--no-ff",
+          "--no-commit",
+          sealedSourceSha,
+        ]);
+        assert.equal(
+          gitForWorkspaceContract(repository, ["rev-parse", "MERGE_HEAD"]),
+          sealedSourceSha,
+          "the crash snapshot must contain the exact in-progress source",
+        );
+      } else if (crashPoint === "after_commit" || crashPoint === "before_receipt") {
+        gitForWorkspaceContract(repository, [
+          "merge",
+          "--no-ff",
+          "--no-edit",
+          sealedSourceSha,
+        ]);
+        const mergeCommitSha = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+        if (crashPoint === "before_receipt") {
+          durableState.state = "committed";
+          durableState.mergeCommitSha = mergeCommitSha;
+        }
+      }
+      await writeFile(durableStatePath, JSON.stringify(durableState));
+      await assert.rejects(access(receiptPath), /ENOENT/);
+
+      // A restart has no in-memory state: recovery begins only from the durable
+      // record and current Git evidence in this newly created repository.
+      const replayed = JSON.parse(
+        await readFile(durableStatePath, "utf8"),
+      ) as typeof durableState;
+      const currentHead = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+      if (replayed.crashPoint === "before_apply") {
+        assert.equal(currentHead, replayed.expectedTargetSha);
+        assert.throws(
+          () => gitForWorkspaceContract(repository, ["rev-parse", "--verify", "MERGE_HEAD"]),
+          /needed a single revision|unknown revision|ambiguous argument/i,
+        );
+        observedOutcomes.set(crashPoint, "requeued_without_apply");
+      } else if (replayed.crashPoint === "during_merge") {
+        assert.equal(currentHead, replayed.expectedTargetSha);
+        assert.equal(
+          gitForWorkspaceContract(repository, ["rev-parse", "MERGE_HEAD"]),
+          replayed.sealedSourceSha,
+        );
+        gitForWorkspaceContract(repository, ["merge", "--abort"]);
+        assert.equal(gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]), replayed.expectedTargetSha);
+        assert.equal(gitForWorkspaceContract(repository, ["status", "--porcelain"]), "");
+        observedOutcomes.set(crashPoint, "owned_merge_aborted_and_requeued");
+      } else {
+        const mergeCommitSha = replayed.mergeCommitSha ?? currentHead;
+        assert.equal(currentHead, mergeCommitSha);
+        assert.deepEqual(
+          gitForWorkspaceContract(repository, [
+            "show",
+            "-s",
+            "--format=%P",
+            mergeCommitSha,
+          ]).split(" "),
+          [replayed.expectedTargetSha, replayed.sealedSourceSha],
+        );
+        await writeFile(
+          receiptPath,
+          JSON.stringify({
+            result: "merged",
+            mergeCommitSha,
+            recoveredFrom: replayed.crashPoint,
+          }),
+        );
+        assert.deepEqual(
+          JSON.parse(await readFile(receiptPath, "utf8")),
+          {
+            result: "merged",
+            mergeCommitSha,
+            recoveredFrom: replayed.crashPoint,
+          },
+        );
+        observedOutcomes.set(crashPoint, "receipt_finalized_from_git_evidence");
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  assert.deepEqual(Object.fromEntries(observedOutcomes), {
+    before_apply: "requeued_without_apply",
+    during_merge: "owned_merge_aborted_and_requeued",
+    after_commit: "receipt_finalized_from_git_evidence",
+    before_receipt: "receipt_finalized_from_git_evidence",
+  });
+});
+
+test("Workspace and Merge v1 Windows lease recovery distinguishes live and dead owners and rejects stale epochs", async () => {
+  if (process.platform !== "win32") {
+    assert.equal(
+      windowsWorkspaceCapability(),
+      "unsupported_fail_closed",
+      "Windows lease-owner evidence is unavailable and must fail closed",
+    );
+    return;
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "orchestrator lease recovery "));
+  const leasePath = join(root, "merge-lease.json");
+  let owner: ReturnType<typeof spawn> | undefined;
+  try {
+    owner = spawn(
+      process.execPath,
+      ["-e", "console.log('READY'); setInterval(() => {}, 1000)"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    await waitForLine(owner, "READY");
+    assert.ok(owner.pid);
+    const initialLease = {
+      leaseId: "lease-one",
+      ownerPid: owner.pid,
+      epoch: 7,
+    };
+    await writeFile(leasePath, JSON.stringify(initialLease));
+
+    const processIsAlive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const acquireAfterRestart = async (expectedEpoch: number) => {
+      const current = JSON.parse(await readFile(leasePath, "utf8")) as typeof initialLease;
+      assert.equal(
+        current.epoch,
+        expectedEpoch,
+        `stale lease epoch ${expectedEpoch} cannot mutate epoch ${current.epoch}`,
+      );
+      assert.equal(
+        processIsAlive(current.ownerPid),
+        false,
+        "a live owner must retain the lease",
+      );
+      const replacement = {
+        leaseId: "lease-two",
+        ownerPid: process.pid,
+        epoch: current.epoch + 1,
+      };
+      await writeFile(leasePath, JSON.stringify(replacement));
+      return replacement;
+    };
+
+    const persistedLiveLease = JSON.parse(
+      await readFile(leasePath, "utf8"),
+    ) as typeof initialLease;
+    assert.equal(processIsAlive(persistedLiveLease.ownerPid), true);
+    await assert.rejects(
+      acquireAfterRestart(7),
+      /live owner must retain the lease/,
+    );
+    assert.deepEqual(JSON.parse(await readFile(leasePath, "utf8")), initialLease);
+
+    await stopChild(owner);
+    owner = undefined;
+    assert.equal(processIsAlive(initialLease.ownerPid), false);
+    const replacement = await acquireAfterRestart(7);
+    assert.equal(replacement.epoch, 8, "replacement epochs are strictly monotonic");
+    await assert.rejects(
+      acquireAfterRestart(7),
+      /stale lease epoch 7 cannot mutate epoch 8/,
+    );
+    assert.deepEqual(JSON.parse(await readFile(leasePath, "utf8")), replacement);
+  } finally {
+    if (owner) await stopChild(owner);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Workspace and Merge v1 Windows cleanup restart persists retry state and retains contended files", async () => {
+  if (process.platform !== "win32") {
+    assert.equal(
+      windowsWorkspaceCapability(),
+      "unsupported_fail_closed",
+      "Windows cleanup-replay evidence is unavailable and must fail closed",
+    );
+    return;
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "orchestrator cleanup replay "));
+  const ownedRoot = join(root, "owned");
+  const cleanupTarget = join(ownedRoot, "contended.txt");
+  const statePath = join(root, "workspace-attempt.json");
+  let locker: ReturnType<typeof spawn> | undefined;
+  try {
+    await mkdir(ownedRoot, { recursive: true });
+    await writeFile(cleanupTarget, "preserve until retry\n");
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        state: "cleanup_pending",
+        cleanup: { mode: "non_destructive", maxAttempts: 2, attemptOrdinal: 0 },
+      }),
+    );
+    const quotedTarget = cleanupTarget.replace(/'/g, "''");
+    locker = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$stream=[IO.File]::Open('${quotedTarget}',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None); [Console]::Out.WriteLine('READY'); Start-Sleep -Seconds 30; $stream.Dispose()`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    await waitForLine(locker, "READY");
+
+    const first = JSON.parse(await readFile(statePath, "utf8")) as {
+      state: string;
+      cleanup: { mode: string; maxAttempts: number; attemptOrdinal: number };
+    };
+    first.cleanup.attemptOrdinal += 1;
+    await writeFile(statePath, JSON.stringify(first));
+    await assert.rejects(rm(cleanupTarget), /EPERM|EBUSY|permission|being used/i);
+
+    // Simulate restart by discarding the object and reading the persisted retry
+    // budget before attempting the next non-destructive cleanup.
+    const replayed = JSON.parse(await readFile(statePath, "utf8")) as typeof first;
+    assert.deepEqual(replayed.cleanup, {
+      mode: "non_destructive",
+      maxAttempts: 2,
+      attemptOrdinal: 1,
+    });
+    assert.ok(replayed.cleanup.attemptOrdinal < replayed.cleanup.maxAttempts);
+    replayed.cleanup.attemptOrdinal += 1;
+    await writeFile(statePath, JSON.stringify(replayed));
+    await stopChild(locker);
+    locker = undefined;
+    assert.equal(
+      await readFile(cleanupTarget, "utf8"),
+      "preserve until retry\n",
+      "the failed non-force attempt retained the contended file",
+    );
+    await rm(cleanupTarget);
+    await assert.rejects(access(cleanupTarget), /ENOENT/);
+    assert.deepEqual(
+      (JSON.parse(await readFile(statePath, "utf8")) as typeof first).cleanup,
+      { mode: "non_destructive", maxAttempts: 2, attemptOrdinal: 2 },
+    );
+  } finally {
+    if (locker) await stopChild(locker);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Workspace and Merge v1 Windows stale worktree metadata is quarantined non-destructively and containment is case-folded", async () => {
+  if (process.platform !== "win32") {
+    assert.equal(
+      windowsWorkspaceCapability(),
+      "unsupported_fail_closed",
+      "Windows stale-metadata evidence is unavailable and must fail closed",
+    );
+    return;
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "Orchestrator Mixed Case "));
+  const repository = join(root, "Repository");
+  const ownedRoot = join(root, "Owned WorkTrees");
+  const workspace = join(ownedRoot, "Run-One", "Attempt-One");
+  const quarantineEvidence = join(root, "quarantine-evidence.json");
+  try {
+    await mkdir(repository, { recursive: true });
+    await mkdir(ownedRoot, { recursive: true });
+    gitForWorkspaceContract(repository, ["init", "-b", "main"]);
+    gitForWorkspaceContract(repository, ["config", "user.email", "metadata@example.invalid"]);
+    gitForWorkspaceContract(repository, ["config", "user.name", "Metadata Test"]);
+    await writeFile(join(repository, "base.txt"), "base\n");
+    gitForWorkspaceContract(repository, ["add", "base.txt"]);
+    gitForWorkspaceContract(repository, ["commit", "-m", "base"]);
+    gitForWorkspaceContract(repository, [
+      "worktree",
+      "add",
+      "-b",
+      "orchestrator/attempt/run-one/attempt-one",
+      workspace,
+      "HEAD",
+    ]);
+
+    assert.equal(
+      windowsPathContained(ownedRoot.toUpperCase(), workspace.toLowerCase()),
+      true,
+      "mixed-case spelling still resolves inside the owned root",
+    );
+    assert.equal(
+      windowsPathContained(
+        ownedRoot.toUpperCase(),
+        `${ownedRoot.toLowerCase()}-sibling\\Run-One\\Attempt-One`,
+      ),
+      false,
+      "mixed-case sibling-prefix paths remain outside containment",
+    );
+
+    await rm(workspace, { recursive: true, force: true });
+    await assert.rejects(access(workspace), /ENOENT/);
+    const metadataBefore = gitForWorkspaceContract(repository, [
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+    assert.match(metadataBefore, /worktree .*Attempt-One/i);
+    assert.match(metadataBefore, /prunable/i);
+
+    // No prune, force removal, ref deletion, or path recreation is attempted:
+    // unreconciled metadata is retained and explicitly quarantined.
+    await writeFile(
+      quarantineEvidence,
+      JSON.stringify({
+        result: "quarantined",
+        reason: "stale worktree metadata cannot be reconciled non-destructively",
+        workspace,
+      }),
+    );
+    const metadataAfter = gitForWorkspaceContract(repository, [
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+    assert.equal(metadataAfter, metadataBefore);
+    assert.deepEqual(JSON.parse(await readFile(quarantineEvidence, "utf8")), {
+      result: "quarantined",
+      reason: "stale worktree metadata cannot be reconciled non-destructively",
+      workspace,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function createWorkspaceLifecycleRepository(root: string, name = "Target Repository") {
+  const repository = join(root, name);
+  await mkdir(repository, { recursive: true });
+  gitForWorkspaceContract(repository, ["init", "-b", "main"]);
+  gitForWorkspaceContract(repository, ["config", "user.email", "workspace-lifecycle@example.invalid"]);
+  gitForWorkspaceContract(repository, ["config", "user.name", "Workspace Lifecycle Test"]);
+  await writeFile(join(repository, "base.txt"), "base\n");
+  gitForWorkspaceContract(repository, ["add", "base.txt"]);
+  gitForWorkspaceContract(repository, ["commit", "-m", "base"]);
+  return repository;
+}
+
+async function productionWorkspaceInput(
+  root: string,
+  repository: string,
+  runId: string,
+  attemptId: string,
+) {
+  const baseSha = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+  const ownedRoot = join(
+    root,
+    "Owned Worktrees With Spaces And A Deliberately Long Windows Path Segment",
+  );
+  return {
+    statePath: join(root, ".orchestrator", "runs", runId, "run.json"),
+    repositoryPath: repository,
+    ownedRoot,
+    workspacePath: join(ownedRoot, runId, attemptId),
+    projectId: "project-one",
+    repositoryId: await repositoryIdentityV1(repository),
+    changeId: "change-one",
+    waveId: "wave-one",
+    taskId: "task-one",
+    runId,
+    attemptId,
+    plan: { planId: "plan-one", revision: 1, planBaseSha: baseSha },
+    targetRef: "refs/heads/main",
+    baseSha,
+    cleanupMaxAttempts: 3,
+  } as const;
+}
+
+function interruptWorkspaceLifecycleAt(expected: string) {
+  return async (boundary: string) => {
+    if (boundary === expected)
+      throw new Error(`simulated process crash at ${boundary}`);
+  };
+}
+
+async function managedStartupCrashFixture(
+  root: string,
+  label: string,
+) {
+  const repository = await createWorkspaceLifecycleRepository(
+    root,
+    `Managed Crash Target ${label}`,
+  );
+  const attemptId = `attempt-${label}`;
+  const baseInput = await productionWorkspaceInput(
+    root,
+    repository,
+    `run-${label}`,
+    attemptId,
+  );
+  const ownedRoot = join(root, "w");
+  const input = {
+    ...baseInput,
+    ownedRoot,
+    workspacePath: join(ownedRoot, label),
+  };
+  const record = run([task(attemptId, "completed")], "completed");
+  record.id = input.runId;
+  record.project = { name: label, path: repository };
+  record.finishedAt = new Date().toISOString();
+  record.tasks[0].workspaceAttemptId =
+    `workspace-${input.runId}-${input.attemptId}`;
+  record.tasks[0].workspacePath = input.workspacePath;
+  await mkdir(join(input.statePath, ".."), { recursive: true });
+  await writeFile(input.statePath, JSON.stringify(record, null, 2), "utf8");
+  return {
+    input,
+    repository,
+    target: {
+      head: gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+      ref: gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]),
+      status: gitForWorkspaceContract(repository, [
+        "status",
+        "--porcelain=v1",
+        "-uall",
+      ]),
+      base: await readFile(join(repository, "base.txt"), "utf8"),
+    },
+  };
+}
+
+async function makeWorkspaceLeaseLookInterrupted(repository: string) {
+  const directory = join(
+    repository,
+    ".git",
+    "orchestrator-attempt-leases",
+  );
+  const entries = await readdir(directory);
+  assert.equal(entries.length, 1);
+  const path = join(directory, entries[0]);
+  const lease = JSON.parse(await readFile(path, "utf8")) as {
+    pid: number;
+  };
+  lease.pid = 2_147_483_647;
+  await writeFile(path, JSON.stringify(lease), "utf8");
+}
+
+async function assertManagedTargetUnchanged(
+  repository: string,
+  expected: {
+    head: string;
+    ref: string;
+    status: string;
+    base: string;
+  },
+) {
+  assert.equal(
+    gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+    expected.head,
+  );
+  assert.equal(
+    gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]),
+    expected.ref,
+  );
+  assert.equal(
+    gitForWorkspaceContract(repository, [
+      "status",
+      "--porcelain=v1",
+      "-uall",
+    ]),
+    expected.status,
+  );
+  assert.equal(await readFile(join(repository, "base.txt"), "utf8"), expected.base);
+}
+
+async function recoverManagedCrashFixture(
+  fixture: Awaited<ReturnType<typeof managedStartupCrashFixture>>,
+) {
+  const diagnostics: string[] = [];
+  await recoverPersistedRunForStartup(
+    fixture.input.statePath,
+    (message) => diagnostics.push(message),
+  );
+  assert.deepEqual(diagnostics, []);
+  const record = JSON.parse(
+    await readFile(fixture.input.statePath, "utf8"),
+  ) as {
+    workspaceAttempts: Array<{
+      workspaceAttemptId: string;
+      state: string;
+      workspacePath: string;
+      branchRef: string;
+      evidenceRefs: string[];
+    }>;
+    workspaceAttemptEvents: Array<{
+      state: string;
+      workspaceAttemptId: string;
+    }>;
+    workspaceMutationAuthorityEvents: Array<{
+      workspaceAttemptId: string;
+      reason: string;
+      authority: { headSha: string; leaseEpoch: number };
+    }>;
+  };
+  const attempt = record.workspaceAttempts.find(
+    (candidate) =>
+      candidate.workspaceAttemptId ===
+      `workspace-${fixture.input.runId}-${fixture.input.attemptId}`,
+  );
+  assert.ok(attempt);
+  await assertManagedTargetUnchanged(
+    fixture.repository,
+    fixture.target,
+  );
+  return { attempt, record };
+}
+
+test("managed production startup crash matrix recovers or quarantines every persisted workspace boundary without touching target", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T005H production startup crash matrix requires a Windows verification host",
+  );
+  const root = await mkdtemp(
+    join(tmpdir(), "orchestrator managed crash matrix "),
+  );
+  const matrix: Array<{
+    boundary: string;
+    state: string;
+    evidence: string;
+    artifact: string;
+  }> = [];
+  try {
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "provisioning-intent",
+      );
+      await assert.rejects(
+        provisionWorkspaceAttemptV1({
+          ...fixture.input,
+          onPersistedBoundary: interruptWorkspaceLifecycleAt(
+            "provisioning_persisted",
+          ),
+        }),
+        /simulated process crash at provisioning_persisted/,
+      );
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "quarantined");
+      assert.ok(attempt.evidenceRefs.includes("recovery:ambiguous"));
+      await assert.rejects(access(fixture.input.workspacePath), /ENOENT/);
+      assert.deepEqual(
+        record.workspaceAttemptEvents.map((event) => event.state),
+        ["provisioning", "quarantined"],
+      );
+      matrix.push({
+        boundary: "provisioning_intent",
+        state: attempt.state,
+        evidence: "recovery:ambiguous",
+        artifact: "none_created",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "provisioning-worktree",
+      );
+      await assert.rejects(
+        provisionWorkspaceAttemptV1({
+          ...fixture.input,
+          onPersistedBoundary: interruptWorkspaceLifecycleAt("worktree_added"),
+        }),
+        /simulated process crash at worktree_added/,
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "quarantined");
+      assert.ok(attempt.evidenceRefs.includes("recovery:ambiguous"));
+      assert.equal(
+        gitForWorkspaceContract(fixture.input.workspacePath, [
+          "rev-parse",
+          "HEAD",
+        ]),
+        fixture.target.head,
+      );
+      matrix.push({
+        boundary: "provisioning_worktree_before_marker_authority",
+        state: attempt.state,
+        evidence: "recovery:ambiguous",
+        artifact: "worktree_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "provisioning-marker",
+      );
+      await assert.rejects(
+        provisionWorkspaceAttemptV1({
+          ...fixture.input,
+          onPersistedBoundary: interruptWorkspaceLifecycleAt(
+            "ownership_marker_persisted",
+          ),
+        }),
+        /simulated process crash at ownership_marker_persisted/,
+      );
+      const markerPath = join(
+        gitForWorkspaceContract(fixture.input.workspacePath, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ]),
+        "orchestrator-owner-v1.json",
+      );
+      const markerBeforeRecovery = await readFile(markerPath, "utf8");
+      const workspaceBeforeRecovery = {
+        head: gitForWorkspaceContract(fixture.input.workspacePath, [
+          "rev-parse",
+          "HEAD",
+        ]),
+        ref: gitForWorkspaceContract(fixture.input.workspacePath, [
+          "symbolic-ref",
+          "HEAD",
+        ]),
+        status: gitForWorkspaceContract(fixture.input.workspacePath, [
+          "status",
+          "--porcelain=v1",
+          "-uall",
+        ]),
+        base: await readFile(
+          join(fixture.input.workspacePath, "base.txt"),
+          "utf8",
+        ),
+      };
+      const beforeRecovery = JSON.parse(
+        await readFile(fixture.input.statePath, "utf8"),
+      ) as {
+        workspaceAttemptEvents: Array<{ state: string }>;
+        workspaceMutationAuthorities?: unknown[];
+        workspaceMutationAuthorityEvents?: unknown[];
+      };
+      assert.deepEqual(
+        beforeRecovery.workspaceAttemptEvents.map((event) => event.state),
+        ["provisioning"],
+      );
+      assert.deepEqual(beforeRecovery.workspaceMutationAuthorities ?? [], []);
+      assert.deepEqual(
+        beforeRecovery.workspaceMutationAuthorityEvents ?? [],
+        [],
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "quarantined");
+      assert.ok(attempt.evidenceRefs.includes("recovery:ambiguous"));
+      assert.deepEqual(
+        record.workspaceAttemptEvents.map((event) => event.state),
+        ["provisioning", "quarantined"],
+      );
+      assert.deepEqual(record.workspaceMutationAuthorityEvents ?? [], []);
+      assert.equal(await readFile(markerPath, "utf8"), markerBeforeRecovery);
+      assert.equal(
+        gitForWorkspaceContract(fixture.input.workspacePath, [
+          "rev-parse",
+          "HEAD",
+        ]),
+        workspaceBeforeRecovery.head,
+      );
+      assert.equal(
+        gitForWorkspaceContract(fixture.input.workspacePath, [
+          "symbolic-ref",
+          "HEAD",
+        ]),
+        workspaceBeforeRecovery.ref,
+      );
+      assert.equal(
+        gitForWorkspaceContract(fixture.input.workspacePath, [
+          "status",
+          "--porcelain=v1",
+          "-uall",
+        ]),
+        workspaceBeforeRecovery.status,
+      );
+      assert.equal(
+        await readFile(join(fixture.input.workspacePath, "base.txt"), "utf8"),
+        workspaceBeforeRecovery.base,
+      );
+      matrix.push({
+        boundary: "ownership_marker_before_authority",
+        state: attempt.state,
+        evidence: "recovery:ambiguous",
+        artifact: "owned_marker_worktree_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "provisioning-authority",
+      );
+      await assert.rejects(
+        provisionWorkspaceAttemptV1({
+          ...fixture.input,
+          onPersistedBoundary: interruptWorkspaceLifecycleAt(
+            "provisioning_authority_persisted",
+          ),
+        }),
+        /simulated process crash at provisioning_authority_persisted/,
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "active");
+      assert.ok(
+        attempt.evidenceRefs.includes("recovery:reconciled:active"),
+      );
+      assert.deepEqual(
+        record.workspaceMutationAuthorityEvents.map((event) => event.reason),
+        ["provisioned", "lease_takeover"],
+      );
+      matrix.push({
+        boundary: "provisioning_authority_before_activation",
+        state: attempt.state,
+        evidence: "recovery:reconciled:active",
+        artifact: "owned_worktree_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(root, "executor");
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      const dirtyArtifact = join(active.workspacePath, "executor-partial.txt");
+      await assert.rejects(
+        executeInWorkspaceAttemptV1(
+          fixture.input.statePath,
+          fixture.repository,
+          active.workspaceAttemptId,
+          {
+            executable: process.execPath,
+            args: [
+              "-e",
+              `require('node:fs').writeFileSync(${JSON.stringify(
+                dirtyArtifact,
+              )}, 'partial executor output\\n')`,
+            ],
+          },
+          interruptWorkspaceLifecycleAt("executor_returned"),
+        ),
+        /simulated process crash at executor_returned/,
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "active");
+      assert.equal(
+        await readFile(dirtyArtifact, "utf8"),
+        "partial executor output\n",
+      );
+      assert.match(
+        gitForWorkspaceContract(active.workspacePath, [
+          "status",
+          "--porcelain=v1",
+          "-uall",
+        ]),
+        /executor-partial\.txt/,
+      );
+      assert.equal(
+        record.workspaceAttemptEvents.at(-1)?.state,
+        "active",
+      );
+      matrix.push({
+        boundary: "executor_returned_with_dirty_artifact",
+        state: attempt.state,
+        evidence: "canonical_active_event",
+        artifact: "dirty_owned_artifact_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "checkpoint-before-commit",
+      );
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      const artifact = join(active.workspacePath, "staged.txt");
+      await writeFile(artifact, "staged checkpoint\n");
+      await assert.rejects(
+        checkpointWorkspaceAttemptV1(
+          fixture.input.statePath,
+          fixture.repository,
+          active.workspaceAttemptId,
+          ["staged.txt"],
+          "checkpoint staged",
+          interruptWorkspaceLifecycleAt("checkpoint_staged"),
+        ),
+        /simulated process crash at checkpoint_staged/,
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "active");
+      assert.equal(await readFile(artifact, "utf8"), "staged checkpoint\n");
+      assert.match(
+        gitForWorkspaceContract(active.workspacePath, ["status", "--short"]),
+        /^A  staged\.txt$/m,
+      );
+      assert.deepEqual(
+        record.workspaceMutationAuthorityEvents.map((event) => event.reason),
+        ["provisioned", "lease_takeover"],
+      );
+      matrix.push({
+        boundary: "checkpoint_before_commit",
+        state: attempt.state,
+        evidence: "lease_takeover_without_checkpoint_authority",
+        artifact: "staged_owned_artifact_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "checkpoint-after-commit",
+      );
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      const artifact = join(active.workspacePath, "committed.txt");
+      await writeFile(artifact, "committed checkpoint\n");
+      await assert.rejects(
+        checkpointWorkspaceAttemptV1(
+          fixture.input.statePath,
+          fixture.repository,
+          active.workspaceAttemptId,
+          ["committed.txt"],
+          "checkpoint committed",
+          interruptWorkspaceLifecycleAt("checkpoint_committed"),
+        ),
+        /simulated process crash at checkpoint_committed/,
+      );
+      const committedHead = gitForWorkspaceContract(active.workspacePath, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "quarantined");
+      assert.ok(attempt.evidenceRefs.includes("recovery:ambiguous"));
+      assert.equal(
+        gitForWorkspaceContract(active.workspacePath, ["rev-parse", "HEAD"]),
+        committedHead,
+      );
+      assert.deepEqual(
+        record.workspaceMutationAuthorityEvents.map((event) => event.reason),
+        ["provisioned", "lease_takeover"],
+      );
+      matrix.push({
+        boundary: "checkpoint_commit_before_authority",
+        state: attempt.state,
+        evidence: "recovery:ambiguous",
+        artifact: "unacknowledged_commit_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "checkpoint-after-authority",
+      );
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      await writeFile(
+        join(active.workspacePath, "authorized.txt"),
+        "authorized checkpoint\n",
+      );
+      await assert.rejects(
+        checkpointWorkspaceAttemptV1(
+          fixture.input.statePath,
+          fixture.repository,
+          active.workspaceAttemptId,
+          ["authorized.txt"],
+          "checkpoint authorized",
+          interruptWorkspaceLifecycleAt(
+            "checkpoint_authority_persisted",
+          ),
+        ),
+        /simulated process crash at checkpoint_authority_persisted/,
+      );
+      const authorizedHead = gitForWorkspaceContract(active.workspacePath, [
+        "rev-parse",
+        "HEAD",
+      ]);
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt, record } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "active");
+      assert.deepEqual(
+        record.workspaceMutationAuthorityEvents.map((event) => event.reason),
+        ["provisioned", "checkpoint", "lease_takeover"],
+      );
+      assert.equal(
+        record.workspaceMutationAuthorityEvents.at(-1)?.authority.headSha,
+        authorizedHead,
+      );
+      matrix.push({
+        boundary: "checkpoint_authority_persisted",
+        state: attempt.state,
+        evidence: "checkpoint_then_lease_takeover",
+        artifact: "acknowledged_commit_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(root, "sealing");
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      await assert.rejects(
+        sealWorkspaceAttemptV1(
+          fixture.input.statePath,
+          fixture.repository,
+          active.workspaceAttemptId,
+          interruptWorkspaceLifecycleAt("sealed_persisted"),
+        ),
+        /simulated process crash at sealed_persisted/,
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "sealed");
+      assert.ok(
+        attempt.evidenceRefs.some((reference) =>
+          reference.startsWith("git:sealed:"),
+        ),
+      );
+      matrix.push({
+        boundary: "sealing_persisted",
+        state: attempt.state,
+        evidence: "git:sealed",
+        artifact: "sealed_worktree_retained",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(root, "cleanup");
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      await assert.rejects(
+        cleanupWorkspaceAttemptV1(
+          fixture.input.statePath,
+          fixture.repository,
+          active.workspaceAttemptId,
+          interruptWorkspaceLifecycleAt("cleanup_worktree_removed"),
+        ),
+        /simulated process crash at cleanup_worktree_removed/,
+      );
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "cleaned");
+      assert.ok(
+        attempt.evidenceRefs.includes("cleanup:non-force-removed"),
+      );
+      await assert.rejects(access(active.workspacePath), /ENOENT/);
+      matrix.push({
+        boundary: "cleanup_after_non_force_removal",
+        state: attempt.state,
+        evidence: "cleanup:non-force-removed",
+        artifact: "owned_worktree_removed",
+      });
+    }
+
+    {
+      const fixture = await managedStartupCrashFixture(
+        root,
+        "contradictory-one-sided",
+      );
+      const active = await provisionWorkspaceAttemptV1(fixture.input);
+      const sealed = await sealWorkspaceAttemptV1(
+        fixture.input.statePath,
+        fixture.repository,
+        active.workspaceAttemptId,
+      );
+      gitForWorkspaceContract(fixture.repository, [
+        "update-ref",
+        sealed.branchRef,
+        sealed.baseSha,
+      ]);
+      const contradictoryRef = gitForWorkspaceContract(fixture.repository, [
+        "rev-parse",
+        sealed.branchRef,
+      ]);
+      await rm(sealed.workspacePath, { recursive: true, force: true });
+      await makeWorkspaceLeaseLookInterrupted(fixture.repository);
+      const { attempt } = await recoverManagedCrashFixture(fixture);
+      assert.equal(attempt.state, "quarantined");
+      assert.ok(attempt.evidenceRefs.includes("recovery:ambiguous"));
+      assert.equal(
+        gitForWorkspaceContract(fixture.repository, [
+          "rev-parse",
+          sealed.branchRef,
+        ]),
+        contradictoryRef,
+      );
+      matrix.push({
+        boundary: "contradictory_one_sided_persistence",
+        state: attempt.state,
+        evidence: "recovery:ambiguous",
+        artifact: "contradictory_branch_retained",
+      });
+    }
+
+    assert.deepEqual(matrix, [
+      {
+        boundary: "provisioning_intent",
+        state: "quarantined",
+        evidence: "recovery:ambiguous",
+        artifact: "none_created",
+      },
+      {
+        boundary: "provisioning_worktree_before_marker_authority",
+        state: "quarantined",
+        evidence: "recovery:ambiguous",
+        artifact: "worktree_retained",
+      },
+      {
+        boundary: "ownership_marker_before_authority",
+        state: "quarantined",
+        evidence: "recovery:ambiguous",
+        artifact: "owned_marker_worktree_retained",
+      },
+      {
+        boundary: "provisioning_authority_before_activation",
+        state: "active",
+        evidence: "recovery:reconciled:active",
+        artifact: "owned_worktree_retained",
+      },
+      {
+        boundary: "executor_returned_with_dirty_artifact",
+        state: "active",
+        evidence: "canonical_active_event",
+        artifact: "dirty_owned_artifact_retained",
+      },
+      {
+        boundary: "checkpoint_before_commit",
+        state: "active",
+        evidence: "lease_takeover_without_checkpoint_authority",
+        artifact: "staged_owned_artifact_retained",
+      },
+      {
+        boundary: "checkpoint_commit_before_authority",
+        state: "quarantined",
+        evidence: "recovery:ambiguous",
+        artifact: "unacknowledged_commit_retained",
+      },
+      {
+        boundary: "checkpoint_authority_persisted",
+        state: "active",
+        evidence: "checkpoint_then_lease_takeover",
+        artifact: "acknowledged_commit_retained",
+      },
+      {
+        boundary: "sealing_persisted",
+        state: "sealed",
+        evidence: "git:sealed",
+        artifact: "sealed_worktree_retained",
+      },
+      {
+        boundary: "cleanup_after_non_force_removal",
+        state: "cleaned",
+        evidence: "cleanup:non-force-removed",
+        artifact: "owned_worktree_removed",
+      },
+      {
+        boundary: "contradictory_one_sided_persistence",
+        state: "quarantined",
+        evidence: "recovery:ambiguous",
+        artifact: "contradictory_branch_retained",
+      },
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WorkspaceAttemptV1 production lifecycle persists, executes, checkpoints, seals, and replays 100+ commits without touching target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator production workspace "));
+  try {
+    const repository = await createWorkspaceLifecycleRepository(root);
+    const input = await productionWorkspaceInput(root, repository, "run-production", "attempt-production");
+    const targetBefore = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+    const attempt = await provisionWorkspaceAttemptV1(input);
+    assert.equal(attempt.state, "active");
+    assert.equal(
+      attempt.branchRef,
+      "refs/heads/orchestrator/attempt/run-production/attempt-production",
+    );
+    assert.ok(input.workspacePath.length > 100);
+    assert.equal(
+      workspacePathContainedV1(input.ownedRoot.toUpperCase(), input.workspacePath.toLowerCase()),
+      true,
+    );
+    assert.equal(
+      workspacePathContainedV1(input.ownedRoot, `${input.ownedRoot}-sibling\\attempt`),
+      false,
+    );
+
+    const worker = await executeInWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      attempt.workspaceAttemptId,
+      {
+        executable: process.execPath,
+        args: [
+          "-e",
+          "require('node:fs').writeFileSync('worker.txt', 'worker ran in owned workspace\\n')",
+        ],
+      },
+    );
+    assert.equal(worker.cwd, input.workspacePath);
+    await checkpointWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      attempt.workspaceAttemptId,
+      ["worker.txt"],
+      "worker checkpoint",
+    );
+    const verification = await executeInWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      attempt.workspaceAttemptId,
+      { executable: "git", args: ["status", "--porcelain=v1", "-uall"] },
+    );
+    assert.equal(verification.cwd, input.workspacePath);
+    assert.equal(verification.output, "");
+
+    for (let index = 1; index <= 101; index += 1) {
+      await executeInWorkspaceAttemptV1(
+        input.statePath,
+        repository,
+        attempt.workspaceAttemptId,
+        {
+          executable: "git",
+          args: ["commit", "--allow-empty", "-m", `intermediate ${index}`],
+        },
+      );
+    }
+    const sealed = await sealWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      attempt.workspaceAttemptId,
+    );
+    assert.equal(sealed.state, "sealed");
+    assert.equal(
+      sealed.sealedSourceSha,
+      gitForWorkspaceContract(input.workspacePath, ["rev-parse", "HEAD"]),
+    );
+    assert.equal(
+      Number(
+        gitForWorkspaceContract(input.workspacePath, [
+          "rev-list",
+          "--count",
+          `${targetBefore}..${sealed.sealedSourceSha}`,
+        ]),
+      ),
+      102,
+    );
+    assert.equal(gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]), targetBefore);
+    assert.equal(gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]), "refs/heads/main");
+    assert.equal(
+      gitForWorkspaceContract(repository, ["rev-parse", sealed.branchRef]),
+      sealed.sealedSourceSha,
+    );
+
+    const record = JSON.parse(await readFile(input.statePath, "utf8")) as {
+      workspaceAttempts: unknown[];
+      workspaceAttemptEvents: Array<Record<string, unknown>>;
+      mergeRequests?: unknown[];
+      mergeReceipts?: unknown[];
+    };
+    assert.equal(record.workspaceAttempts.length, 1);
+    assert.deepEqual(
+      record.workspaceAttemptEvents.map((event) => event.state),
+      ["provisioning", "active", "sealed"],
+    );
+    assert.equal(record.mergeRequests, undefined);
+    assert.equal(record.mergeReceipts, undefined);
+    const replayed = replayWorkspaceAttemptEventsV1(
+      record.workspaceAttemptEvents as never,
+    );
+    assert.equal(replayed.get(attempt.workspaceAttemptId)?.sealedSourceSha, sealed.sealedSourceSha);
+
+    const conflicting = structuredClone(record.workspaceAttemptEvents);
+    conflicting[1].previousState = null;
+    assert.throws(
+      () => replayWorkspaceAttemptEventsV1(conflicting as never),
+      /hash mismatch|Conflicting|Invalid workspace transition/,
+    );
+    const partial = structuredClone(record.workspaceAttemptEvents);
+    delete partial[0].attempt;
+    assert.throws(
+      () => replayWorkspaceAttemptEventsV1(partial as never),
+      /hash mismatch|Invalid WorkspaceAttemptV1|Cannot read|properties of undefined/i,
+    );
+    const unknownVersion = structuredClone(record.workspaceAttemptEvents);
+    unknownVersion[0].contractVersion = "2.0";
+    assert.throws(
+      () => replayWorkspaceAttemptEventsV1(unknownVersion as never),
+      /Invalid workspace event envelope/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WorkspaceAttemptV1 production entry points fail closed on collisions, marker drift, live leases, and stale metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator production recovery "));
+  let leaseOwner: ReturnType<typeof spawn> | undefined;
+  try {
+    const repository = await createWorkspaceLifecycleRepository(root);
+    const input = await productionWorkspaceInput(root, repository, "run-recovery", "attempt-recovery");
+    const attempt = await provisionWorkspaceAttemptV1(input);
+
+    await assert.rejects(
+      provisionWorkspaceAttemptV1(input),
+      /Workspace path already exists|Attempt branch already exists/,
+    );
+    await writeFile(join(repository, "target-dirty.txt"), "target stays protected\n");
+    const dirtyInput = await productionWorkspaceInput(root, repository, "run-dirty-target", "attempt-dirty-target");
+    await assert.rejects(
+      provisionWorkspaceAttemptV1(dirtyInput),
+      /Target worktree is not clean/,
+    );
+    await rm(join(repository, "target-dirty.txt"));
+
+    const leaseDirectory = join(repository, ".git", "orchestrator-attempt-leases");
+    const [leaseName] = await readdir(leaseDirectory);
+    const leasePath = join(leaseDirectory, leaseName);
+    leaseOwner = spawn(
+      process.execPath,
+      ["-e", "console.log('READY'); setInterval(() => {}, 1000)"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    await waitForLine(leaseOwner, "READY");
+    const liveLease = JSON.parse(await readFile(leasePath, "utf8")) as {
+      pid: number;
+      epoch: number;
+    };
+    liveLease.pid = leaseOwner.pid!;
+    liveLease.epoch = 7;
+    await writeFile(leasePath, JSON.stringify(liveLease));
+    await assert.rejects(
+      recoverWorkspaceAttemptLeaseV1(repository, attempt),
+      /live owner still holds/,
+    );
+    await stopChild(leaseOwner);
+    leaseOwner = undefined;
+    assert.equal(await recoverWorkspaceAttemptLeaseV1(repository, attempt), 8);
+    assert.equal(
+      (JSON.parse(await readFile(leasePath, "utf8")) as { epoch: number }).epoch,
+      8,
+    );
+
+    const privateGitDirectory = gitForWorkspaceContract(input.workspacePath, [
+      "rev-parse",
+      "--absolute-git-dir",
+    ]);
+    const markerPath = join(privateGitDirectory, "orchestrator-owner-v1.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as {
+      creationNonce: string;
+    };
+    marker.creationNonce = "tampered";
+    await writeFile(markerPath, JSON.stringify(marker));
+    await assert.rejects(
+      executeInWorkspaceAttemptV1(
+        input.statePath,
+        repository,
+        attempt.workspaceAttemptId,
+        { executable: "git", args: ["status", "--porcelain"] },
+      ),
+      /Ownership marker/,
+    );
+    const quarantined = await recoverWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      attempt.workspaceAttemptId,
+    );
+    assert.equal(quarantined.state, "quarantined");
+
+    const staleRepository = await createWorkspaceLifecycleRepository(root, "Stale Repository");
+    const staleInput = await productionWorkspaceInput(root, staleRepository, "run-stale", "attempt-stale");
+    const staleAttempt = await provisionWorkspaceAttemptV1(staleInput);
+    await rm(staleInput.workspacePath, { recursive: true, force: true });
+    const metadataBefore = gitForWorkspaceContract(staleRepository, [
+      "worktree",
+      "list",
+      "--porcelain",
+    ]);
+    assert.match(metadataBefore, /prunable/i);
+    const staleResult = await recoverWorkspaceAttemptV1(
+      staleInput.statePath,
+      staleRepository,
+      staleAttempt.workspaceAttemptId,
+    );
+    assert.equal(staleResult.state, "quarantined");
+    assert.equal(
+      gitForWorkspaceContract(staleRepository, ["worktree", "list", "--porcelain"]),
+      metadataBefore,
+      "recovery must not globally prune stale metadata",
+    );
+  } finally {
+    if (leaseOwner) await stopChild(leaseOwner);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("WorkspaceAttemptV1 Windows production cleanup retains dirty/contended artifacts and rejects junction escapes", async () => {
+  assert.equal(process.platform, "win32", "T005 Windows invariants require a Windows verification host");
+  const root = await mkdtemp(join(tmpdir(), "orchestrator production windows "));
+  let locker: ReturnType<typeof spawn> | undefined;
+  try {
+    const repository = await createWorkspaceLifecycleRepository(root);
+    const input = await productionWorkspaceInput(root, repository, "run-cleanup", "attempt-cleanup");
+    const attempt = await provisionWorkspaceAttemptV1(input);
+
+    await writeFile(join(input.workspacePath, "uncommitted-user-file.txt"), "preserve me\n");
+    const retained = await cleanupWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      attempt.workspaceAttemptId,
+    );
+    assert.equal(retained.state, "recovery_pending");
+    assert.equal(retained.cleanup.attemptOrdinal, 1);
+    assert.equal(
+      await readFile(join(input.workspacePath, "uncommitted-user-file.txt"), "utf8"),
+      "preserve me\n",
+    );
+
+    const contendedRepository = await createWorkspaceLifecycleRepository(root, "Contended Repository");
+    const contendedInput = await productionWorkspaceInput(root, contendedRepository, "run-contended", "attempt-contended");
+    const contendedAttempt = await provisionWorkspaceAttemptV1(contendedInput);
+    const lockedFile = join(contendedInput.workspacePath, "base.txt");
+    const quotedLockedFile = lockedFile.replace(/'/g, "''");
+    locker = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$stream=[IO.File]::Open('${quotedLockedFile}',[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::None); [Console]::Out.WriteLine('READY'); Start-Sleep -Seconds 30; $stream.Dispose()`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    await waitForLine(locker, "READY");
+    const contended = await cleanupWorkspaceAttemptV1(
+      contendedInput.statePath,
+      contendedRepository,
+      contendedAttempt.workspaceAttemptId,
+    );
+    assert.equal(contended.state, "recovery_pending");
+    assert.equal(contended.cleanup.attemptOrdinal, 1);
+    await access(lockedFile);
+    await stopChild(locker);
+    locker = undefined;
+    assert.equal((await readFile(lockedFile, "utf8")).replace(/\r\n/g, "\n"), "base\n");
+    const cleaned = await cleanupWorkspaceAttemptV1(
+      contendedInput.statePath,
+      contendedRepository,
+      contendedAttempt.workspaceAttemptId,
+    );
+    assert.equal(cleaned.state, "cleaned");
+    assert.equal(cleaned.cleanup.attemptOrdinal, 2);
+    assert.equal(
+      new Set(cleaned.evidenceRefs).size,
+      cleaned.evidenceRefs.length,
+      "cleanup retry evidence remains canonically unique",
+    );
+    assert.equal(
+      cleaned.evidenceRefs.filter((reference) => reference === "cleanup:requested").length,
+      1,
+      "cleanup retry reuses the original request evidence",
+    );
+    assert.ok(
+      cleaned.evidenceRefs.includes("cleanup:dirty-retained") ||
+        cleaned.evidenceRefs.includes("cleanup:non-force-failed"),
+      "cleanup retry preserves the original retention evidence",
+    );
+    assert.ok(cleaned.evidenceRefs.includes("cleanup:non-force-removed"));
+    await assert.rejects(access(contendedInput.workspacePath), /ENOENT/);
+    assert.equal(
+      gitForWorkspaceContract(contendedRepository, [
+        "show-ref",
+        "--verify",
+        "--quiet",
+        contendedAttempt.branchRef,
+      ]),
+      "",
+      "cleanup retains the attempt branch for the deferred merge phase",
+    );
+
+    const junctionRepository = await createWorkspaceLifecycleRepository(root, "Junction Repository");
+    const junctionInput = await productionWorkspaceInput(root, junctionRepository, "run-junction", "attempt-junction");
+    const outside = join(root, "Outside Owned Root");
+    await mkdir(junctionInput.ownedRoot, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    const junction = join(junctionInput.ownedRoot, "run-junction");
+    try {
+      execFileSync(process.env.ComSpec ?? "cmd.exe", [
+        "/d",
+        "/c",
+        "mklink",
+        "/J",
+        junction,
+        outside,
+      ], { stdio: "pipe" });
+    } catch (error) {
+      assert.fail(`Junction capability unavailable; production must fail closed: ${String(error)}`);
+    }
+    await assert.rejects(
+      provisionWorkspaceAttemptV1(junctionInput),
+      /symbolic link|junction|resolves outside/,
+    );
+    await assert.rejects(access(junctionInput.statePath), /ENOENT/);
+  } finally {
+    if (locker) await stopChild(locker);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed Phase 2 tasks run concurrently only in canonical owned workspaces and restart-replay exact authority", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T005E production routing requires a Windows verification host",
+  );
+  const root = await mkdtemp(join(tmpdir(), "orchestrator managed workspace "));
+  const repository = await createWorkspaceLifecycleRepository(
+    root,
+    "Managed Target",
+  );
+  const targetHead = gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]);
+  const targetRef = gitForWorkspaceContract(repository, [
+    "symbolic-ref",
+    "HEAD",
+  ]);
+  const repositoryId = await repositoryIdentityV1(repository);
+  const suffix = createHash("sha256")
+    .update(root)
+    .digest("hex")
+    .slice(0, 12);
+  const changeId = `managed-change-${suffix}`;
+  const waveId = `managed-wave-${suffix}`;
+  const taskIds = [`managed-one-${suffix}`, `managed-two-${suffix}`];
+  const fakeCodex = join(root, "fake-codex.cjs");
+  const invocationTrace = join(root, "managed-invocations.jsonl");
+  const correctionMarker = join(root, "managed-one-corrected");
+  const previousCodexBin = process.env.CODEX_BIN;
+  const previousTestCodexScript =
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  let server: ReturnType<typeof app.listen> | undefined;
+  let profileId = "";
+  try {
+    await writeFile(
+      fakeCodex,
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => prompt += chunk);",
+        "process.stdin.on('end', () => {",
+        "  const args = process.argv.slice(2);",
+        "  const outputIndex = args.indexOf('--output-last-message');",
+        "  const output = args[outputIndex + 1];",
+        "  const name = prompt.includes('managed-one.txt') ? 'managed-one.txt' : 'managed-two.txt';",
+        `  const trace = ${JSON.stringify(invocationTrace)};`,
+        `  const correctionMarker = ${JSON.stringify(correctionMarker)};`,
+        "  const reviewer = prompt.startsWith('Review only the authoritative task change set');",
+        "  const correction = prompt.includes('Reviewer found these issues:');",
+        "  const phase = reviewer ? 'reviewer' : correction ? 'correction' : 'executor';",
+        "  fs.appendFileSync(trace, JSON.stringify({ phase, name, cwd: process.cwd() }) + '\\n');",
+        "  if (reviewer) {",
+        "    const requestCorrection = name === 'managed-one.txt' && !fs.existsSync(correctionMarker);",
+        "    fs.writeFileSync(output, requestCorrection ? 'VERDICT: CHANGES_REQUESTED\\nCorrect managed-one.\\n' : 'VERDICT: APPROVED\\n');",
+        "    return;",
+        "  }",
+        "  fs.writeFileSync(path.join(process.cwd(), name), `owned:${name}:${phase}\\n`);",
+        "  if (correction) fs.writeFileSync(correctionMarker, 'corrected\\n');",
+        "  fs.writeFileSync(output, 'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED\\n');",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = fakeCodex;
+
+    server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server!.once("listening", resolveListen);
+      server!.once("error", rejectListen);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const profileResponse = await fetch(
+      `http://127.0.0.1:${address.port}/api/projects`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: `Managed ${suffix}`,
+          path: repository,
+          verificationCommands: ["git diff --check"],
+        }),
+      },
+    );
+    assert.equal(profileResponse.status, 201);
+    profileId = (await profileResponse.json() as { id: string }).id;
+
+    await changeControlStore.create(profileId, {
+      changeId,
+      actor: "user:creator",
+    });
+    await changeControlStore.createWave(profileId, changeId, {
+      waveId,
+      actor: "user:creator",
+      tasks: taskIds.map((taskId) => ({ taskId })),
+    });
+    const createdAt = new Date().toISOString();
+    const planId = `managed-plan-${suffix}`;
+    const contract: PlanningContractV1 = {
+      contractType: "PlanningContractV1",
+      contractVersion: "1.0",
+      planId,
+      revision: 1,
+      projectId: profileId,
+      changeId,
+      waveId,
+      predecessor: null,
+      planBase: {
+        repositoryId,
+        sha: targetHead,
+        hashAlgorithm: targetHead.length === 64 ? "sha256" : "sha1",
+        ref: targetRef,
+        capturedAt: createdAt,
+        worktreeState: "clean",
+      },
+      taskPlans: taskIds.map((taskId, index) => ({
+        taskId,
+        acceptanceClaims: [{
+          claimId: `claim-${index + 1}`,
+          observableOutcome: `${taskId} writes only its owned result.`,
+          oracle: {
+            kind: "command",
+            instruction: "git diff --check",
+          },
+          expectedEvidence: [{
+            kind: "command_exit",
+            description: "The exact verification command exits successfully.",
+          }],
+          failureSeverity: "blocking",
+        }],
+        blastRadius: {
+          declaredWriteSet: [{
+            path: index === 0 ? "managed-one.txt" : "managed-two.txt",
+            mode: "create",
+            evidenceRefs: [`queue:${taskId}`],
+          }],
+          dependencyImpacts: [],
+          publicApiChanges: [],
+          schemaMigrationEffects: [],
+          externalSideEffects: [],
+          impactedTests: [{
+            description: `${taskId} production path`,
+            evidenceRefs: [`test:${taskId}`],
+          }],
+          assessmentEvidenceRefs: [`assessment:${taskId}`],
+        },
+      })),
+      replanTriggers: ["base_sha_changed", "unknown_drift"],
+      createdAt,
+      createdBy: "planner:managed-test",
+      authorizationRequired: true,
+    };
+    await changeControlStore.publishPlanningContract(
+      profileId,
+      changeId,
+      waveId,
+      { contract },
+    );
+    await changeControlStore.publishPlanAuthorization(
+      profileId,
+      changeId,
+      waveId,
+      {
+        authorization: {
+          contractType: "PlanAuthorizationV1",
+          contractVersion: "1.0",
+          authorizationId: `managed-authorization-${suffix}`,
+          projectId: profileId,
+          changeId,
+          waveId,
+          plan: { planId, revision: 1, planBaseSha: targetHead },
+          decision: "authorized",
+          reason: "The exact managed plan and base are authorized.",
+          decidedAt: new Date().toISOString(),
+          decidedBy: "human:managed-reviewer",
+        },
+      },
+    );
+    await changeControlStore.dispatchWave(profileId, changeId, waveId, {
+      actor: "user:managed-dispatcher",
+    });
+
+    const approvals = taskIds.map((taskId, index) => ({
+      approvalId: `approval-${index + 1}-${suffix}`,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      allowedPaths: [index === 0 ? "managed-one.txt" : "managed-two.txt"],
+      verificationCommands: ["git diff --check"],
+    }));
+    const queue = validateTaskQueue({
+      project: {
+        name: `Managed ${suffix}`,
+        path: repository,
+        approvedApplyContracts: approvals,
+      },
+      limits: {
+        taskTimeoutMinutes: 1,
+        reviewerTimeoutMinutes: 1,
+        maxTaskRetries: 0,
+        maxParallelTasks: 2,
+      },
+      git: { checkpointCommits: false },
+      tasks: taskIds.map((taskId, index) => ({
+        key: `managed-${index + 1}`,
+        title: `Managed ${index + 1}`,
+        prompt: `Write managed-${index + 1 === 1 ? "one" : "two"}.txt`,
+        allowedPaths: approvals[index].allowedPaths,
+        verificationCommands: approvals[index].verificationCommands,
+        authorization: {
+          enabled: true,
+          intent: "apply",
+          technicalPermission: "reversible_local_write",
+          sideEffectRisk: "reversible_local_write",
+          approvalId: approvals[index].approvalId,
+        },
+        workspace: {
+          contractType: "ManagedWorkspaceBindingV1",
+          contractVersion: "1.0",
+          projectId: profileId,
+          changeId,
+          waveId,
+          taskId,
+        },
+      })),
+    });
+    const run = createRun(queue);
+    run.review.enabled = true;
+    run.review.maxCorrections = 1;
+    await executeQueue(run);
+    const blockedTask = run.tasks.find((task) => task.status === "blocked");
+    const completedTask = run.tasks.find((task) => task.status === "completed");
+    assert.ok(blockedTask, JSON.stringify(run.tasks, null, 2));
+    assert.ok(completedTask, JSON.stringify(run.tasks, null, 2));
+    assert.equal(run.tasks.filter((task) => task.status === "blocked").length, 1);
+    assert.equal(run.tasks.filter((task) => task.status === "completed").length, 1);
+
+    const statePath = join(testDataDirectory, "runs", run.id, "run.json");
+    const record = JSON.parse(await readFile(statePath, "utf8")) as {
+      workspaceAttempts: Array<{ workspaceAttemptId: string; taskId: string; state: string; workspacePath: string }>;
+      workspaceAttemptEvents: Parameters<typeof replayWorkspaceAttemptEventsV1>[0];
+      workspaceMutationAuthorityEvents: Parameters<typeof replayWorkspaceMutationAuthorityEventsV1>[0];
+      mergeRequests: Array<{
+        mergeRequestId: string;
+        workspaceAttemptId: string;
+        taskId: string;
+        state: string;
+        expectedTargetSha: string;
+        observedTargetSha?: string;
+        sealedSourceSha: string;
+        driftAssessmentId?: string;
+        evidenceRefs: string[];
+      }>;
+      mergeReceipts: Array<{
+        mergeRequestId: string;
+        result: string;
+        driftAssessmentId?: string;
+        evidenceRefs: string[];
+      }>;
+    };
+    assert.deepEqual(record.workspaceAttempts.map((attempt) => attempt.state).sort(), ["cleaned", "replan_required"]);
+    assert.deepEqual(record.mergeRequests.map((request) => request.state).sort(), ["committed", "replan_required"]);
+    assert.deepEqual(record.mergeReceipts.map((receipt) => receipt.result).sort(), ["merged", "replan_required"]);
+    assert.equal(replayWorkspaceAttemptEventsV1(record.workspaceAttemptEvents).size, 2);
+    assert.equal(replayWorkspaceMutationAuthorityEventsV1(record.workspaceMutationAuthorityEvents).size, 2);
+
+    const replanRequest = record.mergeRequests.find((request) => request.state === "replan_required");
+    assert.ok(replanRequest);
+    assert.equal(replanRequest.taskId, blockedTask.workspace?.taskId);
+    assert.notEqual(replanRequest.observedTargetSha, replanRequest.expectedTargetSha);
+    const replanReceipt = record.mergeReceipts.find((receipt) => receipt.result === "replan_required");
+    assert.ok(replanReceipt);
+    assert.equal(replanReceipt.mergeRequestId, replanRequest.mergeRequestId);
+    assert.equal(replanReceipt.driftAssessmentId, replanRequest.driftAssessmentId);
+    const linkedEvidence = [
+      `merge:request:${replanRequest.mergeRequestId}`,
+      `merge:task:${replanRequest.taskId}`,
+      `git:prior-head:${replanRequest.expectedTargetSha}`,
+      `git:head:${replanRequest.observedTargetSha}`,
+      `plan:${contract.planId}:${contract.revision}:${contract.planBase.sha}`,
+      "requirement:architect-replan",
+      "requirement:fresh-human-authorization",
+    ];
+    for (const reference of linkedEvidence) {
+      assert.ok(replanRequest.evidenceRefs.includes(reference));
+      assert.ok(replanReceipt.evidenceRefs.includes(reference));
+    }
+    assert.ok(replanRequest.evidenceRefs.some((reference) => reference.startsWith("merge:authorization:")));
+    assert.ok(replanRequest.evidenceRefs.some((reference) => reference.startsWith("merge:dispatch-receipt:")));
+
+    const projection = await changeControlStore.getPlanningProjection(profileId, changeId, waveId);
+    const mergeDrift = projection.driftAssessments.find(
+      (assessment) => assessment.assessmentId === replanRequest.driftAssessmentId,
+    );
+    assert.ok(mergeDrift);
+    assert.equal(mergeDrift.status, "stale");
+    assert.equal(mergeDrift.requiresReplan, true);
+    for (const reference of linkedEvidence)
+      assert.ok(mergeDrift.evidenceRefs.includes(reference));
+    const replayedDrift =
+      await changeControlStore.recordMergeTargetDrift(
+        profileId,
+        changeId,
+        waveId,
+        {
+          actor: "merge-controller:v1",
+          assessmentId: `ignored-replay-id-${suffix}`,
+          plan: {
+            planId: contract.planId,
+            revision: contract.revision,
+            planBaseSha: contract.planBase.sha,
+          },
+          taskId: replanRequest.taskId,
+          mergeRequestId: replanRequest.mergeRequestId,
+          expectedTargetSha: replanRequest.expectedTargetSha,
+          observedTargetSha: replanRequest.observedTargetSha!,
+          sealedSourceSha: replanRequest.sealedSourceSha,
+        },
+      );
+    assert.deepEqual(replayedDrift, mergeDrift);
+    await assert.rejects(
+      changeControlStore.recordMergeTargetDrift(
+        profileId,
+        changeId,
+        waveId,
+        {
+          actor: "merge-controller:v1",
+          assessmentId: `conflicting-replay-id-${suffix}`,
+          plan: {
+            planId: contract.planId,
+            revision: contract.revision,
+            planBaseSha: contract.planBase.sha,
+          },
+          taskId: replanRequest.taskId,
+          mergeRequestId: replanRequest.mergeRequestId,
+          expectedTargetSha: replanRequest.expectedTargetSha,
+          observedTargetSha: "f".repeat(
+            replanRequest.observedTargetSha!.length,
+          ),
+          sealedSourceSha: replanRequest.sealedSourceSha,
+        },
+      ),
+      /replay conflicts/,
+    );
+
+    const mergedPath = completedTask.allowedPaths?.[0];
+    const blockedPath = blockedTask.allowedPaths?.[0];
+    assert.ok(mergedPath);
+    assert.ok(blockedPath);
+    assert.notEqual(gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]), targetHead);
+    assert.match(await readFile(join(repository, mergedPath), "utf8"), /^owned:/);
+    await assert.rejects(access(join(repository, blockedPath)), /ENOENT/);
+    assert.equal(gitForWorkspaceContract(repository, ["status", "--porcelain=v1", "-uall"]), "");
+
+    const invocationRecords = (await readFile(invocationTrace, "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { cwd: string });
+    assert.ok(invocationRecords.length >= 5);
+    for (const invocation of invocationRecords) {
+      assert.notEqual(invocation.cwd, repository);
+      assert.ok(record.workspaceAttempts.some((attempt) => attempt.workspacePath === invocation.cwd));
+    }
+
+    const crashRecord = JSON.parse(
+      await readFile(statePath, "utf8"),
+    ) as Record<string, unknown> & {
+      workspaceAttempts: Array<Record<string, unknown>>;
+      workspaceAttemptEvents: Array<{
+        eventId: string;
+        workspaceAttemptId: string;
+        state: string;
+        attempt: Record<string, unknown>;
+      }>;
+      mergeRequests: Array<Record<string, unknown> & {
+        mergeRequestId: string;
+        workspaceAttemptId: string;
+        state: string;
+      }>;
+      mergeRequestEvents: Array<{
+        eventId: string;
+        mergeRequestId: string;
+        state: string;
+        request: Record<string, unknown>;
+      }>;
+      mergeReceipts: Array<{ mergeRequestId: string }>;
+    };
+    const terminalMergeEvent = crashRecord.mergeRequestEvents.at(-1);
+    assert.equal(
+      terminalMergeEvent?.mergeRequestId,
+      replanRequest.mergeRequestId,
+    );
+    assert.equal(terminalMergeEvent?.state, "replan_required");
+    crashRecord.mergeRequestEvents.pop();
+    const priorMergeEvent = crashRecord.mergeRequestEvents
+      .filter(
+        (event) =>
+          event.mergeRequestId === replanRequest.mergeRequestId,
+      )
+      .at(-1);
+    assert.equal(priorMergeEvent?.state, "validating");
+    crashRecord.mergeRequests = crashRecord.mergeRequests.map((request) =>
+      request.mergeRequestId === replanRequest.mergeRequestId
+        ? structuredClone(priorMergeEvent!.request)
+        : request,
+    ) as typeof crashRecord.mergeRequests;
+    crashRecord.mergeReceipts = crashRecord.mergeReceipts.filter(
+      (receipt) =>
+        receipt.mergeRequestId !== replanRequest.mergeRequestId,
+    );
+    const replanAttempt = crashRecord.workspaceAttempts.find(
+      (attempt) =>
+        attempt.workspaceAttemptId ===
+        replanRequest.workspaceAttemptId,
+    );
+    assert.ok(replanAttempt);
+    const terminalWorkspaceEvent =
+      crashRecord.workspaceAttemptEvents.at(-1);
+    assert.equal(
+      terminalWorkspaceEvent?.workspaceAttemptId,
+      replanRequest.workspaceAttemptId,
+    );
+    assert.equal(terminalWorkspaceEvent?.state, "replan_required");
+    crashRecord.workspaceAttemptEvents.pop();
+    const priorWorkspaceEvent = crashRecord.workspaceAttemptEvents
+      .filter(
+        (event) =>
+          event.workspaceAttemptId ===
+          replanRequest.workspaceAttemptId,
+      )
+      .at(-1);
+    assert.equal(priorWorkspaceEvent?.state, "merge_queued");
+    crashRecord.workspaceAttempts =
+      crashRecord.workspaceAttempts.map((attempt) =>
+        attempt.workspaceAttemptId ===
+        replanRequest.workspaceAttemptId
+          ? structuredClone(priorWorkspaceEvent!.attempt)
+          : attempt,
+      );
+    await writeFile(
+      statePath,
+      `${JSON.stringify(crashRecord, null, 2)}\n`,
+      "utf8",
+    );
+    const targetBeforeStartup = gitForWorkspaceContract(repository, [
+      "rev-parse",
+      "HEAD",
+    ]);
+    const diagnostics: string[] = [];
+    await recoverPersistedRunForStartup(statePath, (message) => diagnostics.push(message));
+    assert.deepEqual(diagnostics, []);
+    const afterStartup = JSON.parse(await readFile(statePath, "utf8")) as {
+      workspaceAttempts: typeof record.workspaceAttempts;
+      mergeRequests: typeof record.mergeRequests;
+      mergeReceipts: typeof record.mergeReceipts;
+    };
+    assert.equal(
+      afterStartup.workspaceAttempts.find(
+        (attempt) =>
+          attempt.workspaceAttemptId ===
+          replanRequest.workspaceAttemptId,
+      )?.state,
+      "replan_required",
+    );
+    assert.equal(
+      afterStartup.mergeRequests.find(
+        (request) =>
+          request.mergeRequestId === replanRequest.mergeRequestId,
+      )?.state,
+      "replan_required",
+    );
+    assert.equal(
+      afterStartup.mergeReceipts.filter(
+        (receipt) =>
+          receipt.mergeRequestId === replanRequest.mergeRequestId,
+      ).length,
+      1,
+    );
+    const afterFirstStartup = JSON.stringify(afterStartup);
+    const repeatedDiagnostics: string[] = [];
+    await recoverPersistedRunForStartup(statePath, (message) =>
+      repeatedDiagnostics.push(message),
+    );
+    assert.deepEqual(repeatedDiagnostics, []);
+    assert.equal(
+      JSON.stringify(JSON.parse(await readFile(statePath, "utf8"))),
+      afterFirstStartup,
+    );
+    const afterProjection =
+      await changeControlStore.getPlanningProjection(
+        profileId,
+        changeId,
+        waveId,
+      );
+    assert.equal(
+      afterProjection.driftAssessments.filter((assessment) =>
+        assessment.evidenceRefs.includes(
+          `merge:request:${replanRequest.mergeRequestId}`,
+        ),
+      ).length,
+      1,
+    );
+    assert.equal(
+      gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+      targetBeforeStartup,
+    );
+    const stableRecord = JSON.parse(
+      await readFile(statePath, "utf8"),
+    ) as Record<string, unknown> & {
+      mergeReceipts: Array<
+        Record<string, unknown> & { mergeRequestId: string }
+      >;
+    };
+    const alteredRecord = structuredClone(stableRecord);
+    alteredRecord.mergeReceipts.find(
+      (receipt) =>
+        receipt.mergeRequestId === replanRequest.mergeRequestId,
+    )!.transitionEventRef = "merge-event-semantically-altered";
+    await writeFile(
+      statePath,
+      `${JSON.stringify(alteredRecord, null, 2)}\n`,
+      "utf8",
+    );
+    const alteredDiagnostics: string[] = [];
+    assert.equal(
+      await recoverPersistedRunForStartup(statePath, (message) =>
+        alteredDiagnostics.push(message),
+      ),
+      undefined,
+    );
+    assert.equal(alteredDiagnostics.length, 1);
+    assert.match(
+      alteredDiagnostics[0],
+      /receipt|terminal request event/i,
+    );
+    await writeFile(
+      statePath,
+      `${JSON.stringify(stableRecord, null, 2)}\n`,
+      "utf8",
+    );
+  } finally {
+    if (server) {
+      if (profileId) {
+        const address = server.address();
+        if (address && typeof address === "object")
+          await fetch(
+            `http://127.0.0.1:${address.port}/api/projects/${profileId}`,
+            { method: "DELETE" },
+          ).catch(() => undefined);
+      }
+      await new Promise<void>((resolveClose) =>
+        server!.close(() => resolveClose()),
+      );
+    }
+    if (previousCodexBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousCodexBin;
+    if (previousTestCodexScript === undefined)
+      delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else
+      process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT =
+        previousTestCodexScript;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("startup preserves sealed legacy records without live Phase 2 merge authority", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator sealed legacy "));
+  const repository = await createWorkspaceLifecycleRepository(
+    root,
+    "Legacy Sealed Target",
+  );
+  const queue = validateTaskQueue({
+    project: { path: repository },
+    tasks: [
+      { title: "Legacy sealed", prompt: "Retain the sealed source." },
+      { title: "Terminal sibling", prompt: "Remain terminal." },
+    ],
+  });
+  const run = createRun(queue);
+  run.status = "completed";
+  for (const task of run.tasks) {
+    task.status = "completed";
+    task.startedAt = new Date().toISOString();
+    task.finishedAt = task.startedAt;
+  }
+  const statePath = join(testDataDirectory, "runs", run.id, "run.json");
+  try {
+    const baseInput = await productionWorkspaceInput(
+      root,
+      repository,
+      run.id,
+      run.tasks[0].id,
+    );
+    const input = {
+      ...baseInput,
+      statePath,
+      projectId: `legacy-project-${run.id}`,
+      changeId: `legacy-change-${run.id}`,
+      waveId: `legacy-wave-${run.id}`,
+      taskId: `legacy-task-${run.id}`,
+    };
+    const active = await provisionWorkspaceAttemptV1(input);
+    await executeInWorkspaceAttemptV1(
+      statePath,
+      repository,
+      active.workspaceAttemptId,
+      {
+        executable: process.execPath,
+        args: [
+          "-e",
+          "require('node:fs').writeFileSync('legacy-sealed.txt', 'sealed\\n')",
+        ],
+      },
+    );
+    await checkpointWorkspaceAttemptV1(
+      statePath,
+      repository,
+      active.workspaceAttemptId,
+      ["legacy-sealed.txt"],
+      "legacy sealed source",
+    );
+    const sealed = await sealWorkspaceAttemptV1(
+      statePath,
+      repository,
+      active.workspaceAttemptId,
+    );
+    run.tasks[0].workspaceAttemptId = sealed.workspaceAttemptId;
+    run.tasks[0].workspacePath = sealed.workspacePath;
+    const workspaceRecord = JSON.parse(
+      await readFile(statePath, "utf8"),
+    ) as Record<string, unknown>;
+    await writeFile(
+      statePath,
+      JSON.stringify({ ...run, ...workspaceRecord }, null, 2),
+      "utf8",
+    );
+    const targetBefore = gitForWorkspaceContract(repository, [
+      "rev-parse",
+      "HEAD",
+    ]);
+    const sourceBefore = gitForWorkspaceContract(repository, [
+      "rev-parse",
+      sealed.branchRef,
+    ]);
+    const attemptsBefore = JSON.stringify(workspaceRecord.workspaceAttempts);
+    const eventsBefore = JSON.stringify(workspaceRecord.workspaceAttemptEvents);
+    const diagnostics: string[] = [];
+
+    await recoverPersistedRunForStartup(
+      statePath,
+      (message) => diagnostics.push(message),
+    );
+
+    assert.deepEqual(diagnostics, []);
+    const recovered = JSON.parse(await readFile(statePath, "utf8")) as {
+      workspaceAttempts: unknown[];
+      workspaceAttemptEvents: unknown[];
+      mergeRequests?: unknown[];
+      mergeRequestEvents?: unknown[];
+      mergeReceipts?: unknown[];
+    };
+    assert.equal(JSON.stringify(recovered.workspaceAttempts), attemptsBefore);
+    assert.equal(JSON.stringify(recovered.workspaceAttemptEvents), eventsBefore);
+    assert.deepEqual(recovered.mergeRequests ?? [], []);
+    assert.deepEqual(recovered.mergeRequestEvents ?? [], []);
+    assert.deepEqual(recovered.mergeReceipts ?? [], []);
+    assert.equal(
+      gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+      targetBefore,
+    );
+    assert.equal(
+      gitForWorkspaceContract(repository, ["rev-parse", sealed.branchRef]),
+      sourceBefore,
+    );
+    assert.equal(
+      gitForWorkspaceContract(repository, [
+        "status",
+        "--porcelain=v1",
+        "-uall",
+      ]),
+      "",
+    );
+  } finally {
+    await rm(join(testDataDirectory, "runs", run.id), {
+      recursive: true,
+      force: true,
+    });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("visual task editor exposes accessible optional context controls", () => {
   const markup = renderToStaticMarkup(createElement(TaskContextControls, {
     task: { title: "Review", prompt: "Review repository", contextProfile: "review" },
@@ -6000,5 +8626,1340 @@ test("managed checkpoints reject a foreign descendant despite forged matching re
     assert.equal(await isManagedCheckpoint(fixture.checkpointRun, fixture.checkpointTask), false);
   } finally {
     await rm(fixture.project, { recursive: true, force: true });
+  }
+});
+
+async function sealedProductionMergeFixture(
+  root: string,
+  identity: string,
+  intermediateCommits = 1,
+) {
+  const repository = await createWorkspaceLifecycleRepository(root);
+  const input = await productionWorkspaceInput(
+    root,
+    repository,
+    `run-${identity}`,
+    `attempt-${identity}`,
+  );
+  return sealProductionMergeSource(
+    repository,
+    input,
+    identity,
+    intermediateCommits,
+  );
+}
+
+async function sealProductionMergeSource(
+  repository: string,
+  input: Awaited<ReturnType<typeof productionWorkspaceInput>>,
+  identity: string,
+  intermediateCommits = 1,
+) {
+  const active = await provisionWorkspaceAttemptV1(input);
+  await executeInWorkspaceAttemptV1(
+    input.statePath,
+    repository,
+    active.workspaceAttemptId,
+    {
+      executable: process.execPath,
+      args: [
+        "-e",
+        `require('node:fs').writeFileSync('merge-${identity}.txt', 'owned source\\n')`,
+      ],
+    },
+  );
+  await checkpointWorkspaceAttemptV1(
+    input.statePath,
+    repository,
+    active.workspaceAttemptId,
+    [`merge-${identity}.txt`],
+    `merge source ${identity}`,
+  );
+  for (let index = 1; index < intermediateCommits; index += 1)
+    await executeInWorkspaceAttemptV1(
+      input.statePath,
+      repository,
+      active.workspaceAttemptId,
+      {
+        executable: "git",
+        args: ["commit", "--allow-empty", "-m", `${identity} ${index}`],
+      },
+    );
+  const sealed = await sealWorkspaceAttemptV1(
+    input.statePath,
+    repository,
+    active.workspaceAttemptId,
+  );
+  return { repository, input, sealed };
+}
+
+function productionMergeInput(
+  fixture: Awaited<ReturnType<typeof sealedProductionMergeFixture>>,
+  onPersistedBoundary?: (boundary: string) => void | Promise<void>,
+) {
+  return {
+    statePath: fixture.input.statePath,
+    repositoryPath: fixture.repository,
+    workspaceAttemptId: fixture.sealed.workspaceAttemptId,
+    plan: fixture.sealed.plan,
+    verificationCommands: ["git rev-parse -q --verify MERGE_HEAD"],
+    transitionedBy: "production-test:v1",
+    onPersistedBoundary,
+  };
+}
+
+type TargetLeaseRaceChild = {
+  child: ReturnType<typeof spawn>;
+  output: string;
+};
+
+function spawnTargetLeaseRaceChild(
+  mode: "execute" | "recover",
+  input: ReturnType<typeof productionMergeInput>,
+  mergeRequestId?: string,
+  mutexPause?: {
+    boundary: "dead_owner_observed" | "acquired";
+    releasePath: string;
+  },
+): TargetLeaseRaceChild {
+  const serverUrl = new URL("./index.ts", import.meta.url).href;
+  const serializedInput = JSON.stringify(input);
+  const serializedMutexPause = JSON.stringify(mutexPause);
+  const script = `
+    process.env.ORCHESTRATOR_TEST = "1";
+    const server = await import(${JSON.stringify(serverUrl)});
+    const fs = await import("node:fs/promises");
+    const input = ${serializedInput};
+    const mutexPause = ${serializedMutexPause};
+    input.onTargetLeaseMutexBoundary = async (boundary, owner) => {
+      if (!mutexPause || boundary !== mutexPause.boundary) return;
+      process.stdout.write(JSON.stringify({
+        kind: "mutex",
+        boundary,
+        owner,
+      }) + "\\n");
+      while (true) {
+        try {
+          await fs.access(mutexPause.releasePath);
+          return;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      }
+    };
+    input.onPersistedBoundary = async (boundary) => {
+      if (boundary !== "lease_persisted") return;
+      process.stdout.write(JSON.stringify({ kind: "lease", pid: process.pid }) + "\\n");
+      setInterval(() => {}, 1000);
+      await new Promise(() => {});
+    };
+    try {
+      const receipt = ${
+        mode === "execute"
+          ? "await server.executeMergeRequestV1(input)"
+          : `await server.recoverMergeRequestV1(input, ${JSON.stringify(mergeRequestId)})`
+      };
+      process.stdout.write(JSON.stringify({ kind: "receipt", receipt }) + "\\n");
+    } catch (error) {
+      process.stdout.write(JSON.stringify({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      }) + "\\n");
+      process.exitCode = 2;
+    }
+  `;
+  const child = spawn(
+    testNodeExecutable,
+    ["--import", "tsx", "--input-type=module", "-e", script],
+    {
+      cwd: process.cwd(),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const result: TargetLeaseRaceChild = { child, output: "" };
+  child.stdout?.on("data", (chunk: Buffer) => {
+    result.output += chunk.toString("utf8");
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    result.output += chunk.toString("utf8");
+  });
+  return result;
+}
+
+async function waitForTargetLeaseOutput(
+  contender: TargetLeaseRaceChild,
+  marker: string,
+) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (contender.output.includes(marker)) return;
+    if (contender.child.exitCode !== null)
+      throw new Error(
+        `Target lease child ${contender.child.pid} exited before ${marker}: ${contender.output}`,
+      );
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${marker} from target lease child ${contender.child.pid}: ${contender.output}`,
+  );
+}
+
+async function waitForTargetLeaseWinner(
+  contenders: TargetLeaseRaceChild[],
+): Promise<TargetLeaseRaceChild> {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const winners = contenders.filter((entry) =>
+      entry.output.includes('"kind":"lease"'),
+    );
+    if (winners.length > 1)
+      throw new Error(
+        `Multiple target lease winners: ${winners.map((entry) => entry.child.pid).join(", ")}`,
+      );
+    if (winners.length === 1) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      const confirmed = contenders.filter((entry) =>
+        entry.output.includes('"kind":"lease"'),
+      );
+      assert.equal(
+        confirmed.length,
+        1,
+        `exactly one target lease winner\n${contenders.map((entry) => entry.output).join("\n")}`,
+      );
+      return confirmed[0];
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error(
+    `Timed out waiting for target lease winner\n${contenders.map((entry) => entry.output).join("\n")}`,
+  );
+}
+
+async function waitForTargetLeaseLosers(
+  contenders: TargetLeaseRaceChild[],
+  winner: TargetLeaseRaceChild,
+) {
+  await Promise.all(
+    contenders
+      .filter((entry) => entry !== winner)
+      .map(
+        (entry) =>
+          new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `Target lease loser ${entry.child.pid} did not exit: ${entry.output}`,
+                  ),
+                ),
+              20_000,
+            );
+            const finished = (code: number | null) => {
+              clearTimeout(timeout);
+              try {
+                assert.equal(code, 2, entry.output);
+                assert.match(
+                  entry.output,
+                  /live owner holds the repository target lease/,
+                );
+                assert.doesNotMatch(
+                  entry.output,
+                  /ENOTEMPTY|changed during dead-owner recovery/,
+                );
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            };
+            if (entry.child.exitCode !== null) finished(entry.child.exitCode);
+            else entry.child.once("exit", finished);
+          }),
+      ),
+  );
+}
+
+test("MergeRequestV1 production controller serializes, verifies, merges 100+ commits once, replays, and cleans non-force", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T007 production merge proof requires a Windows verification host",
+  );
+  const root = await mkdtemp(join(tmpdir(), "orchestrator merge production "));
+  try {
+    const fixture = await sealedProductionMergeFixture(
+      root,
+      "many-commits",
+      101,
+    );
+    const expectedTarget = fixture.sealed.baseSha;
+    const receipt = await executeMergeRequestV1(
+      productionMergeInput(fixture),
+    );
+    assert.equal(receipt.result, "merged");
+    assert.ok(receipt.mergeCommitSha);
+    assert.deepEqual(receipt.mergeParents, [
+      expectedTarget,
+      fixture.sealed.sealedSourceSha,
+    ]);
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, [
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        receipt.mergeCommitSha!,
+      ]).split(/\s+/).length,
+      3,
+    );
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, [
+        "merge-base",
+        "--is-ancestor",
+        fixture.sealed.sealedSourceSha!,
+        receipt.mergeCommitSha!,
+      ]),
+      "",
+    );
+    assert.equal(
+      Number(
+        gitForWorkspaceContract(fixture.repository, [
+          "rev-list",
+          "--count",
+          `${expectedTarget}..${fixture.sealed.sealedSourceSha}`,
+        ]),
+      ),
+      101,
+    );
+    const record = JSON.parse(
+      await readFile(fixture.input.statePath, "utf8"),
+    ) as {
+      mergeRequestEvents: unknown[];
+      mergeRequests: Array<{ state: string; mergeCommitSha?: string }>;
+      mergeReceipts: unknown[];
+      workspaceAttempts: Array<{ state: string }>;
+    };
+    const replayed = replayMergeRequestEventsV1(
+      record.mergeRequestEvents as never,
+    );
+    assert.equal(replayed.size, 1);
+    assert.equal(record.mergeRequests[0].state, "committed");
+    assert.equal(record.mergeReceipts.length, 1);
+    assert.equal(record.workspaceAttempts[0].state, "merged");
+    const tampered = structuredClone(record.mergeRequestEvents) as Array<
+      Record<string, unknown>
+    >;
+    tampered[0].state = "quarantined";
+    assert.throws(
+      () => replayMergeRequestEventsV1(tampered as never),
+      /hash mismatch|Invalid merge transition/,
+    );
+
+    const cleaned = await cleanupWorkspaceAttemptV1(
+      fixture.input.statePath,
+      fixture.repository,
+      fixture.sealed.workspaceAttemptId,
+    );
+    assert.equal(cleaned.state, "cleaned");
+    await assert.rejects(access(fixture.sealed.workspacePath), /ENOENT/);
+    assert.throws(
+      () =>
+        gitForWorkspaceContract(fixture.repository, [
+          "show-ref",
+          "--verify",
+          fixture.sealed.branchRef,
+        ]),
+      /Command failed/,
+    );
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, [
+        "status",
+        "--porcelain=v1",
+        "-uall",
+      ]),
+      "",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeReceiptV1 ordinary load and startup reject altered canonical fields for every terminal result", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T007E receipt immutability proof requires a Windows verification host",
+  );
+  const root = await mkdtemp(
+    join(tmpdir(), "orchestrator merge receipt semantics "),
+  );
+  const caseRoots: string[] = [];
+  const caseRoot = async (label: string) => {
+    const path = await mkdtemp(join(tmpdir(), `omr-${label}-`));
+    caseRoots.push(path);
+    return path;
+  };
+  try {
+    type ReceiptRecord = Record<string, unknown> & {
+      mergeReceipts: Array<Record<string, unknown>>;
+    };
+    type ReceiptCase = {
+      result: "merged" | "replan_required" | "recovery_pending" | "quarantined";
+      statePath: string;
+      original: ReceiptRecord;
+    };
+    const loadCase = async (
+      statePath: string,
+      result: ReceiptCase["result"],
+    ): Promise<ReceiptCase> => {
+      const original = JSON.parse(
+        await readFile(statePath, "utf8"),
+      ) as ReceiptRecord;
+      assert.equal(original.mergeReceipts.length, 1);
+      assert.equal(original.mergeReceipts[0].result, result);
+      return { result, statePath, original };
+    };
+
+    const mergedFixture = await sealedProductionMergeFixture(
+      await caseRoot("m"),
+      "receipt-merged",
+    );
+    assert.equal(
+      (
+        await executeMergeRequestV1({
+          ...productionMergeInput(mergedFixture),
+          verificationCommands: [
+            "git rev-parse -q --verify MERGE_HEAD",
+            "git status --porcelain=v1",
+          ],
+        })
+      ).result,
+      "merged",
+    );
+
+    const replanFixture = await sealedProductionMergeFixture(
+      await caseRoot("r"),
+      "receipt-replan",
+    );
+    await writeFile(
+      join(replanFixture.repository, "target-moved.txt"),
+      "target moved\n",
+    );
+    gitForWorkspaceContract(replanFixture.repository, [
+      "add",
+      "target-moved.txt",
+    ]);
+    gitForWorkspaceContract(replanFixture.repository, [
+      "commit",
+      "-m",
+      "target moved",
+    ]);
+    assert.equal(
+      (
+        await executeMergeRequestV1({
+          ...productionMergeInput(replanFixture),
+          onReplanRequired: () => "receipt-drift-assessment",
+        })
+      ).result,
+      "replan_required",
+    );
+
+    const recoveryFixture = await sealedProductionMergeFixture(
+      await caseRoot("p"),
+      "receipt-recovery",
+    );
+    assert.equal(
+      (
+        await executeMergeRequestV1({
+          ...productionMergeInput(recoveryFixture),
+          verificationCommands: [
+            `${JSON.stringify(process.execPath)} -e "process.exit(9)"`,
+          ],
+        })
+      ).result,
+      "recovery_pending",
+    );
+
+    const quarantineFixture = await sealedProductionMergeFixture(
+      await caseRoot("q"),
+      "receipt-quarantine",
+    );
+    await assert.rejects(
+      executeMergeRequestV1({
+        ...productionMergeInput(quarantineFixture),
+        onPersistedBoundary: async (boundary) => {
+          if (boundary !== "merge_applied") return;
+          await writeFile(
+            join(quarantineFixture.repository, ".git", "MERGE_HEAD"),
+            `${quarantineFixture.sealed.baseSha}\n`,
+          );
+          throw new Error("simulated conflicting merge fingerprint");
+        },
+      }),
+      /simulated conflicting merge fingerprint/,
+    );
+    const quarantineRecord = JSON.parse(
+      await readFile(quarantineFixture.input.statePath, "utf8"),
+    ) as { mergeRequests: Array<{ mergeRequestId: string }> };
+    assert.equal(
+      (
+        await recoverMergeRequestV1(
+          productionMergeInput(quarantineFixture),
+          quarantineRecord.mergeRequests[0].mergeRequestId,
+        )
+      ).result,
+      "quarantined",
+    );
+
+    const cases = await Promise.all([
+      loadCase(mergedFixture.input.statePath, "merged"),
+      loadCase(replanFixture.input.statePath, "replan_required"),
+      loadCase(recoveryFixture.input.statePath, "recovery_pending"),
+      loadCase(quarantineFixture.input.statePath, "quarantined"),
+    ]);
+    const assertRejected = async (
+      fixture: ReceiptCase,
+      name: string,
+      alter: (receipt: Record<string, unknown>) => void,
+    ) => {
+      const changed = structuredClone(fixture.original);
+      alter(changed.mergeReceipts[0]);
+      await writeFile(
+        fixture.statePath,
+        `${JSON.stringify(changed, null, 2)}\n`,
+        "utf8",
+      );
+      await assert.rejects(
+        canonicalWorkspaceRunFieldsV1(fixture.statePath),
+        /receipt|MergeReceiptV1/i,
+        `${fixture.result}: ${name}`,
+      );
+      const diagnostics: string[] = [];
+      await recoverPersistedRunForStartup(
+        fixture.statePath,
+        (message) => diagnostics.push(message),
+      );
+      assert.equal(diagnostics.length, 1, `${fixture.result}: startup ${name}`);
+      assert.match(
+        diagnostics[0],
+        /receipt|MergeReceiptV1/i,
+        `${fixture.result}: startup ${name}`,
+      );
+      await writeFile(
+        fixture.statePath,
+        `${JSON.stringify(fixture.original, null, 2)}\n`,
+        "utf8",
+      );
+    };
+
+    for (const fixture of cases) {
+      await assertRejected(fixture, "receipt identity", (receipt) => {
+        receipt.mergeReceiptId = `${String(receipt.mergeReceiptId)}-altered`;
+      });
+      await assertRejected(fixture, "recorded time", (receipt) => {
+        receipt.recordedAt = "2026-01-01T00:00:00.000Z";
+      });
+      await assertRejected(fixture, "terminal event", (receipt) => {
+        receipt.transitionEventRef = "merge-event-missing";
+      });
+      await assertRejected(fixture, "receipt evidence", (receipt) => {
+        receipt.evidenceRefs = [
+          ...(receipt.evidenceRefs as string[]),
+          "merge:receipt:altered",
+        ];
+      });
+      await assertRejected(fixture, "reason", (receipt) => {
+        receipt.reason =
+          fixture.result === "merged"
+            ? "Merged receipts forbid a reason."
+            : `${String(receipt.reason)} altered`;
+      });
+    }
+
+    const merged = cases.find((fixture) => fixture.result === "merged")!;
+    await assertRejected(merged, "merge commit", (receipt) => {
+      receipt.mergeCommitSha = "f".repeat(40);
+    });
+    await assertRejected(merged, "merge parents", (receipt) => {
+      receipt.mergeParents = [
+        mergedFixture.sealed.sealedSourceSha,
+        mergedFixture.sealed.baseSha,
+      ];
+    });
+    await assertRejected(merged, "verification command", (receipt) => {
+      const results = receipt.verificationResults as Array<
+        Record<string, unknown>
+      >;
+      results[0].command = `${String(results[0].command)} --altered`;
+    });
+    await assertRejected(merged, "swapped verification evidence", (receipt) => {
+      const results = receipt.verificationResults as Array<
+        Record<string, unknown>
+      >;
+      [results[0].evidenceRef, results[1].evidenceRef] = [
+        results[1].evidenceRef,
+        results[0].evidenceRef,
+      ];
+    });
+    await assertRejected(merged, "reused verification evidence", (receipt) => {
+      const results = receipt.verificationResults as Array<
+        Record<string, unknown>
+      >;
+      results[1].evidenceRef = results[0].evidenceRef;
+    });
+
+    const replan = cases.find(
+      (fixture) => fixture.result === "replan_required",
+    )!;
+    await assertRejected(replan, "drift assessment", (receipt) => {
+      receipt.driftAssessmentId = "receipt-drift-altered";
+    });
+    const recovery = cases.find(
+      (fixture) => fixture.result === "recovery_pending",
+    )!;
+    await assertRejected(recovery, "safe-abort evidence", (receipt) => {
+      receipt.recoveryEvidenceRef = "merge:safe-abort:altered:1";
+    });
+    const quarantine = cases.find(
+      (fixture) => fixture.result === "quarantined",
+    )!;
+    await assertRejected(quarantine, "quarantine evidence", (receipt) => {
+      receipt.quarantineEvidenceRef = "merge:target-ambiguous:altered";
+    });
+
+    for (const fixture of cases)
+      assert.equal(
+        (await canonicalWorkspaceRunFieldsV1(fixture.statePath))
+          .mergeReceipts.length,
+        1,
+        fixture.result,
+      );
+  } finally {
+    await Promise.all(
+      caseRoots.map((path) => rm(path, { recursive: true, force: true })),
+    );
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeRequestV1 records target drift for architect replan and fresh authorization without applying source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator merge drift "));
+  try {
+    const fixture = await sealedProductionMergeFixture(root, "drift");
+    await writeFile(join(fixture.repository, "target-moved.txt"), "target\n");
+    gitForWorkspaceContract(fixture.repository, ["add", "target-moved.txt"]);
+    gitForWorkspaceContract(fixture.repository, [
+      "commit",
+      "-m",
+      "target moved",
+    ]);
+    const movedTarget = gitForWorkspaceContract(fixture.repository, [
+      "rev-parse",
+      "HEAD",
+    ]);
+    const handoffs: unknown[] = [];
+    const receipt = await executeMergeRequestV1({
+      ...productionMergeInput(fixture),
+      onReplanRequired: (evidence) => {
+        handoffs.push(evidence);
+        return "phase2-drift-recorded";
+      },
+    });
+    assert.equal(receipt.result, "replan_required");
+    assert.equal(receipt.driftAssessmentId, "phase2-drift-recorded");
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, ["rev-parse", "HEAD"]),
+      movedTarget,
+    );
+    assert.throws(
+      () => gitForWorkspaceContract(fixture.repository, [
+        "merge-base",
+        "--is-ancestor",
+        fixture.sealed.sealedSourceSha!,
+        "HEAD",
+      ]),
+    );
+    assert.deepEqual(handoffs, [
+      {
+        driftAssessmentId: (handoffs[0] as { driftAssessmentId: string })
+          .driftAssessmentId,
+        mergeRequestId: (handoffs[0] as { mergeRequestId: string })
+          .mergeRequestId,
+        projectId: fixture.sealed.projectId,
+        changeId: fixture.sealed.changeId,
+        waveId: fixture.sealed.waveId,
+        taskId: fixture.sealed.taskId,
+        plan: fixture.sealed.plan,
+        expectedTargetSha: fixture.sealed.baseSha,
+        observedTargetSha: movedTarget,
+        sourceSha: fixture.sealed.sealedSourceSha,
+        requiresArchitectReplan: true,
+        requiresFreshHumanAuthorization: true,
+      },
+    ]);
+    const retained = await inspectWorkspaceAttemptV1(
+      fixture.input.statePath,
+      fixture.sealed.workspaceAttemptId,
+    );
+    assert.equal(retained.state, "replan_required");
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, [
+        "rev-parse",
+        fixture.sealed.branchRef,
+      ]),
+      fixture.sealed.sealedSourceSha,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeRequestV1 exact verification failure aborts safely and preserves target/source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator merge abort "));
+  try {
+    const fixture = await sealedProductionMergeFixture(root, "abort");
+    const targetBefore = gitForWorkspaceContract(fixture.repository, [
+      "rev-parse",
+      "HEAD",
+    ]);
+    const receipt = await executeMergeRequestV1({
+      ...productionMergeInput(fixture),
+      verificationCommands: [
+        `${JSON.stringify(process.execPath)} -e "process.exit(9)"`,
+      ],
+    });
+    assert.equal(receipt.result, "recovery_pending");
+    assert.match(receipt.recoveryEvidenceRef ?? "", /merge:safe-abort/);
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, ["rev-parse", "HEAD"]),
+      targetBefore,
+    );
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, [
+        "status",
+        "--porcelain=v1",
+        "-uall",
+      ]),
+      "",
+    );
+    assert.equal(
+      gitForWorkspaceContract(fixture.repository, [
+        "rev-parse",
+        fixture.sealed.branchRef,
+      ]),
+      fixture.sealed.sealedSourceSha,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeRequestV1 production crash boundaries recover idempotently through one immutable receipt", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T007 merge crash proof requires a Windows verification host",
+  );
+  const root = await mkdtemp(join(tmpdir(), "orchestrator merge recovery "));
+  const boundaries = [
+    "queued_persisted",
+    "lease_persisted",
+    "merge_applied",
+    "verifying_persisted",
+    "verification_completed",
+    "merge_commit_created",
+    "receipt_persisted",
+  ];
+  try {
+    for (const [boundaryIndex, boundary] of boundaries.entries()) {
+      const boundaryRoot = await mkdtemp(join(root, "b-"));
+      const fixture = await sealedProductionMergeFixture(
+        boundaryRoot,
+        `c${boundaryIndex}`,
+      );
+      await assert.rejects(
+        executeMergeRequestV1(
+          productionMergeInput(fixture, (observed) => {
+            if (observed === boundary)
+              throw new Error(`simulated merge crash at ${boundary}`);
+          }),
+        ),
+        new RegExp(`simulated merge crash at ${boundary}`),
+      );
+      const recordAfterCrash = JSON.parse(
+        await readFile(fixture.input.statePath, "utf8"),
+      ) as {
+        mergeRequests: Array<{ mergeRequestId: string }>;
+      };
+      const mergeRequestId =
+        recordAfterCrash.mergeRequests[0].mergeRequestId;
+      const recovered = await recoverMergeRequestV1(
+        productionMergeInput(fixture),
+        mergeRequestId,
+      );
+      const repeated = await recoverMergeRequestV1(
+        productionMergeInput(fixture),
+        mergeRequestId,
+      );
+      assert.equal(recovered.result, "merged", boundary);
+      assert.deepEqual(repeated, recovered, boundary);
+      const finalRecord = JSON.parse(
+        await readFile(fixture.input.statePath, "utf8"),
+      ) as { mergeReceipts: unknown[] };
+      assert.equal(finalRecord.mergeReceipts.length, 1, boundary);
+      assert.equal(
+        gitForWorkspaceContract(fixture.repository, [
+          "status",
+          "--porcelain=v1",
+          "-uall",
+        ]),
+        "",
+        boundary,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeRequestV1 production target lease serializes concurrent attempts and advances monotonically after release and dead owners", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T007 target lease proof requires a Windows verification host",
+  );
+  const root = await mkdtemp(join(tmpdir(), "orchestrator merge lease "));
+  try {
+    const repository = await createWorkspaceLifecycleRepository(root);
+    const firstInput = await productionWorkspaceInput(
+      root,
+      repository,
+      "run-l1",
+      "attempt-l1",
+    );
+    const secondInput = await productionWorkspaceInput(
+      root,
+      repository,
+      "run-l2",
+      "attempt-l2",
+    );
+    const first = await sealProductionMergeSource(
+      repository,
+      firstInput,
+      "l1",
+    );
+    const second = await sealProductionMergeSource(
+      repository,
+      secondInput,
+      "l2",
+    );
+    await assert.rejects(
+      executeMergeRequestV1(
+        productionMergeInput(first, (boundary) => {
+          if (boundary === "lease_persisted")
+            throw new Error("hold live target lease");
+        }),
+      ),
+      /hold live target lease/,
+    );
+    await assert.rejects(
+      executeMergeRequestV1(productionMergeInput(second)),
+      /live owner holds the repository target lease/,
+    );
+    const firstRecord = JSON.parse(
+      await readFile(first.input.statePath, "utf8"),
+    ) as {
+      mergeRequests: Array<{
+        mergeRequestId: string;
+        lease: { epoch: number };
+      }>;
+    };
+    const firstReceipt = await recoverMergeRequestV1(
+      productionMergeInput(first),
+      firstRecord.mergeRequests[0].mergeRequestId,
+    );
+    assert.equal(firstReceipt.result, "merged");
+
+    const secondRecord = JSON.parse(
+      await readFile(second.input.statePath, "utf8"),
+    ) as { mergeRequests: Array<{ mergeRequestId: string }> };
+    const driftedSecond = await recoverMergeRequestV1(
+      {
+        ...productionMergeInput(second),
+        onReplanRequired: () => "lease-serialization-drift",
+      },
+      secondRecord.mergeRequests[0].mergeRequestId,
+    );
+    assert.equal(driftedSecond.result, "replan_required");
+    const secondFinal = JSON.parse(
+      await readFile(second.input.statePath, "utf8"),
+    ) as { mergeRequests: Array<{ lease: { epoch: number } }> };
+    assert.equal(
+      secondFinal.mergeRequests[0].lease.epoch,
+      firstRecord.mergeRequests[0].lease.epoch + 1,
+    );
+
+    const deadRoot = await mkdtemp(join(root, "dead-"));
+    const deadRepository = await createWorkspaceLifecycleRepository(deadRoot);
+    const deadInput = await productionWorkspaceInput(
+      deadRoot,
+      deadRepository,
+      "run-dead",
+      "attempt-dead",
+    );
+    const dead = await sealProductionMergeSource(
+      deadRepository,
+      deadInput,
+      "dead",
+    );
+    await assert.rejects(
+      executeMergeRequestV1(
+        productionMergeInput(dead, (boundary) => {
+          if (boundary === "lease_persisted")
+            throw new Error("dead lease crash");
+        }),
+      ),
+      /dead lease crash/,
+    );
+    const leaseDirectory = join(
+      deadRepository,
+      ".git",
+      "orchestrator-target-leases",
+    );
+    const [leaseName] = await readdir(leaseDirectory);
+    const leasePath = join(leaseDirectory, leaseName);
+    const deadLease = JSON.parse(await readFile(leasePath, "utf8")) as {
+      pid: number;
+      epoch: number;
+    };
+    deadLease.pid = 2_147_483_647;
+    await writeFile(leasePath, JSON.stringify(deadLease), "utf8");
+    const deadRecord = JSON.parse(
+      await readFile(dead.input.statePath, "utf8"),
+    ) as { mergeRequests: Array<{ mergeRequestId: string }> };
+    const recovered = await recoverMergeRequestV1(
+      productionMergeInput(dead),
+      deadRecord.mergeRequests[0].mergeRequestId,
+    );
+    assert.equal(recovered.result, "merged");
+    const deadFinal = JSON.parse(
+      await readFile(dead.input.statePath, "utf8"),
+    ) as { mergeRequests: Array<{ lease: { epoch: number } }> };
+    assert.equal(deadFinal.mergeRequests[0].lease.epoch, deadLease.epoch + 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeRequestV1 production target fencing has one cross-process winner after release and dead takeover", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T007M cross-process target fencing requires a Windows verification host",
+  );
+  const root = await mkdtemp(
+    join(tmpdir(), "orchestrator target fencing race "),
+  );
+  const liveChildren = new Set<ReturnType<typeof spawn>>();
+  try {
+    for (let repetition = 0; repetition < 5; repetition += 1) {
+      const caseRoot = await mkdtemp(join(root, `race-${repetition}-`));
+      const repository = await createWorkspaceLifecycleRepository(caseRoot);
+      const seedInput = await productionWorkspaceInput(
+        caseRoot,
+        repository,
+        `run-seed-${repetition}`,
+        `attempt-seed-${repetition}`,
+      );
+      const seed = await sealProductionMergeSource(
+        repository,
+        seedInput,
+        `seed-${repetition}`,
+      );
+      assert.equal(
+        (await executeMergeRequestV1(productionMergeInput(seed))).result,
+        "merged",
+      );
+      const leaseDirectory = join(
+        repository,
+        ".git",
+        "orchestrator-target-leases",
+      );
+      const [leaseName] = (await readdir(leaseDirectory)).filter((name) =>
+        name.endsWith(".json"),
+      );
+      assert.ok(leaseName);
+      const leasePath = join(leaseDirectory, leaseName);
+      const releasedLease = JSON.parse(
+        await readFile(leasePath, "utf8"),
+      ) as {
+        epoch: number;
+        pid: number;
+        status: string;
+      };
+      assert.equal(releasedLease.status, "released");
+
+      const targetBefore = {
+        ref: gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]),
+        head: gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+        index: gitForWorkspaceContract(repository, ["ls-files", "--stage"]),
+        tree: gitForWorkspaceContract(repository, ["write-tree"]),
+        status: gitForWorkspaceContract(repository, [
+          "status",
+          "--porcelain=v1",
+          "-uall",
+        ]),
+      };
+      const fixtures = [];
+      for (let index = 0; index < 5; index += 1) {
+        const input = await productionWorkspaceInput(
+          caseRoot,
+          repository,
+          `run-r${repetition}-${index}`,
+          `attempt-r${repetition}-${index}`,
+        );
+        fixtures.push(
+          await sealProductionMergeSource(
+            repository,
+            input,
+            `r${repetition}-${index}`,
+          ),
+        );
+      }
+      const releasedContenders = fixtures.map((fixture) => {
+        const contender = spawnTargetLeaseRaceChild(
+          "execute",
+          productionMergeInput(fixture),
+        );
+        liveChildren.add(contender.child);
+        return contender;
+      });
+      const releasedWinner =
+        await waitForTargetLeaseWinner(releasedContenders);
+      await waitForTargetLeaseLosers(
+        releasedContenders,
+        releasedWinner,
+      );
+      const releasedWinnerIndex =
+        releasedContenders.indexOf(releasedWinner);
+      const winningFixture = fixtures[releasedWinnerIndex];
+      const firstActiveLease = JSON.parse(
+        await readFile(leasePath, "utf8"),
+      ) as {
+        epoch: number;
+        pid: number;
+        status: string;
+        mergeRequestId: string;
+      };
+      assert.equal(firstActiveLease.status, "active");
+      assert.equal(firstActiveLease.pid, releasedWinner.child.pid);
+      assert.equal(firstActiveLease.epoch, releasedLease.epoch + 1);
+      assert.doesNotThrow(() => process.kill(firstActiveLease.pid, 0));
+
+      const winningState = await readFile(
+        winningFixture.input.statePath,
+        "utf8",
+      );
+      const winningRecord = JSON.parse(winningState) as {
+        mergeRequests: Array<{ mergeRequestId: string }>;
+      };
+      const mergeRequestId =
+        winningRecord.mergeRequests[0].mergeRequestId;
+      assert.equal(firstActiveLease.mergeRequestId, mergeRequestId);
+      const staleStatePath = join(
+        caseRoot,
+        `stale-owner-${repetition}.json`,
+      );
+      await writeFile(staleStatePath, winningState, "utf8");
+
+      await stopChild(releasedWinner.child);
+      liveChildren.delete(releasedWinner.child);
+      assert.throws(() => process.kill(firstActiveLease.pid, 0));
+
+      const deadContenders = Array.from({ length: 5 }, () => {
+        const contender = spawnTargetLeaseRaceChild(
+          "recover",
+          productionMergeInput(winningFixture),
+          mergeRequestId,
+        );
+        liveChildren.add(contender.child);
+        return contender;
+      });
+      const deadWinner = await waitForTargetLeaseWinner(deadContenders);
+      await waitForTargetLeaseLosers(deadContenders, deadWinner);
+      const successorLease = JSON.parse(
+        await readFile(leasePath, "utf8"),
+      ) as {
+        epoch: number;
+        pid: number;
+        status: string;
+        mergeRequestId: string;
+      };
+      assert.equal(successorLease.status, "active");
+      assert.equal(successorLease.pid, deadWinner.child.pid);
+      assert.equal(successorLease.epoch, firstActiveLease.epoch + 1);
+      assert.equal(successorLease.mergeRequestId, mergeRequestId);
+      assert.doesNotThrow(() => process.kill(successorLease.pid, 0));
+      assert.deepEqual(
+        [
+          releasedLease.epoch,
+          firstActiveLease.epoch,
+          successorLease.epoch,
+        ],
+        [
+          releasedLease.epoch,
+          releasedLease.epoch + 1,
+          releasedLease.epoch + 2,
+        ],
+      );
+
+      const staleInput = {
+        ...productionMergeInput(winningFixture),
+        statePath: staleStatePath,
+      };
+      const staleOwner = spawnTargetLeaseRaceChild(
+        "recover",
+        staleInput,
+        mergeRequestId,
+      );
+      liveChildren.add(staleOwner.child);
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Stale owner did not fail closed: ${staleOwner.output}`,
+              ),
+            ),
+          20_000,
+        );
+        staleOwner.child.once("exit", (code) => {
+          clearTimeout(timeout);
+          try {
+            assert.equal(code, 2, staleOwner.output);
+            assert.match(
+              staleOwner.output,
+              /live owner holds the repository target lease/,
+            );
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      liveChildren.delete(staleOwner.child);
+      assert.deepEqual(
+        JSON.parse(await readFile(leasePath, "utf8")),
+        successorLease,
+        "a stale release/recovery cannot alter its live successor",
+      );
+
+      await stopChild(deadWinner.child);
+      liveChildren.delete(deadWinner.child);
+      for (const contender of [...releasedContenders, ...deadContenders])
+        liveChildren.delete(contender.child);
+      assert.deepEqual(
+        {
+          ref: gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]),
+          head: gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+          index: gitForWorkspaceContract(repository, [
+            "ls-files",
+            "--stage",
+          ]),
+          tree: gitForWorkspaceContract(repository, ["write-tree"]),
+          status: gitForWorkspaceContract(repository, [
+            "status",
+            "--porcelain=v1",
+            "-uall",
+          ]),
+        },
+        targetBefore,
+        `target changed during fencing race ${repetition}`,
+      );
+    }
+  } finally {
+    await Promise.all(
+      [...liveChildren].map((child) => stopChild(child).catch(() => undefined)),
+    );
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("MergeRequestV1 dead-owner mutex takeover preserves a live successor under forced interleaving", async () => {
+  assert.equal(
+    process.platform,
+    "win32",
+    "T007O forced mutex interleaving requires a Windows verification host",
+  );
+  const root = await mkdtemp(
+    join(tmpdir(), "orchestrator mutex identity race "),
+  );
+  const liveChildren = new Set<ReturnType<typeof spawn>>();
+  try {
+    const repository = await createWorkspaceLifecycleRepository(root);
+    const seedInput = await productionWorkspaceInput(
+      root,
+      repository,
+      "run-mutex-seed",
+      "attempt-mutex-seed",
+    );
+    const seed = await sealProductionMergeSource(
+      repository,
+      seedInput,
+      "mutex-seed",
+    );
+    assert.equal(
+      (await executeMergeRequestV1(productionMergeInput(seed))).result,
+      "merged",
+    );
+    const leaseDirectory = join(
+      repository,
+      ".git",
+      "orchestrator-target-leases",
+    );
+    const [leaseName] = (await readdir(leaseDirectory)).filter((name) =>
+      name.endsWith(".json"),
+    );
+    assert.ok(leaseName);
+    const leasePath = join(leaseDirectory, leaseName);
+    const mutexPath = `${leasePath}.lock`;
+    const deadOwner = {
+      contractType: "TargetLeaseMutexV1",
+      contractVersion: "1.0",
+      pid: 2_147_483_647,
+      token: "forced-dead-owner",
+      acquiredAt: new Date().toISOString(),
+    };
+    await mkdir(mutexPath);
+    await writeFile(
+      join(mutexPath, `owner-${deadOwner.token}.json`),
+      JSON.stringify(deadOwner),
+      "utf8",
+    );
+
+    const targetBefore = {
+      ref: gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]),
+      head: gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+      index: gitForWorkspaceContract(repository, ["ls-files", "--stage"]),
+      tree: gitForWorkspaceContract(repository, ["write-tree"]),
+      status: gitForWorkspaceContract(repository, [
+        "status",
+        "--porcelain=v1",
+        "-uall",
+      ]),
+    };
+    const aInput = await productionWorkspaceInput(
+      root,
+      repository,
+      "run-mutex-a",
+      "attempt-mutex-a",
+    );
+    const bInput = await productionWorkspaceInput(
+      root,
+      repository,
+      "run-mutex-b",
+      "attempt-mutex-b",
+    );
+    const aFixture = await sealProductionMergeSource(
+      repository,
+      aInput,
+      "mutex-a",
+    );
+    const bFixture = await sealProductionMergeSource(
+      repository,
+      bInput,
+      "mutex-b",
+    );
+    const releaseA = join(root, "release-a");
+    const releaseB = join(root, "release-b");
+    const contenderA = spawnTargetLeaseRaceChild(
+      "execute",
+      productionMergeInput(aFixture),
+      undefined,
+      { boundary: "dead_owner_observed", releasePath: releaseA },
+    );
+    liveChildren.add(contenderA.child);
+    await waitForTargetLeaseOutput(
+      contenderA,
+      '"boundary":"dead_owner_observed"',
+    );
+
+    const contenderB = spawnTargetLeaseRaceChild(
+      "execute",
+      productionMergeInput(bFixture),
+      undefined,
+      { boundary: "acquired", releasePath: releaseB },
+    );
+    liveChildren.add(contenderB.child);
+    await waitForTargetLeaseOutput(
+      contenderB,
+      '"boundary":"acquired"',
+    );
+    const successorNames = await readdir(mutexPath);
+    assert.equal(successorNames.length, 1);
+    const successorPath = join(mutexPath, successorNames[0]);
+    const successorBefore = JSON.parse(
+      await readFile(successorPath, "utf8"),
+    ) as { pid: number; token: string };
+    assert.equal(successorBefore.pid, contenderB.child.pid);
+
+    await writeFile(releaseA, "continue", "utf8");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    assert.deepEqual(
+      JSON.parse(await readFile(successorPath, "utf8")),
+      successorBefore,
+      "stale contender A must not rename, delete, or overwrite B",
+    );
+    assert.equal(contenderB.child.exitCode, null);
+
+    await writeFile(releaseB, "continue", "utf8");
+    await waitForTargetLeaseOutput(contenderB, '"kind":"lease"');
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Stale contender A did not fail closed: ${contenderA.output}`,
+            ),
+          ),
+        20_000,
+      );
+      contenderA.child.once("exit", (code) => {
+        clearTimeout(timeout);
+        try {
+          assert.equal(code, 2, contenderA.output);
+          assert.match(
+            contenderA.output,
+            /live owner holds the repository target lease/,
+          );
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    liveChildren.delete(contenderA.child);
+    await stopChild(contenderB.child);
+    liveChildren.delete(contenderB.child);
+    assert.deepEqual(
+      {
+        ref: gitForWorkspaceContract(repository, ["symbolic-ref", "HEAD"]),
+        head: gitForWorkspaceContract(repository, ["rev-parse", "HEAD"]),
+        index: gitForWorkspaceContract(repository, ["ls-files", "--stage"]),
+        tree: gitForWorkspaceContract(repository, ["write-tree"]),
+        status: gitForWorkspaceContract(repository, [
+          "status",
+          "--porcelain=v1",
+          "-uall",
+        ]),
+      },
+      targetBefore,
+      "forced mutex interleaving must not change the target",
+    );
+  } finally {
+    await Promise.all(
+      [...liveChildren].map((child) => stopChild(child).catch(() => undefined)),
+    );
+    await rm(root, { recursive: true, force: true });
   }
 });
