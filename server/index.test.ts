@@ -81,6 +81,7 @@ const {
   authorizationWriteViolations,
   codexExecutionBoundaryArgs,
   codexExecCommandStartArgs,
+  codexPromptInvocation,
   orchestratorVerificationCommands,
   changedProviderRuntimeIdentityV1,
   providerReasoningModeV1,
@@ -3121,6 +3122,8 @@ test("retry and resume preserve completed work and reset graph descendants", () 
   const failed = {
     ...task("failed", "failed"),
     key: "api",
+    changedFiles: ["README.md", "server/index.ts"],
+    diff: "diff --git a/server/index.ts b/server/index.ts",
     finalOutput: "broken",
     checkpoint: { hash: "abc", message: "old", createdAt: "now" },
   };
@@ -3137,12 +3140,35 @@ test("retry and resume preserve completed work and reset graph descendants", () 
   );
   assert.equal(retry.tasks[1].finalOutput, undefined);
   assert.equal(retry.tasks[1].checkpoint, undefined);
+  assert.equal(retry.tasks[1].changedFiles, undefined);
+  assert.deepEqual(retry.tasks[1].retryLineageChangedFiles, [
+    "README.md",
+    "server/index.ts",
+  ]);
   const resumed = resumeRun(source);
   assert.ok(resumed);
   assert.deepEqual(
     resumed.tasks.map((item) => item.status),
     ["completed", "pending", "pending"],
   );
+});
+
+test("Codex prompts use stdin instead of the process command line", () => {
+  const prompt = "review this change\n".repeat(8_000);
+  const invocation = codexPromptInvocation(
+    ["exec", "--ephemeral", "--json"],
+    prompt,
+  );
+
+  assert.deepEqual(invocation.args, [
+    "exec",
+    "--ephemeral",
+    "--json",
+    "-",
+  ]);
+  assert.equal(invocation.stdin, prompt);
+  assert.equal(invocation.args.includes(prompt), false);
+  assert.ok(invocation.stdin.length > 100_000);
 });
 
 test("review-enabled completion fails closed unless a strict reviewer verdict approves it", () => {

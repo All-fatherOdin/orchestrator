@@ -633,6 +633,8 @@ type Task = ResolvedTask & {
   timedOut?: boolean;
   log: string[];
   changedFiles?: string[];
+  /** Task-owned paths retained across retry runs for authoritative review lineage. */
+  retryLineageChangedFiles?: string[];
   diff?: string;
   finalOutput?: string;
   reviewStatus?: ReviewStatus;
@@ -3014,6 +3016,12 @@ export function recoverRun(run: Run, branch?: string) {
 }
 
 function resetTaskForRun(task: Task, sourceRunId: string) {
+  const retryLineageChangedFiles = [
+    ...new Set([
+      ...(task.retryLineageChangedFiles ?? []),
+      ...(task.changedFiles ?? []),
+    ]),
+  ].sort();
   return {
     ...task,
     providerRuntimeState: task.providerRuntimeState
@@ -3027,6 +3035,10 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     exitCode: undefined,
     timedOut: undefined,
     changedFiles: undefined,
+    retryLineageChangedFiles:
+      retryLineageChangedFiles.length > 0
+        ? retryLineageChangedFiles
+        : undefined,
     diff: undefined,
     finalOutput: undefined,
     reviewStatus: undefined,
@@ -3232,6 +3244,18 @@ function changedWorkspaceFiles(
   if (baseline.get("\0BRANCH") !== current.get("\0BRANCH"))
     changed.push("<git-branch-changed>");
   return changed;
+}
+
+function authoritativeTaskChangedFiles(
+  task: Task,
+  currentAttemptChangedFiles: string[],
+) {
+  return [
+    ...new Set([
+      ...(task.retryLineageChangedFiles ?? []),
+      ...currentAttemptChangedFiles,
+    ]),
+  ].sort();
 }
 
 async function currentBranchIdentity(cwd: string) {
@@ -3567,6 +3591,29 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
   });
 }
 
+export function codexPromptInvocation(args: string[], prompt: string) {
+  return {
+    args: [...args, "-"],
+    stdin: prompt,
+  };
+}
+
+function spawnCodexWithPrompt(
+  args: string[],
+  prompt: string,
+  cwd: string,
+) {
+  const invocation = codexPromptInvocation(args, prompt);
+  const child = spawn(codexBin(), invocation.args, {
+    cwd,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdin?.on("error", () => undefined);
+  child.stdin?.end(invocation.stdin);
+  return child;
+}
+
 export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
   const verificationCommands =
     task.authorizationEvidence?.verificationCommands ??
@@ -3629,8 +3676,7 @@ async function reviewTask(run: Run, task: Task) {
   const prompt = buildReviewerPrompt(task, run.project);
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(
-      codexBin(),
+    child = spawnCodexWithPrompt(
       [
         ...codexExecCommandStartArgs(
           task.authorizationEvidence ?? authorizeTask(task, run.project),
@@ -3646,13 +3692,9 @@ async function reviewTask(run: Run, task: Task) {
         `model_reasoning_effort=\"${codexReasoningEffort(run.review.effort)}\"`,
         "--output-last-message",
         outputFile,
-        prompt,
       ],
-      {
-        cwd: run.project.path,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+      prompt,
+      run.project.path,
     );
   } catch (error) {
     task.executionPhase = undefined;
@@ -3759,8 +3801,7 @@ async function correctTask(run: Run, task: Task) {
   await prepareExecutorProviderRuntime(run, task, "correction");
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(
-      codexBin(),
+    child = spawnCodexWithPrompt(
       [
         ...codexExecCommandStartArgs(
           task.authorizationEvidence ?? authorizeTask(task, run.project),
@@ -3776,13 +3817,9 @@ async function correctTask(run: Run, task: Task) {
         `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
         "--output-last-message",
         outputFile,
-        prompt,
       ],
-      {
-        cwd: run.project.path,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
+      prompt,
+      run.project.path,
     );
   } catch (error) {
     task.executionPhase = undefined;
@@ -3951,6 +3988,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     await persist(run);
     publish("run", run);
     const outputFile = join(runsDirectory, run.id, `${task.id}-final.md`);
+    const prompt = buildPrompt(task, run.project);
     const args = [
       ...codexExecCommandStartArgs(task.authorizationEvidence, "executor"),
       "--ephemeral",
@@ -3963,7 +4001,6 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
       "--output-last-message",
       outputFile,
-      buildPrompt(task, run.project),
     ];
     const maxRetries = task.maxRetries ?? run.limits.maxTaskRetries;
     for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
@@ -3974,11 +4011,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       await prepareExecutorProviderRuntime(run, task, "executor");
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(codexBin(), args, {
-          cwd: run.project.path,
-          shell: false,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        child = spawnCodexWithPrompt(args, prompt, run.project.path);
       } catch (error) {
         task.exitCode = 1;
         task.log.push(
@@ -4035,7 +4068,10 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     )
       task.log.push(`Executor outcome rejected: ${executorOutcome.reason}`);
     let changed = await readWorkspaceSnapshot(run.project.path);
-    task.changedFiles = changedWorkspaceFiles(baseline, changed);
+    task.changedFiles = authoritativeTaskChangedFiles(
+      task,
+      changedWorkspaceFiles(baseline, changed),
+    );
     let violations = [...new Set([
       ...taskWriteViolations(task, task.changedFiles),
       ...authorizationWriteViolations(task.authorizationEvidence, task.changedFiles),
@@ -4054,7 +4090,10 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       if (verification.code !== 0) task.exitCode = verification.code;
     }
     changed = await readWorkspaceSnapshot(run.project.path);
-    task.changedFiles = changedWorkspaceFiles(baseline, changed);
+    task.changedFiles = authoritativeTaskChangedFiles(
+      task,
+      changedWorkspaceFiles(baseline, changed),
+    );
     task.diff = await readGitDiff(run.project.path, task.changedFiles);
     violations = [...new Set([
       ...taskWriteViolations(task, task.changedFiles),
@@ -4095,7 +4134,10 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
           if (verification.timedOut) settledStatus = "timed_out";
           else if (verification.code !== 0) settledStatus = "failed";
           changed = await readWorkspaceSnapshot(run.project.path);
-          task.changedFiles = changedWorkspaceFiles(baseline, changed);
+          task.changedFiles = authoritativeTaskChangedFiles(
+            task,
+            changedWorkspaceFiles(baseline, changed),
+          );
           task.diff = await readGitDiff(run.project.path, task.changedFiles);
           violations = [...new Set([
             ...taskWriteViolations(task, task.changedFiles),
