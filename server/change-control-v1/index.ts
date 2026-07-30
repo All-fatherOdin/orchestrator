@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import Ajv2020 from "ajv8/dist/2020.js";
 import planningDriftV1Schema from "./schemas/planning-drift-v1.schema.json";
+import workspaceMergeV1Schema from "./schemas/workspace-merge-v1.schema.json";
 
 export const CHANGE_CONTROL_EVENT_TYPES = [
   "change.created",
@@ -63,6 +64,205 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
+
+export type WorkspaceAttemptStateV1 =
+  | "provisioning"
+  | "active"
+  | "sealed"
+  | "merge_queued"
+  | "merged"
+  | "replan_required"
+  | "cleanup_pending"
+  | "recovery_pending"
+  | "quarantined"
+  | "cleaned";
+
+export type WorkspaceAttemptV1 = Readonly<{
+  contractType: "WorkspaceAttemptV1";
+  contractVersion: "1.0";
+  workspaceAttemptId: string;
+  projectId: string;
+  repositoryId: string;
+  changeId: string;
+  waveId: string;
+  taskId: string;
+  runId: string;
+  attemptId: string;
+  plan: PlanReferenceV1;
+  ownedRoot: string;
+  workspacePath: string;
+  branchRef: string;
+  targetRef: string;
+  baseSha: string;
+  sealedSourceSha?: string;
+  mergeRequestId?: string;
+  ownershipMarker: Readonly<{
+    runId: string;
+    attemptId: string;
+    repositoryId: string;
+    normalizedWorkspacePath: string;
+    branchRef: string;
+    creationNonce: string;
+    markerSha256: string;
+  }>;
+  previousState: WorkspaceAttemptStateV1 | null;
+  state: WorkspaceAttemptStateV1;
+  cleanup: Readonly<{
+    mode: "non_destructive";
+    maxAttempts: number;
+    attemptOrdinal: number;
+  }>;
+  reason?: string;
+  recoveryReceiptRef?: string;
+  driftAssessmentId?: string;
+  evidenceRefs: readonly string[];
+  transitionedAt: string;
+  transitionedBy: string;
+}>;
+
+const workspaceMergeValidator = new Ajv2020({
+  allErrors: true,
+  strict: true,
+}).compile(workspaceMergeV1Schema);
+
+export function assertWorkspaceAttemptV1(
+  value: unknown,
+): asserts value is WorkspaceAttemptV1 {
+  if (
+    !workspaceMergeValidator(value) ||
+    (value as { contractType?: unknown } | null)?.contractType !==
+      "WorkspaceAttemptV1"
+  ) {
+    const detail =
+      workspaceMergeValidator.errors
+        ?.map((error) => `${error.instancePath || "/"} ${error.message}`)
+        .join("; ") ?? "unknown validation error";
+    throw new ChangeControlError(
+      `Invalid WorkspaceAttemptV1: ${detail}`,
+      "INVALID_INPUT",
+      400,
+    );
+  }
+}
+
+export type MergeStateV1 =
+  | "queued"
+  | "validating"
+  | "applying"
+  | "verifying"
+  | "committed"
+  | "replan_required"
+  | "recovery_pending"
+  | "quarantined";
+
+export type MergeLeaseV1 = Readonly<{
+  leaseId: string;
+  repositoryId: string;
+  targetRef: string;
+  ownerRunId: string;
+  ownerAttemptId: string;
+  epoch: number;
+  acquiredAt: string;
+}>;
+
+export type MergeRequestV1 = Readonly<{
+  contractType: "MergeRequestV1";
+  contractVersion: "1.0";
+  mergeRequestId: string;
+  workspaceAttemptId: string;
+  projectId: string;
+  repositoryId: string;
+  changeId: string;
+  waveId: string;
+  taskId: string;
+  runId: string;
+  attemptId: string;
+  plan: PlanReferenceV1;
+  targetRef: string;
+  expectedTargetSha: string;
+  observedTargetSha?: string;
+  sourceRef: string;
+  sealedSourceSha: string;
+  integrationStrategy: "merge_no_ff_no_commit";
+  verificationCommands: readonly Readonly<{
+    command: string;
+    expectedExitCode: 0;
+  }>[];
+  lease?: MergeLeaseV1;
+  previousState: MergeStateV1 | null;
+  state: MergeStateV1;
+  mergeCommitSha?: string;
+  driftAssessmentId?: string;
+  safeAbortEvidenceRef?: string;
+  reason?: string;
+  evidenceRefs: readonly string[];
+  transitionedAt: string;
+  transitionedBy: string;
+}>;
+
+export type MergeReceiptV1 = Readonly<{
+  contractType: "MergeReceiptV1";
+  contractVersion: "1.0";
+  mergeReceiptId: string;
+  mergeRequestId: string;
+  workspaceAttemptId: string;
+  projectId: string;
+  repositoryId: string;
+  runId: string;
+  attemptId: string;
+  targetRef: string;
+  expectedTargetSha: string;
+  sealedSourceSha: string;
+  result: "merged" | "replan_required" | "recovery_pending" | "quarantined";
+  mergeCommitSha?: string;
+  mergeParents?: readonly [string, string];
+  verificationResults?: readonly Readonly<{
+    command: string;
+    exitCode: 0;
+    evidenceRef: string;
+  }>[];
+  driftAssessmentId?: string;
+  recoveryEvidenceRef?: string;
+  quarantineEvidenceRef?: string;
+  reason?: string;
+  evidenceRefs: readonly string[];
+  persistedRunRef: string;
+  transitionEventRef: string;
+  recordedAt: string;
+  recordedBy: string;
+}>;
+
+function assertWorkspaceMergeContractTypeV1<T>(
+  value: unknown,
+  contractType: "MergeRequestV1" | "MergeReceiptV1",
+): asserts value is T {
+  if (
+    !workspaceMergeValidator(value) ||
+    (value as { contractType?: unknown } | null)?.contractType !== contractType
+  ) {
+    const detail =
+      workspaceMergeValidator.errors
+        ?.map((error) => `${error.instancePath || "/"} ${error.message}`)
+        .join("; ") ?? "unknown validation error";
+    throw new ChangeControlError(
+      `Invalid ${contractType}: ${detail}`,
+      "INVALID_INPUT",
+      400,
+    );
+  }
+}
+
+export function assertMergeRequestV1(
+  value: unknown,
+): asserts value is MergeRequestV1 {
+  assertWorkspaceMergeContractTypeV1<MergeRequestV1>(value, "MergeRequestV1");
+}
+
+export function assertMergeReceiptV1(
+  value: unknown,
+): asserts value is MergeReceiptV1 {
+  assertWorkspaceMergeContractTypeV1<MergeReceiptV1>(value, "MergeReceiptV1");
+}
 
 export type PlanReferenceV1 = Readonly<{
   planId: string;
@@ -509,6 +709,17 @@ export type DispatchWaveInput = {
   correlationId?: string;
   payload?: JsonObject;
 };
+
+export type RecordMergeTargetDriftInputV1 = Readonly<{
+  actor: string;
+  assessmentId: string;
+  plan: PlanReferenceV1;
+  taskId: string;
+  mergeRequestId: string;
+  expectedTargetSha: string;
+  observedTargetSha: string;
+  sealedSourceSha: string;
+}>;
 
 export type PublishPlanningContractInput = Readonly<{
   contract: PlanningContractV1;
@@ -1946,7 +2157,34 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(
             `Drift assessment ${assessment.assessmentId} has a missing or mismatched plan reference.`,
           );
-        if (plan.status !== "authorized")
+        const postDispatchMergeDrift =
+          plan.status === "dispatched" &&
+          assessment.status === "stale" &&
+          assessment.reasons.some(
+            (reason) => reason.code === "BASE_SHA_MISMATCH",
+          ) &&
+          assessment.evidenceRefs.some((reference) =>
+            reference.startsWith("merge:request:"),
+          ) &&
+          plan.contract.taskPlans.some((taskPlan) =>
+            assessment.evidenceRefs.includes(
+              `merge:task:${taskPlan.taskId}`,
+            ),
+          ) &&
+          [...dispatchGateReceipts.values()].some(
+            (receipt) =>
+              receipt.result === "allowed" &&
+              receipt.plan &&
+              samePlanReference(receipt.plan, plan.contract) &&
+              receipt.authorizationId &&
+              assessment.evidenceRefs.includes(
+                `merge:authorization:${receipt.authorizationId}`,
+              ) &&
+              assessment.evidenceRefs.includes(
+                `merge:dispatch-receipt:${receipt.receiptId}`,
+              ),
+          );
+        if (plan.status !== "authorized" && !postDispatchMergeDrift)
           corrupt(
             `Drift assessment ${assessment.assessmentId} does not target an authorized plan.`,
           );
@@ -3692,6 +3930,228 @@ export class ChangeControlStore {
         next.eventsByWave.get(key)!,
         next,
       );
+    });
+  }
+
+  async recordMergeTargetDrift(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+    input: RecordMergeTargetDriftInputV1,
+  ): Promise<DriftAssessmentV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    const actor = requireIdentity(input?.actor, "actor");
+    const assessmentId = requireIdentifier(
+      input?.assessmentId,
+      "assessmentId",
+    );
+    const taskId = requireIdentifier(input?.taskId, "taskId");
+    const mergeRequestId = requireIdentifier(
+      input?.mergeRequestId,
+      "mergeRequestId",
+    );
+    if (
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(
+        input?.expectedTargetSha ?? "",
+      ) ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(
+        input?.observedTargetSha ?? "",
+      ) ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(
+        input?.sealedSourceSha ?? "",
+      ) ||
+      input.expectedTargetSha === input.observedTargetSha
+    )
+      throw new ChangeControlError(
+        "Merge target drift requires distinct full expected and observed SHAs plus a full sealed source SHA.",
+        "INVALID_INPUT",
+        400,
+      );
+
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const key = waveKey(changeId, waveId);
+      const wave = projected.waves.get(key);
+      const events = projected.eventsByWave.get(key);
+      const plans = wavePlans(projected, changeId, waveId);
+      const latestPlan = plans.at(-1);
+      const plan = plans.find((candidate) =>
+        samePlanReference(input.plan, candidate.contract),
+      );
+      const allowedReceipts =
+        plan && plan.authorization
+          ? [...projected.dispatchGateReceipts.values()].filter(
+              (receipt) =>
+                receipt.projectId === projectId &&
+                receipt.changeId === changeId &&
+                receipt.waveId === waveId &&
+                receipt.result === "allowed" &&
+                receipt.plan &&
+                samePlanReference(receipt.plan, plan.contract) &&
+                receipt.authorizationId ===
+                  plan.authorization!.authorizationId,
+            )
+          : [];
+      const evidenceRefs =
+        plan && plan.authorization && allowedReceipts.length === 1
+          ? [
+              `merge:request:${mergeRequestId}`,
+              `merge:task:${taskId}`,
+              `merge:authorization:${plan.authorization.authorizationId}`,
+              `merge:dispatch-receipt:${allowedReceipts[0].receiptId}`,
+              `git:repository:${plan.contract.planBase.repositoryId}`,
+              `git:prior-head:${input.expectedTargetSha}`,
+              `git:head:${input.observedTargetSha}`,
+              `git:sealed-source:${input.sealedSourceSha}`,
+              `plan:${plan.contract.planId}:${plan.contract.revision}:${plan.contract.planBase.sha}`,
+              "requirement:architect-replan",
+              "requirement:fresh-human-authorization",
+            ]
+          : [];
+      const priorForRequest = [
+        ...projected.driftAssessments.values(),
+      ].filter((assessment) =>
+        assessment.evidenceRefs.includes(
+          `merge:request:${mergeRequestId}`,
+        ),
+      );
+      if (priorForRequest.length > 1)
+        throw new ChangeControlError(
+          "Merge request has multiple persisted target-drift assessments.",
+          "CONFLICT",
+          409,
+        );
+      if (priorForRequest.length === 1) {
+        const prior = priorForRequest[0];
+        const exactReplay =
+          !!plan &&
+          !!plan.authorization &&
+          allowedReceipts.length === 1 &&
+          samePlanReference(input.plan, plan.contract) &&
+          plan.contract.planBase.sha === input.expectedTargetSha &&
+          plan.contract.taskPlans.some(
+            (taskPlan) => taskPlan.taskId === taskId,
+          ) &&
+          plan.authorization.decision === "authorized" &&
+          samePlanReference(plan.authorization.plan, plan.contract) &&
+          prior.status === "stale" &&
+          prior.requiresReplan === true &&
+          prior.assessedBy === actor &&
+          samePlanReference(prior.plan, plan.contract) &&
+          prior.observedBase.repositoryId ===
+            plan.contract.planBase.repositoryId &&
+          prior.observedBase.sha === input.observedTargetSha &&
+          prior.observedBase.worktreeState === "clean" &&
+          prior.changedPaths.length === 0 &&
+          prior.reasons.length === 1 &&
+          prior.reasons[0].code === "BASE_SHA_MISMATCH" &&
+          canonicalJson([...prior.evidenceRefs]) ===
+            canonicalJson(evidenceRefs) &&
+          canonicalJson([...prior.reasons[0].evidenceRefs]) ===
+            canonicalJson(evidenceRefs);
+        if (!exactReplay)
+          throw new ChangeControlError(
+            "Merge target drift replay conflicts with the assessment already bound to this merge request.",
+            "CONFLICT",
+            409,
+          );
+        return deepFreeze(structuredClone(prior));
+      }
+      if (
+        !wave ||
+        !events ||
+        !plan ||
+        plan !== latestPlan ||
+        plan.status !== "dispatched" ||
+        !samePlanReference(input.plan, plan.contract) ||
+        plan.contract.planBase.sha !== input.expectedTargetSha ||
+        !plan.contract.taskPlans.some(
+          (taskPlan) => taskPlan.taskId === taskId,
+        ) ||
+        !plan.authorization ||
+        plan.authorization.decision !== "authorized" ||
+        !samePlanReference(plan.authorization.plan, plan.contract)
+      )
+        throw new ChangeControlError(
+          "Merge target drift does not match the exact dispatched plan, task, base, and current authorization.",
+          "CONFLICT",
+          409,
+        );
+      if (allowedReceipts.length !== 1)
+        throw new ChangeControlError(
+          "Merge target drift requires exactly one matching allowed dispatch receipt.",
+          "CONFLICT",
+          409,
+        );
+
+      const assessedAt = this.now();
+      const assessment: DriftAssessmentV1 = {
+        contractType: "DriftAssessmentV1",
+        contractVersion: "1.0",
+        assessmentId,
+        plan: {
+          planId: plan.contract.planId,
+          revision: plan.contract.revision,
+          planBaseSha: plan.contract.planBase.sha,
+        },
+        observedBase: {
+          repositoryId: plan.contract.planBase.repositoryId,
+          sha: input.observedTargetSha,
+          hashAlgorithm:
+            input.observedTargetSha.length === 64 ? "sha256" : "sha1",
+          ...(plan.contract.planBase.ref
+            ? { ref: plan.contract.planBase.ref }
+            : {}),
+          capturedAt: assessedAt,
+          worktreeState: "clean",
+        },
+        status: "stale",
+        reasons: [
+          {
+            code: "BASE_SHA_MISMATCH",
+            description:
+              "A serialized predecessor merge moved the exact authorized target base.",
+            evidenceRefs,
+          },
+        ],
+        changedPaths: [],
+        evidenceRefs,
+        requiresReplan: true,
+        assessedAt,
+        assessedBy: actor,
+      };
+      validatePlanningContractSchema(
+        assessment,
+        "DriftAssessmentV1",
+        true,
+      );
+      this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "plan.marked-stale",
+        occurredAt: assessedAt,
+        projectId,
+        changeId,
+        waveId,
+        actor,
+        causationId: requireIdentity(
+          events.at(-1)!.id,
+          "causationId",
+        ),
+        correlationId: requireIdentity(
+          events[0].correlationId,
+          "correlationId",
+        ),
+        payload: {
+          assessment: structuredClone(assessment) as unknown as JsonValue,
+        },
+      });
+      validateAndProject(ledger);
+      await writeAtomically(file, ledger);
+      return deepFreeze(structuredClone(assessment));
     });
   }
 

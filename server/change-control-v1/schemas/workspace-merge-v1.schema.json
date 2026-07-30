@@ -1,0 +1,533 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orchestrator:change-control:workspace-merge:v1",
+  "title": "Workspace and Merge Contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/WorkspaceAttemptV1" },
+    { "$ref": "#/$defs/MergeRequestV1" },
+    { "$ref": "#/$defs/MergeReceiptV1" }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "GitSha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "GitRef": {
+      "type": "string",
+      "pattern": "^refs/(?:heads|tags)/[^\\s~^:?*\\[\\\\]+$",
+      "maxLength": 1024
+    },
+    "AbsolutePath": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 4096,
+      "pattern": "^(?:[A-Za-z]:[\\\\/]|/)"
+    },
+    "EvidenceRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "EvidenceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "PlanReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planId", "revision", "planBaseSha"],
+      "properties": {
+        "planId": { "$ref": "#/$defs/Identifier" },
+        "revision": { "type": "integer", "minimum": 1 },
+        "planBaseSha": { "$ref": "#/$defs/GitSha" }
+      }
+    },
+    "OwnershipMarker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "attemptId",
+        "repositoryId",
+        "normalizedWorkspacePath",
+        "branchRef",
+        "creationNonce",
+        "markerSha256"
+      ],
+      "properties": {
+        "runId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "repositoryId": { "$ref": "#/$defs/Identifier" },
+        "normalizedWorkspacePath": { "$ref": "#/$defs/AbsolutePath" },
+        "branchRef": { "$ref": "#/$defs/GitRef" },
+        "creationNonce": { "$ref": "#/$defs/Identifier" },
+        "markerSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "Lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leaseId",
+        "repositoryId",
+        "targetRef",
+        "ownerRunId",
+        "ownerAttemptId",
+        "epoch",
+        "acquiredAt"
+      ],
+      "properties": {
+        "leaseId": { "$ref": "#/$defs/Identifier" },
+        "repositoryId": { "$ref": "#/$defs/Identifier" },
+        "targetRef": { "$ref": "#/$defs/GitRef" },
+        "ownerRunId": { "$ref": "#/$defs/Identifier" },
+        "ownerAttemptId": { "$ref": "#/$defs/Identifier" },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "acquiredAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "CleanupPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "maxAttempts", "attemptOrdinal"],
+      "properties": {
+        "mode": { "const": "non_destructive" },
+        "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "attemptOrdinal": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "WorkspaceState": {
+      "enum": [
+        "provisioning",
+        "active",
+        "sealed",
+        "merge_queued",
+        "merged",
+        "replan_required",
+        "cleanup_pending",
+        "recovery_pending",
+        "quarantined",
+        "cleaned"
+      ]
+    },
+    "WorkspaceTransition": {
+      "oneOf": [
+        { "type": "object", "properties": { "previousState": { "type": "null" }, "state": { "const": "provisioning" } } },
+        { "type": "object", "properties": { "previousState": { "const": "provisioning" }, "state": { "enum": ["active", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "active" }, "state": { "enum": ["sealed", "cleanup_pending", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "sealed" }, "state": { "enum": ["merge_queued", "replan_required", "cleanup_pending", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "merge_queued" }, "state": { "enum": ["merged", "replan_required", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "merged" }, "state": { "enum": ["cleanup_pending", "cleaned", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "replan_required" }, "state": { "enum": ["cleanup_pending", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "cleanup_pending" }, "state": { "enum": ["cleaned", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "recovery_pending" }, "state": { "enum": ["active", "sealed", "merge_queued", "merged", "replan_required", "cleanup_pending", "cleaned", "quarantined"] } } }
+      ]
+    },
+    "WorkspaceAttemptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "workspaceAttemptId",
+        "projectId",
+        "repositoryId",
+        "changeId",
+        "waveId",
+        "taskId",
+        "runId",
+        "attemptId",
+        "plan",
+        "ownedRoot",
+        "workspacePath",
+        "branchRef",
+        "targetRef",
+        "baseSha",
+        "ownershipMarker",
+        "previousState",
+        "state",
+        "cleanup",
+        "evidenceRefs",
+        "transitionedAt",
+        "transitionedBy"
+      ],
+      "properties": {
+        "contractType": { "const": "WorkspaceAttemptV1" },
+        "contractVersion": { "const": "1.0" },
+        "workspaceAttemptId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "repositoryId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "runId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "plan": { "$ref": "#/$defs/PlanReference" },
+        "ownedRoot": { "$ref": "#/$defs/AbsolutePath" },
+        "workspacePath": { "$ref": "#/$defs/AbsolutePath" },
+        "branchRef": {
+          "allOf": [
+            { "$ref": "#/$defs/GitRef" },
+            {
+              "type": "string",
+              "pattern": "^refs/heads/orchestrator/attempt/[^/]+/[^/]+$"
+            }
+          ]
+        },
+        "targetRef": { "$ref": "#/$defs/GitRef" },
+        "baseSha": { "$ref": "#/$defs/GitSha" },
+        "sealedSourceSha": { "$ref": "#/$defs/GitSha" },
+        "mergeRequestId": { "$ref": "#/$defs/Identifier" },
+        "ownershipMarker": { "$ref": "#/$defs/OwnershipMarker" },
+        "previousState": {
+          "oneOf": [
+            { "$ref": "#/$defs/WorkspaceState" },
+            { "type": "null" }
+          ]
+        },
+        "state": { "$ref": "#/$defs/WorkspaceState" },
+        "cleanup": { "$ref": "#/$defs/CleanupPolicy" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "recoveryReceiptRef": { "$ref": "#/$defs/EvidenceRef" },
+        "driftAssessmentId": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "transitionedAt": { "$ref": "#/$defs/Timestamp" },
+        "transitionedBy": { "type": "string", "minLength": 1, "maxLength": 256 }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/WorkspaceTransition" },
+        {
+          "if": { "properties": { "state": { "enum": ["sealed", "merge_queued", "merged"] } }, "required": ["state"] },
+          "then": {
+            "required": ["sealedSourceSha"],
+            "properties": { "sealedSourceSha": { "$ref": "#/$defs/GitSha" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["merge_queued", "merged"] } }, "required": ["state"] },
+          "then": {
+            "required": ["mergeRequestId"],
+            "properties": { "mergeRequestId": { "$ref": "#/$defs/Identifier" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "replan_required" } }, "required": ["state"] },
+          "then": {
+            "required": ["driftAssessmentId", "reason"],
+            "properties": {
+              "driftAssessmentId": { "$ref": "#/$defs/Identifier" },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["recovery_pending", "quarantined"] } }, "required": ["state"] },
+          "then": {
+            "required": ["reason"],
+            "properties": {
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "cleaned" } }, "required": ["state"] },
+          "then": {
+            "required": ["recoveryReceiptRef"],
+            "properties": {
+              "recoveryReceiptRef": { "$ref": "#/$defs/EvidenceRef" }
+            }
+          }
+        }
+      ]
+    },
+    "MergeState": {
+      "enum": [
+        "queued",
+        "validating",
+        "applying",
+        "verifying",
+        "committed",
+        "replan_required",
+        "recovery_pending",
+        "quarantined"
+      ]
+    },
+    "MergeTransition": {
+      "oneOf": [
+        { "type": "object", "properties": { "previousState": { "type": "null" }, "state": { "const": "queued" } } },
+        { "type": "object", "properties": { "previousState": { "const": "queued" }, "state": { "enum": ["validating", "replan_required", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "validating" }, "state": { "enum": ["applying", "replan_required", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "applying" }, "state": { "enum": ["verifying", "replan_required", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "verifying" }, "state": { "enum": ["committed", "replan_required", "recovery_pending", "quarantined"] } } },
+        { "type": "object", "properties": { "previousState": { "const": "recovery_pending" }, "state": { "enum": ["queued", "validating", "applying", "verifying", "committed", "replan_required", "quarantined"] } } }
+      ]
+    },
+    "VerificationCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "expectedExitCode"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "expectedExitCode": { "const": 0 }
+      }
+    },
+    "MergeRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "mergeRequestId",
+        "workspaceAttemptId",
+        "projectId",
+        "repositoryId",
+        "changeId",
+        "waveId",
+        "taskId",
+        "runId",
+        "attemptId",
+        "plan",
+        "targetRef",
+        "expectedTargetSha",
+        "sourceRef",
+        "sealedSourceSha",
+        "integrationStrategy",
+        "verificationCommands",
+        "previousState",
+        "state",
+        "evidenceRefs",
+        "transitionedAt",
+        "transitionedBy"
+      ],
+      "properties": {
+        "contractType": { "const": "MergeRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "mergeRequestId": { "$ref": "#/$defs/Identifier" },
+        "workspaceAttemptId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "repositoryId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "runId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "plan": { "$ref": "#/$defs/PlanReference" },
+        "targetRef": { "$ref": "#/$defs/GitRef" },
+        "expectedTargetSha": { "$ref": "#/$defs/GitSha" },
+        "observedTargetSha": { "$ref": "#/$defs/GitSha" },
+        "sourceRef": {
+          "allOf": [
+            { "$ref": "#/$defs/GitRef" },
+            {
+              "type": "string",
+              "pattern": "^refs/heads/orchestrator/attempt/[^/]+/[^/]+$"
+            }
+          ]
+        },
+        "sealedSourceSha": { "$ref": "#/$defs/GitSha" },
+        "integrationStrategy": { "const": "merge_no_ff_no_commit" },
+        "verificationCommands": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/VerificationCommand" }
+        },
+        "lease": { "$ref": "#/$defs/Lease" },
+        "previousState": {
+          "oneOf": [
+            { "$ref": "#/$defs/MergeState" },
+            { "type": "null" }
+          ]
+        },
+        "state": { "$ref": "#/$defs/MergeState" },
+        "mergeCommitSha": { "$ref": "#/$defs/GitSha" },
+        "driftAssessmentId": { "$ref": "#/$defs/Identifier" },
+        "safeAbortEvidenceRef": { "$ref": "#/$defs/EvidenceRef" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "transitionedAt": { "$ref": "#/$defs/Timestamp" },
+        "transitionedBy": { "type": "string", "minLength": 1, "maxLength": 256 }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/MergeTransition" },
+        {
+          "if": { "properties": { "state": { "enum": ["validating", "applying", "verifying", "committed"] } }, "required": ["state"] },
+          "then": {
+            "required": ["lease"],
+            "properties": { "lease": { "$ref": "#/$defs/Lease" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["applying", "verifying", "committed"] } }, "required": ["state"] },
+          "then": {
+            "required": ["observedTargetSha"],
+            "properties": { "observedTargetSha": { "$ref": "#/$defs/GitSha" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "committed" } }, "required": ["state"] },
+          "then": {
+            "required": ["mergeCommitSha"],
+            "properties": { "mergeCommitSha": { "$ref": "#/$defs/GitSha" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "replan_required" } }, "required": ["state"] },
+          "then": {
+            "required": ["driftAssessmentId", "safeAbortEvidenceRef", "reason"],
+            "properties": {
+              "driftAssessmentId": { "$ref": "#/$defs/Identifier" },
+              "safeAbortEvidenceRef": { "$ref": "#/$defs/EvidenceRef" },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "enum": ["recovery_pending", "quarantined"] } }, "required": ["state"] },
+          "then": {
+            "required": ["reason"],
+            "properties": {
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        }
+      ]
+    },
+    "VerificationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exitCode", "evidenceRef"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "exitCode": { "const": 0 },
+        "evidenceRef": { "$ref": "#/$defs/EvidenceRef" }
+      }
+    },
+    "MergeReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "mergeReceiptId",
+        "mergeRequestId",
+        "workspaceAttemptId",
+        "projectId",
+        "repositoryId",
+        "runId",
+        "attemptId",
+        "targetRef",
+        "expectedTargetSha",
+        "sealedSourceSha",
+        "result",
+        "evidenceRefs",
+        "persistedRunRef",
+        "transitionEventRef",
+        "recordedAt",
+        "recordedBy"
+      ],
+      "properties": {
+        "contractType": { "const": "MergeReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "mergeReceiptId": { "$ref": "#/$defs/Identifier" },
+        "mergeRequestId": { "$ref": "#/$defs/Identifier" },
+        "workspaceAttemptId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "repositoryId": { "$ref": "#/$defs/Identifier" },
+        "runId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "targetRef": { "$ref": "#/$defs/GitRef" },
+        "expectedTargetSha": { "$ref": "#/$defs/GitSha" },
+        "sealedSourceSha": { "$ref": "#/$defs/GitSha" },
+        "result": {
+          "enum": ["merged", "replan_required", "recovery_pending", "quarantined"]
+        },
+        "mergeCommitSha": { "$ref": "#/$defs/GitSha" },
+        "mergeParents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/GitSha" }
+        },
+        "verificationResults": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/VerificationResult" }
+        },
+        "driftAssessmentId": { "$ref": "#/$defs/Identifier" },
+        "recoveryEvidenceRef": { "$ref": "#/$defs/EvidenceRef" },
+        "quarantineEvidenceRef": { "$ref": "#/$defs/EvidenceRef" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "persistedRunRef": { "$ref": "#/$defs/EvidenceRef" },
+        "transitionEventRef": { "$ref": "#/$defs/EvidenceRef" },
+        "recordedAt": { "$ref": "#/$defs/Timestamp" },
+        "recordedBy": { "type": "string", "minLength": 1, "maxLength": 256 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "result": { "const": "merged" } }, "required": ["result"] },
+          "then": {
+            "required": ["mergeCommitSha", "mergeParents", "verificationResults"],
+            "properties": {
+              "mergeCommitSha": { "$ref": "#/$defs/GitSha" },
+              "mergeParents": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": { "$ref": "#/$defs/GitSha" }
+              },
+              "verificationResults": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/$defs/VerificationResult" }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "replan_required" } }, "required": ["result"] },
+          "then": {
+            "required": ["driftAssessmentId", "reason"],
+            "properties": {
+              "driftAssessmentId": { "$ref": "#/$defs/Identifier" },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "recovery_pending" } }, "required": ["result"] },
+          "then": {
+            "required": ["recoveryEvidenceRef", "reason"],
+            "properties": {
+              "recoveryEvidenceRef": { "$ref": "#/$defs/EvidenceRef" },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "result": { "const": "quarantined" } }, "required": ["result"] },
+          "then": {
+            "required": ["quarantineEvidenceRef", "reason"],
+            "properties": {
+              "quarantineEvidenceRef": { "$ref": "#/$defs/EvidenceRef" },
+              "reason": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

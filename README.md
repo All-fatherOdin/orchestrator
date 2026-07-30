@@ -160,6 +160,37 @@ persisted atomically with its fresh assessment, gate receipt, and wave
 transition; a rejected attempt persists its assessment when available and its
 gate receipt before returning the stable rejection reasons.
 
+### Workspace and Merge v1
+
+An allowed Phase 2 managed task is executed in one Orchestrator-owned Git
+worktree and local attempt branch at the exact authorized plan base. The
+canonical run record persists `WorkspaceAttemptV1` state and hash-chained
+transition evidence before Git side effects. Executor, reviewer/correction,
+verification, snapshots, diffs, and authenticated checkpoints all use the
+revalidated owned worktree; the target checkout is not used as a fallback.
+Legacy runs without Phase 3 state remain readable and never acquire implicit
+workspace or branch ownership.
+
+A sealed attempt is finalized through a serialized `MergeRequestV1`. One
+cross-process lease, fenced by repository identity and target ref, is held
+continuously while the server revalidates the clean target, exact target and
+sealed-source SHAs, Phase 2 authorization, workspace marker, branch, HEAD, and
+lease epoch. The only integration strategy is
+`git merge --no-ff --no-commit`; recorded verification runs against that exact
+pending merge before one identified two-parent merge commit is created.
+Target movement records linked Phase 2 drift and ends in `replan_required`
+instead of rebasing, cherry-picking, squashing, or refreshing acceptance
+criteria automatically.
+
+Canonical merge requests, hash-chained transitions, and immutable
+`MergeReceiptV1` records are stored in `run.json` and checked on ordinary load
+and startup replay. Recovery is idempotent across provisioning, execution,
+checkpoint, merge, verification, commit, receipt, and cleanup boundaries.
+Ambiguous identity or one-sided evidence is retained and quarantined; automatic
+cleanup is bounded and non-force. Orchestrator does not use `reset --hard`,
+`clean`, force branch/worktree removal, global worktree pruning, force ref
+updates, or remote publication for this lifecycle.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.
