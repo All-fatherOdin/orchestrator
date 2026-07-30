@@ -58,17 +58,17 @@ agents:
 visual_board:
   selected: local
   local:
-    status: starting
+    status: live
     url: "http://goalbuddy.localhost:41737/change-control-foundation-execution-v1/"
     command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/change-control-foundation-execution-v1"
 
-active_task: T001
+active_task: T002
 
 tasks:
   - id: T001
     type: pm
     assignee: PM
-    status: active
+    status: done
     reasoning_hint: high
     objective: "Safely archive stale local runtime artifacts, validate the exact queue, commit the execution board, and push the current branch."
     inputs:
@@ -87,12 +87,32 @@ tasks:
       - "Schema-valid queue"
       - "Remote branch ref"
       - "Clean task workspace except explicitly ignored queue"
-    receipt: null
-
+    receipt:
+      result: done
+      harness: codex
+      summary: "Archived stale runtime and Playwright artifacts recoverably outside the repository, validated the exact ignored two-task queue, committed the execution board, and published cdx/agent-memory-foundation-v1 to origin."
+      evidence:
+        - "Archive: D:/pet-projects/orchestrator-local-artifacts/2026-07-30-change-control-foundation"
+        - "Archive contains .orchestrator-4319 with two run records, both prior logs, and .playwright-mcp"
+        - "Queue validator: valid change-ledger-api,wave-dispatch-gate"
+        - "Commit: 263607c Track change-control foundation execution"
+        - "Remote ref: origin/cdx/agent-memory-foundation-v1"
+      commands:
+        - cmd: "artifact inventory and port 4319 listener check"
+          status: pass
+        - cmd: "recoverable Move-Item archive operation"
+          status: pass
+        - cmd: "validateTaskQueue queues/change-control-foundation-v1.yaml"
+          status: pass
+        - cmd: "git diff --check"
+          status: pass
+        - cmd: "git push -u origin cdx/agent-memory-foundation-v1"
+          status: pass
+      remaining_blockers: []
   - id: T002
     type: pm
     assignee: PM
-    status: queued
+    status: active
     reasoning_hint: high
     objective: "Run the exact two-task foundation queue through a fresh source server and monitor it to a terminal state."
     inputs:
