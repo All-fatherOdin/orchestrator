@@ -57,13 +57,18 @@ remember that ordinary
 diagnostics as failure, as shown in `tasks.example.yaml`; do not stage files
 merely to make verification see them.
 
-Preflight also checks exact-line review requirements. If a task asks the
-reviewer to cite exact paths and lines, its project or task
-`verificationCommands` must include a line-numbered content reader such as
-`Get-Content` with an explicit counter, non-quiet `Select-String`, `rg -n`, or
-`findstr /n`. Existence and whitespace checks alone cannot supply that
-evidence. A task with an explicit `allowedPaths: []` is read-only: reviewer
-changes fail the task directly and do not enter the correction loop.
+Preflight also checks reviewer-evidence requirements. If a task asks the
+reviewer to inspect document contents, hashes and existence checks are not
+enough; a bounded or targeted content reader is required. Exact path/line
+requirements need numbered evidence such as non-quiet `Select-String`, `rg -n`,
+or `findstr /n`. Whole-file `Get-Content` output is rejected unless bounded
+with `-TotalCount`, `Select-Object -First`, or `Select-Object -Last`.
+PowerShell verification commands are syntax-parsed without execution during
+preflight. Writable tasks cannot use `git diff --quiet` or
+`git diff --exit-code` as post-change verification because their allowed
+changes necessarily create a diff; put clean-start requirements in
+`executionGuards`. A task with an explicit `allowedPaths: []` is read-only:
+reviewer changes fail the task directly and do not enter the correction loop.
 
 Set a task's `model` to `auto` to let the orchestrator choose before the run. It routes everyday implementation and verification work to Terra. Contained work uses Luna only when that runtime capability is enabled; otherwise it falls back to Terra. Use `minModel: sol` for the explicit quality-first Sol escalation and compare its preserved reasoning baseline with one lower effort before changing the setting. An explicit model always takes precedence, but an unsupported model, reasoning, or local-tool route is rejected rather than sent to Codex. The resolved model and routing reason are stored in the run record and report. See [GPT-5.6 routing](docs/gpt56-model-routing-v1.md) for source date and fallback behavior.
 
