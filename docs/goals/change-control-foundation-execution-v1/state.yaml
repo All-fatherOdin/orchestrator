@@ -1,0 +1,141 @@
+version: 2
+
+goal:
+  title: "Change Control Foundation Execution v1"
+  slug: "change-control-foundation-execution-v1"
+  kind: existing_plan
+  tranche: "Archive stale artifacts, publish the branch, execute the two-task foundation queue, and audit the result."
+  status: active
+  oracle:
+    signal: "Both exact queue tasks are accepted with scope compliance; focused and full tests prove deterministic change ledger and wave dispatch behavior."
+    cadence: "after environment preparation, after the queue run, and at final audit"
+    final_proof: "Archive path, remote ref, canonical run receipt, diff audit, npm run check, npm test, git diff --check, and full_outcome_complete: true."
+  intake:
+    original_request: "сделай 1-3 потом аудит"
+    interpreted_outcome: "Prepare the environment, publish the branch, execute the existing foundation queue, and audit the implementation."
+    input_shape: existing_plan
+    audience: "Orchestrator owner and maintainers"
+    authority: approved
+    proof_type: test
+    completion_proof: "A completed two-task run plus a final evidence-backed audit."
+    likely_misfire: "Stopping after push or queue launch rather than accepted implementation and audit."
+    blind_spots_considered:
+      - "Old Desktop server binary is not the source revision being tested."
+      - "Stale runtime directories contain recoverable run records."
+      - "The queue file is intentionally ignored by Git."
+    existing_plan_facts:
+      - "Archive or otherwise resolve local service artifacts."
+      - "Push cdx/agent-memory-foundation-v1."
+      - "Run queues/change-control-foundation-v1.yaml."
+      - "Audit after execution."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 1
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  exact_human_approval_can_terminal_wait: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+  goal_pressure_requires_oracle: true
+  no_completion_on_weak_proof: true
+  slice_policy:
+    max_consecutive_tiny_tasks: 2
+    prefer_vertical_slices: true
+    judge_picks_largest_safe_slice: true
+    worker_completes_whole_slice: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+
+visual_board:
+  selected: local
+  local:
+    status: starting
+    url: "http://goalbuddy.localhost:41737/change-control-foundation-execution-v1/"
+    command: "node C:/Users/Alexander Lozovoy/.codex/plugins/cache/goalbuddy/goalbuddy/0.4.1/skills/goal-prep/surfaces/local-goal-board/scripts/local-goal-board.mjs --goal docs/goals/change-control-foundation-execution-v1"
+
+active_task: T001
+
+tasks:
+  - id: T001
+    type: pm
+    assignee: PM
+    status: active
+    reasoning_hint: high
+    objective: "Safely archive stale local runtime artifacts, validate the exact queue, commit the execution board, and push the current branch."
+    inputs:
+      - ".orchestrator-4319/"
+      - ".orchestrator-4319.stdout.log"
+      - ".orchestrator-4319.stderr.log"
+      - ".playwright-mcp/"
+      - "queues/change-control-foundation-v1.yaml"
+      - "cdx/agent-memory-foundation-v1"
+    constraints:
+      - "Preserve artifacts recoverably outside the repository."
+      - "Do not move or commit the ignored queue."
+      - "Push only the current task branch."
+    expected_output:
+      - "Archive path and inventory"
+      - "Schema-valid queue"
+      - "Remote branch ref"
+      - "Clean task workspace except explicitly ignored queue"
+    receipt: null
+
+  - id: T002
+    type: pm
+    assignee: PM
+    status: queued
+    reasoning_hint: high
+    objective: "Run the exact two-task foundation queue through a fresh source server and monitor it to a terminal state."
+    inputs:
+      - "T001 receipt"
+      - "queues/change-control-foundation-v1.yaml"
+      - "Fresh isolated Orchestrator data directory"
+    constraints:
+      - "Do not edit the queue after successful preflight."
+      - "Do not widen allowedPaths or skip review."
+      - "Use a source server from the current branch, not the installed Desktop binary."
+    expected_output:
+      - "Canonical run ID and data path"
+      - "Terminal task states"
+      - "Changed files and verification/review evidence"
+    receipt: null
+
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: queued
+    reasoning_hint: high
+    objective: "Audit the implementation, run the full oracle, and decide whether the requested tranche is complete."
+    inputs:
+      - "T001 and T002 receipts"
+      - "Canonical run record"
+      - "Current implementation diff"
+      - "Fresh verification"
+    constraints:
+      - "Read-only."
+      - "Reject completion on agent claims without behavior and test evidence."
+      - "Reject scope spill or a nonterminal queue run."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "findings and missing evidence"
+    receipt: null
+
+checks:
+  dirty_fingerprint: "untracked stale runtime artifacts plus new goal board"
+  last_verification:
+    result: pass
+    task: null
+    commands:
+      - "npm run check"
+      - "npm test: 101 passed"
+      - "context smoke: 3 passed"
