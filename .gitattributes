@@ -1,2 +1,2 @@
 server/context-contract-v1/schemas/*.json text eol=lf
-docs/architecture/change-control-plane/schemas/*.json text eol=lf
+server/change-control-v1/schemas/*.json text eol=lf

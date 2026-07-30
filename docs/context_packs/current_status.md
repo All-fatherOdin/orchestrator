@@ -23,8 +23,8 @@ Phase 1 is complete:
 
 `docs/goals/change-control-foundation-execution-v1/state.yaml`
 
-The Phase 2 Planning and Drift contract is proposed and awaiting acceptance
-before its implementation queue is created.
+The Phase 2 Planning and Drift contract is accepted. Its local two-task
+implementation queue is ready at `queues/planning-drift-v1.yaml`.
 
 Current boundary:
 
@@ -35,9 +35,9 @@ Current boundary:
 - `queues/` remains canonical for the local launch queue selected by the user.
 - this context pack and `docs/project_map/` are summaries/navigation only.
 
-The evidence ledger, target architecture, roadmap, and proposed Planning and
+The evidence ledger, target architecture, roadmap, and accepted Planning and
 Drift Contract v1 remain under `docs/architecture/change-control-plane/`. The
 completed local Phase 1 queue is retained in
 `queues/change-control-foundation-v1.yaml` as ignored execution input. The
-Phase 2 queue should be created only after the proposed schema, semantic checks,
-authority boundary, and fail-closed dispatch rules are reviewed and accepted.
+accepted Phase 2 queue is `queues/planning-drift-v1.yaml`; it remains ignored
+local execution input until explicitly launched.

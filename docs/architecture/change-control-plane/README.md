@@ -35,9 +35,9 @@ It does not authorize agent execution, Git mutation, worktree management,
 merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
-The Phase 1 implementation evidence is now available. Phase 2 has a proposed
-contract, but its implementation queue remains deferred until the schema,
-semantic checks, and authority boundary are reviewed and accepted.
+The Phase 1 implementation evidence is now available. Phase 2 has an accepted
+contract. Its local implementation queue is
+`queues/planning-drift-v1.yaml`.
 
 ## Authority
 

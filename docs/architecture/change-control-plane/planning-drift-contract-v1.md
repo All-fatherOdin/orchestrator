@@ -1,10 +1,10 @@
 # Planning and Drift Contract v1
 
-Status: proposed contract, implementation not yet authorized
+Status: accepted contract, implementation queue ready
 
-This contract defines the Phase 2 boundary that must exist before an
-implementation queue is created. Its machine-readable form is
-[`schemas/planning-drift-v1.schema.json`](schemas/planning-drift-v1.schema.json);
+This contract defines the accepted Phase 2 boundary for its implementation
+queue. Its canonical machine-readable form is
+[`server/change-control-v1/schemas/planning-drift-v1.schema.json`](../../../server/change-control-v1/schemas/planning-drift-v1.schema.json);
 the companion examples are illustrative fixtures, not canonical runtime state.
 
 ## Authority and storage
@@ -12,9 +12,10 @@ the companion examples are illustrative fixtures, not canonical runtime state.
 - The planner owns immutable `PlanningContractV1` proposals.
 - The drift guard owns immutable `DriftAssessmentV1` observations.
 - The architect owns immutable `ArchitectReplanReceiptV1` proposals.
-- Policy gates and humans own authorization.
-- The dispatcher may read these records and reject dispatch; it may not edit,
-  infer, or authorize them.
+- Policy gates and humans own immutable `PlanAuthorizationV1` decisions.
+- The dispatcher owns immutable `DispatchGateReceiptV1` observations. It may
+  read contract records and reject dispatch; it may not edit, infer, or
+  authorize them.
 - The Phase 1 per-project event ledger remains the canonical publication spine.
   Phase 2 implementation must add typed events rather than place opaque
   contract objects in an unvalidated `payload`.
@@ -24,17 +25,17 @@ the companion examples are illustrative fixtures, not canonical runtime state.
 ## Planning contract
 
 A planning contract is scoped to exactly one project, change, and wave. It
+contains one `taskPlans` entry for every task in that wave, and each task entry
+contains its own acceptance claims and blast radius. The contract also
 contains:
 
 - an immutable plan ID and monotonically increasing revision;
 - the exact clean Git base (`planBase.sha`) and repository identity;
-- one or more observable acceptance claims;
-- an evidence-backed blast radius;
 - explicit replan triggers;
 - creator identity and timestamp;
 - an explicit statement that authorization is required.
 
-Every acceptance claim declares an observable outcome, a concrete oracle
+Every task acceptance claim declares an observable outcome, a concrete oracle
 instruction, expected evidence, and failure severity. Human observation is a
 valid oracle kind, but the planner cannot mark that claim accepted.
 
@@ -71,6 +72,11 @@ authorization from an earlier revision.
 
 The drift guard compares the authorized plan with the dispatch-time repository
 state. Equality is exact: repository identity and full base SHA must match.
+The production adapter resolves `projectId` through the persisted Project
+Profile and reads Git state from that profile's path. Request bodies, plan
+payloads, and target-repository files are not trusted as path authority. A
+missing, ambiguous, or unreadable profile fails with
+`CURRENT_BASE_UNREADABLE`.
 
 If the base SHA differs, the old plan is stale even when changed paths appear
 unrelated. Path, dependency, oracle, and policy analysis supplies reasons and
@@ -87,7 +93,9 @@ Dispatch requires all of the following:
 5. executable blocking acceptance oracles;
 6. wave/task dependency readiness from the Phase 1 projection.
 
-`sendAnyway` cannot bypass a stale, missing, invalid, or unauthorized plan.
+The gate publishes a `DispatchGateReceiptV1` for both allowed and rejected
+decisions. `sendAnyway` cannot bypass a stale, missing, invalid, or unauthorized
+plan.
 Phase 1 dependency overrides remain distinct and cannot authorize Phase 2
 planning risk.
 
@@ -141,6 +149,7 @@ Phase 2 must fail closed with stable machine-readable reasons:
 | `PLAN_CONTRACT_INVALID` | The artifact fails the versioned schema or semantic checks. | Reject |
 | `PLAN_NOT_AUTHORIZED` | This exact revision/base has no authorization event. | Reject |
 | `CURRENT_BASE_UNREADABLE` | Repository identity, clean state, or full SHA cannot be established. | Reject |
+| `CURRENT_WORKTREE_DIRTY` | The trusted Project Profile resolves to a dirty worktree. | Mark stale and reject |
 | `PLAN_BASE_MISMATCH` | Current SHA differs from the authorized plan base. | Mark stale and reject |
 | `PLAN_STALE` | A declared drift trigger fired or a stale event already exists. | Reject |
 | `ACCEPTANCE_ORACLE_UNEXECUTABLE` | A blocking oracle cannot be executed as declared. | Reject |
@@ -158,17 +167,21 @@ The implementation validator must also enforce comparisons JSON Schema cannot:
 - revision 1 has no predecessor, while later revisions have exactly one;
 - replacement revision is greater than the prior revision;
 - all plan, assessment, receipt, project, change, and wave references agree;
-- `fresh` means `currentBaseSha === plan.planBaseSha`;
+- `fresh` means repository identity matches, the observed worktree is clean,
+  and `observedBase.sha === plan.planBaseSha`;
 - `stale` means the SHAs differ or at least one declared trigger fired;
-- acceptance claim IDs and declared write paths are unique within a plan;
+- task IDs are unique and exactly match the wave tasks;
+- acceptance claim IDs and declared write paths are unique within each task;
 - authorization targets the complete `(planId, revision, planBaseSha)` tuple.
 
-## Exit criteria before creating the implementation queue
+## Acceptance evidence and implementation obligations
 
 - The schema and examples validate with JSON Schema Draft 2020-12.
-- Negative fixtures reject a stale assessment without reasons, an
-  authorization-free plan, and a replan receipt with inconsistent lineage.
+- Schema tests reject a stale assessment without reasons, an
+  authorization-free plan, a self-authorized replan receipt, and an allowed
+  dispatch receipt without authorization/drift references.
 - Phase 1 projection and dispatch behavior remain unchanged.
-- The implementation queue has at least two independently useful tasks:
+- The accepted implementation queue has two independently useful tasks:
   contract publication/projection first, dispatch drift gate second.
-- Each task has concrete paths, verification commands, and fail-closed guards.
+- Each queue task has concrete paths, verification commands, semantic negative
+  tests, and fail-closed guards.

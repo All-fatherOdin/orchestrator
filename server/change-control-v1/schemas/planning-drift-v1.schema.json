@@ -11,6 +11,12 @@
     },
     {
       "$ref": "#/$defs/ArchitectReplanReceiptV1"
+    },
+    {
+      "$ref": "#/$defs/PlanAuthorizationV1"
+    },
+    {
+      "$ref": "#/$defs/DispatchGateReceiptV1"
     }
   ],
   "$defs": {
@@ -90,6 +96,45 @@
         },
         "worktreeState": {
           "const": "clean"
+        }
+      }
+    },
+    "ObservedBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositoryId",
+        "sha",
+        "hashAlgorithm",
+        "capturedAt",
+        "worktreeState"
+      ],
+      "properties": {
+        "repositoryId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "sha": {
+          "$ref": "#/$defs/GitSha"
+        },
+        "hashAlgorithm": {
+          "enum": [
+            "sha1",
+            "sha256"
+          ]
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "worktreeState": {
+          "enum": [
+            "clean",
+            "dirty"
+          ]
         }
       }
     },
@@ -248,7 +293,6 @@
       "properties": {
         "declaredWriteSet": {
           "type": "array",
-          "minItems": 1,
           "items": {
             "$ref": "#/$defs/WriteScopeEntry"
           }
@@ -294,6 +338,30 @@
         }
       }
     },
+    "TaskPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "acceptanceClaims",
+        "blastRadius"
+      ],
+      "properties": {
+        "taskId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "acceptanceClaims": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/AcceptanceClaim"
+          }
+        },
+        "blastRadius": {
+          "$ref": "#/$defs/BlastRadius"
+        }
+      }
+    },
     "PlanningContractV1": {
       "type": "object",
       "additionalProperties": false,
@@ -306,8 +374,7 @@
         "changeId",
         "waveId",
         "planBase",
-        "acceptanceClaims",
-        "blastRadius",
+        "taskPlans",
         "replanTriggers",
         "createdAt",
         "createdBy",
@@ -349,15 +416,12 @@
         "planBase": {
           "$ref": "#/$defs/PlanBase"
         },
-        "acceptanceClaims": {
+        "taskPlans": {
           "type": "array",
           "minItems": 1,
           "items": {
-            "$ref": "#/$defs/AcceptanceClaim"
+            "$ref": "#/$defs/TaskPlan"
           }
-        },
-        "blastRadius": {
-          "$ref": "#/$defs/BlastRadius"
         },
         "replanTriggers": {
           "type": "array",
@@ -401,6 +465,7 @@
             "DEPENDENCY_DRIFT",
             "ACCEPTANCE_ORACLE_DRIFT",
             "POLICY_DRIFT",
+            "WORKTREE_DIRTY",
             "UNKNOWN_DRIFT"
           ]
         },
@@ -427,7 +492,7 @@
         "contractVersion",
         "assessmentId",
         "plan",
-        "currentBaseSha",
+        "observedBase",
         "status",
         "reasons",
         "changedPaths",
@@ -449,8 +514,8 @@
         "plan": {
           "$ref": "#/$defs/PlanReference"
         },
-        "currentBaseSha": {
-          "$ref": "#/$defs/GitSha"
+        "observedBase": {
+          "$ref": "#/$defs/ObservedBase"
         },
         "status": {
           "enum": [
@@ -642,6 +707,198 @@
           "const": "pending"
         }
       }
+    },
+    "PlanAuthorizationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "authorizationId",
+        "projectId",
+        "changeId",
+        "waveId",
+        "plan",
+        "decision",
+        "reason",
+        "decidedAt",
+        "decidedBy"
+      ],
+      "properties": {
+        "contractType": {
+          "const": "PlanAuthorizationV1"
+        },
+        "contractVersion": {
+          "const": "1.0"
+        },
+        "authorizationId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "projectId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "changeId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "waveId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "plan": {
+          "$ref": "#/$defs/PlanReference"
+        },
+        "decision": {
+          "enum": [
+            "authorized",
+            "rejected"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "decidedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "decidedBy": {
+          "$ref": "#/$defs/Identity"
+        }
+      }
+    },
+    "DispatchGateReason": {
+      "enum": [
+        "PLAN_REQUIRED",
+        "PLAN_CONTRACT_INVALID",
+        "PLAN_NOT_AUTHORIZED",
+        "CURRENT_BASE_UNREADABLE",
+        "CURRENT_WORKTREE_DIRTY",
+        "PLAN_BASE_MISMATCH",
+        "PLAN_STALE",
+        "ACCEPTANCE_ORACLE_UNEXECUTABLE",
+        "BLAST_RADIUS_UNEVIDENCED",
+        "REPLAN_RECEIPT_REQUIRED",
+        "WAVE_NOT_READY"
+      ]
+    },
+    "DispatchGateReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "receiptId",
+        "projectId",
+        "changeId",
+        "waveId",
+        "result",
+        "reasons",
+        "evaluatedAt",
+        "evaluatedBy"
+      ],
+      "properties": {
+        "contractType": {
+          "const": "DispatchGateReceiptV1"
+        },
+        "contractVersion": {
+          "const": "1.0"
+        },
+        "receiptId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "projectId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "changeId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "waveId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "plan": {
+          "$ref": "#/$defs/PlanReference"
+        },
+        "authorizationId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "driftAssessmentId": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "result": {
+          "enum": [
+            "allowed",
+            "rejected"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/DispatchGateReason"
+          }
+        },
+        "evaluatedAt": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "evaluatedBy": {
+          "$ref": "#/$defs/Identity"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "const": "allowed"
+              }
+            },
+            "required": [
+              "result"
+            ]
+          },
+          "then": {
+            "required": [
+              "plan",
+              "authorizationId",
+              "driftAssessmentId"
+            ],
+            "properties": {
+              "plan": {
+                "$ref": "#/$defs/PlanReference"
+              },
+              "authorizationId": {
+                "$ref": "#/$defs/Identifier"
+              },
+              "driftAssessmentId": {
+                "$ref": "#/$defs/Identifier"
+              },
+              "reasons": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "result": {
+                "const": "rejected"
+              }
+            },
+            "required": [
+              "result"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

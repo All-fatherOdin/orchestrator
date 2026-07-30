@@ -12,12 +12,10 @@ authoritative task-owned path lineage for reviewer scope.
 
 ## Current Safe Step
 
-Review and accept the proposed Phase 2 Planning and Drift contract in
-`docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
-It now fixes structured acceptance claims, evidence-backed blast radius,
-`planBaseSha`, stale-plan rejection, architect replan receipts, ownership,
-transitions, and failure semantics. After acceptance, create the two-task
-implementation queue described by the contract exit criteria.
+Run the accepted Phase 2 Planning and Drift implementation queue:
+`queues/planning-drift-v1.yaml`. It contains two sequential vertical tasks:
+event-backed planning publication/authorization first, then trusted
+repository-state drift assessment and fail-closed dispatch gating.
 
 ## Source Boundaries
 
@@ -28,7 +26,7 @@ implementation queue described by the contract exit criteria.
 - Project Map: secondary navigation and replay context only.
 - Phase 1 completion evidence:
   `docs/goals/change-control-foundation-execution-v1/state.yaml`.
-- Phase 2 contract proposal:
+- Accepted Phase 2 contract:
   `docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
 
 ## Explicit Non-Goals

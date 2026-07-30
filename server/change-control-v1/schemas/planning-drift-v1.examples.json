@@ -1,0 +1,205 @@
+[
+  {
+    "contractType": "PlanningContractV1",
+    "contractVersion": "1.0",
+    "planId": "plan-001",
+    "revision": 1,
+    "projectId": "orchestrator",
+    "changeId": "change-001",
+    "waveId": "wave-001",
+    "predecessor": null,
+    "planBase": {
+      "repositoryId": "orchestrator",
+      "sha": "1111111111111111111111111111111111111111",
+      "hashAlgorithm": "sha1",
+      "ref": "refs/heads/main",
+      "capturedAt": "2026-07-30T09:00:00.000Z",
+      "worktreeState": "clean"
+    },
+    "taskPlans": [
+      {
+        "taskId": "publish-contract",
+        "acceptanceClaims": [
+          {
+            "claimId": "claim-schema-valid",
+            "observableOutcome": "Every published Phase 2 contract validates against the versioned schema.",
+            "oracle": {
+              "kind": "command",
+              "instruction": "Run the Planning and Drift schema validation command."
+            },
+            "expectedEvidence": [
+              {
+                "kind": "command_exit",
+                "description": "The validator exits with code 0."
+              }
+            ],
+            "failureSeverity": "blocking"
+          }
+        ],
+        "blastRadius": {
+          "declaredWriteSet": [
+            {
+              "path": "server/change-control-v1/",
+              "mode": "modify",
+              "evidenceRefs": [
+                "repo:docs/architecture/change-control-plane/implementation-roadmap.md"
+              ]
+            }
+          ],
+          "dependencyImpacts": [],
+          "publicApiChanges": [],
+          "schemaMigrationEffects": [
+            {
+              "description": "Introduces Planning and Drift Contract v1 without changing canonical run records.",
+              "evidenceRefs": [
+                "repo:server/change-control-v1/schemas/planning-drift-v1.schema.json"
+              ]
+            }
+          ],
+          "externalSideEffects": [],
+          "impactedTests": [
+            {
+              "description": "Schema examples must validate and negative fixtures must fail.",
+              "evidenceRefs": [
+                "contract:test:planning-drift-v1"
+              ]
+            }
+          ],
+          "assessmentEvidenceRefs": [
+            "repo:docs/architecture/change-control-plane/target-architecture.md"
+          ]
+        }
+      }
+    ],
+    "replanTriggers": [
+      "base_sha_changed",
+      "write_set_overlap",
+      "dependency_changed",
+      "acceptance_oracle_changed",
+      "policy_changed",
+      "unknown_drift"
+    ],
+    "createdAt": "2026-07-30T09:01:00.000Z",
+    "createdBy": "planner:example",
+    "authorizationRequired": true
+  },
+  {
+    "contractType": "DriftAssessmentV1",
+    "contractVersion": "1.0",
+    "assessmentId": "drift-001",
+    "plan": {
+      "planId": "plan-001",
+      "revision": 1,
+      "planBaseSha": "1111111111111111111111111111111111111111"
+    },
+    "observedBase": {
+      "repositoryId": "orchestrator",
+      "sha": "2222222222222222222222222222222222222222",
+      "hashAlgorithm": "sha1",
+      "ref": "refs/heads/main",
+      "capturedAt": "2026-07-30T09:10:00.000Z",
+      "worktreeState": "clean"
+    },
+    "status": "stale",
+    "reasons": [
+      {
+        "code": "BASE_SHA_MISMATCH",
+        "description": "The dispatch base no longer matches the authorized plan base.",
+        "evidenceRefs": [
+          "git:diff:1111111..2222222"
+        ]
+      }
+    ],
+    "changedPaths": [
+      "server/change-control-v1/index.ts"
+    ],
+    "evidenceRefs": [
+      "git:head:2222222222222222222222222222222222222222"
+    ],
+    "requiresReplan": true,
+    "assessedAt": "2026-07-30T09:10:00.000Z",
+    "assessedBy": "drift-guard:v1"
+  },
+  {
+    "contractType": "ArchitectReplanReceiptV1",
+    "contractVersion": "1.0",
+    "receiptId": "replan-001",
+    "projectId": "orchestrator",
+    "changeId": "change-001",
+    "waveId": "wave-001",
+    "driftAssessmentId": "drift-001",
+    "priorPlan": {
+      "planId": "plan-001",
+      "revision": 1,
+      "planBaseSha": "1111111111111111111111111111111111111111"
+    },
+    "replacementPlan": {
+      "planId": "plan-002",
+      "revision": 2,
+      "planBaseSha": "2222222222222222222222222222222222222222"
+    },
+    "changes": [
+      {
+        "area": "base",
+        "summary": "Rebased the plan on the current main branch.",
+        "rationale": "Dispatch must use the exact base assessed by the planner.",
+        "evidenceRefs": [
+          "contract:drift-001"
+        ]
+      }
+    ],
+    "proposedAt": "2026-07-30T09:12:00.000Z",
+    "proposedBy": "architect:example",
+    "authorizationState": "pending"
+  },
+  {
+    "contractType": "PlanAuthorizationV1",
+    "contractVersion": "1.0",
+    "authorizationId": "authorization-001",
+    "projectId": "orchestrator",
+    "changeId": "change-001",
+    "waveId": "wave-001",
+    "plan": {
+      "planId": "plan-002",
+      "revision": 2,
+      "planBaseSha": "2222222222222222222222222222222222222222"
+    },
+    "decision": "authorized",
+    "reason": "The exact replacement revision and its evidence were reviewed.",
+    "decidedAt": "2026-07-30T09:15:00.000Z",
+    "decidedBy": "human:operator"
+  },
+  {
+    "contractType": "DispatchGateReceiptV1",
+    "contractVersion": "1.0",
+    "receiptId": "dispatch-gate-001",
+    "projectId": "orchestrator",
+    "changeId": "change-001",
+    "waveId": "wave-001",
+    "plan": {
+      "planId": "plan-002",
+      "revision": 2,
+      "planBaseSha": "2222222222222222222222222222222222222222"
+    },
+    "authorizationId": "authorization-001",
+    "driftAssessmentId": "drift-002",
+    "result": "allowed",
+    "reasons": [],
+    "evaluatedAt": "2026-07-30T09:16:00.000Z",
+    "evaluatedBy": "dispatch-gate:v1"
+  },
+  {
+    "contractType": "DispatchGateReceiptV1",
+    "contractVersion": "1.0",
+    "receiptId": "dispatch-gate-002",
+    "projectId": "orchestrator",
+    "changeId": "change-without-plan",
+    "waveId": "wave-without-plan",
+    "result": "rejected",
+    "reasons": [
+      "PLAN_REQUIRED"
+    ],
+    "evaluatedAt": "2026-07-30T09:17:00.000Z",
+    "evaluatedBy": "dispatch-gate:v1"
+  }
+]

@@ -1570,9 +1570,8 @@ test("Planning and Drift Contract v1 examples validate and unsafe variants fail 
   const schema = JSON.parse(
     await readFile(
       join(
-        "docs",
-        "architecture",
-        "change-control-plane",
+        "server",
+        "change-control-v1",
         "schemas",
         "planning-drift-v1.schema.json",
       ),
@@ -1582,9 +1581,8 @@ test("Planning and Drift Contract v1 examples validate and unsafe variants fail 
   const examples = JSON.parse(
     await readFile(
       join(
-        "docs",
-        "architecture",
-        "change-control-plane",
+        "server",
+        "change-control-v1",
         "schemas",
         "planning-drift-v1.examples.json",
       ),
@@ -1612,6 +1610,10 @@ test("Planning and Drift Contract v1 examples validate and unsafe variants fail 
   const selfAuthorizedReceipt = structuredClone(examples[2]);
   selfAuthorizedReceipt.authorizationState = "authorized";
   assert.equal(validate(selfAuthorizedReceipt), false);
+
+  const allowedWithoutAuthorization = structuredClone(examples[4]);
+  delete allowedWithoutAuthorization.authorizationId;
+  assert.equal(validate(allowedWithoutAuthorization), false);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {
