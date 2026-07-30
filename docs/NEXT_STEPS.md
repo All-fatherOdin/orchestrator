@@ -12,12 +12,12 @@ authoritative task-owned path lineage for reviewer scope.
 
 ## Current Safe Step
 
-Define the Phase 2 Planning and Drift contracts before creating another queue:
-structured acceptance claims, evidence-backed blast radius, `planBaseSha`,
-stale-plan detection, dispatch rejection for stale plans, and architect replan
-receipts. Fix their schemas, ownership, transitions, and failure semantics
-against the Phase 1 ledger first; only then create the two-task implementation
-queue.
+Review and accept the proposed Phase 2 Planning and Drift contract in
+`docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
+It now fixes structured acceptance claims, evidence-backed blast radius,
+`planBaseSha`, stale-plan rejection, architect replan receipts, ownership,
+transitions, and failure semantics. After acceptance, create the two-task
+implementation queue described by the contract exit criteria.
 
 ## Source Boundaries
 
@@ -28,6 +28,8 @@ queue.
 - Project Map: secondary navigation and replay context only.
 - Phase 1 completion evidence:
   `docs/goals/change-control-foundation-execution-v1/state.yaml`.
+- Phase 2 contract proposal:
+  `docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
 
 ## Explicit Non-Goals
 

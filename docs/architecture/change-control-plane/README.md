@@ -17,6 +17,8 @@ were observed.
 4. [metrics-and-evals.md](metrics-and-evals.md) defines how quality claims will
    be measured.
 5. [implementation-roadmap.md](implementation-roadmap.md) sequences the work.
+6. [planning-drift-contract-v1.md](planning-drift-contract-v1.md) defines the
+   proposed Phase 2 contract and fail-closed dispatch semantics.
 
 ## Current Boundary
 
@@ -32,6 +34,10 @@ It contains two sequential, independently useful vertical tasks:
 It does not authorize agent execution, Git mutation, worktree management,
 merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
+
+The Phase 1 implementation evidence is now available. Phase 2 has a proposed
+contract, but its implementation queue remains deferred until the schema,
+semantic checks, and authority boundary are reviewed and accepted.
 
 ## Authority
 

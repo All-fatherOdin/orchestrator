@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
+import Ajv2020 from "ajv8/dist/2020.js";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -1563,6 +1564,54 @@ test("Ajv 2020 validates generated ContextRequestV1 and rejects observable misma
     () => validateContextContractV1("request", { ...request, contract_version: "2.0" }),
     /CONTEXT_SCHEMA_MISMATCH.*ContextRequestV1/,
   );
+});
+
+test("Planning and Drift Contract v1 examples validate and unsafe variants fail closed", async () => {
+  const schema = JSON.parse(
+    await readFile(
+      join(
+        "docs",
+        "architecture",
+        "change-control-plane",
+        "schemas",
+        "planning-drift-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const examples = JSON.parse(
+    await readFile(
+      join(
+        "docs",
+        "architecture",
+        "change-control-plane",
+        "schemas",
+        "planning-drift-v1.examples.json",
+      ),
+      "utf8",
+    ),
+  ) as Record<string, unknown>[];
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  const validate = ajv.compile(schema);
+
+  for (const example of examples)
+    assert.equal(
+      validate(example),
+      true,
+      ajv.errorsText(validate.errors),
+    );
+
+  const staleWithoutReasons = structuredClone(examples[1]);
+  staleWithoutReasons.reasons = [];
+  assert.equal(validate(staleWithoutReasons), false);
+
+  const authorizationFreePlan = structuredClone(examples[0]);
+  authorizationFreePlan.authorizationRequired = false;
+  assert.equal(validate(authorizationFreePlan), false);
+
+  const selfAuthorizedReceipt = structuredClone(examples[2]);
+  selfAuthorizedReceipt.authorizationState = "authorized";
+  assert.equal(validate(selfAuthorizedReceipt), false);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {

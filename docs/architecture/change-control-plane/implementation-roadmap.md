@@ -14,6 +14,12 @@ Define structured acceptance claims, evidence-backed blast radius, plan-base
 SHA, stale-plan detection, and architect replan receipts. Create this queue
 only after Phase 1 schemas and APIs are verified.
 
+Contract proposal:
+`docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
+The proposal fixes document schemas, ownership, lifecycle, dispatch rejection,
+and replan lineage. Runtime implementation and its queue are not yet
+authorized.
+
 ## Phase 3: Workspace and Merge
 
 Evaluate worktree/branch isolation on Windows, implement workspace lifecycle,
