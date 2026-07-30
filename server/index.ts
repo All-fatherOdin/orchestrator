@@ -1704,7 +1704,10 @@ export function verificationCommandViolations(
         /\bGet-Content\b/i.test(command) &&
         !/\s-TotalCount\b/i.test(command) &&
         !/\|\s*Select-Object\b[^\r\n]*(?:-First|-Last)\b/i.test(command) &&
-        !/\|\s*Select-String\b/i.test(command),
+        !/\|\s*Select-String\b/i.test(command) &&
+        !/\|\s*(?:ConvertFrom-[A-Za-z]+|Test-[A-Za-z]+|Measure-Object|Out-Null)\b/i.test(
+          command,
+        ),
     )
   )
     violations.push(
@@ -1715,6 +1718,12 @@ export function verificationCommandViolations(
 
 function isLikelyPowerShellCommand(command: string) {
   return (
+    /^\s*(?:&\s*)?(?:"[^"]+\.ps1"|'[^']+\.ps1'|[^\s"';&|]+\.ps1)(?:\s|$)/i.test(
+      command,
+    ) ||
+    /^\s*(?:pwsh(?:\.exe)?|powershell(?:\.exe)?)\b[^\r\n]*\s-File(?:\s|$)/i.test(
+      command,
+    ) ||
     /\$env:[A-Za-z_]/i.test(command) ||
     /(?:^|[;&|]\s*)\$[A-Za-z_]/i.test(command) ||
     /\b(?:Get|Set|Test|Select|ForEach|Where|Write|Resolve|Join|Split|ConvertTo|ConvertFrom)-[A-Za-z]+\b/i.test(command) ||
@@ -1724,6 +1733,7 @@ function isLikelyPowerShellCommand(command: string) {
 }
 
 async function powershellSyntaxViolation(command: string) {
+  const syntaxParserTimeoutMs = 10_000;
   const encodedSource = Buffer.from(command, "utf8").toString("base64");
   const parserScript = [
     `$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedSource}'))`,
@@ -1740,11 +1750,19 @@ async function powershellSyntaxViolation(command: string) {
     );
     let diagnostics = "";
     let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
     const settle = (value: string | undefined) => {
       if (settled) return;
       settled = true;
+      if (timeout) clearTimeout(timeout);
       resolveResult(value);
     };
+    timeout = setTimeout(() => {
+      child.kill();
+      settle(
+        `PowerShell syntax parser timed out after ${syntaxParserTimeoutMs} ms.`,
+      );
+    }, syntaxParserTimeoutMs);
     child.stderr?.on("data", (chunk: Buffer) => {
       diagnostics = `${diagnostics}${chunk.toString()}`.slice(-2_000);
     });

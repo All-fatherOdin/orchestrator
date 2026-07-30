@@ -2614,6 +2614,8 @@ test("verification policy rejects impossible clean-tree checks and unbounded doc
         verificationCommands: [
           "git diff --check",
           "Get-Content -LiteralPath docs/contract.md -TotalCount 120",
+          "Get-Content -Raw package.json | ConvertFrom-Json | Out-Null",
+          "Get-Content -Raw queue.yaml | ConvertFrom-Yaml | Test-QueueContract",
           "rg -n \"contract|decision\" docs/contract.md",
         ],
       },
@@ -2656,6 +2658,17 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
     ).shell,
     false,
   );
+  for (const command of [
+    ".\\scripts\\verify.ps1",
+    "& .\\scripts\\verify.ps1",
+    "pwsh -File .\\scripts\\verify.ps1",
+    "pwsh.exe -NoProfile -File .\\scripts\\verify.ps1",
+    "powershell.exe -File .\\scripts\\verify.ps1",
+  ]) {
+    const invocation = verificationCommandInvocation(command);
+    assert.equal(invocation.shell, false, command);
+    assert.match(invocation.executable, /powershell|pwsh/i);
+  }
 
   const ordinary = verificationCommandInvocation("npm test");
   assert.equal(ordinary.executable, "npm test");
