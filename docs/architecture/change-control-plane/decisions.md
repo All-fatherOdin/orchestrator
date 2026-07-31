@@ -20,14 +20,16 @@
    separate concepts and IDs.
 8. **Foundation queue is sequential.** Its two tasks touch the same server
    integration files, so parallel execution is unsafe.
+9. **Halts and incidents are distinct.** A halt is one immutable detected
+   occurrence; an incident is a durable aggregate with deterministic
+   correlation, closure, and reopen evidence.
+10. **Warden gates; Doctor executes.** Only a deterministic Warden verdict can
+    authorize an allowlisted, bounded, idempotent Doctor recipe. LLM judgment
+    alone never grants repair authority.
 
 ## Deferred
 
 - database versus compact files after data-volume evidence;
-- branch/worktree lifecycle;
-- merge/rebase and stale-plan refresh details;
-- incident closure/reopen semantics;
-- halt taxonomy codes and deterministic heal implementations;
 - prompt registry and eval storage;
 - operator UI.
 

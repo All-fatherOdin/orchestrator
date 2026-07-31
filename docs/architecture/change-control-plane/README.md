@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 2 implemented
+Status: evidence-backed target, Phase 1-3 implemented, Phase 4 contract accepted
 Last reviewed: 2026-07-30
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -19,6 +19,10 @@ were observed.
 5. [implementation-roadmap.md](implementation-roadmap.md) sequences the work.
 6. [planning-drift-contract-v1.md](planning-drift-contract-v1.md) defines the
    implemented Phase 2 contract and fail-closed dispatch semantics.
+7. [workspace-merge-contract-v1.md](workspace-merge-contract-v1.md) defines
+   the implemented Phase 3 isolation, merge, and recovery boundary.
+8. [halts-incidents-contract-v1.md](halts-incidents-contract-v1.md) defines
+   the accepted Phase 4 halt, incident, Warden, and Doctor boundary.
 
 ## Current Boundary
 
@@ -35,9 +39,9 @@ It does not authorize agent execution, Git mutation, worktree management,
 merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
-Phase 1 and Phase 2 implementation evidence is now available. The completed
-local queues remain ignored execution history. Phase 3 Workspace and Merge is
-the next contract-first boundary; it has no implementation queue yet.
+Phase 1-3 implementation evidence is available. The completed local queues
+remain ignored execution history. The Phase 4 contract is accepted; its
+implementation queue has not yet been created.
 
 ## Authority
 

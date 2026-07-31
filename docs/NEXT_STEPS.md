@@ -16,10 +16,10 @@ non-destructive cleanup.
 
 ## Current Safe Step
 
-Define and accept the Phase 4 Halts and Incidents contract before creating its
-implementation queue. Stable incident identity, halt taxonomy, attribution
-evidence, Warden checks, and the deterministic Doctor allowlist remain
-independently unimplemented.
+Create the Phase 4 Halts and Incidents implementation queue from the accepted
+contract. Stable incident identity, halt taxonomy, attribution evidence,
+Warden checks, and the deterministic Doctor allowlist remain unimplemented,
+but their authority and safety boundaries are now fixed.
 
 ## Source Boundaries
 
@@ -34,6 +34,8 @@ independently unimplemented.
   `docs/architecture/change-control-plane/planning-drift-contract-v1.md`.
 - Accepted Phase 3 contract:
   `docs/architecture/change-control-plane/workspace-merge-contract-v1.md`.
+- Accepted Phase 4 contract:
+  `docs/architecture/change-control-plane/halts-incidents-contract-v1.md`.
 - Phase 2/3 product evidence: current branch code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.

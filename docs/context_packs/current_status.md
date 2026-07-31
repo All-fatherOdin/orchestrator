@@ -47,7 +47,8 @@ Current boundary:
 - this context pack and `docs/project_map/` are summaries/navigation only.
 
 The evidence ledger, target architecture, roadmap, Planning and Drift Contract
-v1, and Workspace and Merge Contract v1 remain under
-`docs/architecture/change-control-plane/`. Completed local Phase 1-3 queues
-remain ignored execution history under `queues/`; they are not the next
-operational step. Phase 4 Halts and Incidents is the next contract-first slice.
+v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
+remain under `docs/architecture/change-control-plane/`. Completed local
+Phase 1-3 queues remain ignored execution history under `queues/`; they are
+not the next operational step. The Phase 4 contract is accepted; its bounded
+implementation queue is the next operational step.

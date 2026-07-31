@@ -37,6 +37,13 @@ Add stable incident IDs, halt taxonomy, attribution evidence, Warden checks,
 and a narrow deterministic Doctor allowlist. Depends on event and attempt
 receipts; it may proceed independently of UI.
 
+Accepted contract:
+`docs/architecture/change-control-plane/halts-incidents-contract-v1.md`.
+It fixes halt/incident identity and lifecycles, deterministic correlation,
+attribution confidence, Warden authority, the Doctor recipe allowlist,
+retry/resume gates, and crash-safe receipt requirements. The implementation
+queue is the next operational artifact.
+
 ## Phase 5: Prompt/Model/Eval Lineage
 
 Persist prompt artifacts and model routing identities, join attempts,
@@ -47,6 +54,6 @@ incidents, commits, and versioned eval runs, then establish baseline cohorts.
 Build cross-project wave, bucket, incident, Warden, Doctor, and prompt-registry
 views from canonical APIs. UI never writes projection state directly.
 
-No sequential queue plan exists for the remaining phases. Phase 4 begins with
-an accepted halt/incident contract; later queue boundaries will be fixed from
-prior phase evidence.
+No sequential queue plan exists for the remaining phases. Phase 4 now proceeds
+through a bounded implementation queue derived from the accepted contract;
+later queue boundaries will be fixed from prior phase evidence.
