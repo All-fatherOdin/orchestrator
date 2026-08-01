@@ -6121,12 +6121,16 @@ export class ChangeControlStore {
   ): Promise<IncidentRecordV1> {
     const projectId = requireIdentifier(projectIdValue, "projectId");
     const incidentId = requireIdentifier(incidentIdValue, "incidentId");
-    const receipt = normalizeHaltContract(
+    const receiptInput = normalizeJson(
       input?.receipt,
       "IncidentResolutionReceiptV1",
     );
-    if (receipt.projectId !== projectId || receipt.incidentId !== incidentId)
-      invalid("IncidentResolutionReceiptV1 does not match the route.");
+    if (
+      typeof receiptInput !== "object" ||
+      receiptInput === null ||
+      Array.isArray(receiptInput)
+    )
+      invalid("IncidentResolutionReceiptV1 must be a JSON object.");
     return this.serialize(projectId, async () => {
       const ledger = await readLedger(this.file(projectId), projectId);
       const projected = validateAndProject(ledger);
@@ -6146,10 +6150,19 @@ export class ChangeControlStore {
       const publicationTime = this.now();
       if (canonicalTimestampMillis(publicationTime) === undefined)
         invalid("The publication clock did not return a canonical UTC instant.");
-      if (receipt.resolvedAt !== publicationTime)
+      if (
+        receiptInput.resolvedAt !== undefined &&
+        receiptInput.resolvedAt !== publicationTime
+      )
         invalid(
           "IncidentResolutionReceiptV1 resolvedAt must match the authoritative publication time.",
         );
+      const receipt = normalizeHaltContract(
+        { ...receiptInput, resolvedAt: publicationTime },
+        "IncidentResolutionReceiptV1",
+      );
+      if (receipt.projectId !== projectId || receipt.incidentId !== incidentId)
+        invalid("IncidentResolutionReceiptV1 does not match the route.");
       const reopenUntil = new Date(
         Date.parse(publicationTime) +
           receipt.correlationWindowSeconds * 1000,

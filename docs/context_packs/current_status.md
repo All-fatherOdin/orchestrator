@@ -1,7 +1,7 @@
 # Current Status
 
 Status: active compact context pack
-Last updated: 2026-07-30
+Last updated: 2026-08-01
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run
@@ -37,18 +37,27 @@ creates linked deterministic replan evidence. Canonical workspace/merge state,
 hash-chained transitions, immutable receipts, startup recovery, and bounded
 non-force cleanup fail closed on ambiguous evidence.
 
+Phase 4 halt/incident core is implemented. The canonical ledger publishes one
+classified halt and effective incident atomically across processes, derives
+stable correlation identity, replays lifecycle state deterministically, and
+supports mitigation, escalation, resolution, bounded reopen, and superseding
+correlation correction. Resolution publication time is assigned by the ledger
+rather than trusted from an HTTP caller.
+
 Current boundary:
 
 - `.orchestrator/runs/*/run.json` remains canonical for runs.
 - GoalBuddy `state.yaml` remains canonical for goals.
 - `.orchestrator/change-control-v1/projects/*` is canonical for published
-  change, wave, task, planning, drift, and authorization events.
+  change, wave, task, planning, drift, authorization, halt, and incident events.
 - `queues/` remains canonical for the local launch queue selected by the user.
 - this context pack and `docs/project_map/` are summaries/navigation only.
 
 The evidence ledger, target architecture, roadmap, Planning and Drift Contract
 v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
 remain under `docs/architecture/change-control-plane/`. Completed local
-Phase 1-3 queues remain ignored execution history under `queues/`; they are
-not the next operational step. The Phase 4 contract is accepted; its bounded
-implementation queue is the next operational step.
+Phase 1-3 and the completed Phase 4 core queues remain ignored execution
+history under `queues/`; they are not the next operational step. The accepted
+Phase 4 contract still requires the bounded Warden/Doctor implementation slice:
+verdict gating, deterministic repair recipes and leases, recovery, and explicit
+retry/resume authorization.

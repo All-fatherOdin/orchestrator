@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-07-30
+Last updated: 2026-08-01
 
 ## Current Priority
 
@@ -14,12 +14,20 @@ Windows: managed attempts use owned worktrees, serialized fresh-target merge,
 deterministic replan on drift, canonical replay, bounded recovery, and
 non-destructive cleanup.
 
+The first Phase 4 slice is implemented: closed halt taxonomy and attribution,
+stable incident identity and correlation, append-only halt/incident events,
+cross-process atomic publication, deterministic replay, lifecycle transitions,
+correlation correction, and focused HTTP projections now fail closed against
+invalid or ambiguous evidence.
+
 ## Current Safe Step
 
-Create the Phase 4 Halts and Incidents implementation queue from the accepted
-contract. Stable incident identity, halt taxonomy, attribution evidence,
-Warden checks, and the deterministic Doctor allowlist remain unimplemented,
-but their authority and safety boundaries are now fixed.
+Run the remaining Phase 4 Warden and Doctor implementation queue from the
+accepted contract. Warden verdict publication and policy gating, Doctor repair
+recipes and leases, bounded recovery, and retry/resume authorization remain
+unimplemented. The halt/incident ledger they consume is now implemented, so
+the remaining work can preserve one-way authority: Warden may deny and Doctor
+may propose only allowlisted recovery; neither may silently resume execution.
 
 ## Source Boundaries
 
@@ -36,7 +44,7 @@ but their authority and safety boundaries are now fixed.
   `docs/architecture/change-control-plane/workspace-merge-contract-v1.md`.
 - Accepted Phase 4 contract:
   `docs/architecture/change-control-plane/halts-incidents-contract-v1.md`.
-- Phase 2/3 product evidence: current branch code and `server/index.test.ts`.
+- Phase 2-4 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 
@@ -49,8 +57,9 @@ but their authority and safety boundaries are now fixed.
 - Do not claim that the full Nikolay-like system is implemented.
 - Do not infer destructive Git, force cleanup, or remote-publication authority
   from Phase 3 ownership records.
-- Incident, auto-heal, prompt/eval lineage, and operator UI remain later
-  independently authorized slices.
+- Warden/Doctor recovery, prompt/eval lineage, and operator UI remain later
+  independently authorized slices. No Phase 4 component has general-purpose
+  auto-heal authority.
 
 ## Verification
 

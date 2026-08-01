@@ -1442,7 +1442,6 @@ test("Phase 4 resolves, deterministically reopens, expires windows, and preserve
           },
           noActiveHealing: true,
           evidenceRefs: ["oracle:passed:first"],
-          resolvedAt: publicationTime,
           resolvedBy: "policy:resolution-oracle-v1",
           taxonomyPolicyVersion: "halt-taxonomy-v1",
           correlationWindowSeconds: 60,
@@ -1453,6 +1452,12 @@ test("Phase 4 resolves, deterministically reopens, expires windows, and preserve
       firstResolved.correlationWindowPolicy.reopenUntil,
       "2026-07-31T10:02:00.000Z",
     );
+    const firstResolutionReceipt = (
+      await store.getHaltIncidentProjection("planning-project")
+    ).resolutionReceipts.find(
+      (receipt) => receipt.receiptId === "resolution-window-one",
+    );
+    assert.equal(firstResolutionReceipt?.resolvedAt, publicationTime);
 
     publicationTime = "2026-07-31T10:01:30.000Z";
     const second = await store.detectAndClassifyHalt(

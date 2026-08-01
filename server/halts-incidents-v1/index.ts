@@ -188,6 +188,15 @@ export type IncidentResolutionReceiptV1 = Readonly<{
   correlationWindowSeconds: number;
 }>;
 
+export type IncidentResolutionReceiptInputV1 = Omit<
+  IncidentResolutionReceiptV1,
+  "resolvedAt"
+> &
+  Readonly<{
+    /** The ledger assigns the authoritative publication time when omitted. */
+    resolvedAt?: string;
+  }>;
+
 export type IncidentRecordV1 = Readonly<{
   contractType: "IncidentRecordV1";
   contractVersion: "1.0";
@@ -391,7 +400,7 @@ export type TransitionIncidentInputV1 = Readonly<{
 }>;
 
 export type ResolveIncidentInputV1 = Readonly<{
-  receipt: IncidentResolutionReceiptV1;
+  receipt: IncidentResolutionReceiptInputV1;
   causationId?: string;
   correlationId?: string;
 }>;
