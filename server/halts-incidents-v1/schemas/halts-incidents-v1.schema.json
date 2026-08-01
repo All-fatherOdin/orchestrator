@@ -1,0 +1,872 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orchestrator:change-control:halts-incidents:v1",
+  "title": "Halts and Incidents Contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/HaltRecordV1" },
+    { "$ref": "#/$defs/IncidentRecordV1" },
+    { "$ref": "#/$defs/AttributionAssessmentV1" },
+    { "$ref": "#/$defs/IncidentResolutionReceiptV1" },
+    { "$ref": "#/$defs/HaltIncidentEventV1" }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "Identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "Timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "NullableIdentifier": {
+      "oneOf": [
+        { "$ref": "#/$defs/Identifier" },
+        { "type": "null" }
+      ]
+    },
+    "EvidenceRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "EvidenceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "OptionalEvidenceRefs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "Fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "NormalizedKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "HaltClass": {
+      "enum": [
+        "deterministic_owned_recovery",
+        "retryable_provider_or_process",
+        "plan_or_target_drift",
+        "acceptance_or_verification_failure",
+        "dependency_or_readiness_failure",
+        "scope_or_policy_violation",
+        "ownership_or_state_ambiguity",
+        "human_decision_required",
+        "destructive_or_external_risk",
+        "unknown"
+      ]
+    },
+    "ReasonCode": {
+      "enum": [
+        "HALT_EVIDENCE_INVALID",
+        "HALT_CLASS_UNKNOWN",
+        "ATTRIBUTION_NOT_EXACT",
+        "INCIDENT_CORRELATION_AMBIGUOUS",
+        "INCIDENT_NEW",
+        "INCIDENT_MATCHED_OPEN",
+        "INCIDENT_REOPENED",
+        "INCIDENT_REOPEN_WINDOW_EXPIRED",
+        "INCIDENT_POLICY_VERSION_MISMATCH",
+        "WARDEN_POLICY_UNKNOWN",
+        "EVIDENCE_STALE",
+        "SIDE_EFFECT_AMBIGUOUS",
+        "RECIPE_NOT_ALLOWLISTED",
+        "RECIPE_PRECONDITION_FAILED",
+        "REPAIR_BUDGET_EXHAUSTED",
+        "REPAIR_LEASE_LOST",
+        "REPAIR_RESULT_AMBIGUOUS",
+        "REPLAN_REQUIRED",
+        "HUMAN_AUTHORITY_REQUIRED",
+        "BLOCKING_INCIDENT_OPEN"
+      ]
+    },
+    "Severity": {
+      "enum": ["info", "warning", "blocking", "critical"]
+    },
+    "HaltScopeV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "waveId",
+        "taskId",
+        "attemptId",
+        "planRevision",
+        "runId",
+        "workspaceAttemptId",
+        "mergeRequestId",
+        "commitId"
+      ],
+      "properties": {
+        "waveId": { "$ref": "#/$defs/NullableIdentifier" },
+        "taskId": { "$ref": "#/$defs/NullableIdentifier" },
+        "attemptId": { "$ref": "#/$defs/NullableIdentifier" },
+        "planRevision": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "null" }
+          ]
+        },
+        "runId": { "$ref": "#/$defs/NullableIdentifier" },
+        "workspaceAttemptId": { "$ref": "#/$defs/NullableIdentifier" },
+        "mergeRequestId": { "$ref": "#/$defs/NullableIdentifier" },
+        "commitId": {
+          "oneOf": [
+            { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "AffectedEntityV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "changeId",
+        "waveId",
+        "taskId",
+        "operationKind",
+        "component"
+      ],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/NullableIdentifier" },
+        "taskId": { "$ref": "#/$defs/NullableIdentifier" },
+        "operationKind": { "$ref": "#/$defs/NormalizedKey" },
+        "component": { "$ref": "#/$defs/NormalizedKey" }
+      }
+    },
+    "HaltRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "haltId",
+        "projectId",
+        "changeId",
+        "correlationId",
+        "scope",
+        "detector",
+        "occurredAt",
+        "publishedAt",
+        "observation",
+        "evidenceRefs",
+        "severity",
+        "state"
+      ],
+      "properties": {
+        "contractType": { "const": "HaltRecordV1" },
+        "contractVersion": { "const": "1.0" },
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "correlationId": { "$ref": "#/$defs/Identity" },
+        "scope": { "$ref": "#/$defs/HaltScopeV1" },
+        "detector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["detectorId", "detectorEventId", "detectorCode"],
+          "properties": {
+            "detectorId": { "$ref": "#/$defs/Identifier" },
+            "detectorEventId": { "$ref": "#/$defs/Identifier" },
+            "detectorCode": { "$ref": "#/$defs/NormalizedKey" }
+          }
+        },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "publishedAt": { "$ref": "#/$defs/Timestamp" },
+        "observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fingerprintVersion",
+            "fingerprint",
+            "operationKind",
+            "component",
+            "normalizedFailureCode"
+          ],
+          "properties": {
+            "fingerprintVersion": { "const": "observation-v1" },
+            "fingerprint": { "$ref": "#/$defs/Fingerprint" },
+            "operationKind": { "$ref": "#/$defs/NormalizedKey" },
+            "component": { "$ref": "#/$defs/NormalizedKey" },
+            "normalizedFailureCode": { "$ref": "#/$defs/NormalizedKey" }
+          }
+        },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "severity": { "$ref": "#/$defs/Severity" },
+        "state": {
+          "enum": [
+            "detected",
+            "classified",
+            "action_pending",
+            "healing",
+            "recovered",
+            "escalated",
+            "quarantined"
+          ]
+        },
+        "classificationAssessmentId": { "$ref": "#/$defs/Identifier" },
+        "haltClass": { "$ref": "#/$defs/HaltClass" },
+        "effectiveIncidentId": { "$ref": "#/$defs/Identifier" },
+        "lastTransitionReasonCode": { "$ref": "#/$defs/ReasonCode" }
+      }
+    },
+    "AttributionAssessmentV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "assessmentId",
+        "haltId",
+        "projectId",
+        "changeId",
+        "scope",
+        "haltClass",
+        "confidence",
+        "affectedEntity",
+        "normalizedRootCauseKey",
+        "candidateCauses",
+        "alternativeCandidates",
+        "evidence",
+        "classifier",
+        "assessedAt",
+        "taxonomyPolicyVersion"
+      ],
+      "properties": {
+        "contractType": { "const": "AttributionAssessmentV1" },
+        "contractVersion": { "const": "1.0" },
+        "assessmentId": { "$ref": "#/$defs/Identifier" },
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "scope": { "$ref": "#/$defs/HaltScopeV1" },
+        "haltClass": { "$ref": "#/$defs/HaltClass" },
+        "confidence": { "enum": ["exact", "partial", "none"] },
+        "affectedEntity": { "$ref": "#/$defs/AffectedEntityV1" },
+        "normalizedRootCauseKey": { "$ref": "#/$defs/NormalizedKey" },
+        "candidateCauses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["causeKey", "evidenceRefs"],
+            "properties": {
+              "causeKey": { "$ref": "#/$defs/NormalizedKey" },
+              "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+            }
+          }
+        },
+        "alternativeCandidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["causeKey", "rejectionEvidenceRefs"],
+            "properties": {
+              "causeKey": { "$ref": "#/$defs/NormalizedKey" },
+              "rejectionEvidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+            }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "detectorEvidenceRefs",
+            "declaredWriteSet",
+            "actualChangedPaths",
+            "gitEvidenceRefs",
+            "outcomeEvidenceRefs",
+            "sideEffectState"
+          ],
+          "properties": {
+            "detectorEvidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+            "declaredWriteSet": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            },
+            "actualChangedPaths": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+            },
+            "gitEvidenceRefs": { "$ref": "#/$defs/OptionalEvidenceRefs" },
+            "outcomeEvidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+            "sideEffectState": {
+              "enum": ["none", "committed", "possible", "unknown"]
+            }
+          }
+        },
+        "classifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classifierId", "method"],
+          "properties": {
+            "classifierId": { "$ref": "#/$defs/Identifier" },
+            "method": {
+              "enum": ["deterministic", "human", "llm_proposal_validated"]
+            }
+          }
+        },
+        "assessedAt": { "$ref": "#/$defs/Timestamp" },
+        "taxonomyPolicyVersion": { "const": "halt-taxonomy-v1" }
+      }
+    },
+    "IncidentResolutionReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "receiptId",
+        "incidentId",
+        "projectId",
+        "changeId",
+        "resolutionKind",
+        "oracle",
+        "noActiveHealing",
+        "evidenceRefs",
+        "resolvedAt",
+        "resolvedBy",
+        "taxonomyPolicyVersion",
+        "correlationWindowSeconds"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentResolutionReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "resolutionKind": { "enum": ["mitigated", "resolved"] },
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "outcome", "observationResult"],
+          "properties": {
+            "kind": { "enum": ["executable", "human"] },
+            "outcome": { "const": "passed" },
+            "observationResult": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          }
+        },
+        "noActiveHealing": { "const": true },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "resolvedAt": { "$ref": "#/$defs/Timestamp" },
+        "resolvedBy": { "$ref": "#/$defs/Identity" },
+        "taxonomyPolicyVersion": { "const": "halt-taxonomy-v1" },
+        "correlationWindowSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2592000
+        }
+      }
+    },
+    "IncidentRecordV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "incidentId",
+        "projectId",
+        "changeId",
+        "incidentFingerprintVersion",
+        "incidentFingerprint",
+        "taxonomyPolicyVersion",
+        "firstOccurrenceAt",
+        "latestOccurrenceAt",
+        "haltIds",
+        "affectedEntities",
+        "severity",
+        "ownerKind",
+        "state",
+        "correlationWindowPolicy",
+        "reopenOrdinal",
+        "correlationReasonCode",
+        "openedAt"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentRecordV1" },
+        "contractVersion": { "const": "1.0" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "incidentFingerprintVersion": { "const": "incident-v1" },
+        "incidentFingerprint": { "$ref": "#/$defs/Fingerprint" },
+        "taxonomyPolicyVersion": { "const": "halt-taxonomy-v1" },
+        "firstOccurrenceAt": { "$ref": "#/$defs/Timestamp" },
+        "latestOccurrenceAt": { "$ref": "#/$defs/Timestamp" },
+        "haltIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "affectedEntities": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/AffectedEntityV1" }
+        },
+        "severity": { "$ref": "#/$defs/Severity" },
+        "ownerKind": { "enum": ["policy", "human", "unassigned"] },
+        "state": {
+          "enum": [
+            "open",
+            "investigating",
+            "healing",
+            "mitigated",
+            "escalated",
+            "resolved",
+            "reopened"
+          ]
+        },
+        "correlationWindowPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["durationSeconds", "reopenUntil"],
+          "properties": {
+            "durationSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2592000
+            },
+            "reopenUntil": {
+              "oneOf": [
+                { "$ref": "#/$defs/Timestamp" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "reopenOrdinal": { "type": "integer", "minimum": 0 },
+        "correlationReasonCode": { "$ref": "#/$defs/ReasonCode" },
+        "openedAt": { "$ref": "#/$defs/Timestamp" },
+        "closureReceiptId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "EventEnvelope": {
+      "type": "object",
+      "required": [
+        "id",
+        "sequence",
+        "type",
+        "occurredAt",
+        "projectId",
+        "changeId",
+        "actor",
+        "causationId",
+        "correlationId",
+        "payload",
+        "previousHash",
+        "hash"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/Identifier" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "type": {
+          "enum": [
+            "halt.detected",
+            "halt.classified",
+            "halt.dispositioned",
+            "halt.healing-started",
+            "halt.recovered",
+            "halt.escalated",
+            "halt.quarantined",
+            "incident.opened",
+            "incident.halt-linked",
+            "incident.investigating",
+            "incident.healing",
+            "incident.mitigated",
+            "incident.resolved",
+            "incident.reopened",
+            "incident.escalated",
+            "incident.correlation-superseded"
+          ]
+        },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "causationId": { "$ref": "#/$defs/Identity" },
+        "correlationId": { "$ref": "#/$defs/Identity" },
+        "payload": { "type": "object" },
+        "previousHash": {
+          "oneOf": [
+            { "$ref": "#/$defs/Fingerprint" },
+            { "type": "null" }
+          ]
+        },
+        "hash": { "$ref": "#/$defs/Fingerprint" }
+      }
+    },
+    "HaltIncidentEventV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/EventEnvelope" },
+        {
+          "if": {
+            "properties": { "type": { "const": "halt.detected" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["halt"],
+                "properties": {
+                  "halt": { "$ref": "#/$defs/HaltRecordV1" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "halt.classified" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "haltId",
+                  "assessment",
+                  "incidentId",
+                  "previousState",
+                  "state"
+                ],
+                "properties": {
+                  "haltId": { "$ref": "#/$defs/Identifier" },
+                  "assessment": { "$ref": "#/$defs/AttributionAssessmentV1" },
+                  "incidentId": { "$ref": "#/$defs/Identifier" },
+                  "previousState": { "const": "detected" },
+                  "state": { "const": "classified" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "halt.dispositioned",
+                  "halt.healing-started",
+                  "halt.recovered",
+                  "halt.escalated",
+                  "halt.quarantined"
+                ]
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "haltId",
+                  "previousState",
+                  "state",
+                  "reasonCode",
+                  "evidenceRefs"
+                ],
+                "properties": {
+                  "haltId": { "$ref": "#/$defs/Identifier" },
+                  "previousState": {
+                    "enum": [
+                      "classified",
+                      "action_pending",
+                      "healing"
+                    ]
+                  },
+                  "state": {
+                    "enum": [
+                      "action_pending",
+                      "healing",
+                      "recovered",
+                      "escalated",
+                      "quarantined"
+                    ]
+                  },
+                  "reasonCode": { "$ref": "#/$defs/ReasonCode" },
+                  "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "incident.opened" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["incident"],
+                "properties": {
+                  "incident": { "$ref": "#/$defs/IncidentRecordV1" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "incident.halt-linked" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "haltId",
+                  "incidentId",
+                  "incidentFingerprint",
+                  "reasonCode"
+                ],
+                "properties": {
+                  "haltId": { "$ref": "#/$defs/Identifier" },
+                  "incidentId": { "$ref": "#/$defs/Identifier" },
+                  "incidentFingerprint": { "$ref": "#/$defs/Fingerprint" },
+                  "reasonCode": {
+                    "enum": ["INCIDENT_MATCHED_OPEN", "INCIDENT_REOPENED"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "incident.investigating",
+                  "incident.healing",
+                  "incident.escalated"
+                ]
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "incidentId",
+                  "previousState",
+                  "state",
+                  "reasonCode",
+                  "evidenceRefs"
+                ],
+                "properties": {
+                  "incidentId": { "$ref": "#/$defs/Identifier" },
+                  "previousState": {
+                    "enum": [
+                      "open",
+                      "investigating",
+                      "healing",
+                      "mitigated",
+                      "escalated",
+                      "reopened"
+                    ]
+                  },
+                  "state": {
+                    "enum": [
+                      "investigating",
+                      "healing",
+                      "mitigated",
+                      "escalated"
+                    ]
+                  },
+                  "reasonCode": { "$ref": "#/$defs/ReasonCode" },
+                  "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "incident.mitigated" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "incidentId",
+                  "previousState",
+                  "state",
+                  "reasonCode",
+                  "evidenceRefs",
+                  "receipt"
+                ],
+                "properties": {
+                  "incidentId": { "$ref": "#/$defs/Identifier" },
+                  "previousState": {
+                    "enum": [
+                      "open",
+                      "investigating",
+                      "healing",
+                      "escalated",
+                      "reopened"
+                    ]
+                  },
+                  "state": { "const": "mitigated" },
+                  "reasonCode": { "$ref": "#/$defs/ReasonCode" },
+                  "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+                  "receipt": {
+                    "$ref": "#/$defs/IncidentResolutionReceiptV1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "incident.resolved" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "receipt",
+                  "previousState",
+                  "state",
+                  "reopenUntil"
+                ],
+                "properties": {
+                  "receipt": {
+                    "$ref": "#/$defs/IncidentResolutionReceiptV1"
+                  },
+                  "previousState": { "enum": ["mitigated", "escalated"] },
+                  "state": { "const": "resolved" },
+                  "reopenUntil": { "$ref": "#/$defs/Timestamp" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "incident.reopened" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "haltId",
+                  "incidentId",
+                  "previousState",
+                  "state",
+                  "reopenOrdinal",
+                  "reopenUntil",
+                  "reasonCode"
+                ],
+                "properties": {
+                  "haltId": { "$ref": "#/$defs/Identifier" },
+                  "incidentId": { "$ref": "#/$defs/Identifier" },
+                  "previousState": { "enum": ["mitigated", "resolved"] },
+                  "state": { "const": "reopened" },
+                  "reopenOrdinal": { "type": "integer", "minimum": 1 },
+                  "reopenUntil": {
+                    "anyOf": [
+                      { "$ref": "#/$defs/Timestamp" },
+                      { "type": "null" }
+                    ]
+                  },
+                  "reasonCode": { "const": "INCIDENT_REOPENED" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "incident.correlation-superseded" }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "correctionId",
+                  "haltId",
+                  "previousIncidentId",
+                  "incidentId",
+                  "correctedAt",
+                  "correctedBy",
+                  "reason",
+                  "evidenceRefs"
+                ],
+                "properties": {
+                  "correctionId": { "$ref": "#/$defs/Identifier" },
+                  "haltId": { "$ref": "#/$defs/Identifier" },
+                  "previousIncidentId": { "$ref": "#/$defs/Identifier" },
+                  "incidentId": { "$ref": "#/$defs/Identifier" },
+                  "correctedAt": { "$ref": "#/$defs/Timestamp" },
+                  "correctedBy": { "$ref": "#/$defs/Identity" },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

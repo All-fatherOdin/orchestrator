@@ -15,6 +15,17 @@ import type {
   PlanningContractV1,
   TrustedRepositorySnapshotV1,
 } from "./change-control-v1/index.ts";
+import type {
+  AttributionAssessmentV1,
+  HaltRecordV1,
+} from "./halts-incidents-v1/index.ts";
+import {
+  HALT_CLASSES_V1,
+  incidentFingerprintV1,
+  observationFingerprintV1,
+} from "./halts-incidents-v1/index.ts";
+import haltsIncidentsV1Schema from "./halts-incidents-v1/schemas/halts-incidents-v1.schema.json";
+import haltsIncidentsV1Examples from "./halts-incidents-v1/schemas/halts-incidents-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -149,6 +160,173 @@ const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPat
 
 const planningShaOne = "1".repeat(40);
 const planningShaTwo = "2".repeat(40);
+
+function haltContractsV1(input: {
+  haltId: string;
+  detectorEventId: string;
+  occurredAt?: string;
+  haltClass?: AttributionAssessmentV1["haltClass"];
+  confidence?: AttributionAssessmentV1["confidence"];
+  normalizedRootCauseKey?: string;
+}) {
+  const occurredAt = input.occurredAt ?? "2026-07-31T10:00:00.000Z";
+  const scope = {
+    waveId: "planning-wave",
+    taskId: "task-one",
+    attemptId: null,
+    planRevision: null,
+    runId: null,
+    workspaceAttemptId: null,
+    mergeRequestId: null,
+    commitId: null,
+  } as const;
+  const haltClass = input.haltClass ?? "acceptance_or_verification_failure";
+  const confidence = input.confidence ?? "exact";
+  const normalizedRootCauseKey =
+    input.normalizedRootCauseKey ??
+    (confidence === "exact"
+      ? "oracle:test-failed"
+      : confidence === "partial"
+        ? "partial:oracle-family"
+        : "unknown");
+  const halt: HaltRecordV1 = {
+    contractType: "HaltRecordV1",
+    contractVersion: "1.0",
+    haltId: input.haltId,
+    projectId: "planning-project",
+    changeId: "planning-change",
+    correlationId: `correlation-${input.haltId}`,
+    scope,
+    detector: {
+      detectorId: "detector:test",
+      detectorEventId: input.detectorEventId,
+      detectorCode: "TEST_ORACLE_FAILED",
+    },
+    occurredAt,
+    publishedAt: occurredAt,
+    observation: {
+      fingerprintVersion: "observation-v1",
+      fingerprint: "",
+      operationKind: "verification",
+      component: "test-runner",
+      normalizedFailureCode: "TEST_FAILED",
+    },
+    evidenceRefs: [`test:evidence:${input.haltId}`],
+    severity: "blocking",
+    state: "detected",
+  };
+  const assessment: AttributionAssessmentV1 = {
+    contractType: "AttributionAssessmentV1",
+    contractVersion: "1.0",
+    assessmentId: `assessment-${input.haltId}`,
+    haltId: input.haltId,
+    projectId: halt.projectId,
+    changeId: halt.changeId,
+    scope,
+    haltClass,
+    confidence,
+    affectedEntity: {
+      projectId: halt.projectId,
+      changeId: halt.changeId,
+      waveId: scope.waveId,
+      taskId: scope.taskId,
+      operationKind: halt.observation.operationKind,
+      component: halt.observation.component,
+    },
+    normalizedRootCauseKey,
+    candidateCauses:
+      confidence === "exact"
+        ? [
+            {
+              causeKey: normalizedRootCauseKey,
+              evidenceRefs: halt.evidenceRefs,
+            },
+          ]
+        : confidence === "partial"
+          ? [
+              {
+                causeKey: "candidate:oracle",
+                evidenceRefs: halt.evidenceRefs,
+              },
+              {
+                causeKey: "candidate:environment",
+                evidenceRefs: halt.evidenceRefs,
+              },
+            ]
+          : [],
+    alternativeCandidates: [],
+    evidence: {
+      detectorEvidenceRefs: halt.evidenceRefs,
+      declaredWriteSet: [],
+      actualChangedPaths: [],
+      gitEvidenceRefs: [],
+      outcomeEvidenceRefs: halt.evidenceRefs,
+      sideEffectState: "none",
+    },
+    classifier: {
+      classifierId: "classifier:test",
+      method: "deterministic",
+    },
+    assessedAt: occurredAt,
+    taxonomyPolicyVersion: "halt-taxonomy-v1",
+  };
+  return { halt, assessment };
+}
+
+function fingerprintedHaltContractsV1(
+  input: Parameters<typeof haltContractsV1>[0],
+) {
+  const contracts = haltContractsV1(input);
+  return {
+    halt: {
+      ...contracts.halt,
+      observation: {
+        ...contracts.halt.observation,
+        fingerprint: observationFingerprintV1(contracts.halt),
+      },
+    },
+    assessment: contracts.assessment,
+  };
+}
+
+async function seedPhase4Scope(store: InstanceType<typeof ChangeControlStore>) {
+  await store.create("planning-project", {
+    changeId: "planning-change",
+    actor: "human:test",
+  });
+  await store.createWave("planning-project", "planning-change", {
+    waveId: "planning-wave",
+    actor: "human:test",
+    tasks: [{ taskId: "task-one" }],
+  });
+}
+
+function mitigationReceiptV1(
+  receiptId: string,
+  incidentId: string,
+  resolvedAt: string,
+) {
+  return {
+    contractType: "IncidentResolutionReceiptV1" as const,
+    contractVersion: "1.0" as const,
+    receiptId,
+    incidentId,
+    projectId: "planning-project",
+    changeId: "planning-change",
+    resolutionKind: "mitigated" as const,
+    oracle: {
+      kind: "human" as const,
+      outcome: "passed" as const,
+      observationResult: "Immediate impact is stopped with recorded evidence.",
+    },
+    noActiveHealing: true as const,
+    evidenceRefs: [`human:mitigation:${receiptId}`],
+    resolvedAt,
+    resolvedBy: "human:operator",
+    taxonomyPolicyVersion: "halt-taxonomy-v1" as const,
+    correlationWindowSeconds: 60,
+  };
+}
 
 function planningContract(
   overrides: Partial<PlanningContractV1> = {},
@@ -523,6 +701,1090 @@ test("change-control ledger serializes project writes and rebuilds immutable pro
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 publishes one classified halt and one effective incident atomically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-incidents-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      createId: (() => {
+        let ordinal = 0;
+        return () => `phase4-id-${++ordinal}`;
+      })(),
+    });
+    await seedPhase4Scope(store);
+    const contracts = fingerprintedHaltContractsV1({
+      haltId: "halt-one",
+      detectorEventId: "detector-event-one",
+    });
+
+    const published = await store.detectAndClassifyHalt(
+      "planning-project",
+      contracts,
+    );
+
+    assert.equal(published.halt.state, "classified");
+    assert.equal(published.halt.effectiveIncidentId, published.incident.incidentId);
+    assert.deepEqual(published.incident.haltIds, ["halt-one"]);
+    assert.equal(published.assessment.confidence, "exact");
+    assert.deepEqual(
+      published.events.map((event) => event.type),
+      ["halt.detected", "incident.opened", "halt.classified"],
+    );
+    const eventValidator = new Ajv2020({
+      allErrors: true,
+      strict: true,
+    }).compile(haltsIncidentsV1Schema);
+    for (const event of published.events)
+      assert.equal(
+        eventValidator(event),
+        true,
+        JSON.stringify(eventValidator.errors),
+      );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Halts and Incidents Contract v1 examples validate and unsafe fixtures fail closed", () => {
+  const validator = new Ajv2020({
+    allErrors: true,
+    strict: true,
+  }).compile(haltsIncidentsV1Schema);
+  for (const example of haltsIncidentsV1Examples)
+    assert.equal(
+      validator(example),
+      true,
+      JSON.stringify(validator.errors),
+    );
+
+  const missingExplicitScope = structuredClone(
+    haltsIncidentsV1Examples[0],
+  ) as Record<string, unknown>;
+  delete (missingExplicitScope.scope as Record<string, unknown>).attemptId;
+  assert.equal(validator(missingExplicitScope), false);
+
+  const unsupportedTaxonomy = structuredClone(
+    haltsIncidentsV1Examples[1],
+  ) as Record<string, unknown>;
+  unsupportedTaxonomy.taxonomyPolicyVersion = "halt-taxonomy-v2";
+  assert.equal(validator(unsupportedTaxonomy), false);
+
+  const unknownEvent = {
+    id: "event-unknown",
+    sequence: 1,
+    type: "incident.force-closed",
+    occurredAt: "2026-07-31T10:00:00.000Z",
+    projectId: "orchestrator",
+    changeId: "change-phase4",
+    actor: "human:test",
+    causationId: "cause",
+    correlationId: "correlation",
+    payload: {},
+    previousHash: null,
+    hash: "1".repeat(64),
+  };
+  assert.equal(validator(unknownEvent), false);
+});
+
+test("Phase 4 accepts every closed halt taxonomy class", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-taxonomy-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+
+    for (const haltClass of HALT_CLASSES_V1) {
+      const confidence = haltClass === "unknown" ? "none" : "exact";
+      const published = await store.detectAndClassifyHalt(
+        "planning-project",
+        fingerprintedHaltContractsV1({
+          haltId: `halt-taxonomy-${haltClass}`,
+          detectorEventId: `detector-taxonomy-${haltClass}`,
+          haltClass,
+          confidence,
+        }),
+      );
+      assert.equal(published.halt.haltClass, haltClass);
+      assert.equal(published.assessment.haltClass, haltClass);
+      assert.equal(
+        published.halt.effectiveIncidentId,
+        published.incident.incidentId,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 semantic validation rejects unsafe attribution and fingerprints without partial publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-negative-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+    const before = await store.getHaltIncidentProjection("planning-project");
+
+    const badFingerprint = fingerprintedHaltContractsV1({
+      haltId: "halt-bad-fingerprint",
+      detectorEventId: "detector-bad-fingerprint",
+    });
+    await assert.rejects(
+      store.detectAndClassifyHalt("planning-project", {
+        ...badFingerprint,
+        halt: {
+          ...badFingerprint.halt,
+          observation: {
+            ...badFingerprint.halt.observation,
+            fingerprint: "f".repeat(64),
+          },
+        },
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /fingerprint/.test(error.message),
+    );
+
+    const unsafeUnknown = fingerprintedHaltContractsV1({
+      haltId: "halt-unsafe-unknown",
+      detectorEventId: "detector-unsafe-unknown",
+      haltClass: "unknown",
+      confidence: "exact",
+      normalizedRootCauseKey: "guessed:root-cause",
+    });
+    await assert.rejects(
+      store.detectAndClassifyHalt("planning-project", unsafeUnknown),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /Unknown classification requires none attribution/.test(error.message),
+    );
+
+    const unsafeNone = fingerprintedHaltContractsV1({
+      haltId: "halt-unsafe-none",
+      detectorEventId: "detector-unsafe-none",
+      confidence: "none",
+    });
+    await assert.rejects(
+      store.detectAndClassifyHalt("planning-project", {
+        ...unsafeNone,
+        assessment: {
+          ...unsafeNone.assessment,
+          candidateCauses: [
+            {
+              causeKey: "guessed:cause",
+              evidenceRefs: unsafeNone.halt.evidenceRefs,
+            },
+          ],
+        },
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /None attribution requires unknown/.test(error.message),
+    );
+
+    const conflictingExact = fingerprintedHaltContractsV1({
+      haltId: "halt-conflicting-exact",
+      detectorEventId: "detector-conflicting-exact",
+    });
+    await assert.rejects(
+      store.detectAndClassifyHalt("planning-project", {
+        ...conflictingExact,
+        assessment: {
+          ...conflictingExact.assessment,
+          candidateCauses: [
+            ...conflictingExact.assessment.candidateCauses,
+            {
+              causeKey: "oracle:conflicting-cause",
+              evidenceRefs: conflictingExact.halt.evidenceRefs,
+            },
+          ],
+        },
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /Exact attribution requires one proven normalized cause/.test(
+          error.message,
+        ),
+    );
+
+    const unknown = fingerprintedHaltContractsV1({
+      haltId: "halt-safe-unknown",
+      detectorEventId: "detector-safe-unknown",
+      haltClass: "unknown",
+      confidence: "none",
+    });
+    const published = await store.detectAndClassifyHalt(
+      "planning-project",
+      unknown,
+    );
+    assert.equal(published.halt.haltClass, "unknown");
+    assert.equal(published.halt.state, "escalated");
+    assert.equal(published.halt.lastTransitionReasonCode, "HALT_CLASS_UNKNOWN");
+    assert.equal(published.incident.state, "escalated");
+    assert.equal(published.assessment.confidence, "none");
+
+    const partial = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-safe-partial",
+        detectorEventId: "detector-safe-partial",
+        haltClass: "ownership_or_state_ambiguity",
+        confidence: "partial",
+      }),
+    );
+    assert.equal(partial.halt.state, "escalated");
+    assert.equal(
+      partial.halt.lastTransitionReasonCode,
+      "ATTRIBUTION_NOT_EXACT",
+    );
+    assert.equal(partial.assessment.candidateCauses.length, 2);
+
+    const after = await store.getHaltIncidentProjection("planning-project");
+    assert.equal(after.halts.length, before.halts.length + 2);
+    assert.equal(
+      after.events.filter((event) => event.type === "halt.detected").length,
+      2,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 detector idempotency and concurrent correlation are stable across volatile attempts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-concurrent-"));
+  try {
+    let idOrdinal = 0;
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      createId: () => `concurrent-id-${++idOrdinal}`,
+    });
+    const secondStore = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      createId: () => `concurrent-id-${++idOrdinal}`,
+    });
+    await seedPhase4Scope(store);
+    const contracts = Array.from({ length: 12 }, (_, index) => {
+      const source = fingerprintedHaltContractsV1({
+        haltId: `halt-concurrent-${index}`,
+        detectorEventId: `detector-concurrent-${index}`,
+      });
+      const halt = {
+        ...source.halt,
+        scope: {
+          ...source.halt.scope,
+          attemptId: `attempt-${index}`,
+          runId: `run-${index}`,
+          workspaceAttemptId: `workspace-${index}`,
+        },
+      };
+      return {
+        halt: {
+          ...halt,
+          observation: {
+            ...halt.observation,
+            fingerprint: observationFingerprintV1(halt),
+          },
+        },
+        assessment: {
+          ...source.assessment,
+          scope: halt.scope,
+          evidence: {
+            ...source.assessment.evidence,
+            gitEvidenceRefs: [`git:workspace:${index}`],
+          },
+        },
+      };
+    });
+
+    const published = await Promise.all(
+      contracts.map((contract, index) =>
+        (index % 2 === 0 ? store : secondStore).detectAndClassifyHalt(
+          "planning-project",
+          contract,
+        ),
+      ),
+    );
+    assert.equal(
+      new Set(published.map((item) => item.incident.incidentId)).size,
+      1,
+    );
+    assert.equal(
+      new Set(published.map((item) => item.incident.incidentFingerprint)).size,
+      1,
+    );
+    assert.equal(
+      incidentFingerprintV1(contracts[0].assessment),
+      published[0].incident.incidentFingerprint,
+    );
+    const correlatedProjection = await store.getHaltIncidentProjection(
+      "planning-project",
+    );
+    assert.deepEqual(
+      new Set(correlatedProjection.incidents[0].haltIds),
+      new Set(contracts.map((contract) => contract.halt.haltId)),
+    );
+
+    const beforeReplay = await store.getHaltIncidentProjection(
+      "planning-project",
+    );
+    const replayed = await secondStore.detectAndClassifyHalt(
+      "planning-project",
+      contracts[0],
+    );
+    const afterReplay = await store.getHaltIncidentProjection(
+      "planning-project",
+    );
+    assert.equal(replayed.halt.haltId, contracts[0].halt.haltId);
+    assert.deepEqual(afterReplay, beforeReplay);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 ledger publication recovers an identity-fenced lock left by a dead process", { timeout: 40_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-dead-lock-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const lockPath = `${projectFile}.write-lock`;
+    const deadOwner = {
+      contractType: "ChangeControlLedgerWriteLockV1",
+      contractVersion: "1.0",
+      ownerPid: 999_999,
+      ownerToken: "dead-ledger-owner",
+      acquiredAt: "2026-07-31T09:00:00.000Z",
+    };
+    await mkdir(lockPath);
+    await writeFile(
+      join(lockPath, `owner-${deadOwner.ownerToken}.json`),
+      JSON.stringify(deadOwner),
+      "utf8",
+    );
+
+    const published = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-after-dead-lock",
+        detectorEventId: "detector-after-dead-lock",
+      }),
+    );
+
+    assert.equal(published.halt.haltId, "halt-after-dead-lock");
+    await assert.rejects(access(lockPath), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 correlation is atomic across server processes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-process-race-"));
+  const releasePath = join(root, "release-first-writer");
+  const storeUrl = new URL("./change-control-v1/index.ts", import.meta.url).href;
+  const spawnCorrelationChild = (
+    contracts: ReturnType<typeof fingerprintedHaltContractsV1>,
+    pauseAtPublication: boolean,
+  ) => {
+    const script = `
+      const fs = await import("node:fs");
+      const { ChangeControlStore } = await import(${JSON.stringify(storeUrl)});
+      const store = new ChangeControlStore(${JSON.stringify(root)}, {
+        now: () => {
+          ${pauseAtPublication ? `process.stdout.write("PUBLICATION_CLOCK\\n"); while (!fs.existsSync(${JSON.stringify(releasePath)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);` : ""}
+          return "2026-07-31T10:00:00.000Z";
+        },
+      });
+      process.stdout.write("STARTED\\n");
+      const result = await store.detectAndClassifyHalt(
+        "planning-project",
+        ${JSON.stringify(contracts)},
+      );
+      process.stdout.write(JSON.stringify({
+        haltId: result.halt.haltId,
+        incidentId: result.incident.incidentId,
+      }) + "\\n");
+    `;
+    return spawn(
+      testNodeExecutable,
+      ["--import", "tsx", "--input-type=module", "-e", script],
+      {
+        cwd: process.cwd(),
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  };
+  const waitForExit = (child: ReturnType<typeof spawn>) => {
+    if (child.exitCode !== null)
+      return child.exitCode === 0
+        ? Promise.resolve()
+        : Promise.reject(
+            new Error(`Correlation child exited ${child.exitCode}.`),
+          );
+    return new Promise<void>((resolve, reject) => {
+      let errors = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        errors += chunk.toString("utf8");
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Correlation child exited ${code}: ${errors}`));
+      });
+    });
+  };
+
+  let first: ReturnType<typeof spawn> | undefined;
+  let second: ReturnType<typeof spawn> | undefined;
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+    first = spawnCorrelationChild(
+      fingerprintedHaltContractsV1({
+        haltId: "halt-process-one",
+        detectorEventId: "detector-process-one",
+      }),
+      true,
+    );
+    await waitForLine(first, "PUBLICATION_CLOCK");
+    second = spawnCorrelationChild(
+      fingerprintedHaltContractsV1({
+        haltId: "halt-process-two",
+        detectorEventId: "detector-process-two",
+      }),
+      false,
+    );
+    await waitForLine(second, "STARTED");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await writeFile(releasePath, "release\n", "utf8");
+    await Promise.all([waitForExit(first), waitForExit(second)]);
+
+    const projection = await store.getHaltIncidentProjection("planning-project");
+    assert.equal(projection.halts.length, 2);
+    assert.equal(projection.incidents.length, 1);
+    assert.deepEqual(
+      new Set(projection.incidents[0].haltIds),
+      new Set(["halt-process-one", "halt-process-two"]),
+    );
+    assert.equal(
+      projection.events.filter((event) => event.type === "incident.opened")
+        .length,
+      1,
+    );
+  } finally {
+    if (first) await stopChild(first);
+    if (second) await stopChild(second);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 restart replay is deterministic and semantic corruption fails closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-replay-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+    await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-replay",
+        detectorEventId: "detector-replay",
+      }),
+    );
+    const expected = await store.getHaltIncidentProjection("planning-project");
+    const restarted = new ChangeControlStore(root);
+    assert.deepEqual(
+      await restarted.getHaltIncidentProjection("planning-project"),
+      expected,
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    const classification = ledger.events.find(
+      (event) => event.type === "halt.classified",
+    )!;
+    const assessment = (
+      classification.payload as {
+        assessment: { affectedEntity: { component: string } };
+      }
+    ).assessment;
+    assessment.affectedEntity.component = "corrupted-component";
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+
+    await assert.rejects(
+      restarted.getHaltIncidentProjection("planning-project"),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /mismatched affected entity/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 reopens a mitigated incident when a matching halt recurs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-mitigated-reopen-"));
+  let publicationTime = "2026-07-31T10:00:00.000Z";
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => publicationTime,
+    });
+    await seedPhase4Scope(store);
+    const first = await store.detectAndClassifyHalt(
+      "planning-project",
+      {
+        ...fingerprintedHaltContractsV1({
+          haltId: "halt-mitigated-first",
+          detectorEventId: "detector-mitigated-first",
+        }),
+        correlationWindowSeconds: 60,
+      },
+    );
+    publicationTime = "2026-07-31T10:01:00.000Z";
+    await assert.rejects(
+      store.transitionIncident(
+        "planning-project",
+        first.incident.incidentId,
+        {
+          actor: "human:operator",
+          to: "mitigated",
+          reasonCode: "BLOCKING_INCIDENT_OPEN",
+          evidenceRefs: ["human:mitigation-without-oracle"],
+        },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /receipt/.test(error.message),
+    );
+    await store.transitionIncident(
+      "planning-project",
+      first.incident.incidentId,
+      {
+        actor: "human:operator",
+        to: "mitigated",
+        reasonCode: "BLOCKING_INCIDENT_OPEN",
+        evidenceRefs: ["human:mitigation:mitigation-reopen-first"],
+        receipt: mitigationReceiptV1(
+          "mitigation-reopen-first",
+          first.incident.incidentId,
+          publicationTime,
+        ),
+      },
+    );
+    const mitigatedProjection = await store.getHaltIncidentProjection(
+      "planning-project",
+    );
+    const mitigationEvent = mitigatedProjection.events.find(
+      (event) => event.type === "incident.mitigated",
+    );
+    assert.ok(mitigationEvent);
+    const eventValidator = new Ajv2020({
+      allErrors: true,
+      strict: true,
+    }).compile(haltsIncidentsV1Schema);
+    assert.equal(
+      eventValidator(mitigationEvent),
+      true,
+      JSON.stringify(eventValidator.errors),
+    );
+    assert.ok(
+      mitigatedProjection.resolutionReceipts.some(
+        (receipt) => receipt.receiptId === "mitigation-reopen-first",
+      ),
+    );
+
+    publicationTime = "2026-07-31T10:02:00.000Z";
+    const recurrence = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-mitigated-recurrence",
+        detectorEventId: "detector-mitigated-recurrence",
+        occurredAt: publicationTime,
+      }),
+    );
+
+    assert.equal(recurrence.incident.incidentId, first.incident.incidentId);
+    assert.equal(recurrence.incident.state, "reopened");
+    assert.equal(recurrence.incident.reopenOrdinal, 1);
+    assert.ok(
+      recurrence.events.some((event) => event.type === "incident.reopened"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 resolves, deterministically reopens, expires windows, and preserves superseding correlation history", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-halts-reopen-"));
+  let publicationTime = "2026-07-31T10:00:00.000Z";
+  try {
+    let idOrdinal = 0;
+    const store = new ChangeControlStore(root, {
+      now: () => publicationTime,
+      createId: () => `reopen-id-${++idOrdinal}`,
+    });
+    await seedPhase4Scope(store);
+    const first = await store.detectAndClassifyHalt(
+      "planning-project",
+      {
+        ...fingerprintedHaltContractsV1({
+          haltId: "halt-window-one",
+          detectorEventId: "detector-window-one",
+          occurredAt: publicationTime,
+        }),
+        correlationWindowSeconds: 60,
+      },
+    );
+    await store.transitionHalt("planning-project", first.halt.haltId, {
+      to: "escalated",
+      actor: "human:operator",
+      reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+      evidenceRefs: ["human:triage:first"],
+    });
+    await store.transitionIncident(
+      "planning-project",
+      first.incident.incidentId,
+      {
+        to: "mitigated",
+        actor: "human:operator",
+        reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+        evidenceRefs: ["human:mitigation:mitigation-window-first"],
+        receipt: mitigationReceiptV1(
+          "mitigation-window-first",
+          first.incident.incidentId,
+          publicationTime,
+        ),
+      },
+    );
+    publicationTime = "2026-07-31T10:01:00.000Z";
+    const beforeRejectedResolution = await store.getHaltIncidentProjection(
+      "planning-project",
+    );
+    const mismatchedReceipt = {
+      contractType: "IncidentResolutionReceiptV1" as const,
+      contractVersion: "1.0" as const,
+      receiptId: "resolution-window-mismatched",
+      incidentId: first.incident.incidentId,
+      projectId: "planning-project",
+      changeId: "planning-change",
+      resolutionKind: "resolved" as const,
+      oracle: {
+        kind: "executable" as const,
+        outcome: "passed" as const,
+        observationResult: "The blocking oracle passed.",
+      },
+      noActiveHealing: true as const,
+      evidenceRefs: ["oracle:passed:mismatched"],
+      resolvedAt: "2026-07-31T09:00:00.000Z",
+      resolvedBy: "policy:resolution-oracle-v1",
+      taxonomyPolicyVersion: "halt-taxonomy-v1" as const,
+      correlationWindowSeconds: 60,
+    };
+    for (const resolvedAt of [
+      "2026-07-31T09:00:00.000Z",
+      "2026-07-31T11:00:00.000Z",
+    ])
+      await assert.rejects(
+        store.resolveIncident("planning-project", first.incident.incidentId, {
+          receipt: { ...mismatchedReceipt, resolvedAt },
+        }),
+        (error: unknown) =>
+          error instanceof ChangeControlError &&
+          error.code === "INVALID_INPUT" &&
+          /authoritative publication time/.test(error.message),
+      );
+    assert.deepEqual(
+      await store.getHaltIncidentProjection("planning-project"),
+      beforeRejectedResolution,
+    );
+    const firstResolved = await store.resolveIncident(
+      "planning-project",
+      first.incident.incidentId,
+      {
+        receipt: {
+          contractType: "IncidentResolutionReceiptV1",
+          contractVersion: "1.0",
+          receiptId: "resolution-window-one",
+          incidentId: first.incident.incidentId,
+          projectId: "planning-project",
+          changeId: "planning-change",
+          resolutionKind: "resolved",
+          oracle: {
+            kind: "executable",
+            outcome: "passed",
+            observationResult: "The blocking oracle passed.",
+          },
+          noActiveHealing: true,
+          evidenceRefs: ["oracle:passed:first"],
+          resolvedAt: publicationTime,
+          resolvedBy: "policy:resolution-oracle-v1",
+          taxonomyPolicyVersion: "halt-taxonomy-v1",
+          correlationWindowSeconds: 60,
+        },
+      },
+    );
+    assert.equal(
+      firstResolved.correlationWindowPolicy.reopenUntil,
+      "2026-07-31T10:02:00.000Z",
+    );
+
+    publicationTime = "2026-07-31T10:01:30.000Z";
+    const second = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-window-two",
+        detectorEventId: "detector-window-two",
+        occurredAt: publicationTime,
+      }),
+    );
+    assert.equal(second.incident.incidentId, first.incident.incidentId);
+    assert.equal(second.incident.state, "reopened");
+    assert.equal(second.incident.reopenOrdinal, 1);
+
+    await store.transitionHalt("planning-project", second.halt.haltId, {
+      to: "escalated",
+      actor: "human:operator",
+      reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+      evidenceRefs: ["human:triage:second"],
+    });
+    await store.transitionIncident(
+      "planning-project",
+      second.incident.incidentId,
+      {
+        to: "mitigated",
+        actor: "human:operator",
+        reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+        evidenceRefs: ["human:mitigation:mitigation-window-second"],
+        receipt: mitigationReceiptV1(
+          "mitigation-window-second",
+          second.incident.incidentId,
+          publicationTime,
+        ),
+      },
+    );
+    publicationTime = "2026-07-31T10:01:40.000Z";
+    await store.resolveIncident(
+      "planning-project",
+      second.incident.incidentId,
+      {
+        receipt: {
+          contractType: "IncidentResolutionReceiptV1",
+          contractVersion: "1.0",
+          receiptId: "resolution-window-two",
+          incidentId: second.incident.incidentId,
+          projectId: "planning-project",
+          changeId: "planning-change",
+          resolutionKind: "resolved",
+          oracle: {
+            kind: "executable",
+            outcome: "passed",
+            observationResult: "The blocking oracle remained healthy.",
+          },
+          noActiveHealing: true,
+          evidenceRefs: ["oracle:passed:second"],
+          resolvedAt: publicationTime,
+          resolvedBy: "policy:resolution-oracle-v1",
+          taxonomyPolicyVersion: "halt-taxonomy-v1",
+          correlationWindowSeconds: 60,
+        },
+      },
+    );
+
+    publicationTime = "2026-07-31T10:03:00.000Z";
+    const third = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-window-three",
+        detectorEventId: "detector-window-three",
+        occurredAt: "2026-07-31T09:00:00.000Z",
+      }),
+    );
+    assert.notEqual(third.incident.incidentId, first.incident.incidentId);
+    assert.equal(
+      third.incident.correlationReasonCode,
+      "INCIDENT_REOPEN_WINDOW_EXPIRED",
+    );
+
+    const beforeRejectedCorrection =
+      await store.getHaltIncidentProjection("planning-project");
+    publicationTime = "2026-07-31T10:03:00.500Z";
+    await assert.rejects(
+      store.correctIncidentCorrelation(
+        "planning-project",
+        third.halt.haltId,
+        {
+          correctionId: "correction-into-resolved",
+          incidentId: first.incident.incidentId,
+          actor: "human:operator",
+          correctedAt: publicationTime,
+          reason: "This active halt must not silently invalidate resolution.",
+          evidenceRefs: ["human:correlation-review:rejected"],
+        },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CONFLICT" &&
+        /resolved incident/.test(error.message),
+    );
+    assert.deepEqual(
+      await store.getHaltIncidentProjection("planning-project"),
+      beforeRejectedCorrection,
+    );
+
+    publicationTime = "2026-07-31T10:03:01.000Z";
+    await assert.rejects(
+      store.correctIncidentCorrelation(
+        "planning-project",
+        first.halt.haltId,
+        {
+          correctionId: "correction-non-human",
+          incidentId: third.incident.incidentId,
+          actor: "policy:incident-correlation-v1",
+          correctedAt: "2020-01-01T00:00:00.000Z",
+          reason: "A policy actor must not rewrite human-owned correlation.",
+          evidenceRefs: ["policy:unsupported-correction"],
+        },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "INVALID_INPUT" &&
+        /human actor/.test(error.message),
+    );
+    const corrected = await store.correctIncidentCorrelation(
+      "planning-project",
+      first.halt.haltId,
+      {
+        correctionId: "correction-window-one",
+        incidentId: third.incident.incidentId,
+        actor: "human:operator",
+        correctedAt: "2020-01-01T00:00:00.000Z",
+        reason: "The original durable occurrence belongs to the later aggregate.",
+        evidenceRefs: ["human:correlation-review"],
+      },
+    );
+    assert.equal(
+      corrected.halt.effectiveIncidentId,
+      third.incident.incidentId,
+    );
+    const projection = await store.getHaltIncidentProjection(
+      "planning-project",
+    );
+    assert.deepEqual(projection.correlationHistory, [
+      {
+        correctionId: "correction-window-one",
+        haltId: first.halt.haltId,
+        previousIncidentId: first.incident.incidentId,
+        incidentId: third.incident.incidentId,
+        correctedAt: publicationTime,
+        correctedBy: "human:operator",
+        reason:
+          "The original durable occurrence belongs to the later aggregate.",
+        evidenceRefs: ["human:correlation-review"],
+      },
+    ]);
+    assert.ok(
+      projection.incidents
+        .find(
+          (incident) => incident.incidentId === first.incident.incidentId,
+        )
+        ?.haltIds.includes(first.halt.haltId),
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    ledger.events.push({
+      id: "corrupt-correction-into-resolved",
+      sequence: ledger.events.length + 1,
+      type: "incident.correlation-superseded",
+      occurredAt: publicationTime,
+      projectId: "planning-project",
+      changeId: "planning-change",
+      waveId: "planning-wave",
+      taskId: "task-one",
+      actor: "human:operator",
+      causationId: "manual-corruption",
+      correlationId: third.halt.correlationId,
+      payload: {
+        correctionId: "corrupt-correction-into-resolved",
+        haltId: third.halt.haltId,
+        previousIncidentId: third.incident.incidentId,
+        incidentId: first.incident.incidentId,
+        correctedAt: publicationTime,
+        correctedBy: "human:operator",
+        reason: "A resolved target must fail canonical replay.",
+        evidenceRefs: ["test:corrupt-correlation"],
+      },
+      previousHash: null,
+      hash: "",
+    });
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+    await assert.rejects(
+      new ChangeControlStore(root).getHaltIncidentProjection("planning-project"),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /correction/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 HTTP APIs publish and read focused halt/incident projections", async () => {
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListening) =>
+    server.once("listening", resolveListening),
+  );
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const projectId = "phase4-http-project";
+    const changeId = "phase4-http-change";
+    const waveId = "phase4-http-wave";
+    const taskId = "phase4-http-task";
+    const changes = `${origin}/api/change-control/projects/${projectId}/changes`;
+    assert.equal(
+      (
+        await fetch(changes, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            changeId,
+            actor: "human:http-test",
+          }),
+        })
+      ).status,
+      201,
+    );
+    assert.equal(
+      (
+        await fetch(`${changes}/${changeId}/waves`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            waveId,
+            actor: "human:http-test",
+            tasks: [{ taskId }],
+          }),
+        })
+      ).status,
+      201,
+    );
+
+    const publishedAt = new Date().toISOString();
+    const source = haltContractsV1({
+      haltId: "phase4-http-halt",
+      detectorEventId: "phase4-http-detector-event",
+      occurredAt: publishedAt,
+    });
+    const scope = {
+      ...source.halt.scope,
+      waveId,
+      taskId,
+    };
+    const haltWithoutFingerprint = {
+      ...source.halt,
+      projectId,
+      changeId,
+      scope,
+      correlationId: "phase4-http-correlation",
+    };
+    const halt = {
+      ...haltWithoutFingerprint,
+      observation: {
+        ...haltWithoutFingerprint.observation,
+        fingerprint: observationFingerprintV1(haltWithoutFingerprint),
+      },
+    };
+    const assessment = {
+      ...source.assessment,
+      assessmentId: "phase4-http-assessment",
+      haltId: halt.haltId,
+      projectId,
+      changeId,
+      scope,
+      affectedEntity: {
+        ...source.assessment.affectedEntity,
+        projectId,
+        changeId,
+        waveId,
+        taskId,
+      },
+      assessedAt: publishedAt,
+    };
+    const haltResponse = await fetch(
+      `${origin}/api/change-control/projects/${projectId}/halts`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ halt, assessment }),
+      },
+    );
+    const haltResponseText = await haltResponse.text();
+    assert.equal(haltResponse.status, 201, haltResponseText);
+    const aggregate = JSON.parse(haltResponseText) as {
+      halt: { haltId: string; effectiveIncidentId: string };
+      incident: { incidentId: string };
+    };
+    assert.equal(aggregate.halt.haltId, halt.haltId);
+    assert.equal(
+      aggregate.halt.effectiveIncidentId,
+      aggregate.incident.incidentId,
+    );
+
+    const projectionResponse = await fetch(
+      `${origin}/api/change-control/projects/${projectId}/halts-incidents`,
+    );
+    assert.equal(projectionResponse.status, 200);
+    const projection = (await projectionResponse.json()) as {
+      halts: unknown[];
+      incidents: unknown[];
+    };
+    assert.equal(projection.halts.length, 1);
+    assert.equal(projection.incidents.length, 1);
+
+    const getResponse = await fetch(
+      `${origin}/api/change-control/projects/${projectId}/incidents/${aggregate.incident.incidentId}`,
+    );
+    assert.equal(getResponse.status, 200);
+  } finally {
+    await new Promise<void>((resolveClose) =>
+      server.close(() => resolveClose()),
+    );
   }
 });
 

@@ -1,9 +1,49 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  rmdir,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import Ajv2020 from "ajv8/dist/2020.js";
 import planningDriftV1Schema from "./schemas/planning-drift-v1.schema.json";
 import workspaceMergeV1Schema from "./schemas/workspace-merge-v1.schema.json";
+import {
+  HALT_INCIDENT_EVENT_TYPES_V1,
+  HALT_INCIDENT_REASON_CODES_V1,
+  assertHaltIncidentContractV1,
+  incidentFingerprintV1,
+  observationFingerprintV1,
+  type AttributionAssessmentV1,
+  type CorrectIncidentCorrelationInputV1,
+  type DetectAndClassifyHaltInputV1,
+  type HaltIncidentAggregateV1,
+  type HaltIncidentEventV1,
+  type HaltIncidentProjectionV1,
+  type HaltIncidentReasonCodeV1,
+  type HaltRecordV1,
+  type IncidentRecordV1,
+  type IncidentResolutionReceiptV1,
+  type ResolveIncidentInputV1,
+  type TransitionHaltInputV1,
+  type TransitionIncidentInputV1,
+} from "../halts-incidents-v1/index.ts";
+
+export {
+  type CorrectIncidentCorrelationInputV1,
+  type DetectAndClassifyHaltInputV1,
+  type HaltIncidentAggregateV1,
+  type HaltIncidentProjectionV1,
+  type ResolveIncidentInputV1,
+  type TransitionHaltInputV1,
+  type TransitionIncidentInputV1,
+} from "../halts-incidents-v1/index.ts";
 
 export const CHANGE_CONTROL_EVENT_TYPES = [
   "change.created",
@@ -32,6 +72,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   "plan.superseded",
   "plan.dispatch-validated",
   "architect.replan-recorded",
+  ...HALT_INCIDENT_EVENT_TYPES_V1,
 ] as const;
 
 export type ChangeControlEventType =
@@ -774,6 +815,9 @@ const planningEventTypes = new Set<ChangeControlEventType>([
   "plan.dispatch-validated",
   "architect.replan-recorded",
 ]);
+const haltIncidentEventTypes = new Set<ChangeControlEventType>(
+  HALT_INCIDENT_EVENT_TYPES_V1,
+);
 const changeTargetForType = {
   "change.created": "draft",
   "change.planned": "planned",
@@ -1037,6 +1081,18 @@ type ProjectedLedger = {
   eventsByChange: Map<string, ChangeControlEvent[]>;
   eventsByWave: Map<string, ChangeControlEvent[]>;
   planningEventsByWave: Map<string, PlanningChangeControlEvent[]>;
+  halts: Map<string, HaltRecordV1>;
+  incidents: Map<string, IncidentRecordV1>;
+  assessments: Map<string, AttributionAssessmentV1>;
+  resolutionReceipts: Map<string, IncidentResolutionReceiptV1>;
+  effectiveIncidentByHalt: Map<string, string>;
+  detectorHaltIds: Map<string, string>;
+  haltEvents: Map<string, HaltIncidentEventV1[]>;
+  incidentEvents: Map<string, HaltIncidentEventV1[]>;
+  haltIncidentEvents: HaltIncidentEventV1[];
+  correlationHistory: Array<
+    HaltIncidentProjectionV1["correlationHistory"][number]
+  >;
 };
 
 function waveKey(changeId: string, waveId: string) {
@@ -1725,6 +1781,819 @@ function validReplacementReceipt(
   );
 }
 
+type HaltIncidentProjectionState = Pick<
+  ProjectedLedger,
+  | "projections"
+  | "waves"
+  | "tasks"
+  | "plans"
+  | "halts"
+  | "incidents"
+  | "assessments"
+  | "resolutionReceipts"
+  | "effectiveIncidentByHalt"
+  | "detectorHaltIds"
+  | "haltEvents"
+  | "incidentEvents"
+  | "haltIncidentEvents"
+  | "correlationHistory"
+>;
+
+function haltDetectorKey(
+  projectId: string,
+  detectorId: string,
+  detectorEventId: string,
+) {
+  return `${projectId}\u0000${detectorId}\u0000${detectorEventId}`;
+}
+
+function assertHaltContractStored<
+  T extends
+    | "HaltRecordV1"
+    | "IncidentRecordV1"
+    | "AttributionAssessmentV1"
+    | "IncidentResolutionReceiptV1",
+>(value: unknown, expectedType: T) {
+  try {
+    assertHaltIncidentContractV1(value, expectedType);
+  } catch (error) {
+    corrupt(
+      `A persisted ${expectedType} contract is invalid: ${
+        error instanceof Error ? error.message : "unknown validation error"
+      }`,
+    );
+  }
+  return value as unknown as T extends "HaltRecordV1"
+    ? HaltRecordV1
+    : T extends "IncidentRecordV1"
+      ? IncidentRecordV1
+      : T extends "AttributionAssessmentV1"
+        ? AttributionAssessmentV1
+        : IncidentResolutionReceiptV1;
+}
+
+function sameHaltScope(left: HaltRecordV1["scope"], right: HaltRecordV1["scope"]) {
+  return (
+    canonicalJson(left as unknown as JsonValue) ===
+    canonicalJson(right as unknown as JsonValue)
+  );
+}
+
+function assertHaltEventScope(
+  event: ChangeControlEvent,
+  scope: HaltRecordV1["scope"],
+) {
+  if (
+    event.waveId !== (scope.waveId ?? undefined) ||
+    event.taskId !== (scope.taskId ?? undefined)
+  )
+    corrupt(`Halt/incident event ${event.id} has mismatched wave or task scope.`);
+}
+
+function assertHaltEventIdentity(
+  event: ChangeControlEvent,
+  halt: HaltRecordV1,
+) {
+  if (
+    halt.projectId !== event.projectId ||
+    halt.changeId !== event.changeId
+  )
+    corrupt(`Halt/incident event ${event.id} has mismatched project or change scope.`);
+  assertHaltEventScope(event, halt.scope);
+}
+
+function assertHaltScopeExists(
+  event: ChangeControlEvent,
+  scope: HaltRecordV1["scope"],
+  projected: HaltIncidentProjectionState,
+) {
+  if (!projected.projections.has(event.changeId))
+    corrupt(`Halt/incident event ${event.id} precedes change creation.`);
+  if (scope.taskId !== null && scope.waveId === null)
+    corrupt(`Halt/incident event ${event.id} has a task without a wave.`);
+  if (
+    scope.waveId !== null &&
+    !projected.waves.has(waveKey(event.changeId, scope.waveId))
+  )
+    corrupt(`Halt/incident event ${event.id} references a missing wave.`);
+  if (
+    scope.taskId !== null &&
+    !projected.tasks.has(taskKey(event.changeId, scope.waveId!, scope.taskId))
+  )
+    corrupt(`Halt/incident event ${event.id} references a missing task.`);
+  if (scope.planRevision !== null) {
+    if (scope.waveId === null)
+      corrupt(`Halt/incident event ${event.id} has a plan without a wave.`);
+    const plan = wavePlans(projected, event.changeId, scope.waveId).find(
+      (candidate) => candidate.contract.revision === scope.planRevision,
+    );
+    if (!plan)
+      corrupt(`Halt/incident event ${event.id} references a missing plan revision.`);
+  }
+}
+
+function assertAttributionSemantics(
+  halt: HaltRecordV1,
+  assessment: AttributionAssessmentV1,
+  publicationTime: string,
+) {
+  if (
+    assessment.haltId !== halt.haltId ||
+    assessment.projectId !== halt.projectId ||
+    assessment.changeId !== halt.changeId ||
+    !sameHaltScope(assessment.scope, halt.scope)
+  )
+    corrupt(
+      `Attribution assessment ${assessment.assessmentId} has mismatched halt scope.`,
+    );
+  if (
+    assessment.affectedEntity.projectId !== halt.projectId ||
+    assessment.affectedEntity.changeId !== halt.changeId ||
+    assessment.affectedEntity.waveId !== halt.scope.waveId ||
+    assessment.affectedEntity.taskId !== halt.scope.taskId ||
+    assessment.affectedEntity.operationKind !==
+      halt.observation.operationKind ||
+    assessment.affectedEntity.component !== halt.observation.component
+  )
+    corrupt(
+      `Attribution assessment ${assessment.assessmentId} has a mismatched affected entity.`,
+    );
+  const assessedAt = planningTimestamp(
+    assessment.assessedAt,
+    "AttributionAssessmentV1 assessedAt",
+    true,
+  );
+  const occurrence = planningTimestamp(
+    halt.occurredAt,
+    "HaltRecordV1 occurredAt",
+    true,
+  );
+  const publication = planningTimestamp(
+    publicationTime,
+    "halt classification publication time",
+    true,
+  );
+  if (assessedAt < occurrence || assessedAt > publication)
+    corrupt(
+      `Attribution assessment ${assessment.assessmentId} violates publication causality.`,
+    );
+  if (
+    !halt.evidenceRefs.every((reference) =>
+      assessment.evidence.detectorEvidenceRefs.includes(reference),
+    )
+  )
+    corrupt(
+      `Attribution assessment ${assessment.assessmentId} omits detector evidence.`,
+    );
+  const gitStateInvolved =
+    halt.scope.workspaceAttemptId !== null ||
+    halt.scope.mergeRequestId !== null ||
+    halt.scope.commitId !== null ||
+    halt.observation.operationKind.toLowerCase().includes("git");
+  if (gitStateInvolved && assessment.evidence.gitEvidenceRefs.length === 0)
+    corrupt(
+      `Attribution assessment ${assessment.assessmentId} omits required Git evidence.`,
+    );
+  if (
+    assessment.confidence === "exact" &&
+    (assessment.candidateCauses.length !== 1 ||
+      assessment.candidateCauses[0].causeKey !==
+        assessment.normalizedRootCauseKey ||
+      assessment.normalizedRootCauseKey === "unknown")
+  )
+    corrupt(
+      `Exact attribution assessment ${assessment.assessmentId} does not prove one cause.`,
+    );
+  if (
+    new Set(assessment.candidateCauses.map((candidate) => candidate.causeKey))
+      .size !== assessment.candidateCauses.length ||
+    new Set(
+      assessment.alternativeCandidates.map((candidate) => candidate.causeKey),
+    ).size !== assessment.alternativeCandidates.length
+  )
+    corrupt(
+      `Attribution assessment ${assessment.assessmentId} contains duplicate cause candidates.`,
+    );
+  if (
+    assessment.confidence === "partial" &&
+    assessment.candidateCauses.length === 0
+  )
+    corrupt(
+      `Partial attribution assessment ${assessment.assessmentId} has no candidate cause.`,
+    );
+  if (
+    assessment.confidence === "none" &&
+    (assessment.candidateCauses.length !== 0 ||
+      assessment.normalizedRootCauseKey !== "unknown")
+  )
+    corrupt(
+      `None attribution assessment ${assessment.assessmentId} must use unknown with no candidates.`,
+    );
+  if (
+    assessment.haltClass === "unknown" &&
+    assessment.confidence !== "none"
+  )
+    corrupt(
+      `Unknown halt ${halt.haltId} cannot receive exact or partial attribution.`,
+    );
+}
+
+function addHaltIncidentEvent(
+  map: Map<string, HaltIncidentEventV1[]>,
+  id: string,
+  event: HaltIncidentEventV1,
+) {
+  const events = map.get(id) ?? [];
+  events.push(event);
+  map.set(id, events);
+}
+
+function maxSeverity(
+  left: HaltRecordV1["severity"],
+  right: HaltRecordV1["severity"],
+) {
+  const rank: Record<HaltRecordV1["severity"], number> = {
+    info: 0,
+    warning: 1,
+    blocking: 2,
+    critical: 3,
+  };
+  return rank[left] >= rank[right] ? left : right;
+}
+
+function applyHaltIncidentEvent(
+  event: ChangeControlEvent,
+  projected: HaltIncidentProjectionState,
+) {
+  const typedEvent = event as HaltIncidentEventV1;
+  projected.haltIncidentEvents.push(typedEvent);
+
+  if (event.type === "halt.detected") {
+    assertPayloadKeys(event, ["halt"]);
+    const halt = assertHaltContractStored(event.payload.halt, "HaltRecordV1");
+    assertHaltEventIdentity(event, halt);
+    assertHaltScopeExists(event, halt.scope, projected);
+    if (
+      halt.projectId !== event.projectId ||
+      halt.changeId !== event.changeId ||
+      halt.correlationId !== event.correlationId ||
+      halt.publishedAt !== event.occurredAt ||
+      halt.state !== "detected" ||
+      halt.classificationAssessmentId !== undefined ||
+      halt.haltClass !== undefined ||
+      halt.effectiveIncidentId !== undefined
+    )
+      corrupt(`Detected halt ${halt.haltId} has invalid publication fields.`);
+    if (event.actor !== halt.detector.detectorId)
+      corrupt(`Detected halt ${halt.haltId} has a mismatched detector actor.`);
+    if (
+      planningTimestamp(halt.occurredAt, "HaltRecordV1 occurredAt", true) >
+      planningTimestamp(halt.publishedAt, "HaltRecordV1 publishedAt", true)
+    )
+      corrupt(`Detected halt ${halt.haltId} occurs after publication.`);
+    if (observationFingerprintV1(halt) !== halt.observation.fingerprint)
+      corrupt(`Detected halt ${halt.haltId} has an invalid observation fingerprint.`);
+    if (projected.halts.has(halt.haltId))
+      corrupt(`Duplicate halt ID: ${halt.haltId}.`);
+    const detectorKey = haltDetectorKey(
+      halt.projectId,
+      halt.detector.detectorId,
+      halt.detector.detectorEventId,
+    );
+    if (projected.detectorHaltIds.has(detectorKey))
+      corrupt(`Duplicate detector idempotency tuple for halt ${halt.haltId}.`);
+    projected.detectorHaltIds.set(detectorKey, halt.haltId);
+    projected.halts.set(halt.haltId, halt);
+    addHaltIncidentEvent(projected.haltEvents, halt.haltId, typedEvent);
+    return;
+  }
+
+  if (event.type === "incident.opened") {
+    assertPayloadKeys(event, ["incident"]);
+    const incident = assertHaltContractStored(
+      event.payload.incident,
+      "IncidentRecordV1",
+    );
+    if (
+      incident.projectId !== event.projectId ||
+      incident.changeId !== event.changeId ||
+      incident.openedAt !== event.occurredAt ||
+      incident.state !== "open" ||
+      incident.haltIds.length !== 1 ||
+      incident.incidentFingerprintVersion !== "incident-v1" ||
+      incident.correlationWindowPolicy.reopenUntil !== null ||
+      incident.reopenOrdinal !== 0
+    )
+      corrupt(`Opened incident ${incident.incidentId} has invalid initial fields.`);
+    const halt = projected.halts.get(incident.haltIds[0]);
+    if (!halt)
+      corrupt(`Opened incident ${incident.incidentId} references a missing halt.`);
+    assertHaltEventIdentity(event, halt);
+    if (projected.incidents.has(incident.incidentId))
+      corrupt(`Duplicate incident ID: ${incident.incidentId}.`);
+    if (
+      incident.firstOccurrenceAt !== halt.occurredAt ||
+      incident.latestOccurrenceAt !== halt.occurredAt ||
+      incident.severity !== halt.severity
+    )
+      corrupt(`Opened incident ${incident.incidentId} has mismatched halt fields.`);
+    projected.incidents.set(incident.incidentId, incident);
+    projected.effectiveIncidentByHalt.set(halt.haltId, incident.incidentId);
+    addHaltIncidentEvent(
+      projected.incidentEvents,
+      incident.incidentId,
+      typedEvent,
+    );
+    return;
+  }
+
+  if (event.type === "incident.halt-linked") {
+    assertPayloadKeys(event, [
+      "haltId",
+      "incidentFingerprint",
+      "incidentId",
+      "reasonCode",
+    ]);
+    const haltId = requireStoredIdentifier(event.payload.haltId, "haltId");
+    const incidentId = requireStoredIdentifier(
+      event.payload.incidentId,
+      "incidentId",
+    );
+    const halt = projected.halts.get(haltId);
+    const incident = projected.incidents.get(incidentId);
+    if (!halt || !incident)
+      corrupt(`Incident link ${event.id} has a missing halt or incident.`);
+    assertHaltEventIdentity(event, halt);
+    if (
+      event.payload.incidentFingerprint !== incident.incidentFingerprint ||
+      !["INCIDENT_MATCHED_OPEN", "INCIDENT_REOPENED"].includes(
+        String(event.payload.reasonCode),
+      ) ||
+      incident.haltIds.includes(haltId) ||
+      projected.effectiveIncidentByHalt.has(haltId)
+    )
+      corrupt(`Incident link ${event.id} is invalid or duplicated.`);
+    const latestOccurrenceAt =
+      planningTimestamp(
+        halt.occurredAt,
+        "linked halt occurrence",
+        true,
+      ) >
+      planningTimestamp(
+        incident.latestOccurrenceAt,
+        "incident latest occurrence",
+        true,
+      )
+        ? halt.occurredAt
+        : incident.latestOccurrenceAt;
+    projected.incidents.set(incidentId, {
+      ...incident,
+      latestOccurrenceAt,
+      haltIds: [...incident.haltIds, haltId],
+      severity: maxSeverity(incident.severity, halt.severity),
+      correlationReasonCode:
+        event.payload.reasonCode as HaltIncidentReasonCodeV1,
+    });
+    projected.effectiveIncidentByHalt.set(haltId, incidentId);
+    addHaltIncidentEvent(projected.haltEvents, haltId, typedEvent);
+    addHaltIncidentEvent(projected.incidentEvents, incidentId, typedEvent);
+    return;
+  }
+
+  if (event.type === "halt.classified") {
+    assertPayloadKeys(event, [
+      "assessment",
+      "haltId",
+      "incidentId",
+      "previousState",
+      "state",
+    ]);
+    const haltId = requireStoredIdentifier(event.payload.haltId, "haltId");
+    const incidentId = requireStoredIdentifier(
+      event.payload.incidentId,
+      "incidentId",
+    );
+    const halt = projected.halts.get(haltId);
+    const incident = projected.incidents.get(incidentId);
+    if (!halt || !incident)
+      corrupt(`Halt classification ${event.id} has a missing halt or incident.`);
+    const assessment = assertHaltContractStored(
+      event.payload.assessment,
+      "AttributionAssessmentV1",
+    );
+    assertHaltEventIdentity(event, halt);
+    assertAttributionSemantics(halt, assessment, event.occurredAt);
+    if (
+      event.actor !== assessment.classifier.classifierId ||
+      event.payload.previousState !== "detected" ||
+      event.payload.state !== "classified" ||
+      halt.state !== "detected" ||
+      projected.effectiveIncidentByHalt.get(haltId) !== incidentId ||
+      incidentFingerprintV1(assessment) !== incident.incidentFingerprint ||
+      !incident.haltIds.includes(haltId) ||
+      !incident.affectedEntities.some(
+        (affected) =>
+          canonicalJson(affected as unknown as JsonValue) ===
+          canonicalJson(assessment.affectedEntity as unknown as JsonValue),
+      )
+    )
+      corrupt(`Halt classification ${event.id} is semantically invalid.`);
+    if (projected.assessments.has(assessment.assessmentId))
+      corrupt(`Duplicate attribution assessment ID: ${assessment.assessmentId}.`);
+    projected.assessments.set(assessment.assessmentId, assessment);
+    projected.halts.set(haltId, {
+      ...halt,
+      state: "classified",
+      classificationAssessmentId: assessment.assessmentId,
+      haltClass: assessment.haltClass,
+      effectiveIncidentId: incidentId,
+    });
+    addHaltIncidentEvent(projected.haltEvents, haltId, typedEvent);
+    return;
+  }
+
+  if (
+    event.type === "halt.escalated" ||
+    event.type === "halt.quarantined" ||
+    event.type === "halt.dispositioned" ||
+    event.type === "halt.healing-started" ||
+    event.type === "halt.recovered"
+  ) {
+    assertPayloadKeys(event, [
+      "evidenceRefs",
+      "haltId",
+      "previousState",
+      "reasonCode",
+      "state",
+    ]);
+    const haltId = requireStoredIdentifier(event.payload.haltId, "haltId");
+    const halt = projected.halts.get(haltId);
+    if (!halt) corrupt(`Halt transition ${event.id} references a missing halt.`);
+    assertHaltEventIdentity(event, halt);
+    const target =
+      event.type === "halt.escalated"
+        ? "escalated"
+        : event.type === "halt.quarantined"
+          ? "quarantined"
+          : event.type === "halt.dispositioned"
+            ? "action_pending"
+            : event.type === "halt.healing-started"
+              ? "healing"
+              : "recovered";
+    const legal: Record<string, readonly string[]> = {
+      classified: ["action_pending", "escalated", "quarantined"],
+      action_pending: ["healing", "recovered", "escalated", "quarantined"],
+      healing: ["recovered", "action_pending", "escalated", "quarantined"],
+    };
+    if (
+      event.payload.previousState !== halt.state ||
+      event.payload.state !== target ||
+      !(legal[halt.state] ?? []).includes(target) ||
+      !HALT_INCIDENT_REASON_CODES_V1.includes(
+        event.payload.reasonCode as HaltIncidentReasonCodeV1,
+      ) ||
+      !Array.isArray(event.payload.evidenceRefs) ||
+      event.payload.evidenceRefs.length === 0
+    )
+      corrupt(`Halt transition ${event.id} is semantically invalid.`);
+    if (target === "action_pending" || target === "healing")
+      corrupt(`Halt transition ${event.id} lacks an implemented Warden verdict.`);
+    projected.halts.set(haltId, {
+      ...halt,
+      state: target,
+      lastTransitionReasonCode:
+        event.payload.reasonCode as HaltIncidentReasonCodeV1,
+    });
+    addHaltIncidentEvent(projected.haltEvents, haltId, typedEvent);
+    return;
+  }
+
+  if (
+    event.type === "incident.investigating" ||
+    event.type === "incident.healing" ||
+    event.type === "incident.mitigated" ||
+    event.type === "incident.escalated"
+  ) {
+    assertPayloadKeys(event, [
+      "evidenceRefs",
+      "incidentId",
+      "previousState",
+      "reasonCode",
+      ...(event.type === "incident.mitigated" ? ["receipt"] : []),
+      "state",
+    ]);
+    const incidentId = requireStoredIdentifier(
+      event.payload.incidentId,
+      "incidentId",
+    );
+    const incident = projected.incidents.get(incidentId);
+    if (!incident)
+      corrupt(`Incident transition ${event.id} references a missing incident.`);
+    if (
+      incident.projectId !== event.projectId ||
+      incident.changeId !== event.changeId ||
+      event.waveId !== undefined ||
+      event.taskId !== undefined
+    )
+      corrupt(`Incident transition ${event.id} has mismatched entity scope.`);
+    const target =
+      event.type === "incident.investigating"
+        ? "investigating"
+        : event.type === "incident.healing"
+          ? "healing"
+          : event.type === "incident.mitigated"
+            ? "mitigated"
+            : "escalated";
+    const legal: Record<string, readonly string[]> = {
+      open: ["investigating", "healing", "mitigated", "escalated"],
+      investigating: ["healing", "mitigated", "escalated"],
+      healing: ["investigating", "mitigated", "escalated"],
+      mitigated: ["escalated"],
+      escalated: ["investigating", "mitigated"],
+      reopened: ["investigating", "healing", "mitigated", "escalated"],
+    };
+    if (
+      event.payload.previousState !== incident.state ||
+      event.payload.state !== target ||
+      !(legal[incident.state] ?? []).includes(target) ||
+      !HALT_INCIDENT_REASON_CODES_V1.includes(
+        event.payload.reasonCode as HaltIncidentReasonCodeV1,
+      ) ||
+      !Array.isArray(event.payload.evidenceRefs) ||
+      event.payload.evidenceRefs.length === 0
+    )
+      corrupt(`Incident transition ${event.id} is semantically invalid.`);
+    if (target === "healing")
+      corrupt(`Incident transition ${event.id} lacks an implemented Warden verdict.`);
+    if (target === "mitigated") {
+      const receipt = assertHaltContractStored(
+        event.payload.receipt,
+        "IncidentResolutionReceiptV1",
+      );
+      if (
+        receipt.receiptId === undefined ||
+        projected.resolutionReceipts.has(receipt.receiptId) ||
+        receipt.incidentId !== incidentId ||
+        receipt.projectId !== event.projectId ||
+        receipt.changeId !== event.changeId ||
+        receipt.resolutionKind !== "mitigated" ||
+        receipt.resolvedAt !== event.occurredAt ||
+        receipt.resolvedBy !== event.actor ||
+        receipt.taxonomyPolicyVersion !== incident.taxonomyPolicyVersion ||
+        receipt.correlationWindowSeconds !==
+          incident.correlationWindowPolicy.durationSeconds ||
+        canonicalJson(receipt.evidenceRefs as unknown as JsonValue) !==
+          canonicalJson(event.payload.evidenceRefs as JsonValue)
+      )
+        corrupt(`Incident mitigation ${event.id} has an invalid receipt.`);
+      const humanOnly = incident.haltIds.some((haltId) => {
+        const halt = projected.halts.get(haltId);
+        return (
+          projected.effectiveIncidentByHalt.get(haltId) === incident.incidentId &&
+          halt?.haltClass !== undefined &&
+          [
+            "human_decision_required",
+            "destructive_or_external_risk",
+            "unknown",
+          ].includes(halt.haltClass)
+        );
+      });
+      if (
+        humanOnly &&
+        (receipt.oracle.kind !== "human" || !receipt.resolvedBy.startsWith("human:"))
+      )
+        corrupt(`Human-only incident ${incident.incidentId} lacks human mitigation.`);
+      projected.resolutionReceipts.set(receipt.receiptId, receipt);
+    }
+    projected.incidents.set(incidentId, {
+      ...incident,
+      state: target,
+      correlationReasonCode:
+        event.payload.reasonCode as HaltIncidentReasonCodeV1,
+    });
+    addHaltIncidentEvent(projected.incidentEvents, incidentId, typedEvent);
+    return;
+  }
+
+  if (event.type === "incident.resolved") {
+    assertPayloadKeys(event, [
+      "previousState",
+      "receipt",
+      "reopenUntil",
+      "state",
+    ]);
+    const receipt = assertHaltContractStored(
+      event.payload.receipt,
+      "IncidentResolutionReceiptV1",
+    );
+    const incident = projected.incidents.get(receipt.incidentId);
+    if (!incident)
+      corrupt(`Incident resolution ${event.id} references a missing incident.`);
+    if (event.waveId !== undefined || event.taskId !== undefined)
+      corrupt(`Incident resolution ${event.id} has unexpected halt scope.`);
+    const expectedReopenUntil = new Date(
+      planningTimestamp(event.occurredAt, "resolution publication", true) +
+        receipt.correlationWindowSeconds * 1000,
+    ).toISOString();
+    if (
+      receipt.projectId !== event.projectId ||
+      receipt.changeId !== event.changeId ||
+      receipt.taxonomyPolicyVersion !== incident.taxonomyPolicyVersion ||
+      receipt.resolvedAt !== event.occurredAt ||
+      receipt.resolvedBy !== event.actor ||
+      receipt.resolutionKind !== "resolved" ||
+      receipt.correlationWindowSeconds !==
+        incident.correlationWindowPolicy.durationSeconds ||
+      event.payload.previousState !== incident.state ||
+      event.payload.state !== "resolved" ||
+      event.payload.reopenUntil !== expectedReopenUntil ||
+      !["mitigated", "escalated"].includes(incident.state)
+    )
+      corrupt(`Incident resolution ${event.id} is semantically invalid.`);
+    if (projected.resolutionReceipts.has(receipt.receiptId))
+      corrupt(`Duplicate incident resolution receipt ID: ${receipt.receiptId}.`);
+    if (
+      incident.haltIds.some((haltId) => {
+        if (projected.effectiveIncidentByHalt.get(haltId) !== incident.incidentId)
+          return false;
+        const halt = projected.halts.get(haltId);
+        return (
+          halt?.severity === "blocking" || halt?.severity === "critical"
+        ) && !["recovered", "escalated", "quarantined"].includes(halt.state);
+      })
+    )
+      corrupt(`Incident ${incident.incidentId} closed with an active blocking halt.`);
+    const humanOnly = incident.haltIds.some((haltId) => {
+      const halt = projected.halts.get(haltId);
+      return (
+        projected.effectiveIncidentByHalt.get(haltId) === incident.incidentId &&
+        halt?.haltClass !== undefined &&
+        [
+          "human_decision_required",
+          "destructive_or_external_risk",
+          "unknown",
+        ].includes(halt.haltClass)
+      );
+    });
+    if (
+      humanOnly &&
+      (receipt.oracle.kind !== "human" || !receipt.resolvedBy.startsWith("human:"))
+    )
+      corrupt(`Human-only incident ${incident.incidentId} lacks human resolution.`);
+    projected.resolutionReceipts.set(receipt.receiptId, receipt);
+    projected.incidents.set(incident.incidentId, {
+      ...incident,
+      state: "resolved",
+      closureReceiptId: receipt.receiptId,
+      correlationWindowPolicy: {
+        durationSeconds: receipt.correlationWindowSeconds,
+        reopenUntil: expectedReopenUntil,
+      },
+    });
+    addHaltIncidentEvent(
+      projected.incidentEvents,
+      incident.incidentId,
+      typedEvent,
+    );
+    return;
+  }
+
+  if (event.type === "incident.reopened") {
+    assertPayloadKeys(event, [
+      "haltId",
+      "incidentId",
+      "previousState",
+      "reasonCode",
+      "reopenOrdinal",
+      "reopenUntil",
+      "state",
+    ]);
+    const incidentId = requireStoredIdentifier(
+      event.payload.incidentId,
+      "incidentId",
+    );
+    const haltId = requireStoredIdentifier(event.payload.haltId, "haltId");
+    const incident = projected.incidents.get(incidentId);
+    const halt = projected.halts.get(haltId);
+    if (!incident || !halt)
+      corrupt(`Incident reopen ${event.id} has a missing incident or halt.`);
+    assertHaltEventIdentity(event, halt);
+    const reopensResolvedIncident = incident.state === "resolved";
+    const reopensMitigatedIncident = incident.state === "mitigated";
+    if (
+      (!reopensResolvedIncident && !reopensMitigatedIncident) ||
+      event.payload.previousState !== incident.state ||
+      event.payload.state !== "reopened" ||
+      event.payload.reasonCode !== "INCIDENT_REOPENED" ||
+      event.payload.reopenOrdinal !== incident.reopenOrdinal + 1 ||
+      event.payload.reopenUntil !==
+        incident.correlationWindowPolicy.reopenUntil ||
+      (reopensResolvedIncident &&
+        (incident.correlationWindowPolicy.reopenUntil === null ||
+          planningTimestamp(event.occurredAt, "reopen publication", true) >
+            planningTimestamp(
+              incident.correlationWindowPolicy.reopenUntil,
+              "incident reopen window",
+              true,
+            ))) ||
+      (reopensMitigatedIncident &&
+        incident.correlationWindowPolicy.reopenUntil !== null) ||
+      projected.effectiveIncidentByHalt.get(haltId) !== incidentId ||
+      !incident.haltIds.includes(haltId)
+    )
+      corrupt(`Incident reopen ${event.id} violates its recorded window.`);
+    projected.incidents.set(incidentId, {
+      ...incident,
+      state: "reopened",
+      reopenOrdinal: incident.reopenOrdinal + 1,
+      correlationReasonCode: "INCIDENT_REOPENED",
+    });
+    addHaltIncidentEvent(projected.haltEvents, haltId, typedEvent);
+    addHaltIncidentEvent(projected.incidentEvents, incidentId, typedEvent);
+    return;
+  }
+
+  if (event.type === "incident.correlation-superseded") {
+    assertPayloadKeys(event, [
+      "correctedAt",
+      "correctedBy",
+      "correctionId",
+      "evidenceRefs",
+      "haltId",
+      "incidentId",
+      "previousIncidentId",
+      "reason",
+    ]);
+    const haltId = requireStoredIdentifier(event.payload.haltId, "haltId");
+    const previousIncidentId = requireStoredIdentifier(
+      event.payload.previousIncidentId,
+      "previousIncidentId",
+    );
+    const incidentId = requireStoredIdentifier(
+      event.payload.incidentId,
+      "incidentId",
+    );
+    const correctionId = requireStoredIdentifier(
+      event.payload.correctionId,
+      "correctionId",
+    );
+    const halt = projected.halts.get(haltId);
+    const previousIncident = projected.incidents.get(previousIncidentId);
+    const incident = projected.incidents.get(incidentId);
+    if (!halt || !previousIncident || !incident)
+      corrupt(`Incident correction ${correctionId} has a missing reference.`);
+    assertHaltEventIdentity(event, halt);
+    const correctionIssue = correlationCorrectionIssue(
+      previousIncident,
+      incident,
+      event.actor,
+    );
+    if (
+      projected.correlationHistory.some(
+        (candidate) => candidate.correctionId === correctionId,
+      ) ||
+      projected.effectiveIncidentByHalt.get(haltId) !== previousIncidentId ||
+      correctionIssue !== undefined ||
+      event.payload.correctedAt !== event.occurredAt ||
+      event.payload.correctedBy !== event.actor ||
+      typeof event.payload.reason !== "string" ||
+      event.payload.reason.length === 0 ||
+      !Array.isArray(event.payload.evidenceRefs) ||
+      event.payload.evidenceRefs.length === 0
+    )
+      corrupt(`Incident correction ${correctionId} is semantically invalid.`);
+    const history = {
+      correctionId,
+      haltId,
+      previousIncidentId,
+      incidentId,
+      correctedAt: event.payload.correctedAt,
+      correctedBy: event.payload.correctedBy,
+      reason: event.payload.reason,
+      evidenceRefs: event.payload.evidenceRefs,
+    } as HaltIncidentProjectionV1["correlationHistory"][number];
+    projected.correlationHistory.push(history);
+    projected.effectiveIncidentByHalt.set(haltId, incidentId);
+    projected.halts.set(haltId, { ...halt, effectiveIncidentId: incidentId });
+    if (!incident.haltIds.includes(haltId))
+      projected.incidents.set(incidentId, {
+        ...incident,
+        haltIds: [...incident.haltIds, haltId],
+        severity: maxSeverity(incident.severity, halt.severity),
+      });
+    addHaltIncidentEvent(projected.haltEvents, haltId, typedEvent);
+    addHaltIncidentEvent(
+      projected.incidentEvents,
+      previousIncidentId,
+      typedEvent,
+    );
+    addHaltIncidentEvent(projected.incidentEvents, incidentId, typedEvent);
+    return;
+  }
+
+  corrupt(`Unsupported halt/incident event type: ${event.type}.`);
+}
+
 function validateAndProject(ledger: Ledger): ProjectedLedger {
   if (ledger.version !== 1 || !Array.isArray(ledger.events))
     corrupt("Unsupported change-control ledger format.");
@@ -1746,6 +2615,18 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     string,
     PlanningChangeControlEvent[]
   >();
+  const halts = new Map<string, HaltRecordV1>();
+  const incidents = new Map<string, IncidentRecordV1>();
+  const assessments = new Map<string, AttributionAssessmentV1>();
+  const resolutionReceipts = new Map<string, IncidentResolutionReceiptV1>();
+  const effectiveIncidentByHalt = new Map<string, string>();
+  const detectorHaltIds = new Map<string, string>();
+  const haltEvents = new Map<string, HaltIncidentEventV1[]>();
+  const incidentEvents = new Map<string, HaltIncidentEventV1[]>();
+  const haltIncidentEvents: HaltIncidentEventV1[] = [];
+  const correlationHistory: Array<
+    HaltIncidentProjectionV1["correlationHistory"][number]
+  > = [];
   const eventIds = new Set<string>();
   let previousHash: string | null = null;
 
@@ -2455,6 +3336,23 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
       const scopedEvents = planningEventsByWave.get(scopedWaveKey) ?? [];
       scopedEvents.push(planningEvent);
       planningEventsByWave.set(scopedWaveKey, scopedEvents);
+    } else if (haltIncidentEventTypes.has(event.type)) {
+      applyHaltIncidentEvent(event, {
+        projections,
+        waves,
+        tasks,
+        plans,
+        halts,
+        incidents,
+        assessments,
+        resolutionReceipts,
+        effectiveIncidentByHalt,
+        detectorHaltIds,
+        haltEvents,
+        incidentEvents,
+        haltIncidentEvents,
+        correlationHistory,
+      });
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
       const taskId = requireStoredIdentifier(event.taskId, "taskId");
@@ -2526,6 +3424,23 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   });
 
   for (const wave of waves.values()) assertTaskGraph(wave, tasks);
+  for (const halt of halts.values()) {
+    if (halt.state === "detected")
+      corrupt(`Detected halt ${halt.haltId} bypassed classification.`);
+    const assessment = halt.classificationAssessmentId
+      ? assessments.get(halt.classificationAssessmentId)
+      : undefined;
+    const incidentId = effectiveIncidentByHalt.get(halt.haltId);
+    const incident = incidentId ? incidents.get(incidentId) : undefined;
+    if (
+      !assessment ||
+      !incident ||
+      halt.effectiveIncidentId !== incidentId ||
+      !incident.haltIds.includes(halt.haltId) ||
+      incidentFingerprintV1(assessment) !== incident.incidentFingerprint
+    )
+      corrupt(`Classified halt ${halt.haltId} lacks one exact effective incident.`);
+  }
 
   return {
     projections,
@@ -2541,6 +3456,16 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     eventsByChange,
     eventsByWave,
     planningEventsByWave,
+    halts,
+    incidents,
+    assessments,
+    resolutionReceipts,
+    effectiveIncidentByHalt,
+    detectorHaltIds,
+    haltEvents,
+    incidentEvents,
+    haltIncidentEvents,
+    correlationHistory,
   };
 }
 
@@ -2759,8 +3684,348 @@ function normalizeTasks(value: unknown) {
   return tasks;
 }
 
+function normalizeHaltContract<
+  T extends
+    | "HaltRecordV1"
+    | "IncidentRecordV1"
+    | "AttributionAssessmentV1"
+    | "IncidentResolutionReceiptV1",
+>(value: unknown, expectedType: T) {
+  const normalized = normalizeJson(value, expectedType);
+  if (
+    normalized === null ||
+    Array.isArray(normalized) ||
+    typeof normalized !== "object"
+  )
+    invalid(`${expectedType} must be a JSON object.`);
+  try {
+    assertHaltIncidentContractV1(normalized, expectedType);
+  } catch (error) {
+    invalid(error instanceof Error ? error.message : `${expectedType} is invalid.`);
+  }
+  return normalized as unknown as T extends "HaltRecordV1"
+    ? HaltRecordV1
+    : T extends "IncidentRecordV1"
+      ? IncidentRecordV1
+      : T extends "AttributionAssessmentV1"
+        ? AttributionAssessmentV1
+        : IncidentResolutionReceiptV1;
+}
+
+function normalizeEvidenceRefs(value: unknown, field = "evidenceRefs") {
+  if (!Array.isArray(value) || value.length === 0)
+    invalid(`${field} must be a non-empty array.`);
+  const refs = value.map((item) => {
+    if (
+      typeof item !== "string" ||
+      item.length === 0 ||
+      item.length > 2048
+    )
+      invalid(`${field} contains an invalid evidence reference.`);
+    return item;
+  });
+  if (new Set(refs).size !== refs.length)
+    invalid(`${field} cannot contain duplicates.`);
+  return refs;
+}
+
+function immutableHaltIncidentProjection(
+  projectId: string,
+  projected: ProjectedLedger,
+): HaltIncidentProjectionV1 {
+  return deepFreeze(
+    structuredClone({
+      projectId,
+      halts: [...projected.halts.values()].sort(
+        (left, right) =>
+          left.publishedAt.localeCompare(right.publishedAt) ||
+          left.haltId.localeCompare(right.haltId),
+      ),
+      incidents: [...projected.incidents.values()].sort(
+        (left, right) =>
+          left.openedAt.localeCompare(right.openedAt) ||
+          left.incidentId.localeCompare(right.incidentId),
+      ),
+      assessments: [...projected.assessments.values()].sort((left, right) =>
+        left.assessmentId.localeCompare(right.assessmentId),
+      ),
+      resolutionReceipts: [...projected.resolutionReceipts.values()].sort(
+        (left, right) => left.receiptId.localeCompare(right.receiptId),
+      ),
+      correlationHistory: projected.correlationHistory,
+      events: projected.haltIncidentEvents,
+    }),
+  );
+}
+
+function haltIncidentAggregate(
+  projected: ProjectedLedger,
+  haltId: string,
+  operationEventIds?: ReadonlySet<string>,
+): HaltIncidentAggregateV1 {
+  const halt = projected.halts.get(haltId);
+  if (!halt)
+    throw new ChangeControlError(
+      `Halt ${haltId} was not found.`,
+      "NOT_FOUND",
+      404,
+    );
+  const incidentId = projected.effectiveIncidentByHalt.get(haltId);
+  const incident = incidentId
+    ? projected.incidents.get(incidentId)
+    : undefined;
+  const assessment = halt.classificationAssessmentId
+    ? projected.assessments.get(halt.classificationAssessmentId)
+    : undefined;
+  if (!incident || !assessment)
+    corrupt(`Halt ${haltId} lacks its effective incident or assessment.`);
+  const events = operationEventIds
+    ? projected.haltIncidentEvents.filter((event) =>
+        operationEventIds.has(event.id),
+      )
+    : projected.haltEvents.get(haltId) ?? [];
+  return deepFreeze(
+    structuredClone({
+      halt,
+      incident,
+      assessment,
+      events,
+    }),
+  );
+}
+
+function validateCandidateLedger(ledger: Ledger) {
+  try {
+    return validateAndProject(ledger);
+  } catch (error) {
+    if (
+      error instanceof ChangeControlError &&
+      error.code === "CORRUPT_LEDGER"
+    )
+      invalid(error.message);
+    throw error;
+  }
+}
+
+const activeIncidentStates = new Set<IncidentRecordV1["state"]>([
+  "open",
+  "investigating",
+  "healing",
+  "mitigated",
+  "escalated",
+  "reopened",
+]);
+
+type CorrelationCorrectionIssue =
+  | "NON_HUMAN_ACTOR"
+  | "SAME_INCIDENT"
+  | "FINGERPRINT_MISMATCH"
+  | "CLOSED_TARGET";
+
+function correlationCorrectionIssue(
+  previousIncident: IncidentRecordV1,
+  incident: IncidentRecordV1,
+  actor: string,
+): CorrelationCorrectionIssue | undefined {
+  if (!actor.startsWith("human:")) return "NON_HUMAN_ACTOR";
+  if (incident.incidentId === previousIncident.incidentId)
+    return "SAME_INCIDENT";
+  if (
+    incident.incidentFingerprint !== previousIncident.incidentFingerprint
+  )
+    return "FINGERPRINT_MISMATCH";
+  if (["mitigated", "resolved"].includes(incident.state))
+    return "CLOSED_TARGET";
+  return undefined;
+}
+
+function incidentReopenWindowContains(
+  incident: IncidentRecordV1,
+  publicationTime: string,
+) {
+  return (
+    incident.state === "resolved" &&
+    incident.correlationWindowPolicy.reopenUntil !== null &&
+    planningTimestamp(
+      publicationTime,
+      "halt publication time",
+      false,
+    ) <=
+      planningTimestamp(
+        incident.correlationWindowPolicy.reopenUntil,
+        "incident reopen window",
+        true,
+      )
+  );
+}
+
+const ledgerWriteLockRetryMilliseconds = 10;
+const ledgerWriteLockTimeoutMilliseconds = 30_000;
+
+type ChangeControlLedgerWriteLockV1 = Readonly<{
+  contractType: "ChangeControlLedgerWriteLockV1";
+  contractVersion: "1.0";
+  ownerPid: number;
+  ownerToken: string;
+  acquiredAt: string;
+}>;
+
+function ledgerWriteLockOwnerName(owner: ChangeControlLedgerWriteLockV1) {
+  return `owner-${owner.ownerToken}.json`;
+}
+
+function ledgerLockProcessIsAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function assertLedgerWriteLock(
+  value: unknown,
+): asserts value is ChangeControlLedgerWriteLockV1 {
+  const owner = value as Partial<ChangeControlLedgerWriteLockV1>;
+  if (
+    !owner ||
+    owner.contractType !== "ChangeControlLedgerWriteLockV1" ||
+    owner.contractVersion !== "1.0" ||
+    typeof owner.ownerPid !== "number" ||
+    !Number.isInteger(owner.ownerPid) ||
+    owner.ownerPid < 1 ||
+    typeof owner.ownerToken !== "string" ||
+    owner.ownerToken.length === 0 ||
+    typeof owner.acquiredAt !== "string" ||
+    canonicalTimestampMillis(owner.acquiredAt) === undefined
+  )
+    throw new ChangeControlError(
+      "The change-control ledger write lock is malformed; ownership cannot be proven.",
+      "CORRUPT_LEDGER",
+      500,
+    );
+}
+
+async function readLedgerWriteLock(lockPath: string) {
+  const names = await readdir(lockPath);
+  if (
+    names.length !== 1 ||
+    !names[0].startsWith("owner-") ||
+    !names[0].endsWith(".json")
+  )
+    throw new ChangeControlError(
+      "The change-control ledger write lock is malformed; ownership cannot be proven.",
+      "CORRUPT_LEDGER",
+      500,
+    );
+  const ownerName = names[0]!;
+  const owner = JSON.parse(
+    await readFile(join(lockPath, ownerName), "utf8"),
+  ) as unknown;
+  assertLedgerWriteLock(owner);
+  if (ownerName !== ledgerWriteLockOwnerName(owner))
+    throw new ChangeControlError(
+      "The change-control ledger write lock filename disagrees with its owner identity.",
+      "CORRUPT_LEDGER",
+      500,
+    );
+  return owner;
+}
+
+function transientLedgerLockError(error: unknown) {
+  return ["EACCES", "EBUSY", "EEXIST", "ENOENT", "ENOTEMPTY", "EPERM"].includes(
+    (error as NodeJS.ErrnoException).code ?? "",
+  );
+}
+
+async function retryLedgerWriteLock(deadline: number) {
+  if (Date.now() >= deadline)
+    throw new ChangeControlError(
+      "Timed out waiting for the exclusive change-control ledger write lock.",
+      "CONFLICT",
+      409,
+    );
+  await new Promise((resolve) =>
+    setTimeout(resolve, ledgerWriteLockRetryMilliseconds),
+  );
+}
+
+async function acquireLedgerWriteLock(file: string) {
+  const lockPath = `${file}.write-lock`;
+  const deadline = Date.now() + ledgerWriteLockTimeoutMilliseconds;
+  await mkdir(dirname(file), { recursive: true });
+
+  while (true) {
+    const owner: ChangeControlLedgerWriteLockV1 = {
+      contractType: "ChangeControlLedgerWriteLockV1",
+      contractVersion: "1.0",
+      ownerPid: process.pid,
+      ownerToken: randomUUID(),
+      acquiredAt: new Date().toISOString(),
+    };
+    const candidatePath = `${lockPath}.${process.pid}.${owner.ownerToken}.candidate`;
+    await mkdir(candidatePath);
+    await writeFile(
+      join(candidatePath, ledgerWriteLockOwnerName(owner)),
+      JSON.stringify(owner),
+      { encoding: "utf8", flag: "wx" },
+    );
+    let published = false;
+    try {
+      await rename(candidatePath, lockPath);
+      published = true;
+    } catch (error) {
+      await rm(candidatePath, { recursive: true, force: true });
+      if (!transientLedgerLockError(error)) throw error;
+    }
+    if (published)
+      return async () => {
+        const observed = await readLedgerWriteLock(lockPath);
+        if (
+          observed.ownerPid !== owner.ownerPid ||
+          observed.ownerToken !== owner.ownerToken ||
+          canonicalJson(observed as unknown as JsonValue) !==
+            canonicalJson(owner as unknown as JsonValue)
+        )
+          throw new ChangeControlError(
+            "The change-control ledger write lock changed ownership during publication.",
+            "CORRUPT_LEDGER",
+            500,
+          );
+        await unlink(join(lockPath, ledgerWriteLockOwnerName(owner)));
+        await rmdir(lockPath);
+      };
+
+    let observed: ChangeControlLedgerWriteLockV1;
+    try {
+      observed = await readLedgerWriteLock(lockPath);
+    } catch (error) {
+      if (transientLedgerLockError(error)) {
+        await retryLedgerWriteLock(deadline);
+        continue;
+      }
+      throw error;
+    }
+    if (ledgerLockProcessIsAlive(observed.ownerPid)) {
+      await retryLedgerWriteLock(deadline);
+      continue;
+    }
+    try {
+      await unlink(join(lockPath, ledgerWriteLockOwnerName(observed)));
+      await rmdir(lockPath);
+    } catch (error) {
+      if (transientLedgerLockError(error)) {
+        await retryLedgerWriteLock(deadline);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+const processLedgerWriteChains = new Map<string, Promise<void>>();
+
 export class ChangeControlStore {
-  private readonly writeChains = new Map<string, Promise<void>>();
   private readonly now: () => string;
   private readonly createId: () => string;
   private readonly resolveRepositorySnapshot?: (
@@ -2782,14 +4047,27 @@ export class ChangeControlStore {
   }
 
   private serialize<T>(projectId: string, operation: () => Promise<T>) {
-    const previous = this.writeChains.get(projectId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(operation);
+    const key = this.file(projectId);
+    const previous = processLedgerWriteChains.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(async () => {
+      // A project transaction is deliberately stronger than a fingerprint lock:
+      // it makes every (projectId, incidentFingerprint) decision atomic while also
+      // preventing unrelated project writes from replacing the same ledger file.
+      // The process queue preserves local FIFO behavior; the filesystem lock is
+      // the cross-process authority.
+      const release = await acquireLedgerWriteLock(key);
+      try {
+        return await operation();
+      } finally {
+        await release();
+      }
+    });
     const settled = next.then(() => undefined, () => undefined);
-    this.writeChains.set(projectId, settled);
+    processLedgerWriteChains.set(key, settled);
     void settled
       .finally(() => {
-        if (this.writeChains.get(projectId) === settled)
-          this.writeChains.delete(projectId);
+        if (processLedgerWriteChains.get(key) === settled)
+          processLedgerWriteChains.delete(key);
       })
       .catch(() => undefined);
     return next;
@@ -4320,6 +5598,661 @@ export class ChangeControlStore {
         next.eventsByWave.get(waveLookupKey)!,
         next,
       );
+    });
+  }
+
+  async detectAndClassifyHalt(
+    projectIdValue: string,
+    input: DetectAndClassifyHaltInputV1,
+  ): Promise<HaltIncidentAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltInput = normalizeHaltContract(input?.halt, "HaltRecordV1");
+    const assessment = normalizeHaltContract(
+      input?.assessment,
+      "AttributionAssessmentV1",
+    );
+    const correlationWindowSeconds =
+      input?.correlationWindowSeconds === undefined
+        ? 3600
+        : input.correlationWindowSeconds;
+    if (
+      !Number.isInteger(correlationWindowSeconds) ||
+      correlationWindowSeconds < 0 ||
+      correlationWindowSeconds > 2_592_000
+    )
+      invalid(
+        "correlationWindowSeconds must be an integer from 0 through 2592000.",
+      );
+    if (
+      haltInput.projectId !== projectId ||
+      assessment.projectId !== projectId
+    )
+      invalid("Halt and attribution project IDs must match the route.");
+    if (
+      haltInput.state !== "detected" ||
+      haltInput.classificationAssessmentId !== undefined ||
+      haltInput.haltClass !== undefined ||
+      haltInput.effectiveIncidentId !== undefined
+    )
+      invalid("A newly detected HaltRecordV1 must be in detected state.");
+
+    return this.serialize(projectId, async () => {
+      const ledger = await readLedger(this.file(projectId), projectId);
+      const projected = validateAndProject(ledger);
+      const detectorKey = haltDetectorKey(
+        projectId,
+        haltInput.detector.detectorId,
+        haltInput.detector.detectorEventId,
+      );
+      const priorHaltId = projected.detectorHaltIds.get(detectorKey);
+      if (priorHaltId) return haltIncidentAggregate(projected, priorHaltId);
+      if (projected.halts.has(haltInput.haltId))
+        throw new ChangeControlError(
+          `Halt ${haltInput.haltId} already exists.`,
+          "CONFLICT",
+          409,
+        );
+
+      const publicationTime = this.now();
+      if (canonicalTimestampMillis(publicationTime) === undefined)
+        invalid("The publication clock did not return a canonical UTC instant.");
+      const halt: HaltRecordV1 = {
+        ...haltInput,
+        publishedAt: publicationTime,
+      };
+      if (observationFingerprintV1(halt) !== halt.observation.fingerprint)
+        invalid("HaltRecordV1 observation fingerprint does not recompute.");
+      if (
+        assessment.haltId !== halt.haltId ||
+        assessment.changeId !== halt.changeId ||
+        !sameHaltScope(assessment.scope, halt.scope)
+      )
+        invalid("AttributionAssessmentV1 does not bind the exact halt scope.");
+      if (
+        canonicalTimestampMillis(assessment.assessedAt) === undefined ||
+        Date.parse(assessment.assessedAt) < Date.parse(halt.occurredAt) ||
+        Date.parse(assessment.assessedAt) > Date.parse(publicationTime)
+      )
+        invalid("AttributionAssessmentV1 violates publication causality.");
+      if (
+        assessment.haltClass === "unknown" &&
+        (assessment.confidence !== "none" ||
+          assessment.normalizedRootCauseKey !== "unknown")
+      )
+        invalid("Unknown classification requires none attribution.");
+      if (
+        assessment.confidence === "exact" &&
+        (assessment.candidateCauses.length !== 1 ||
+          assessment.candidateCauses[0].causeKey !==
+            assessment.normalizedRootCauseKey ||
+          assessment.normalizedRootCauseKey === "unknown")
+      )
+        invalid("Exact attribution requires one proven normalized cause.");
+      if (
+        assessment.confidence === "none" &&
+        (assessment.candidateCauses.length !== 0 ||
+          assessment.normalizedRootCauseKey !== "unknown")
+      )
+        invalid("None attribution requires unknown and no candidate causes.");
+
+      const incidentFingerprint = incidentFingerprintV1(assessment);
+      const exactIncidents = [...projected.incidents.values()].filter(
+        (incident) =>
+          incident.incidentFingerprint === incidentFingerprint &&
+          incident.taxonomyPolicyVersion === assessment.taxonomyPolicyVersion,
+      );
+      const viableIncidents = exactIncidents.filter(
+        (incident) =>
+          activeIncidentStates.has(incident.state) ||
+          incidentReopenWindowContains(incident, publicationTime),
+      );
+      let incident = viableIncidents.length === 1
+        ? viableIncidents[0]
+        : undefined;
+      let correlationReason: HaltIncidentReasonCodeV1;
+      if (viableIncidents.length > 1) {
+        correlationReason = "INCIDENT_CORRELATION_AMBIGUOUS";
+        incident = undefined;
+      } else if (
+        incident &&
+        ["mitigated", "resolved"].includes(incident.state)
+      ) {
+        correlationReason = "INCIDENT_REOPENED";
+      } else if (incident) {
+        correlationReason = "INCIDENT_MATCHED_OPEN";
+      } else if (exactIncidents.some((candidate) => candidate.state === "resolved")) {
+        correlationReason = "INCIDENT_REOPEN_WINDOW_EXPIRED";
+      } else {
+        correlationReason = "INCIDENT_NEW";
+      }
+
+      const operationEventIds = new Set<string>();
+      const appendOperation = (
+        draft: EventDraft,
+      ) => {
+        const event = this.append(ledger, draft);
+        operationEventIds.add(event.id);
+        return event;
+      };
+      const detectedEvent = appendOperation({
+        id: this.createId(),
+        type: "halt.detected",
+        occurredAt: publicationTime,
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor: halt.detector.detectorId,
+        causationId: halt.detector.detectorEventId,
+        correlationId: halt.correlationId,
+        payload: normalizePayload({ halt }),
+      });
+
+      let correlationEvent: ChangeControlEvent;
+      if (!incident) {
+        const incidentId = this.createId();
+        incident = {
+          contractType: "IncidentRecordV1",
+          contractVersion: "1.0",
+          incidentId,
+          projectId,
+          changeId: halt.changeId,
+          incidentFingerprintVersion: "incident-v1",
+          incidentFingerprint,
+          taxonomyPolicyVersion: assessment.taxonomyPolicyVersion,
+          firstOccurrenceAt: halt.occurredAt,
+          latestOccurrenceAt: halt.occurredAt,
+          haltIds: [halt.haltId],
+          affectedEntities: [assessment.affectedEntity],
+          severity: halt.severity,
+          ownerKind: [
+            "human_decision_required",
+            "destructive_or_external_risk",
+            "unknown",
+          ].includes(assessment.haltClass)
+            ? "human"
+            : "unassigned",
+          state: "open",
+          correlationWindowPolicy: {
+            durationSeconds: correlationWindowSeconds,
+            reopenUntil: null,
+          },
+          reopenOrdinal: 0,
+          correlationReasonCode: correlationReason,
+          openedAt: publicationTime,
+        };
+        correlationEvent = appendOperation({
+          id: this.createId(),
+          type: "incident.opened",
+          occurredAt: publicationTime,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:incident-correlation-v1",
+          causationId: detectedEvent.id,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({ incident }),
+        });
+      } else {
+        correlationEvent = appendOperation({
+          id: this.createId(),
+          type: "incident.halt-linked",
+          occurredAt: publicationTime,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:incident-correlation-v1",
+          causationId: detectedEvent.id,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({
+            haltId: halt.haltId,
+            incidentId: incident.incidentId,
+            incidentFingerprint,
+            reasonCode: correlationReason,
+          }),
+        });
+      }
+
+      const classifiedEvent = appendOperation({
+        id: this.createId(),
+        type: "halt.classified",
+        occurredAt: publicationTime,
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor: assessment.classifier.classifierId,
+        causationId: correlationEvent.id,
+        correlationId: halt.correlationId,
+        payload: normalizePayload({
+          haltId: halt.haltId,
+          assessment,
+          incidentId: incident.incidentId,
+          previousState: "detected",
+          state: "classified",
+        }),
+      });
+
+      if (correlationReason === "INCIDENT_REOPENED") {
+        appendOperation({
+          id: this.createId(),
+          type: "incident.reopened",
+          occurredAt: publicationTime,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:incident-correlation-v1",
+          causationId: classifiedEvent.id,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({
+            haltId: halt.haltId,
+            incidentId: incident.incidentId,
+            previousState: incident.state,
+            state: "reopened",
+            reopenOrdinal: incident.reopenOrdinal + 1,
+            reopenUntil: incident.correlationWindowPolicy.reopenUntil,
+            reasonCode: "INCIDENT_REOPENED",
+          }),
+        });
+      }
+
+      const failClosedReason =
+        assessment.haltClass === "unknown"
+          ? "HALT_CLASS_UNKNOWN"
+          : assessment.confidence !== "exact"
+            ? "ATTRIBUTION_NOT_EXACT"
+          : correlationReason === "INCIDENT_CORRELATION_AMBIGUOUS"
+            ? "INCIDENT_CORRELATION_AMBIGUOUS"
+            : undefined;
+      if (failClosedReason) {
+        const haltEscalated = appendOperation({
+          id: this.createId(),
+          type: "halt.escalated",
+          occurredAt: publicationTime,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:incident-correlation-v1",
+          causationId: classifiedEvent.id,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({
+            haltId: halt.haltId,
+            previousState: "classified",
+            state: "escalated",
+            reasonCode: failClosedReason,
+            evidenceRefs: halt.evidenceRefs,
+          }),
+        });
+        if (incident.state === "open")
+          appendOperation({
+            id: this.createId(),
+            type: "incident.escalated",
+            occurredAt: publicationTime,
+            projectId,
+            changeId: halt.changeId,
+            actor: "policy:incident-correlation-v1",
+            causationId: haltEscalated.id,
+            correlationId: halt.correlationId,
+            payload: normalizePayload({
+              incidentId: incident.incidentId,
+              previousState: "open",
+              state: "escalated",
+              reasonCode: failClosedReason,
+              evidenceRefs: halt.evidenceRefs,
+            }),
+          });
+      }
+
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(this.file(projectId), ledger);
+      return haltIncidentAggregate(next, halt.haltId, operationEventIds);
+    });
+  }
+
+  async getHaltIncidentProjection(
+    projectIdValue: string,
+  ): Promise<HaltIncidentProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return immutableHaltIncidentProjection(
+      projectId,
+      validateAndProject(ledger),
+    );
+  }
+
+  async getHalt(
+    projectIdValue: string,
+    haltIdValue: string,
+  ): Promise<HaltIncidentAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return haltIncidentAggregate(validateAndProject(ledger), haltId);
+  }
+
+  async getIncident(
+    projectIdValue: string,
+    incidentIdValue: string,
+  ): Promise<IncidentRecordV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const incidentId = requireIdentifier(incidentIdValue, "incidentId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const incident = validateAndProject(ledger).incidents.get(incidentId);
+    if (!incident)
+      throw new ChangeControlError(
+        `Incident ${incidentId} was not found.`,
+        "NOT_FOUND",
+        404,
+      );
+    return deepFreeze(structuredClone(incident));
+  }
+
+  async transitionHalt(
+    projectIdValue: string,
+    haltIdValue: string,
+    input: TransitionHaltInputV1,
+  ): Promise<HaltIncidentAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const actor = requireIdentity(input?.actor, "actor");
+    if (!["escalated", "quarantined"].includes(input?.to))
+      invalid(
+        "This Phase 4 slice permits only escalated or quarantined halt transitions.",
+      );
+    if (
+      !HALT_INCIDENT_REASON_CODES_V1.includes(
+        input?.reasonCode as HaltIncidentReasonCodeV1,
+      )
+    )
+      invalid("reasonCode is not a supported fail-closed reason code.");
+    const evidenceRefs = normalizeEvidenceRefs(input?.evidenceRefs);
+    return this.serialize(projectId, async () => {
+      const ledger = await readLedger(this.file(projectId), projectId);
+      const projected = validateAndProject(ledger);
+      const halt = projected.halts.get(haltId);
+      if (!halt)
+        throw new ChangeControlError(
+          `Halt ${haltId} was not found.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (!["classified", "action_pending", "healing"].includes(halt.state))
+        throw new ChangeControlError(
+          `Halt ${haltId} cannot transition from ${halt.state}.`,
+          "CONFLICT",
+          409,
+        );
+      const event = this.append(ledger, {
+        id: this.createId(),
+        type:
+          input.to === "escalated"
+            ? "halt.escalated"
+            : "halt.quarantined",
+        occurredAt: this.now(),
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor,
+        causationId: input.causationId ?? halt.haltId,
+        correlationId: input.correlationId ?? halt.correlationId,
+        payload: normalizePayload({
+          haltId,
+          previousState: halt.state,
+          state: input.to,
+          reasonCode: input.reasonCode,
+          evidenceRefs,
+        }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(this.file(projectId), ledger);
+      return haltIncidentAggregate(next, haltId, new Set([event.id]));
+    });
+  }
+
+  async transitionIncident(
+    projectIdValue: string,
+    incidentIdValue: string,
+    input: TransitionIncidentInputV1,
+  ): Promise<IncidentRecordV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const incidentId = requireIdentifier(incidentIdValue, "incidentId");
+    const actor = requireIdentity(input?.actor, "actor");
+    if (!["investigating", "mitigated", "escalated"].includes(input?.to))
+      invalid(
+        "This Phase 4 slice permits investigating, mitigated, or escalated incident transitions.",
+      );
+    if (
+      !HALT_INCIDENT_REASON_CODES_V1.includes(
+        input?.reasonCode as HaltIncidentReasonCodeV1,
+      )
+    )
+      invalid("reasonCode is not a supported fail-closed reason code.");
+    const evidenceRefs = normalizeEvidenceRefs(input?.evidenceRefs);
+    if (input?.to === "mitigated" && input?.receipt === undefined)
+      invalid("A mitigated incident transition requires a resolution receipt.");
+    const mitigationReceipt =
+      input?.to === "mitigated"
+        ? normalizeHaltContract(
+            input.receipt,
+            "IncidentResolutionReceiptV1",
+          )
+        : undefined;
+    if (input?.to !== "mitigated" && input?.receipt !== undefined)
+      invalid("Only a mitigated incident transition accepts a resolution receipt.");
+    return this.serialize(projectId, async () => {
+      const ledger = await readLedger(this.file(projectId), projectId);
+      const projected = validateAndProject(ledger);
+      const incident = projected.incidents.get(incidentId);
+      if (!incident)
+        throw new ChangeControlError(
+          `Incident ${incidentId} was not found.`,
+          "NOT_FOUND",
+          404,
+        );
+      const legal: Record<string, readonly string[]> = {
+        open: ["investigating", "mitigated", "escalated"],
+        investigating: ["mitigated", "escalated"],
+        healing: ["investigating", "mitigated", "escalated"],
+        mitigated: ["escalated"],
+        escalated: ["investigating", "mitigated"],
+        reopened: ["investigating", "mitigated", "escalated"],
+      };
+      if (!(legal[incident.state] ?? []).includes(input.to))
+        throw new ChangeControlError(
+          `Incident ${incidentId} cannot transition from ${incident.state} to ${input.to}.`,
+          "CONFLICT",
+          409,
+        );
+      const publicationTime = this.now();
+      if (canonicalTimestampMillis(publicationTime) === undefined)
+        invalid("The publication clock did not return a canonical UTC instant.");
+      if (mitigationReceipt) {
+        if (
+          mitigationReceipt.projectId !== projectId ||
+          mitigationReceipt.changeId !== incident.changeId ||
+          mitigationReceipt.incidentId !== incidentId ||
+          mitigationReceipt.resolutionKind !== "mitigated" ||
+          mitigationReceipt.resolvedAt !== publicationTime ||
+          mitigationReceipt.resolvedBy !== actor ||
+          mitigationReceipt.taxonomyPolicyVersion !==
+            incident.taxonomyPolicyVersion ||
+          mitigationReceipt.correlationWindowSeconds !==
+            incident.correlationWindowPolicy.durationSeconds ||
+          canonicalJson(mitigationReceipt.evidenceRefs as unknown as JsonValue) !==
+            canonicalJson(evidenceRefs as unknown as JsonValue)
+        )
+          invalid(
+            "IncidentResolutionReceiptV1 does not prove this exact mitigation publication.",
+          );
+      }
+      this.append(ledger, {
+        id: this.createId(),
+        type: `incident.${input.to}` as ChangeControlEventType,
+        occurredAt: publicationTime,
+        projectId,
+        changeId: incident.changeId,
+        actor,
+        causationId: input.causationId ?? incidentId,
+        correlationId: input.correlationId ?? incidentId,
+        payload: normalizePayload({
+          incidentId,
+          previousState: incident.state,
+          state: input.to,
+          reasonCode: input.reasonCode,
+          evidenceRefs,
+          ...(mitigationReceipt ? { receipt: mitigationReceipt } : {}),
+        }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(this.file(projectId), ledger);
+      return deepFreeze(structuredClone(next.incidents.get(incidentId)!));
+    });
+  }
+
+  async resolveIncident(
+    projectIdValue: string,
+    incidentIdValue: string,
+    input: ResolveIncidentInputV1,
+  ): Promise<IncidentRecordV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const incidentId = requireIdentifier(incidentIdValue, "incidentId");
+    const receipt = normalizeHaltContract(
+      input?.receipt,
+      "IncidentResolutionReceiptV1",
+    );
+    if (receipt.projectId !== projectId || receipt.incidentId !== incidentId)
+      invalid("IncidentResolutionReceiptV1 does not match the route.");
+    return this.serialize(projectId, async () => {
+      const ledger = await readLedger(this.file(projectId), projectId);
+      const projected = validateAndProject(ledger);
+      const incident = projected.incidents.get(incidentId);
+      if (!incident)
+        throw new ChangeControlError(
+          `Incident ${incidentId} was not found.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (!["mitigated", "escalated"].includes(incident.state))
+        throw new ChangeControlError(
+          `Incident ${incidentId} must be mitigated or escalated before resolution.`,
+          "CONFLICT",
+          409,
+        );
+      const publicationTime = this.now();
+      if (canonicalTimestampMillis(publicationTime) === undefined)
+        invalid("The publication clock did not return a canonical UTC instant.");
+      if (receipt.resolvedAt !== publicationTime)
+        invalid(
+          "IncidentResolutionReceiptV1 resolvedAt must match the authoritative publication time.",
+        );
+      const reopenUntil = new Date(
+        Date.parse(publicationTime) +
+          receipt.correlationWindowSeconds * 1000,
+      ).toISOString();
+      this.append(ledger, {
+        id: this.createId(),
+        type: "incident.resolved",
+        occurredAt: publicationTime,
+        projectId,
+        changeId: incident.changeId,
+        actor: receipt.resolvedBy,
+        causationId: input.causationId ?? receipt.receiptId,
+        correlationId: input.correlationId ?? incidentId,
+        payload: normalizePayload({
+          receipt,
+          previousState: incident.state,
+          state: "resolved",
+          reopenUntil,
+        }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(this.file(projectId), ledger);
+      return deepFreeze(structuredClone(next.incidents.get(incidentId)!));
+    });
+  }
+
+  async correctIncidentCorrelation(
+    projectIdValue: string,
+    haltIdValue: string,
+    input: CorrectIncidentCorrelationInputV1,
+  ): Promise<HaltIncidentAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const incidentId = requireIdentifier(input?.incidentId, "incidentId");
+    const correctionId = requireIdentifier(input?.correctionId, "correctionId");
+    const actor = requireIdentity(input?.actor, "actor");
+    if (!actor.startsWith("human:"))
+      invalid("A correlation correction requires a human actor.");
+    const reason = requireIdentity(input?.reason, "reason");
+    const evidenceRefs = normalizeEvidenceRefs(input?.evidenceRefs);
+    return this.serialize(projectId, async () => {
+      const ledger = await readLedger(this.file(projectId), projectId);
+      const projected = validateAndProject(ledger);
+      const halt = projected.halts.get(haltId);
+      const incident = projected.incidents.get(incidentId);
+      const previousIncidentId = projected.effectiveIncidentByHalt.get(haltId);
+      const previousIncident = previousIncidentId
+        ? projected.incidents.get(previousIncidentId)
+        : undefined;
+      if (!halt || !incident || !previousIncident)
+        throw new ChangeControlError(
+          "The halt or incident correlation target was not found.",
+          "NOT_FOUND",
+          404,
+        );
+      const correctionIssue = correlationCorrectionIssue(
+        previousIncident,
+        incident,
+        actor,
+      );
+      if (
+        correctionIssue === "SAME_INCIDENT" ||
+        correctionIssue === "FINGERPRINT_MISMATCH"
+      )
+        throw new ChangeControlError(
+          "A correction must target a different incident with the exact same versioned fingerprint.",
+          "CONFLICT",
+          409,
+        );
+      if (correctionIssue === "CLOSED_TARGET")
+        throw new ChangeControlError(
+          "A mitigated or resolved incident cannot receive a correlation correction; a new detected halt must satisfy deterministic reopen rules.",
+          "CONFLICT",
+          409,
+        );
+      const publicationTime = this.now();
+      if (canonicalTimestampMillis(publicationTime) === undefined)
+        invalid("The publication clock did not return a canonical UTC instant.");
+      const event = this.append(ledger, {
+        id: this.createId(),
+        type: "incident.correlation-superseded",
+        occurredAt: publicationTime,
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor,
+        causationId: input.causationId ?? correctionId,
+        correlationId: input.correlationId ?? halt.correlationId,
+        payload: normalizePayload({
+          correctionId,
+          haltId,
+          previousIncidentId,
+          incidentId,
+          correctedAt: publicationTime,
+          correctedBy: actor,
+          reason,
+          evidenceRefs,
+        }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(this.file(projectId), ledger);
+      return haltIncidentAggregate(next, haltId, new Set([event.id]));
     });
   }
 

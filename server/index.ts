@@ -45,11 +45,16 @@ import {
   type CreateChangeInput,
   type CreateWaveInput,
   type DispatchWaveInput,
+  type CorrectIncidentCorrelationInputV1,
+  type DetectAndClassifyHaltInputV1,
   type PublishArchitectReplanReceiptInput,
   type PublishPlanAuthorizationInput,
   type PublishPlanningContractInput,
+  type ResolveIncidentInputV1,
   type TrustedRepositorySnapshotV1,
   type TransitionChangeInput,
+  type TransitionHaltInputV1,
+  type TransitionIncidentInputV1,
   type TransitionTaskInput,
   type TransitionWaveInput,
 } from "./change-control-v1/index.ts";
@@ -5626,6 +5631,129 @@ app.post(
           request.params.waveId,
           request.params.taskId,
           request.body as TransitionTaskInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/halts",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.detectAndClassifyHalt(
+          request.params.projectId,
+          request.body as DetectAndClassifyHaltInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/halts-incidents",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getHaltIncidentProjection(
+          request.params.projectId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/halts/:haltId",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getHalt(
+          request.params.projectId,
+          request.params.haltId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/halts/:haltId/transitions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.transitionHalt(
+          request.params.projectId,
+          request.params.haltId,
+          request.body as TransitionHaltInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/halts/:haltId/correlations",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.correctIncidentCorrelation(
+          request.params.projectId,
+          request.params.haltId,
+          request.body as CorrectIncidentCorrelationInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/incidents/:incidentId",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getIncident(
+          request.params.projectId,
+          request.params.incidentId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/incidents/:incidentId/transitions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.transitionIncident(
+          request.params.projectId,
+          request.params.incidentId,
+          request.body as TransitionIncidentInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/incidents/:incidentId/resolutions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.resolveIncident(
+          request.params.projectId,
+          request.params.incidentId,
+          request.body as ResolveIncidentInputV1,
         ),
       );
     } catch (error) {

@@ -191,6 +191,54 @@ cleanup is bounded and non-force. Orchestrator does not use `reset --hard`,
 `clean`, force branch/worktree removal, global worktree pruning, force ref
 updates, or remote publication for this lifecycle.
 
+### Halts and Incidents v1: contract and correlation slice
+
+Detected halts, attribution assessments, incidents, resolution receipts, and
+their typed lifecycle events extend the existing per-project change-control
+hash chain. They do not create another scheduler, run record, or mutable
+incident database. The Draft 2020-12 schema and fixtures are in
+`server/halts-incidents-v1/schemas/halts-incidents-v1.schema.json` and
+`halts-incidents-v1.examples.json`.
+
+Halt publication is atomic across detection, classification, and exact
+incident linkage. Detector retries are idempotent by
+`(projectId, detectorId, detectorEventId)`. Versioned observation and incident
+fingerprints exclude attempt, run, process, lease, and workspace identities
+from durable recurrence identity. Concurrent correlations serialize on the
+project ledger through an identity-fenced filesystem lock; a dead process
+owner is recovered without allowing a stale contender to remove its successor.
+Replay rejects incomplete classification, changed
+fingerprints, illegal transitions, missing scopes, conflicting links, invalid
+closure evidence, and reopen attempts outside the recorded publication-time
+window. Insufficient evidence is published as `unknown` with `none`
+attribution and escalates with `HALT_CLASS_UNKNOWN`; it never receives exact
+attribution or automatic action.
+
+The focused APIs are:
+
+- `POST /api/change-control/projects/:projectId/halts`
+- `GET /api/change-control/projects/:projectId/halts-incidents`
+- `GET /api/change-control/projects/:projectId/halts/:haltId`
+- `POST /api/change-control/projects/:projectId/halts/:haltId/transitions`
+- `POST /api/change-control/projects/:projectId/halts/:haltId/correlations`
+- `GET /api/change-control/projects/:projectId/incidents/:incidentId`
+- `POST /api/change-control/projects/:projectId/incidents/:incidentId/transitions`
+- `POST /api/change-control/projects/:projectId/incidents/:incidentId/resolutions`
+
+Correlation corrections are human-owned, use ledger-assigned publication
+time, append superseding history, and leave original links and incident records
+immutable. Mitigation and resolution require an exact
+`IncidentResolutionReceiptV1`; resolution additionally requires terminal
+handling for associated blocking halts, no active healing, and the incident's
+recorded correlation-window policy. A matching recurrence reopens a mitigated
+incident immediately, or a resolved incident only inside that window; an
+expired window creates a new incident with
+`INCIDENT_REOPEN_WINDOW_EXPIRED`.
+
+This slice does not implement Warden verdict publication, Doctor recipes or
+repair leases, automatic repair, or retry/resume authority. Those actions
+remain unavailable and fail closed.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

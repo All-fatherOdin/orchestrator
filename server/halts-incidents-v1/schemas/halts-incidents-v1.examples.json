@@ -1,0 +1,152 @@
+[
+  {
+    "contractType": "HaltRecordV1",
+    "contractVersion": "1.0",
+    "haltId": "halt-example-001",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "correlationId": "correlation-example-001",
+    "scope": {
+      "waveId": "wave-phase4",
+      "taskId": "task-contract",
+      "attemptId": null,
+      "planRevision": 1,
+      "runId": null,
+      "workspaceAttemptId": null,
+      "mergeRequestId": null,
+      "commitId": null
+    },
+    "detector": {
+      "detectorId": "detector:verification",
+      "detectorEventId": "verification-result-001",
+      "detectorCode": "VERIFICATION_FAILED"
+    },
+    "occurredAt": "2026-07-31T10:00:00.000Z",
+    "publishedAt": "2026-07-31T10:00:01.000Z",
+    "observation": {
+      "fingerprintVersion": "observation-v1",
+      "fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "operationKind": "verification",
+      "component": "npm-test",
+      "normalizedFailureCode": "TEST_FAILED"
+    },
+    "evidenceRefs": [
+      "command:npm-test:result-001"
+    ],
+    "severity": "blocking",
+    "state": "detected"
+  },
+  {
+    "contractType": "AttributionAssessmentV1",
+    "contractVersion": "1.0",
+    "assessmentId": "assessment-example-001",
+    "haltId": "halt-example-001",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "scope": {
+      "waveId": "wave-phase4",
+      "taskId": "task-contract",
+      "attemptId": null,
+      "planRevision": 1,
+      "runId": null,
+      "workspaceAttemptId": null,
+      "mergeRequestId": null,
+      "commitId": null
+    },
+    "haltClass": "acceptance_or_verification_failure",
+    "confidence": "exact",
+    "affectedEntity": {
+      "projectId": "orchestrator",
+      "changeId": "change-phase4",
+      "waveId": "wave-phase4",
+      "taskId": "task-contract",
+      "operationKind": "verification",
+      "component": "npm-test"
+    },
+    "normalizedRootCauseKey": "oracle:npm-test-failed",
+    "candidateCauses": [
+      {
+        "causeKey": "oracle:npm-test-failed",
+        "evidenceRefs": [
+          "command:npm-test:result-001"
+        ]
+      }
+    ],
+    "alternativeCandidates": [],
+    "evidence": {
+      "detectorEvidenceRefs": [
+        "command:npm-test:result-001"
+      ],
+      "declaredWriteSet": [],
+      "actualChangedPaths": [],
+      "gitEvidenceRefs": [],
+      "outcomeEvidenceRefs": [
+        "command:npm-test:result-001"
+      ],
+      "sideEffectState": "none"
+    },
+    "classifier": {
+      "classifierId": "classifier:deterministic-v1",
+      "method": "deterministic"
+    },
+    "assessedAt": "2026-07-31T10:00:01.000Z",
+    "taxonomyPolicyVersion": "halt-taxonomy-v1"
+  },
+  {
+    "contractType": "IncidentRecordV1",
+    "contractVersion": "1.0",
+    "incidentId": "incident-example-001",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "incidentFingerprintVersion": "incident-v1",
+    "incidentFingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+    "taxonomyPolicyVersion": "halt-taxonomy-v1",
+    "firstOccurrenceAt": "2026-07-31T10:00:00.000Z",
+    "latestOccurrenceAt": "2026-07-31T10:00:00.000Z",
+    "haltIds": [
+      "halt-example-001"
+    ],
+    "affectedEntities": [
+      {
+        "projectId": "orchestrator",
+        "changeId": "change-phase4",
+        "waveId": "wave-phase4",
+        "taskId": "task-contract",
+        "operationKind": "verification",
+        "component": "npm-test"
+      }
+    ],
+    "severity": "blocking",
+    "ownerKind": "unassigned",
+    "state": "open",
+    "correlationWindowPolicy": {
+      "durationSeconds": 3600,
+      "reopenUntil": null
+    },
+    "reopenOrdinal": 0,
+    "correlationReasonCode": "INCIDENT_NEW",
+    "openedAt": "2026-07-31T10:00:01.000Z"
+  },
+  {
+    "contractType": "IncidentResolutionReceiptV1",
+    "contractVersion": "1.0",
+    "receiptId": "resolution-example-001",
+    "incidentId": "incident-example-001",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "resolutionKind": "resolved",
+    "oracle": {
+      "kind": "executable",
+      "outcome": "passed",
+      "observationResult": "The blocking verification oracle passed after mitigation."
+    },
+    "noActiveHealing": true,
+    "evidenceRefs": [
+      "command:npm-test:result-002"
+    ],
+    "resolvedAt": "2026-07-31T11:00:00.000Z",
+    "resolvedBy": "human:operator",
+    "taxonomyPolicyVersion": "halt-taxonomy-v1",
+    "correlationWindowSeconds": 3600
+  }
+]
