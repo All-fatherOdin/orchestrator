@@ -14,20 +14,18 @@ Windows: managed attempts use owned worktrees, serialized fresh-target merge,
 deterministic replan on drift, canonical replay, bounded recovery, and
 non-destructive cleanup.
 
-The first Phase 4 slice is implemented: closed halt taxonomy and attribution,
-stable incident identity and correlation, append-only halt/incident events,
-cross-process atomic publication, deterministic replay, lifecycle transitions,
-correlation correction, and focused HTTP projections now fail closed against
-invalid or ambiguous evidence.
+Phase 4 is implemented: the halt/incident core, deterministic Warden policy,
+monotonic repair leases, five closed typed Doctor adapters, immutable repair
+receipts, crash/restart replay, and independently authorized task retry and
+wave resume all fail closed against stale, ambiguous, conflicting, exhausted,
+or unfenced evidence.
 
 ## Current Safe Step
 
-Run the remaining Phase 4 Warden and Doctor implementation queue from the
-accepted contract. Warden verdict publication and policy gating, Doctor repair
-recipes and leases, bounded recovery, and retry/resume authorization remain
-unimplemented. The halt/incident ledger they consume is now implemented, so
-the remaining work can preserve one-way authority: Warden may deny and Doctor
-may propose only allowlisted recovery; neither may silently resume execution.
+Treat the verified Phase 4 boundary as complete. The next separately
+authorized product slice is Phase 5 prompt/model/eval lineage. Phase 6
+operator projections remain later; no UI should gain canonical write
+authority from this handoff.
 
 ## Source Boundaries
 
@@ -57,9 +55,8 @@ may propose only allowlisted recovery; neither may silently resume execution.
 - Do not claim that the full Nikolay-like system is implemented.
 - Do not infer destructive Git, force cleanup, or remote-publication authority
   from Phase 3 ownership records.
-- Warden/Doctor recovery, prompt/eval lineage, and operator UI remain later
-  independently authorized slices. No Phase 4 component has general-purpose
-  auto-heal authority.
+- Prompt/eval lineage and operator UI remain later independently authorized
+  slices. No Phase 4 component has general-purpose auto-heal authority.
 
 ## Verification
 

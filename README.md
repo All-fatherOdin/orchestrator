@@ -191,7 +191,7 @@ cleanup is bounded and non-force. Orchestrator does not use `reset --hard`,
 `clean`, force branch/worktree removal, global worktree pruning, force ref
 updates, or remote publication for this lifecycle.
 
-### Halts and Incidents v1: core and Warden policy slice
+### Halts and Incidents v1: Warden and Doctor
 
 Detected halts, attribution assessments, incidents, resolution receipts, and
 their typed lifecycle events extend the existing per-project change-control
@@ -225,6 +225,11 @@ The focused APIs are:
 - `GET /api/change-control/projects/:projectId/halts/:haltId/warden-verdicts`
 - `POST /api/change-control/projects/:projectId/halts/:haltId/warden-verdicts`
 - `POST /api/change-control/projects/:projectId/halts/:haltId/repair-lease/transitions`
+- `GET /api/change-control/projects/:projectId/doctor`
+- `POST /api/change-control/projects/:projectId/halts/:haltId/doctor-repairs`
+- `GET /api/change-control/projects/:projectId/doctor-repairs/:receiptId`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/tasks/:taskId/retry-authorizations`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/resume-authorizations`
 - `POST /api/change-control/projects/:projectId/halts/:haltId/transitions`
 - `POST /api/change-control/projects/:projectId/halts/:haltId/correlations`
 - `GET /api/change-control/projects/:projectId/incidents/:incidentId`
@@ -249,9 +254,28 @@ attribution, ambiguous effects/results, exhausted budgets, and lease loss fail
 closed. Higher-ordinal verdicts append superseding history. An open blocking
 incident rejects wave dispatch, including `sendAnyway`.
 
-The five v1 recipe identities are policy allowlist metadata only. This slice
-does not execute Doctor recipes, authorize retry/resume, edit source, or add
-general automatic healing.
+Doctor executes only `provider-read-retry-v1`,
+`registered-process-retry-v1`, `workspace-reconcile-v1`,
+`merge-safe-abort-resume-v1`, and `owned-cleanup-retry-v1`. Each identity has
+closed typed inputs, fixed attempt/backoff/timeout bounds, code-owned adapters,
+stop conditions, and an executable success oracle. Requests cannot supply a
+shell, command, tool, prompt, model, path, plan, policy, dependency, or
+authorization choice. Phase 3 recipes call the existing recovery and bounded
+non-force cleanup APIs.
+
+`doctor.repair-started` is durable before an effect and
+`doctor.repair-finished` carries `DoctorRepairReceiptV1` with exact input,
+evidence, lease epoch, adapter outcomes, and oracle result. Restart replay
+returns an exact prior receipt, proves a completed effect by typed
+re-observation, retries only an explicitly crash-safe read, or quarantines
+ambiguity and lease loss. Doctor success does not recover a halt, resolve an
+incident, or authorize retry/resume.
+
+`task.retry-authorized` and `wave.resume-authorized` require an independent
+live Warden bounded-retry verdict or an audited `human:*` decision. Retry
+allocates a new immutable attempt identity and records a stale-plan assessment;
+the next dispatch must pass fresh Phase 2 planning, authorization, drift,
+dependency, acceptance, Phase 3 ownership, and blocking-incident gates.
 
 ## Sequential queue plans
 

@@ -37,12 +37,16 @@ creates linked deterministic replan evidence. Canonical workspace/merge state,
 hash-chained transitions, immutable receipts, startup recovery, and bounded
 non-force cleanup fail closed on ambiguous evidence.
 
-Phase 4 halt/incident core is implemented. The canonical ledger publishes one
+Phase 4 Halts and Incidents is implemented. The canonical ledger publishes one
 classified halt and effective incident atomically across processes, derives
 stable correlation identity, replays lifecycle state deterministically, and
 supports mitigation, escalation, resolution, bounded reopen, and superseding
-correlation correction. Resolution publication time is assigned by the ledger
-rather than trusted from an HTTP caller.
+correlation correction. Warden binds exact evidence, budgets, recipe identity,
+idempotency, and monotonic leases. Doctor persists start before effects,
+executes only five fixed typed adapters, publishes fenced
+`DoctorRepairReceiptV1` results, and replays pending work by re-observation.
+Independent Warden or audited-human events authorize retry/resume; Doctor
+success alone changes neither task/wave authority nor incident closure.
 
 Current boundary:
 
@@ -56,8 +60,6 @@ Current boundary:
 The evidence ledger, target architecture, roadmap, Planning and Drift Contract
 v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
 remain under `docs/architecture/change-control-plane/`. Completed local
-Phase 1-3 and the completed Phase 4 core queues remain ignored execution
-history under `queues/`; they are not the next operational step. The accepted
-Phase 4 contract still requires the bounded Warden/Doctor implementation slice:
-verdict gating, deterministic repair recipes and leases, recovery, and explicit
-retry/resume authorization.
+Phase 1-4 queues remain ignored execution history under `queues/`; they are
+not the next operational step. The next product phase is separately authorized
+prompt/model/eval lineage; operator projections remain later.

@@ -42,6 +42,16 @@ export const WARDEN_EVENT_TYPES_V1 = [
   "warden.verdict-recorded",
 ] as const;
 
+export const DOCTOR_EVENT_TYPES_V1 = [
+  "doctor.repair-started",
+  "doctor.repair-finished",
+] as const;
+
+export const RECOVERY_AUTHORIZATION_EVENT_TYPES_V1 = [
+  "task.retry-authorized",
+  "wave.resume-authorized",
+] as const;
+
 export const WARDEN_DISPOSITIONS_V1 = [
   "allow_auto_heal",
   "allow_bounded_retry",
@@ -85,6 +95,14 @@ export const WARDEN_REPAIR_RECIPES_V1 = [
     disposition: "allow_bounded_retry",
     successOracle: typedAdapterOracle("oracle:provider-read-success-v1"),
     stopOracle: typedAdapterOracle("oracle:provider-read-stop-v1"),
+    inputKind: "provider_read" as const,
+    bounds: Object.freeze({
+      maxAttempts: 3,
+      initialBackoffMs: 10,
+      maxBackoffMs: 40,
+      attemptTimeoutMs: 30_000,
+    }),
+    crashPolicy: "reobserve_then_retry" as const,
   },
   {
     recipeId: "registered-process-retry-v1",
@@ -94,6 +112,14 @@ export const WARDEN_REPAIR_RECIPES_V1 = [
     disposition: "allow_bounded_retry",
     successOracle: registeredCommandOracle("oracle:registered-process-success-v1"),
     stopOracle: registeredCommandOracle("oracle:registered-process-stop-v1"),
+    inputKind: "registered_process" as const,
+    bounds: Object.freeze({
+      maxAttempts: 2,
+      initialBackoffMs: 10,
+      maxBackoffMs: 20,
+      attemptTimeoutMs: 30_000,
+    }),
+    crashPolicy: "reobserve_then_retry" as const,
   },
   {
     recipeId: "workspace-reconcile-v1",
@@ -103,6 +129,14 @@ export const WARDEN_REPAIR_RECIPES_V1 = [
     disposition: "allow_auto_heal",
     successOracle: typedAdapterOracle("oracle:workspace-reconcile-success-v1"),
     stopOracle: typedAdapterOracle("oracle:workspace-reconcile-stop-v1"),
+    inputKind: "workspace_attempt" as const,
+    bounds: Object.freeze({
+      maxAttempts: 1,
+      initialBackoffMs: 0,
+      maxBackoffMs: 0,
+      attemptTimeoutMs: 30_000,
+    }),
+    crashPolicy: "reobserve_then_finalize" as const,
   },
   {
     recipeId: "merge-safe-abort-resume-v1",
@@ -112,6 +146,14 @@ export const WARDEN_REPAIR_RECIPES_V1 = [
     disposition: "allow_auto_heal",
     successOracle: typedAdapterOracle("oracle:merge-safe-abort-resume-success-v1"),
     stopOracle: typedAdapterOracle("oracle:merge-safe-abort-resume-stop-v1"),
+    inputKind: "merge_request" as const,
+    bounds: Object.freeze({
+      maxAttempts: 1,
+      initialBackoffMs: 0,
+      maxBackoffMs: 0,
+      attemptTimeoutMs: 60_000,
+    }),
+    crashPolicy: "reobserve_then_finalize" as const,
   },
   {
     recipeId: "owned-cleanup-retry-v1",
@@ -121,6 +163,14 @@ export const WARDEN_REPAIR_RECIPES_V1 = [
     disposition: "allow_auto_heal",
     successOracle: typedAdapterOracle("oracle:owned-cleanup-success-v1"),
     stopOracle: typedAdapterOracle("oracle:owned-cleanup-stop-v1"),
+    inputKind: "workspace_attempt" as const,
+    bounds: Object.freeze({
+      maxAttempts: 1,
+      initialBackoffMs: 0,
+      maxBackoffMs: 0,
+      attemptTimeoutMs: 30_000,
+    }),
+    crashPolicy: "reobserve_then_finalize" as const,
   },
 ] as const;
 
@@ -160,9 +210,14 @@ export type HaltIncidentEventTypeV1 =
 export type HaltIncidentReasonCodeV1 =
   (typeof HALT_INCIDENT_REASON_CODES_V1)[number];
 export type WardenEventTypeV1 = (typeof WARDEN_EVENT_TYPES_V1)[number];
+export type DoctorEventTypeV1 = (typeof DOCTOR_EVENT_TYPES_V1)[number];
+export type RecoveryAuthorizationEventTypeV1 =
+  (typeof RECOVERY_AUTHORIZATION_EVENT_TYPES_V1)[number];
 export type WardenDispositionV1 = (typeof WARDEN_DISPOSITIONS_V1)[number];
 export type WardenDenialReasonCodeV1 =
   (typeof WARDEN_DENIAL_REASON_CODES_V1)[number];
+export type DoctorRecipeIdV1 =
+  (typeof WARDEN_REPAIR_RECIPES_V1)[number]["recipeId"];
 export type HaltStateV1 =
   | "detected"
   | "classified"
@@ -493,6 +548,221 @@ export type WardenAggregateV1 = Readonly<{
   events: readonly WardenEventV1[];
 }>;
 
+export type ProviderReadRetryInputV1 = Readonly<{
+  recipeId: "provider-read-retry-v1";
+  providerOperationId: string;
+  resourceIdentity: string;
+}>;
+
+export type RegisteredProcessRetryInputV1 = Readonly<{
+  recipeId: "registered-process-retry-v1";
+  operationId: string;
+  operationKind: string;
+  commandHash: string;
+  fixedArgumentsHash: string;
+  effectContract: "read_only_non_mutating";
+}>;
+
+export type WorkspaceReconcileInputV1 = Readonly<{
+  recipeId: "workspace-reconcile-v1";
+  runId: string;
+  workspaceAttemptId: string;
+}>;
+
+export type MergeSafeAbortResumeInputV1 = Readonly<{
+  recipeId: "merge-safe-abort-resume-v1";
+  runId: string;
+  workspaceAttemptId: string;
+  mergeRequestId: string;
+}>;
+
+export type OwnedCleanupRetryInputV1 = Readonly<{
+  recipeId: "owned-cleanup-retry-v1";
+  runId: string;
+  workspaceAttemptId: string;
+}>;
+
+export type DoctorRecipeInputV1 =
+  | ProviderReadRetryInputV1
+  | RegisteredProcessRetryInputV1
+  | WorkspaceReconcileInputV1
+  | MergeSafeAbortResumeInputV1
+  | OwnedCleanupRetryInputV1;
+
+export type DoctorObservationV1 = Readonly<{
+  state: "ready" | "succeeded" | "stop" | "ambiguous";
+  observationCode: string;
+  evidenceRefs: readonly string[];
+  evidenceHash: string;
+}>;
+
+export type DoctorAdapterAttemptOutcomeV1 = Readonly<{
+  outcome: "completed" | "retryable_failure" | "terminal_failure" | "ambiguous";
+  outcomeCode: string;
+  evidenceRefs: readonly string[];
+}>;
+
+export type DoctorAdapterObservationContextV1 = Readonly<{
+  projectId: string;
+  changeId: string;
+  incidentId: string;
+  haltId: string;
+  verdictId: string;
+  idempotencyKey: string;
+  leaseId: string;
+  leaseEpoch: number;
+}>;
+
+export type DoctorAdapterContextV1 = DoctorAdapterObservationContextV1 &
+  Readonly<{
+  attemptOrdinal: number;
+  attemptTimeoutMs: number;
+  /** Must be called immediately before the adapter crosses its effect boundary. */
+  assertLiveFence: () => Promise<void>;
+}>;
+
+export type DoctorTypedAdapterV1<TInput extends DoctorRecipeInputV1> = Readonly<{
+  observe: (
+    input: TInput,
+    context: DoctorAdapterObservationContextV1,
+  ) => Promise<DoctorObservationV1>;
+  executeAttempt: (
+    input: TInput,
+    context: DoctorAdapterContextV1,
+  ) => Promise<DoctorAdapterAttemptOutcomeV1>;
+}>;
+
+export type DoctorAdapterRegistryV1 = Readonly<{
+  "provider-read-retry-v1": DoctorTypedAdapterV1<ProviderReadRetryInputV1>;
+  "registered-process-retry-v1": DoctorTypedAdapterV1<RegisteredProcessRetryInputV1>;
+  "workspace-reconcile-v1": DoctorTypedAdapterV1<WorkspaceReconcileInputV1>;
+  "merge-safe-abort-resume-v1": DoctorTypedAdapterV1<MergeSafeAbortResumeInputV1>;
+  "owned-cleanup-retry-v1": DoctorTypedAdapterV1<OwnedCleanupRetryInputV1>;
+}>;
+
+export type DoctorRepairInvocationV1 = Readonly<{
+  contractType: "DoctorRepairInvocationV1";
+  contractVersion: "1.0";
+  receiptId: string;
+  projectId: string;
+  changeId: string;
+  incidentId: string;
+  haltId: string;
+  verdictId: string;
+  policyVersion: string;
+  recipe: WardenRecipeIdentityV1;
+  invocationOrdinal: number;
+  idempotencyKey: string;
+  lease: Readonly<{ leaseId: string; epoch: number }>;
+  input: DoctorRecipeInputV1;
+  inputHash: string;
+  beforeEvidence: DoctorObservationV1;
+  startedAt: string;
+  startedBy: "system:doctor-v1";
+}>;
+
+export type DoctorRepairReceiptV1 = Readonly<{
+  contractType: "DoctorRepairReceiptV1";
+  contractVersion: "1.0";
+  receiptId: string;
+  projectId: string;
+  changeId: string;
+  incidentId: string;
+  haltId: string;
+  verdictId: string;
+  policyVersion: string;
+  recipe: WardenRecipeIdentityV1;
+  invocationOrdinal: number;
+  idempotencyKey: string;
+  lease: Readonly<{ leaseId: string; epoch: number; fenced: boolean }>;
+  input: DoctorRecipeInputV1;
+  inputHash: string;
+  beforeEvidence: DoctorObservationV1;
+  afterEvidence: DoctorObservationV1;
+  startedAt: string;
+  finishedAt: string;
+  adapterOutcomes: readonly Readonly<{
+    attemptOrdinal: number;
+    outcome: DoctorAdapterAttemptOutcomeV1["outcome"];
+    outcomeCode: string;
+    evidenceRefs: readonly string[];
+  }>[];
+  successOracle: Readonly<{
+    oracleId: string;
+    outcome: "passed" | "failed" | "ambiguous";
+    evidenceRefs: readonly string[];
+  }>;
+  stopOracle: Readonly<{
+    oracleId: string;
+    triggered: boolean;
+    evidenceRefs: readonly string[];
+  }>;
+  result:
+    | "succeeded"
+    | "failed"
+    | "interrupted"
+    | "precondition_changed"
+    | "quarantined";
+  reasonCode: WardenDenialReasonCodeV1 | "DOCTOR_ADAPTER_FAILED" | null;
+  causationRefs: readonly string[];
+  recordedBy: "system:doctor-v1";
+}>;
+
+type DoctorEventEnvelopeV1<
+  T extends DoctorEventTypeV1,
+  P extends Readonly<Record<string, unknown>>,
+> = Readonly<{
+  id: string;
+  sequence: number;
+  type: T;
+  occurredAt: string;
+  projectId: string;
+  changeId: string;
+  waveId?: string;
+  taskId?: string;
+  actor: string;
+  causationId: string;
+  correlationId: string;
+  payload: P;
+  previousHash: string | null;
+  hash: string;
+}>;
+
+export type DoctorRepairStartedEventV1 = DoctorEventEnvelopeV1<
+  "doctor.repair-started",
+  Readonly<{ invocation: DoctorRepairInvocationV1 }>
+>;
+export type DoctorRepairFinishedEventV1 = DoctorEventEnvelopeV1<
+  "doctor.repair-finished",
+  Readonly<{ receipt: DoctorRepairReceiptV1 }>
+>;
+export type DoctorEventV1 =
+  | DoctorRepairStartedEventV1
+  | DoctorRepairFinishedEventV1;
+
+export type DoctorProjectionV1 = Readonly<{
+  projectId: string;
+  invocations: readonly DoctorRepairInvocationV1[];
+  receipts: readonly DoctorRepairReceiptV1[];
+  pendingInvocations: readonly DoctorRepairInvocationV1[];
+  events: readonly DoctorEventV1[];
+}>;
+
+export type DoctorAggregateV1 = Readonly<{
+  invocation: DoctorRepairInvocationV1;
+  receipt?: DoctorRepairReceiptV1;
+  verdict: WardenVerdictV1;
+  lease: RepairLeaseV1;
+  events: readonly DoctorEventV1[];
+}>;
+
+export type ExecuteDoctorRepairInputV1 = Readonly<{
+  receiptId: string;
+  verdictId: string;
+  invocationOrdinal: number;
+  input: DoctorRecipeInputV1;
+}>;
+
 type HaltIncidentEventEnvelopeV1<
   T extends HaltIncidentEventTypeV1,
   P extends Readonly<Record<string, unknown>>,
@@ -733,6 +1003,8 @@ export function assertHaltIncidentContractV1<
 type WardenContractByTypeV1 = {
   WardenVerdictV1: WardenVerdictV1;
   RepairLeaseV1: RepairLeaseV1;
+  DoctorRepairInvocationV1: DoctorRepairInvocationV1;
+  DoctorRepairReceiptV1: DoctorRepairReceiptV1;
 };
 
 export function assertWardenContractV1<T extends keyof WardenContractByTypeV1>(
@@ -768,6 +1040,16 @@ function versionedHash(version: string, value: unknown) {
   return createHash("sha256")
     .update(`${version}\n${canonicalJson(value)}`)
     .digest("hex");
+}
+
+export function doctorContractHashV1(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+export function doctorObservationHashV1(
+  observation: Omit<DoctorObservationV1, "evidenceHash">,
+): string {
+  return doctorContractHashV1(observation);
 }
 
 export function wardenContractHashV1(value: unknown) {

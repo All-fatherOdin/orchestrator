@@ -33,16 +33,15 @@ and covered by the repository integration suite.
 
 ## Phase 4: Halts and Incidents
 
-Add stable incident IDs, halt taxonomy, attribution evidence, Warden checks,
-and a narrow deterministic Doctor allowlist. Depends on event and attempt
-receipts; it may proceed independently of UI.
-
-Accepted contract:
+Implemented contract:
 `docs/architecture/change-control-plane/halts-incidents-contract-v1.md`.
-It fixes halt/incident identity and lifecycles, deterministic correlation,
-attribution confidence, Warden authority, the Doctor recipe allowlist,
-retry/resume gates, and crash-safe receipt requirements. The implementation
-queue is the next operational artifact.
+The canonical ledger now covers halt/incident identity and lifecycle,
+deterministic correlation, attribution confidence, Warden verdicts and fenced
+leases, the five closed typed Doctor recipes, crash-safe repair receipts and
+replay, and independently authorized retry/resume events. Retry allocates a
+new attempt and records stale-plan evidence so Phase 2 planning,
+authorization, drift, dependencies, acceptance, Phase 3 ownership, and
+blocking incidents are re-entered rather than bypassed.
 
 ## Phase 5: Prompt/Model/Eval Lineage
 
@@ -54,6 +53,5 @@ incidents, commits, and versioned eval runs, then establish baseline cohorts.
 Build cross-project wave, bucket, incident, Warden, Doctor, and prompt-registry
 views from canonical APIs. UI never writes projection state directly.
 
-No sequential queue plan exists for the remaining phases. Phase 4 now proceeds
-through a bounded implementation queue derived from the accepted contract;
-later queue boundaries will be fixed from prior phase evidence.
+No sequential queue plan exists for the remaining phases. Later queue
+boundaries will be fixed from completed Phase 4 evidence.

@@ -5,7 +5,10 @@
   "oneOf": [
     { "$ref": "#/$defs/WardenVerdictV1" },
     { "$ref": "#/$defs/RepairLeaseV1" },
-    { "$ref": "#/$defs/WardenEventV1" }
+    { "$ref": "#/$defs/WardenEventV1" },
+    { "$ref": "#/$defs/DoctorRepairInvocationV1" },
+    { "$ref": "#/$defs/DoctorRepairReceiptV1" },
+    { "$ref": "#/$defs/DoctorEventV1" }
   ],
   "$defs": {
     "Identifier": {
@@ -272,6 +275,176 @@
         }
       ]
     },
+    "DoctorRecipeInputV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recipeId", "providerOperationId", "resourceIdentity"],
+          "properties": {
+            "recipeId": { "const": "provider-read-retry-v1" },
+            "providerOperationId": { "$ref": "#/$defs/Identifier" },
+            "resourceIdentity": { "$ref": "#/$defs/Identifier" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recipeId", "operationId", "operationKind", "commandHash", "fixedArgumentsHash", "effectContract"],
+          "properties": {
+            "recipeId": { "const": "registered-process-retry-v1" },
+            "operationId": { "$ref": "#/$defs/Identifier" },
+            "operationKind": { "$ref": "#/$defs/Identifier" },
+            "commandHash": { "$ref": "#/$defs/Hash" },
+            "fixedArgumentsHash": { "$ref": "#/$defs/Hash" },
+            "effectContract": { "const": "read_only_non_mutating" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recipeId", "runId", "workspaceAttemptId"],
+          "properties": {
+            "recipeId": { "enum": ["workspace-reconcile-v1", "owned-cleanup-retry-v1"] },
+            "runId": { "$ref": "#/$defs/Identifier" },
+            "workspaceAttemptId": { "$ref": "#/$defs/Identifier" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recipeId", "runId", "workspaceAttemptId", "mergeRequestId"],
+          "properties": {
+            "recipeId": { "const": "merge-safe-abort-resume-v1" },
+            "runId": { "$ref": "#/$defs/Identifier" },
+            "workspaceAttemptId": { "$ref": "#/$defs/Identifier" },
+            "mergeRequestId": { "$ref": "#/$defs/Identifier" }
+          }
+        }
+      ]
+    },
+    "DoctorObservationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "observationCode", "evidenceRefs", "evidenceHash"],
+      "properties": {
+        "state": { "enum": ["ready", "succeeded", "stop", "ambiguous"] },
+        "observationCode": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "evidenceHash": { "$ref": "#/$defs/Hash" }
+      }
+    },
+    "DoctorRepairInvocationV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "receiptId", "projectId", "changeId", "incidentId", "haltId", "verdictId", "policyVersion", "recipe", "invocationOrdinal", "idempotencyKey", "lease", "input", "inputHash", "beforeEvidence", "startedAt", "startedBy"],
+      "properties": {
+        "contractType": { "const": "DoctorRepairInvocationV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "verdictId": { "$ref": "#/$defs/Identifier" },
+        "policyVersion": { "$ref": "#/$defs/Identifier" },
+        "recipe": { "$ref": "#/$defs/RecipeIdentityV1" },
+        "invocationOrdinal": { "type": "integer", "minimum": 1 },
+        "idempotencyKey": { "$ref": "#/$defs/Identity" },
+        "lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["leaseId", "epoch"],
+          "properties": {
+            "leaseId": { "$ref": "#/$defs/Identifier" },
+            "epoch": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "input": { "$ref": "#/$defs/DoctorRecipeInputV1" },
+        "inputHash": { "$ref": "#/$defs/Hash" },
+        "beforeEvidence": { "$ref": "#/$defs/DoctorObservationV1" },
+        "startedAt": { "$ref": "#/$defs/Timestamp" },
+        "startedBy": { "const": "system:doctor-v1" }
+      }
+    },
+    "DoctorRepairReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "receiptId", "projectId", "changeId", "incidentId", "haltId", "verdictId", "policyVersion", "recipe", "invocationOrdinal", "idempotencyKey", "lease", "input", "inputHash", "beforeEvidence", "afterEvidence", "startedAt", "finishedAt", "adapterOutcomes", "successOracle", "stopOracle", "result", "reasonCode", "causationRefs", "recordedBy"],
+      "properties": {
+        "contractType": { "const": "DoctorRepairReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "verdictId": { "$ref": "#/$defs/Identifier" },
+        "policyVersion": { "$ref": "#/$defs/Identifier" },
+        "recipe": { "$ref": "#/$defs/RecipeIdentityV1" },
+        "invocationOrdinal": { "type": "integer", "minimum": 1 },
+        "idempotencyKey": { "$ref": "#/$defs/Identity" },
+        "lease": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["leaseId", "epoch", "fenced"],
+          "properties": {
+            "leaseId": { "$ref": "#/$defs/Identifier" },
+            "epoch": { "type": "integer", "minimum": 1 },
+            "fenced": { "type": "boolean" }
+          }
+        },
+        "input": { "$ref": "#/$defs/DoctorRecipeInputV1" },
+        "inputHash": { "$ref": "#/$defs/Hash" },
+        "beforeEvidence": { "$ref": "#/$defs/DoctorObservationV1" },
+        "afterEvidence": { "$ref": "#/$defs/DoctorObservationV1" },
+        "startedAt": { "$ref": "#/$defs/Timestamp" },
+        "finishedAt": { "$ref": "#/$defs/Timestamp" },
+        "adapterOutcomes": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["attemptOrdinal", "outcome", "outcomeCode", "evidenceRefs"],
+            "properties": {
+              "attemptOrdinal": { "type": "integer", "minimum": 1, "maximum": 3 },
+              "outcome": { "enum": ["completed", "retryable_failure", "terminal_failure", "ambiguous"] },
+              "outcomeCode": { "$ref": "#/$defs/Identifier" },
+              "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+            }
+          }
+        },
+        "successOracle": {
+          "type": "object", "additionalProperties": false,
+          "required": ["oracleId", "outcome", "evidenceRefs"],
+          "properties": {
+            "oracleId": { "$ref": "#/$defs/Identifier" },
+            "outcome": { "enum": ["passed", "failed", "ambiguous"] },
+            "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+          }
+        },
+        "stopOracle": {
+          "type": "object", "additionalProperties": false,
+          "required": ["oracleId", "triggered", "evidenceRefs"],
+          "properties": {
+            "oracleId": { "$ref": "#/$defs/Identifier" },
+            "triggered": { "type": "boolean" },
+            "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+          }
+        },
+        "result": { "enum": ["succeeded", "failed", "interrupted", "precondition_changed", "quarantined"] },
+        "reasonCode": {
+          "oneOf": [
+            { "$ref": "#/$defs/DenialReason" },
+            { "const": "DOCTOR_ADAPTER_FAILED" },
+            { "type": "null" }
+          ]
+        },
+        "causationRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "recordedBy": { "const": "system:doctor-v1" }
+      }
+    },
     "EventEnvelope": {
       "type": "object",
       "required": [
@@ -296,7 +469,9 @@
             "warden.repair-lease-acquired",
             "warden.repair-lease-released",
             "warden.repair-lease-lost",
-            "warden.verdict-recorded"
+            "warden.verdict-recorded",
+            "doctor.repair-started",
+            "doctor.repair-finished"
           ]
         },
         "occurredAt": { "$ref": "#/$defs/Timestamp" },
@@ -368,6 +543,43 @@
                   "additionalProperties": false,
                   "required": ["verdict"],
                   "properties": { "verdict": { "$ref": "#/$defs/WardenVerdictV1" } }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "DoctorEventV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/EventEnvelope" },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "type": { "const": "doctor.repair-started" },
+                "payload": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["invocation"],
+                  "properties": {
+                    "invocation": { "$ref": "#/$defs/DoctorRepairInvocationV1" }
+                  }
+                }
+              }
+            },
+            {
+              "properties": {
+                "type": { "const": "doctor.repair-finished" },
+                "payload": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["receipt"],
+                  "properties": {
+                    "receipt": { "$ref": "#/$defs/DoctorRepairReceiptV1" }
+                  }
                 }
               }
             }

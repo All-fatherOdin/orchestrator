@@ -138,5 +138,74 @@
     },
     "previousHash": "8888888888888888888888888888888888888888888888888888888888888888",
     "hash": "9999999999999999999999999999999999999999999999999999999999999999"
+  },
+  {
+    "contractType": "DoctorRepairReceiptV1",
+    "contractVersion": "1.0",
+    "receiptId": "doctor-receipt-example-001",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "incidentId": "incident-example-001",
+    "haltId": "halt-example-001",
+    "verdictId": "warden-verdict-example-001",
+    "policyVersion": "warden-policy-v1",
+    "recipe": {
+      "recipeId": "provider-read-retry-v1",
+      "recipeVersion": "1.0",
+      "codeHash": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "invocationOrdinal": 1,
+    "idempotencyKey": "provider-read:halt-example-001:1",
+    "lease": {
+      "leaseId": "repair-lease-example-001",
+      "epoch": 1,
+      "fenced": true
+    },
+    "input": {
+      "recipeId": "provider-read-retry-v1",
+      "providerOperationId": "provider-read-example-001",
+      "resourceIdentity": "resource-example-001"
+    },
+    "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "beforeEvidence": {
+      "state": "ready",
+      "observationCode": "provider-read-ready",
+      "evidenceRefs": ["provider-read:before:001"],
+      "evidenceHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "afterEvidence": {
+      "state": "succeeded",
+      "observationCode": "provider-read-succeeded",
+      "evidenceRefs": ["provider-read:after:001"],
+      "evidenceHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "startedAt": "2026-07-31T10:00:03.000Z",
+    "finishedAt": "2026-07-31T10:00:04.000Z",
+    "adapterOutcomes": [
+      {
+        "attemptOrdinal": 1,
+        "outcome": "completed",
+        "outcomeCode": "provider-read-completed",
+        "evidenceRefs": ["provider-read:attempt:001"]
+      }
+    ],
+    "successOracle": {
+      "oracleId": "oracle:provider-read-success-v1",
+      "outcome": "passed",
+      "evidenceRefs": ["provider-read:after:001"]
+    },
+    "stopOracle": {
+      "oracleId": "oracle:provider-read-stop-v1",
+      "triggered": false,
+      "evidenceRefs": ["provider-read:after:001"]
+    },
+    "result": "succeeded",
+    "reasonCode": null,
+    "causationRefs": [
+      "warden-verdict-example-001",
+      "halt-example-001",
+      "incident-example-001"
+    ],
+    "recordedBy": "system:doctor-v1"
   }
 ]

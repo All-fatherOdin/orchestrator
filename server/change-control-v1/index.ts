@@ -17,6 +17,8 @@ import workspaceMergeV1Schema from "./schemas/workspace-merge-v1.schema.json";
 import {
   HALT_INCIDENT_EVENT_TYPES_V1,
   HALT_INCIDENT_REASON_CODES_V1,
+  DOCTOR_EVENT_TYPES_V1,
+  RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
   WARDEN_EVENT_TYPES_V1,
   WARDEN_DENIAL_REASON_CODES_V1,
   WARDEN_POLICY_V1,
@@ -27,6 +29,8 @@ import {
   observationFingerprintV1,
   wardenContractHashV1,
   wardenEvidenceSnapshotHashV1,
+  doctorContractHashV1,
+  doctorObservationHashV1,
   type AttributionAssessmentV1,
   type CorrectIncidentCorrelationInputV1,
   type DetectAndClassifyHaltInputV1,
@@ -50,6 +54,15 @@ import {
   type WardenProjectionV1,
   type WardenRecipeIdentityV1,
   type WardenVerdictV1,
+  type DoctorAdapterRegistryV1,
+  type DoctorAggregateV1,
+  type DoctorEventV1,
+  type DoctorObservationV1,
+  type DoctorProjectionV1,
+  type DoctorRepairInvocationV1,
+  type DoctorRepairReceiptV1,
+  type DoctorRecipeInputV1,
+  type ExecuteDoctorRepairInputV1,
 } from "../halts-incidents-v1/index.ts";
 
 export {
@@ -64,6 +77,9 @@ export {
   type TransitionWardenRepairLeaseInputV1,
   type WardenAggregateV1,
   type WardenProjectionV1,
+  type DoctorAggregateV1,
+  type DoctorProjectionV1,
+  type ExecuteDoctorRepairInputV1,
 } from "../halts-incidents-v1/index.ts";
 
 export const CHANGE_CONTROL_EVENT_TYPES = [
@@ -95,6 +111,8 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   "architect.replan-recorded",
   ...HALT_INCIDENT_EVENT_TYPES_V1,
   ...WARDEN_EVENT_TYPES_V1,
+  ...DOCTOR_EVENT_TYPES_V1,
+  ...RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
 ] as const;
 
 export type ChangeControlEventType =
@@ -765,6 +783,45 @@ export type TransitionTaskInput = {
   payload?: JsonObject;
 };
 
+export type RecoveryAuthorityV1 =
+  | Readonly<{
+      kind: "warden";
+      actor: "policy:warden-v1";
+      verdictId: string;
+    }>
+  | Readonly<{
+      kind: "audited_human";
+      actor: string;
+      decisionId: string;
+      evidenceRefs: readonly string[];
+    }>;
+
+export type AuthorizeTaskRetryInputV1 = Readonly<{
+  authorizationId: string;
+  priorTerminalEventId: string;
+  incidentId: string;
+  haltId: string;
+  newAttemptId: string;
+  attemptAllocationNonce: string;
+  budgetOrdinal: number;
+  reason: string;
+  authority: RecoveryAuthorityV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type AuthorizeWaveResumeInputV1 = Readonly<{
+  authorizationId: string;
+  priorTerminalEventId: string;
+  incidentId: string;
+  haltId: string;
+  budgetOrdinal: number;
+  reason: string;
+  authority: RecoveryAuthorityV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
 export type DispatchWaveInput = {
   actor: string;
   sendAnyway?: boolean;
@@ -809,6 +866,11 @@ export type ChangeControlStoreOptions = {
   resolveRepositorySnapshot?: (
     projectId: string,
   ) => Promise<TrustedRepositorySnapshotV1>;
+  doctorAdapters?: DoctorAdapterRegistryV1;
+  onDoctorBoundary?: (
+    boundary: "started_persisted" | "effect_completed" | "finished_persisted",
+    invocation: DoctorRepairInvocationV1,
+  ) => void | Promise<void>;
 };
 
 const eventTypeSet = new Set<string>(CHANGE_CONTROL_EVENT_TYPES);
@@ -842,6 +904,10 @@ const haltIncidentEventTypes = new Set<ChangeControlEventType>(
   HALT_INCIDENT_EVENT_TYPES_V1,
 );
 const wardenEventTypes = new Set<ChangeControlEventType>(WARDEN_EVENT_TYPES_V1);
+const doctorEventTypes = new Set<ChangeControlEventType>(DOCTOR_EVENT_TYPES_V1);
+const recoveryAuthorizationEventTypes = new Set<ChangeControlEventType>(
+  RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
+);
 const changeTargetForType = {
   "change.created": "draft",
   "change.planned": "planned",
@@ -1123,6 +1189,12 @@ type ProjectedLedger = {
   activeRepairLeaseByScope: Map<string, string>;
   repairLeaseEpochByScope: Map<string, number>;
   wardenEvents: WardenEventV1[];
+  doctorInvocations: Map<string, DoctorRepairInvocationV1>;
+  doctorInvocationByIdempotencyKey: Map<string, string>;
+  doctorReceipts: Map<string, DoctorRepairReceiptV1>;
+  doctorEvents: DoctorEventV1[];
+  recoveryAuthorizationIds: Set<string>;
+  recoveryAttemptIds: Set<string>;
 };
 
 function waveKey(changeId: string, waveId: string) {
@@ -1817,6 +1889,7 @@ type HaltIncidentProjectionState = Pick<
   | "waves"
   | "tasks"
   | "plans"
+  | "eventsByWave"
   | "halts"
   | "incidents"
   | "assessments"
@@ -1833,6 +1906,12 @@ type HaltIncidentProjectionState = Pick<
   | "activeRepairLeaseByScope"
   | "repairLeaseEpochByScope"
   | "wardenEvents"
+  | "doctorInvocations"
+  | "doctorInvocationByIdempotencyKey"
+  | "doctorReceipts"
+  | "doctorEvents"
+  | "recoveryAuthorizationIds"
+  | "recoveryAttemptIds"
 >;
 
 function haltDetectorKey(
@@ -2513,6 +2592,503 @@ function applyWardenEvent(
   corrupt(`Unsupported Warden event type: ${event.type}.`);
 }
 
+function exactObjectKeys(value: unknown, keys: readonly string[]) {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      canonicalJson(Object.keys(value as Record<string, unknown>).sort()) ===
+        canonicalJson([...keys].sort()),
+  );
+}
+
+function doctorRecipeInputValid(
+  value: unknown,
+  recipeId: string,
+): value is DoctorRecipeInputV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  if (input.recipeId !== recipeId) return false;
+  const identifier = (candidate: unknown) =>
+    typeof candidate === "string" && identifierPattern.test(candidate);
+  const hash = (candidate: unknown) =>
+    typeof candidate === "string" && /^[0-9a-f]{64}$/.test(candidate);
+  if (recipeId === "provider-read-retry-v1")
+    return (
+      exactObjectKeys(input, [
+        "providerOperationId",
+        "recipeId",
+        "resourceIdentity",
+      ]) &&
+      identifier(input.providerOperationId) &&
+      identifier(input.resourceIdentity)
+    );
+  if (recipeId === "registered-process-retry-v1")
+    return (
+      exactObjectKeys(input, [
+        "commandHash",
+        "effectContract",
+        "fixedArgumentsHash",
+        "operationId",
+        "operationKind",
+        "recipeId",
+      ]) &&
+      identifier(input.operationId) &&
+      identifier(input.operationKind) &&
+      hash(input.commandHash) &&
+      hash(input.fixedArgumentsHash) &&
+      input.effectContract === "read_only_non_mutating"
+    );
+  if (
+    recipeId === "workspace-reconcile-v1" ||
+    recipeId === "owned-cleanup-retry-v1"
+  )
+    return (
+      exactObjectKeys(input, ["recipeId", "runId", "workspaceAttemptId"]) &&
+      identifier(input.runId) &&
+      identifier(input.workspaceAttemptId)
+    );
+  if (recipeId === "merge-safe-abort-resume-v1")
+    return (
+      exactObjectKeys(input, [
+        "mergeRequestId",
+        "recipeId",
+        "runId",
+        "workspaceAttemptId",
+      ]) &&
+      identifier(input.runId) &&
+      identifier(input.workspaceAttemptId) &&
+      identifier(input.mergeRequestId)
+    );
+  return false;
+}
+
+function doctorObservationValid(value: unknown): value is DoctorObservationV1 {
+  if (
+    !exactObjectKeys(value, [
+      "evidenceHash",
+      "evidenceRefs",
+      "observationCode",
+      "state",
+    ])
+  )
+    return false;
+  const observation = value as DoctorObservationV1;
+  if (
+    !["ready", "succeeded", "stop", "ambiguous"].includes(
+      observation.state,
+    ) ||
+    typeof observation.observationCode !== "string" ||
+    !identifierPattern.test(observation.observationCode) ||
+    !Array.isArray(observation.evidenceRefs) ||
+    observation.evidenceRefs.length === 0 ||
+    new Set(observation.evidenceRefs).size !== observation.evidenceRefs.length ||
+    observation.evidenceRefs.some(
+      (reference) => typeof reference !== "string" || reference.length === 0,
+    )
+  )
+    return false;
+  const { evidenceHash, ...body } = observation;
+  return evidenceHash === doctorObservationHashV1(body);
+}
+
+async function withDoctorTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("DOCTOR_ADAPTER_TIMEOUT")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function sameDoctorInvocationAndReceipt(
+  invocation: DoctorRepairInvocationV1,
+  receipt: DoctorRepairReceiptV1,
+) {
+  return Boolean(
+    receipt.receiptId === invocation.receiptId &&
+      receipt.projectId === invocation.projectId &&
+      receipt.changeId === invocation.changeId &&
+      receipt.incidentId === invocation.incidentId &&
+      receipt.haltId === invocation.haltId &&
+      receipt.verdictId === invocation.verdictId &&
+      receipt.policyVersion === invocation.policyVersion &&
+      receipt.invocationOrdinal === invocation.invocationOrdinal &&
+      receipt.idempotencyKey === invocation.idempotencyKey &&
+      receipt.lease.leaseId === invocation.lease.leaseId &&
+      receipt.lease.epoch === invocation.lease.epoch &&
+      receipt.inputHash === invocation.inputHash &&
+      receipt.startedAt === invocation.startedAt &&
+      canonicalJson(receipt.recipe as unknown as JsonValue) ===
+        canonicalJson(invocation.recipe as unknown as JsonValue) &&
+      canonicalJson(receipt.input as unknown as JsonValue) ===
+        canonicalJson(invocation.input as unknown as JsonValue) &&
+      canonicalJson(receipt.beforeEvidence as unknown as JsonValue) ===
+        canonicalJson(invocation.beforeEvidence as unknown as JsonValue)
+  );
+}
+
+function applyDoctorEvent(
+  event: ChangeControlEvent,
+  projected: HaltIncidentProjectionState,
+) {
+  projected.doctorEvents.push(event as unknown as DoctorEventV1);
+  if (event.type === "doctor.repair-started") {
+    assertPayloadKeys(event, ["invocation"]);
+    const invocation = event.payload.invocation as unknown as DoctorRepairInvocationV1;
+    const verdict = projected.wardenVerdicts.get(invocation?.verdictId);
+    const lease = invocation?.lease
+      ? projected.repairLeases.get(invocation.lease.leaseId)
+      : undefined;
+    const halt = projected.halts.get(invocation?.haltId);
+    const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+      sameWardenRecipeIdentity(candidate, invocation?.recipe),
+    );
+    const history = halt
+      ? projected.wardenVerdictsByHalt.get(halt.haltId) ?? []
+      : [];
+    const priorInvocations = [...projected.doctorInvocations.values()].filter(
+      (candidate) => candidate.haltId === invocation?.haltId,
+    );
+    if (
+      !invocation ||
+      invocation.contractType !== "DoctorRepairInvocationV1" ||
+      invocation.contractVersion !== "1.0" ||
+      invocation.projectId !== event.projectId ||
+      invocation.changeId !== event.changeId ||
+      invocation.startedAt !== event.occurredAt ||
+      invocation.startedBy !== event.actor ||
+      event.actor !== "system:doctor-v1" ||
+      !verdict ||
+      history.at(-1)?.verdictId !== verdict.verdictId ||
+      !["allow_auto_heal", "allow_bounded_retry"].includes(
+        verdict.disposition,
+      ) ||
+      !lease ||
+      lease.state !== "active" ||
+      lease.haltId !== invocation.haltId ||
+      lease.incidentId !== invocation.incidentId ||
+      lease.epoch !== invocation.lease.epoch ||
+      verdict.repairLease?.leaseId !== lease.leaseId ||
+      verdict.idempotencyKey !== invocation.idempotencyKey ||
+      verdict.policyVersion !== invocation.policyVersion ||
+      !halt ||
+      projected.effectiveIncidentByHalt.get(halt.haltId) !==
+        invocation.incidentId ||
+      !recipe ||
+      !doctorRecipeInputValid(invocation.input, recipe.recipeId) ||
+      invocation.inputHash !== doctorContractHashV1(invocation.input) ||
+      !doctorObservationValid(invocation.beforeEvidence) ||
+      invocation.beforeEvidence.state !== "ready" ||
+      invocation.invocationOrdinal !== priorInvocations.length + 1 ||
+      projected.doctorInvocations.has(invocation.receiptId) ||
+      projected.doctorInvocationByIdempotencyKey.has(invocation.idempotencyKey)
+    )
+      corrupt(`Doctor repair start ${event.id} lacks exact live repair authority.`);
+    assertHaltEventIdentity(event, halt);
+    projected.doctorInvocations.set(invocation.receiptId, invocation);
+    projected.doctorInvocationByIdempotencyKey.set(
+      invocation.idempotencyKey,
+      invocation.receiptId,
+    );
+    return;
+  }
+
+  if (event.type === "doctor.repair-finished") {
+    assertPayloadKeys(event, ["receipt"]);
+    const receipt = event.payload.receipt as unknown as DoctorRepairReceiptV1;
+    const invocation = projected.doctorInvocations.get(receipt?.receiptId);
+    const lease = receipt?.lease
+      ? projected.repairLeases.get(receipt.lease.leaseId)
+      : undefined;
+    const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+      sameWardenRecipeIdentity(candidate, receipt?.recipe),
+    );
+    if (
+      !receipt ||
+      receipt.contractType !== "DoctorRepairReceiptV1" ||
+      receipt.contractVersion !== "1.0" ||
+      !invocation ||
+      !sameDoctorInvocationAndReceipt(invocation, receipt) ||
+      receipt.finishedAt !== event.occurredAt ||
+      receipt.recordedBy !== event.actor ||
+      event.actor !== "system:doctor-v1" ||
+      projected.doctorReceipts.has(receipt.receiptId) ||
+      !lease ||
+      lease.epoch !== receipt.lease.epoch ||
+      !recipe ||
+      !doctorObservationValid(receipt.afterEvidence) ||
+      receipt.adapterOutcomes.length > recipe.bounds.maxAttempts ||
+      receipt.adapterOutcomes.some(
+        (outcome, index) =>
+          outcome.attemptOrdinal !== index + 1 ||
+          ![
+            "completed",
+            "retryable_failure",
+            "terminal_failure",
+            "ambiguous",
+          ].includes(outcome.outcome) ||
+          !identifierPattern.test(outcome.outcomeCode) ||
+          !Array.isArray(outcome.evidenceRefs) ||
+          outcome.evidenceRefs.length === 0,
+      ) ||
+      receipt.successOracle.oracleId !== recipe.successOracle.oracleId ||
+      receipt.stopOracle.oracleId !== recipe.stopOracle.oracleId ||
+      !receipt.causationRefs.includes(receipt.verdictId) ||
+      !receipt.causationRefs.includes(receipt.haltId) ||
+      !receipt.causationRefs.includes(receipt.incidentId)
+    )
+      corrupt(`Doctor repair finish ${event.id} is semantically invalid.`);
+    const liveFence = lease.state === "active";
+    if (
+      (receipt.result === "succeeded" &&
+        (!receipt.lease.fenced ||
+          !liveFence ||
+          receipt.afterEvidence.state !== "succeeded" ||
+          receipt.successOracle.outcome !== "passed")) ||
+      (!liveFence && receipt.result !== "quarantined") ||
+      (receipt.afterEvidence.state === "ambiguous" &&
+        receipt.result !== "quarantined") ||
+      (receipt.successOracle.outcome === "ambiguous" &&
+        receipt.result !== "quarantined")
+    )
+      corrupt(`Doctor repair finish ${event.id} reports an unsafe result.`);
+    assertHaltEventIdentity(event, projected.halts.get(receipt.haltId)!);
+    projected.doctorReceipts.set(receipt.receiptId, receipt);
+    return;
+  }
+  corrupt(`Unsupported Doctor event type: ${event.type}.`);
+}
+
+function validRecoveryAuthority(
+  authority: unknown,
+  haltId: string,
+  incidentId: string,
+  projected: HaltIncidentProjectionState,
+  authorizedAt: string,
+  budgetOrdinal: number,
+) {
+  if (!authority || typeof authority !== "object") return false;
+  const value = authority as Record<string, unknown>;
+  if (value.kind === "warden") {
+    if (
+      !exactObjectKeys(value, ["actor", "kind", "verdictId"]) ||
+      value.actor !== "policy:warden-v1" ||
+      typeof value.verdictId !== "string"
+    )
+      return false;
+    const verdict = projected.wardenVerdicts.get(value.verdictId);
+    const authorizedMillis = canonicalTimestampMillis(authorizedAt);
+    const capturedMillis = verdict
+      ? canonicalTimestampMillis(verdict.evidenceSnapshot.capturedAt)
+      : undefined;
+    const alreadyConsumed = [...projected.eventsByWave.values()]
+      .flat()
+      .some((event) => {
+        if (!recoveryAuthorizationEventTypes.has(event.type)) return false;
+        const priorAuthority = event.payload.authority as
+          | Record<string, unknown>
+          | undefined;
+        return (
+          priorAuthority?.kind === "warden" &&
+          priorAuthority.verdictId === value.verdictId
+        );
+      });
+    return Boolean(
+      verdict &&
+        verdict.haltId === haltId &&
+        verdict.incidentId === incidentId &&
+        verdict.disposition === "allow_bounded_retry" &&
+        authorizedMillis !== undefined &&
+        capturedMillis !== undefined &&
+        authorizedMillis >= capturedMillis &&
+        authorizedMillis - capturedMillis <=
+          WARDEN_POLICY_V1.evidenceMaxAgeSeconds * 1000 &&
+        budgetOrdinal === 1 &&
+        verdict.budgets.consumedBefore.halt < verdict.budgets.limits.halt &&
+        !alreadyConsumed &&
+        projected.wardenVerdictsByHalt.get(haltId)?.at(-1)?.verdictId ===
+          verdict.verdictId,
+    );
+  }
+  return Boolean(
+    value.kind === "audited_human" &&
+      exactObjectKeys(value, [
+        "actor",
+        "decisionId",
+        "evidenceRefs",
+        "kind",
+      ]) &&
+      typeof value.actor === "string" &&
+      value.actor.startsWith("human:") &&
+      typeof value.decisionId === "string" &&
+      identifierPattern.test(value.decisionId) &&
+      Array.isArray(value.evidenceRefs) &&
+      value.evidenceRefs.length > 0
+  );
+}
+
+function expireDispatchedPlanForRecovery(
+  projected: HaltIncidentProjectionState,
+  changeId: string,
+  waveId: string,
+  sequence: number,
+) {
+  const latest = wavePlans(projected, changeId, waveId).at(-1);
+  if (latest?.status === "dispatched")
+    projected.plans.set(
+      planKey(changeId, waveId, latest.contract.planId, latest.contract.revision),
+      { ...latest, status: "stale", updatedSequence: sequence },
+    );
+}
+
+function applyRecoveryAuthorizationEvent(
+  event: ChangeControlEvent,
+  projected: HaltIncidentProjectionState,
+) {
+  const waveId = requireStoredIdentifier(event.waveId, "waveId");
+  const payload = event.payload as Record<string, unknown>;
+  const commonKeys = [
+    "authorizationId",
+    "authority",
+    "budgetOrdinal",
+    "haltId",
+    "incidentId",
+    "priorTerminalEventId",
+    "reason",
+  ];
+  const expectedKeys =
+    event.type === "task.retry-authorized"
+      ? [...commonKeys, "attemptAllocationNonce", "newAttemptId"]
+      : commonKeys;
+  assertPayloadKeys(event, expectedKeys);
+  const authorizationId = requireStoredIdentifier(
+    payload.authorizationId,
+    "authorizationId",
+  );
+  const haltId = requireStoredIdentifier(payload.haltId, "haltId");
+  const incidentId = requireStoredIdentifier(payload.incidentId, "incidentId");
+  const priorTerminalEventId = requireStoredIdentifier(
+    payload.priorTerminalEventId,
+    "priorTerminalEventId",
+  );
+  const halt = projected.halts.get(haltId);
+  const incident = projected.incidents.get(incidentId);
+  const priorEvent = [...projected.eventsByWave.values()]
+    .flat()
+    .find((candidate) => candidate.id === priorTerminalEventId);
+  const expectedBudgetOrdinal =
+    [...projected.eventsByWave.values()]
+      .flat()
+      .filter(
+        (candidate) =>
+          candidate.type === event.type && candidate.payload.haltId === haltId,
+      ).length + 1;
+  if (
+    !halt ||
+    !incident ||
+    halt.changeId !== event.changeId ||
+    halt.scope.waveId !== waveId ||
+    projected.effectiveIncidentByHalt.get(haltId) !== incidentId ||
+    projected.recoveryAuthorizationIds.has(authorizationId) ||
+    !Number.isSafeInteger(payload.budgetOrdinal) ||
+    payload.budgetOrdinal !== expectedBudgetOrdinal ||
+    typeof payload.reason !== "string" ||
+    payload.reason.length === 0 ||
+    !validRecoveryAuthority(
+      payload.authority,
+      haltId,
+      incidentId,
+      projected,
+      event.occurredAt,
+      payload.budgetOrdinal as number,
+    ) ||
+    event.actor !== (payload.authority as { actor: string }).actor ||
+    !priorEvent
+  )
+    corrupt(`Recovery authorization ${event.id} lacks independent authority.`);
+
+  const waveLookupKey = waveKey(event.changeId, waveId);
+  const wave = projected.waves.get(waveLookupKey);
+  if (!wave) corrupt(`Recovery authorization ${event.id} references a missing wave.`);
+  if (event.type === "task.retry-authorized") {
+    const taskId = requireStoredIdentifier(event.taskId, "taskId");
+    const taskLookupKey = taskKey(event.changeId, waveId, taskId);
+    const task = projected.tasks.get(taskLookupKey);
+    const newAttemptId = requireStoredIdentifier(payload.newAttemptId, "newAttemptId");
+    const nonce = requireStoredIdentifier(
+      payload.attemptAllocationNonce,
+      "attemptAllocationNonce",
+    );
+    if (
+      !task ||
+      !["failed", "halted"].includes(task.status) ||
+      halt.scope.taskId !== taskId ||
+      priorEvent.taskId !== taskId ||
+      !["task.failed", "task.halted"].includes(priorEvent.type) ||
+      projected.recoveryAttemptIds.has(newAttemptId) ||
+      [...projected.tasks.values()].some(
+        (candidate) => candidate.details.phase4AttemptId === newAttemptId,
+      )
+    )
+      corrupt(`Task retry authorization ${event.id} reuses or bypasses a terminal attempt.`);
+    projected.tasks.set(taskLookupKey, {
+      ...task,
+      status: "ready",
+      sequence: event.sequence,
+      updatedAt: event.occurredAt,
+      lastActor: event.actor,
+      details: {
+        ...task.details,
+        phase4AttemptId: newAttemptId,
+        phase4AttemptAllocationNonce: nonce,
+      },
+    });
+    projected.recoveryAttemptIds.add(newAttemptId);
+  } else {
+    if (
+      wave.status !== "halted" ||
+      priorEvent.type !== "wave.halted" ||
+      priorEvent.waveId !== waveId ||
+      waveReadinessReasons(wave, projected.waves, projected.tasks).length > 0
+    )
+      corrupt(`Wave resume authorization ${event.id} bypasses dependency readiness.`);
+    const unresolved = blockingDispatchIncidents(
+      projected,
+      event.changeId,
+      waveId,
+    );
+    const allDispositioned = unresolved.every((candidate) =>
+      candidate.haltIds.some((candidateHaltId) => {
+        if (candidateHaltId === haltId) return true;
+        return projected.wardenVerdictsByHalt
+          .get(candidateHaltId)
+          ?.some((verdict) => verdict.disposition === "allow_bounded_retry");
+      }),
+    );
+    if (!allDispositioned)
+      corrupt(`Wave resume authorization ${event.id} has undispositioned blocking incidents.`);
+    projected.waves.set(waveLookupKey, {
+      ...wave,
+      status: "ready",
+      sequence: event.sequence,
+      updatedAt: event.occurredAt,
+      lastActor: event.actor,
+    });
+  }
+  projected.recoveryAuthorizationIds.add(authorizationId);
+  expireDispatchedPlanForRecovery(projected, event.changeId, waveId, event.sequence);
+  projected.eventsByWave.get(waveLookupKey)!.push(event);
+}
+
 function maxSeverity(
   left: HaltRecordV1["severity"],
   right: HaltRecordV1["severity"],
@@ -3155,6 +3731,12 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   const activeRepairLeaseByScope = new Map<string, string>();
   const repairLeaseEpochByScope = new Map<string, number>();
   const wardenEvents: WardenEventV1[] = [];
+  const doctorInvocations = new Map<string, DoctorRepairInvocationV1>();
+  const doctorInvocationByIdempotencyKey = new Map<string, string>();
+  const doctorReceipts = new Map<string, DoctorRepairReceiptV1>();
+  const doctorEvents: DoctorEventV1[] = [];
+  const recoveryAuthorizationIds = new Set<string>();
+  const recoveryAttemptIds = new Set<string>();
   const eventIds = new Set<string>();
   let previousHash: string | null = null;
 
@@ -3603,7 +4185,23 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
                 `merge:dispatch-receipt:${receipt.receiptId}`,
               ),
           );
-        if (plan.status !== "authorized" && !postDispatchMergeDrift)
+        const postDispatchRecoveryReplan =
+          plan.status === "dispatched" &&
+          assessment.status === "stale" &&
+          assessment.reasons.length === 1 &&
+          assessment.reasons[0].code === "UNKNOWN_DRIFT" &&
+          assessment.assessedBy === "recovery-gate:v1" &&
+          assessment.evidenceRefs.some((reference) =>
+            reference.startsWith("recovery:authorization:"),
+          ) &&
+          assessment.evidenceRefs.some((reference) =>
+            reference.startsWith("recovery:prior-terminal:"),
+          );
+        if (
+          plan.status !== "authorized" &&
+          !postDispatchMergeDrift &&
+          !postDispatchRecoveryReplan
+        )
           corrupt(
             `Drift assessment ${assessment.assessmentId} does not target an authorized plan.`,
           );
@@ -3880,6 +4478,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         waves,
         tasks,
         plans,
+        eventsByWave,
         halts,
         incidents,
         assessments,
@@ -3896,6 +4495,12 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         activeRepairLeaseByScope,
         repairLeaseEpochByScope,
         wardenEvents,
+        doctorInvocations,
+        doctorInvocationByIdempotencyKey,
+        doctorReceipts,
+        doctorEvents,
+        recoveryAuthorizationIds,
+        recoveryAttemptIds,
       });
     } else if (wardenEventTypes.has(event.type)) {
       applyWardenEvent(event, {
@@ -3903,6 +4508,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         waves,
         tasks,
         plans,
+        eventsByWave,
         halts,
         incidents,
         assessments,
@@ -3919,6 +4525,72 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         activeRepairLeaseByScope,
         repairLeaseEpochByScope,
         wardenEvents,
+        doctorInvocations,
+        doctorInvocationByIdempotencyKey,
+        doctorReceipts,
+        doctorEvents,
+        recoveryAuthorizationIds,
+        recoveryAttemptIds,
+      });
+    } else if (doctorEventTypes.has(event.type)) {
+      applyDoctorEvent(event, {
+        projections,
+        waves,
+        tasks,
+        plans,
+        eventsByWave,
+        halts,
+        incidents,
+        assessments,
+        resolutionReceipts,
+        effectiveIncidentByHalt,
+        detectorHaltIds,
+        haltEvents,
+        incidentEvents,
+        haltIncidentEvents,
+        correlationHistory,
+        wardenVerdicts,
+        wardenVerdictsByHalt,
+        repairLeases,
+        activeRepairLeaseByScope,
+        repairLeaseEpochByScope,
+        wardenEvents,
+        doctorInvocations,
+        doctorInvocationByIdempotencyKey,
+        doctorReceipts,
+        doctorEvents,
+        recoveryAuthorizationIds,
+        recoveryAttemptIds,
+      });
+    } else if (recoveryAuthorizationEventTypes.has(event.type)) {
+      applyRecoveryAuthorizationEvent(event, {
+        projections,
+        waves,
+        tasks,
+        plans,
+        eventsByWave,
+        halts,
+        incidents,
+        assessments,
+        resolutionReceipts,
+        effectiveIncidentByHalt,
+        detectorHaltIds,
+        haltEvents,
+        incidentEvents,
+        haltIncidentEvents,
+        correlationHistory,
+        wardenVerdicts,
+        wardenVerdictsByHalt,
+        repairLeases,
+        activeRepairLeaseByScope,
+        repairLeaseEpochByScope,
+        wardenEvents,
+        doctorInvocations,
+        doctorInvocationByIdempotencyKey,
+        doctorReceipts,
+        doctorEvents,
+        recoveryAuthorizationIds,
+        recoveryAttemptIds,
       });
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
@@ -4039,6 +4711,12 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     activeRepairLeaseByScope,
     repairLeaseEpochByScope,
     wardenEvents,
+    doctorInvocations,
+    doctorInvocationByIdempotencyKey,
+    doctorReceipts,
+    doctorEvents,
+    recoveryAuthorizationIds,
+    recoveryAttemptIds,
   };
 }
 
@@ -4508,6 +5186,67 @@ function wardenAggregate(
   );
 }
 
+function immutableDoctorProjection(
+  projectId: string,
+  projected: ProjectedLedger,
+): DoctorProjectionV1 {
+  const invocations = [...projected.doctorInvocations.values()].sort(
+    (left, right) =>
+      left.startedAt.localeCompare(right.startedAt) ||
+      left.receiptId.localeCompare(right.receiptId),
+  );
+  return deepFreeze(
+    structuredClone({
+      projectId,
+      invocations,
+      receipts: [...projected.doctorReceipts.values()].sort(
+        (left, right) =>
+          left.finishedAt.localeCompare(right.finishedAt) ||
+          left.receiptId.localeCompare(right.receiptId),
+      ),
+      pendingInvocations: invocations.filter(
+        (invocation) => !projected.doctorReceipts.has(invocation.receiptId),
+      ),
+      events: projected.doctorEvents,
+    }),
+  );
+}
+
+function doctorAggregate(
+  projected: ProjectedLedger,
+  receiptId: string,
+  operationEventIds?: ReadonlySet<string>,
+): DoctorAggregateV1 {
+  const invocation = projected.doctorInvocations.get(receiptId);
+  if (!invocation)
+    throw new ChangeControlError(
+      `Doctor repair ${receiptId} was not found.`,
+      "NOT_FOUND",
+      404,
+    );
+  const verdict = projected.wardenVerdicts.get(invocation.verdictId);
+  const lease = projected.repairLeases.get(invocation.lease.leaseId);
+  if (!verdict || !lease) corrupt(`Doctor repair ${receiptId} lost canonical authority.`);
+  const events = operationEventIds
+    ? projected.doctorEvents.filter((event) => operationEventIds.has(event.id))
+    : projected.doctorEvents.filter((event) => {
+        if (event.type === "doctor.repair-started")
+          return event.payload.invocation.receiptId === receiptId;
+        return event.payload.receipt.receiptId === receiptId;
+      });
+  return deepFreeze(
+    structuredClone({
+      invocation,
+      ...(projected.doctorReceipts.get(receiptId)
+        ? { receipt: projected.doctorReceipts.get(receiptId)! }
+        : {}),
+      verdict,
+      lease,
+      events,
+    }),
+  );
+}
+
 const blockingDispatchIncidentStates = new Set<IncidentRecordV1["state"]>([
   "open",
   "investigating",
@@ -4778,6 +5517,9 @@ export class ChangeControlStore {
   private readonly resolveRepositorySnapshot?: (
     projectId: string,
   ) => Promise<TrustedRepositorySnapshotV1>;
+  private readonly doctorAdapters?: DoctorAdapterRegistryV1;
+  private readonly onDoctorBoundary?: ChangeControlStoreOptions["onDoctorBoundary"];
+  private readonly activeDoctorRepairKeys = new Set<string>();
 
   constructor(
     private readonly rootDirectory: string,
@@ -4786,6 +5528,8 @@ export class ChangeControlStore {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createId = options.createId ?? randomUUID;
     this.resolveRepositorySnapshot = options.resolveRepositorySnapshot;
+    this.doctorAdapters = options.doctorAdapters;
+    this.onDoctorBoundary = options.onDoctorBoundary;
   }
 
   private file(projectId: string) {
@@ -4833,6 +5577,72 @@ export class ChangeControlStore {
     }) as ChangeControlEvent;
     ledger.events.push(event);
     return event;
+  }
+
+  private appendRecoveryPlanInvalidation(
+    ledger: Ledger,
+    projected: ProjectedLedger,
+    changeId: string,
+    waveId: string,
+    authorizationId: string,
+    priorTerminalEventId: string,
+    correlationId: string,
+  ) {
+    const latest = wavePlans(projected, changeId, waveId).at(-1);
+    if (latest?.status !== "dispatched") return;
+    const assessedAt = this.now();
+    const evidenceRefs = [
+      "recovery:authorization:" + authorizationId,
+      "recovery:prior-terminal:" + priorTerminalEventId,
+    ];
+    const assessment: DriftAssessmentV1 = {
+      contractType: "DriftAssessmentV1",
+      contractVersion: "1.0",
+      assessmentId: requireIdentifier(this.createId(), "assessmentId"),
+      plan: {
+        planId: latest.contract.planId,
+        revision: latest.contract.revision,
+        planBaseSha: latest.contract.planBase.sha,
+      },
+      observedBase: {
+        repositoryId: latest.contract.planBase.repositoryId,
+        sha: latest.contract.planBase.sha,
+        hashAlgorithm: latest.contract.planBase.hashAlgorithm,
+        ...(latest.contract.planBase.ref
+          ? { ref: latest.contract.planBase.ref }
+          : {}),
+        capturedAt: assessedAt,
+        worktreeState: "clean",
+      },
+      status: "stale",
+      reasons: [
+        {
+          code: "UNKNOWN_DRIFT",
+          description:
+            "A terminal attempt requires fresh Phase 2 planning, acceptance, dependency, and ownership evaluation.",
+          evidenceRefs,
+        },
+      ],
+      changedPaths: [],
+      evidenceRefs,
+      requiresReplan: true,
+      assessedAt,
+      assessedBy: "recovery-gate:v1",
+    };
+    this.append(ledger, {
+      id: requireIdentifier(this.createId(), "id"),
+      type: "plan.marked-stale",
+      occurredAt: assessedAt,
+      projectId: latest.contract.projectId,
+      changeId,
+      waveId,
+      actor: assessment.assessedBy,
+      causationId: priorTerminalEventId,
+      correlationId,
+      payload: {
+        assessment: structuredClone(assessment) as unknown as JsonValue,
+      },
+    });
   }
 
   private refreshTaskReadiness(
@@ -6275,6 +7085,196 @@ export class ChangeControlStore {
     });
   }
 
+  async authorizeTaskRetry(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+    taskIdValue: string,
+    input: AuthorizeTaskRetryInputV1,
+  ): Promise<WaveAggregate> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    const taskId = requireIdentifier(taskIdValue, "taskId");
+    requireIdentifier(input?.authorizationId, "authorizationId");
+    requireIdentifier(input?.priorTerminalEventId, "priorTerminalEventId");
+    requireIdentifier(input?.incidentId, "incidentId");
+    requireIdentifier(input?.haltId, "haltId");
+    requireIdentifier(input?.newAttemptId, "newAttemptId");
+    requireIdentifier(input?.attemptAllocationNonce, "attemptAllocationNonce");
+    requireIdentity(input?.reason, "reason");
+    if (!Number.isSafeInteger(input?.budgetOrdinal) || input.budgetOrdinal < 1)
+      invalid("budgetOrdinal must be a positive integer.");
+    const actor = requireIdentity(input?.authority?.actor, "authority.actor");
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const authorizedAt = this.now();
+      const key = taskKey(changeId, waveId, taskId);
+      const task = projected.tasks.get(key);
+      const halt = projected.halts.get(input.haltId);
+      if (!task || !["failed", "halted"].includes(task.status))
+        throw new ChangeControlError(
+          "Task retry requires one exact failed or halted task.",
+          "CONFLICT",
+          409,
+        );
+      const waveEvents = projected.eventsByWave.get(waveKey(changeId, waveId));
+      const prior = waveEvents?.find(
+        (event) => event.id === input.priorTerminalEventId,
+      );
+      if (
+        !prior ||
+        !halt ||
+        halt.scope.taskId !== taskId ||
+        prior.taskId !== taskId ||
+        !["task.failed", "task.halted"].includes(prior.type) ||
+        !validRecoveryAuthority(
+          input.authority,
+          input.haltId,
+          input.incidentId,
+          projected,
+          authorizedAt,
+          input.budgetOrdinal,
+        )
+      )
+        throw new ChangeControlError(
+          "Task retry lacks its exact terminal event or independent recovery authority.",
+          "CONFLICT",
+          409,
+        );
+      const correlationId =
+        input.correlationId ?? halt.correlationId;
+      this.appendRecoveryPlanInvalidation(
+        ledger,
+        projected,
+        changeId,
+        waveId,
+        input.authorizationId,
+        input.priorTerminalEventId,
+        correlationId,
+      );
+      const event = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "task.retry-authorized",
+        occurredAt: authorizedAt,
+        projectId,
+        changeId,
+        waveId,
+        taskId,
+        actor,
+        causationId: input.causationId ?? input.authorizationId,
+        correlationId,
+        payload: normalizePayload({
+          authorizationId: input.authorizationId,
+          priorTerminalEventId: input.priorTerminalEventId,
+          incidentId: input.incidentId,
+          haltId: input.haltId,
+          newAttemptId: input.newAttemptId,
+          attemptAllocationNonce: input.attemptAllocationNonce,
+          budgetOrdinal: input.budgetOrdinal,
+          reason: input.reason,
+          authority: input.authority,
+        }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return immutableWaveAggregate(
+        next.waves.get(waveKey(changeId, waveId))!,
+        next.eventsByWave.get(waveKey(changeId, waveId))!,
+        next,
+      );
+    });
+  }
+
+  async authorizeWaveResume(
+    projectIdValue: string,
+    changeIdValue: string,
+    waveIdValue: string,
+    input: AuthorizeWaveResumeInputV1,
+  ): Promise<WaveAggregate> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const waveId = requireIdentifier(waveIdValue, "waveId");
+    requireIdentifier(input?.authorizationId, "authorizationId");
+    requireIdentifier(input?.priorTerminalEventId, "priorTerminalEventId");
+    requireIdentifier(input?.incidentId, "incidentId");
+    requireIdentifier(input?.haltId, "haltId");
+    requireIdentity(input?.reason, "reason");
+    if (!Number.isSafeInteger(input?.budgetOrdinal) || input.budgetOrdinal < 1)
+      invalid("budgetOrdinal must be a positive integer.");
+    const actor = requireIdentity(input?.authority?.actor, "authority.actor");
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const authorizedAt = this.now();
+      const key = waveKey(changeId, waveId);
+      const wave = projected.waves.get(key);
+      const prior = projected.eventsByWave
+        .get(key)
+        ?.find((event) => event.id === input.priorTerminalEventId);
+      if (
+        !wave ||
+        wave.status !== "halted" ||
+        !prior ||
+        prior.type !== "wave.halted" ||
+        !validRecoveryAuthority(
+          input.authority,
+          input.haltId,
+          input.incidentId,
+          projected,
+          authorizedAt,
+          input.budgetOrdinal,
+        )
+      )
+        throw new ChangeControlError(
+          "Wave resume lacks its exact terminal event or independent recovery authority.",
+          "CONFLICT",
+          409,
+        );
+      const correlationId =
+        input.correlationId ?? projected.halts.get(input.haltId)!.correlationId;
+      this.appendRecoveryPlanInvalidation(
+        ledger,
+        projected,
+        changeId,
+        waveId,
+        input.authorizationId,
+        input.priorTerminalEventId,
+        correlationId,
+      );
+      this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "wave.resume-authorized",
+        occurredAt: authorizedAt,
+        projectId,
+        changeId,
+        waveId,
+        actor,
+        causationId: input.causationId ?? input.authorizationId,
+        correlationId,
+        payload: normalizePayload({
+          authorizationId: input.authorizationId,
+          priorTerminalEventId: input.priorTerminalEventId,
+          incidentId: input.incidentId,
+          haltId: input.haltId,
+          budgetOrdinal: input.budgetOrdinal,
+          reason: input.reason,
+          authority: input.authority,
+        }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return immutableWaveAggregate(
+        next.waves.get(key)!,
+        next.eventsByWave.get(key)!,
+        next,
+      );
+    });
+  }
+
   async transitionTask(
     projectIdValue: string,
     changeIdValue: string,
@@ -7276,6 +8276,572 @@ export class ChangeControlStore {
       await writeAtomically(file, ledger);
       return wardenAggregate(next, haltId, operationEventIds);
     });
+  }
+
+  async executeDoctorRepair(
+    projectIdValue: string,
+    haltIdValue: string,
+    input: ExecuteDoctorRepairInputV1,
+  ): Promise<DoctorAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const receiptId = requireIdentifier(input?.receiptId, "receiptId");
+    const verdictId = requireIdentifier(input?.verdictId, "verdictId");
+    if (!Number.isSafeInteger(input?.invocationOrdinal) || input.invocationOrdinal < 1)
+      invalid("invocationOrdinal must be a positive integer.");
+    const recipeId = (input?.input as { recipeId?: unknown } | undefined)?.recipeId;
+    if (typeof recipeId !== "string" || !doctorRecipeInputValid(input.input, recipeId))
+      invalid("Doctor input must match one closed typed recipe input.");
+    const recipe = WARDEN_REPAIR_RECIPES_V1.find(
+      (candidate) => candidate.recipeId === recipeId,
+    );
+    if (!recipe) invalid("Doctor recipe is not allowlisted.");
+    if (!this.doctorAdapters) invalid("Doctor typed adapters are not configured.");
+    const adapter = this.doctorAdapters[
+      recipe.recipeId
+    ] as unknown as import("../halts-incidents-v1/index.ts").DoctorTypedAdapterV1<DoctorRecipeInputV1>;
+    const normalizedInput = structuredClone(input.input);
+    const inputHash = doctorContractHashV1(normalizedInput);
+    const activeKey = `${projectId}\u0000${receiptId}`;
+    let shouldContinue = false;
+
+    const started = await this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const verdict = projected.wardenVerdicts.get(verdictId);
+      const halt = projected.halts.get(haltId);
+      if (!verdict || !halt)
+        throw new ChangeControlError(
+          "Allowed Warden verdict " + verdictId + " for halt " + haltId + " was not found.",
+          "NOT_FOUND",
+          404,
+        );
+      const existingId = projected.doctorInvocationByIdempotencyKey.get(
+        verdict.idempotencyKey ?? "",
+      );
+      if (existingId) {
+        const existing = projected.doctorInvocations.get(existingId)!;
+        if (
+          existing.receiptId !== receiptId ||
+          existing.verdictId !== verdictId ||
+          existing.invocationOrdinal !== input.invocationOrdinal ||
+          existing.inputHash !== inputHash
+        )
+          throw new ChangeControlError(
+            "Doctor idempotency key is already bound to a conflicting invocation.",
+            "CONFLICT",
+            409,
+          );
+        if (!projected.doctorReceipts.has(existing.receiptId)) {
+          shouldContinue = !this.activeDoctorRepairKeys.has(activeKey);
+          if (shouldContinue) this.activeDoctorRepairKeys.add(activeKey);
+        }
+        return doctorAggregate(projected, existing.receiptId);
+      }
+      const history = projected.wardenVerdictsByHalt.get(haltId) ?? [];
+      const lease = verdict.repairLease
+        ? projected.repairLeases.get(verdict.repairLease.leaseId)
+        : undefined;
+      const assessment = halt.classificationAssessmentId
+        ? projected.assessments.get(halt.classificationAssessmentId)
+        : undefined;
+      const incident = projected.incidents.get(verdict.incidentId);
+      const latestHaltEvent = projected.haltEvents.get(haltId)?.at(-1);
+      const evaluatedMillis = canonicalTimestampMillis(verdict.evaluatedAt);
+      const capturedMillis = canonicalTimestampMillis(
+        verdict.evidenceSnapshot.capturedAt,
+      );
+      const now = this.now();
+      const nowMillis = canonicalTimestampMillis(now);
+      if (
+        history.at(-1)?.verdictId !== verdictId ||
+        !["allow_auto_heal", "allow_bounded_retry"].includes(verdict.disposition) ||
+        !sameWardenRecipeIdentity(verdict.recipe, recipe) ||
+        !verdict.idempotencyKey ||
+        !lease ||
+        lease.state !== "active" ||
+        lease.epoch !== verdict.repairLease?.epoch ||
+        !assessment ||
+        !incident ||
+        !(
+          verdict.evidenceSnapshot.haltRecordHash === wardenContractHashV1(halt) ||
+          (latestHaltEvent?.type === "halt.dispositioned" &&
+            latestHaltEvent.causationId === verdictId &&
+            halt.state === "action_pending")
+        ) ||
+        verdict.evidenceSnapshot.incidentRecordHash !== wardenContractHashV1(incident) ||
+        verdict.evidenceSnapshot.attributionAssessmentHash !==
+          wardenContractHashV1(assessment) ||
+        evaluatedMillis === undefined ||
+        capturedMillis === undefined ||
+        nowMillis === undefined ||
+        nowMillis - capturedMillis > WARDEN_POLICY_V1.evidenceMaxAgeSeconds * 1000 ||
+        !verdict.evidenceSnapshot.preconditionsUnchanged ||
+        verdict.evidenceSnapshot.priorRepairResult !== "none" ||
+        verdict.evidenceSnapshot.sideEffectState !== "none" ||
+        verdict.evidenceSnapshot.quarantineReasonCodes.length > 0
+      )
+        throw new ChangeControlError(
+          "Doctor requires the exact live Warden verdict, fresh evidence, and exclusive fenced lease.",
+          "CONFLICT",
+          409,
+        );
+      const priorCount = [...projected.doctorInvocations.values()].filter(
+        (candidate) => candidate.haltId === haltId,
+      ).length;
+      if (input.invocationOrdinal !== priorCount + 1)
+        throw new ChangeControlError(
+          "Doctor invocation ordinal must be " + (priorCount + 1) + ".",
+          "CONFLICT",
+          409,
+        );
+      const context = {
+        projectId,
+        changeId: halt.changeId,
+        incidentId: incident.incidentId,
+        haltId,
+        verdictId,
+        idempotencyKey: verdict.idempotencyKey,
+        leaseId: lease.leaseId,
+        leaseEpoch: lease.epoch,
+      };
+      const beforeEvidence = await adapter.observe(normalizedInput, context);
+      if (!doctorObservationValid(beforeEvidence) || beforeEvidence.state !== "ready")
+        throw new ChangeControlError(
+          beforeEvidence?.state === "ambiguous"
+            ? "REPAIR_RESULT_AMBIGUOUS: typed pre-observation is ambiguous."
+            : "RECIPE_PRECONDITION_FAILED: typed pre-observation is not repair-ready.",
+          "CONFLICT",
+          409,
+        );
+      const invocation: DoctorRepairInvocationV1 = {
+        contractType: "DoctorRepairInvocationV1",
+        contractVersion: "1.0",
+        receiptId,
+        projectId,
+        changeId: halt.changeId,
+        incidentId: incident.incidentId,
+        haltId,
+        verdictId,
+        policyVersion: verdict.policyVersion,
+        recipe: {
+          recipeId: recipe.recipeId,
+          recipeVersion: recipe.recipeVersion,
+          codeHash: recipe.codeHash,
+        },
+        invocationOrdinal: input.invocationOrdinal,
+        idempotencyKey: verdict.idempotencyKey,
+        lease: { leaseId: lease.leaseId, epoch: lease.epoch },
+        input: normalizedInput,
+        inputHash,
+        beforeEvidence,
+        startedAt: now,
+        startedBy: "system:doctor-v1",
+      };
+      shouldContinue = true;
+      this.activeDoctorRepairKeys.add(activeKey);
+      const event = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "doctor.repair-started",
+        occurredAt: now,
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor: "system:doctor-v1",
+        causationId: verdictId,
+        correlationId: halt.correlationId,
+        payload: normalizePayload({ invocation }),
+      });
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return doctorAggregate(next, receiptId, new Set([event.id]));
+    });
+
+    if (started.receipt || !shouldContinue) return started;
+    try {
+      await this.onDoctorBoundary?.("started_persisted", started.invocation);
+      return await this.continueDoctorRepair(projectId, started.invocation);
+    } finally {
+      this.activeDoctorRepairKeys.delete(activeKey);
+    }
+  }
+
+  private async assertDoctorLiveFence(
+    projectId: string,
+    invocation: DoctorRepairInvocationV1,
+  ): Promise<void> {
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    const current = projected.doctorInvocations.get(invocation.receiptId);
+    const lease = projected.repairLeases.get(invocation.lease.leaseId);
+    const halt = projected.halts.get(invocation.haltId);
+    const latestVerdict = projected.wardenVerdictsByHalt
+      .get(invocation.haltId)
+      ?.at(-1);
+    const latestHaltEvent = projected.haltEvents.get(invocation.haltId)?.at(-1);
+    if (
+      !current ||
+      current.inputHash !== invocation.inputHash ||
+      projected.doctorReceipts.has(invocation.receiptId) ||
+      !lease ||
+      lease.state !== "active" ||
+      lease.epoch !== invocation.lease.epoch ||
+      lease.projectId !== projectId ||
+      lease.incidentId !== invocation.incidentId ||
+      lease.haltId !== invocation.haltId ||
+      latestVerdict?.verdictId !== invocation.verdictId ||
+      halt?.state !== "action_pending" ||
+      latestHaltEvent?.type !== "halt.dispositioned" ||
+      latestHaltEvent.causationId !== invocation.verdictId
+    )
+      throw new ChangeControlError(
+        "REPAIR_LEASE_LOST: Doctor effect boundary lacks its exact live fence.",
+        "CONFLICT",
+        409,
+      );
+  }
+
+  private async continueDoctorRepair(
+    projectId: string,
+    invocation: DoctorRepairInvocationV1,
+  ): Promise<DoctorAggregateV1> {
+    const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+      sameWardenRecipeIdentity(candidate, invocation.recipe),
+    )!;
+    const adapter = this.doctorAdapters![
+      recipe.recipeId
+    ] as unknown as import("../halts-incidents-v1/index.ts").DoctorTypedAdapterV1<DoctorRecipeInputV1>;
+    const contextBase = {
+      projectId,
+      changeId: invocation.changeId,
+      incidentId: invocation.incidentId,
+      haltId: invocation.haltId,
+      verdictId: invocation.verdictId,
+      idempotencyKey: invocation.idempotencyKey,
+      leaseId: invocation.lease.leaseId,
+      leaseEpoch: invocation.lease.epoch,
+    };
+    const adapterOutcomes: Array<{
+      attemptOrdinal: number;
+      outcome: "completed" | "retryable_failure" | "terminal_failure" | "ambiguous";
+      outcomeCode: string;
+      evidenceRefs: readonly string[];
+    }> = [];
+    let afterEvidence = await adapter.observe(invocation.input, contextBase);
+    let result: DoctorRepairReceiptV1["result"] = "interrupted";
+    let reasonCode: DoctorRepairReceiptV1["reasonCode"] = null;
+    if (!doctorObservationValid(afterEvidence))
+      invalid("Doctor adapter returned invalid observation evidence.");
+
+    if (afterEvidence.state === "succeeded") result = "succeeded";
+    else if (afterEvidence.state === "ambiguous") {
+      result = "quarantined";
+      reasonCode = "REPAIR_RESULT_AMBIGUOUS";
+    } else if (afterEvidence.state === "stop") {
+      result = "precondition_changed";
+      reasonCode = "RECIPE_PRECONDITION_FAILED";
+    } else {
+      for (let attemptOrdinal = 1; attemptOrdinal <= recipe.bounds.maxAttempts; attemptOrdinal += 1) {
+        if (attemptOrdinal > 1 && recipe.bounds.initialBackoffMs > 0) {
+          const delay = Math.min(
+            recipe.bounds.maxBackoffMs,
+            recipe.bounds.initialBackoffMs * 2 ** (attemptOrdinal - 2),
+          );
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, delay));
+        }
+        let outcome;
+        try {
+          const assertLiveFence = () =>
+            this.assertDoctorLiveFence(projectId, invocation);
+          await assertLiveFence();
+          outcome = await withDoctorTimeout(
+            adapter.executeAttempt(invocation.input, {
+              ...contextBase,
+              attemptOrdinal,
+              attemptTimeoutMs: recipe.bounds.attemptTimeoutMs,
+              assertLiveFence,
+            }),
+            recipe.bounds.attemptTimeoutMs,
+          );
+        } catch {
+          afterEvidence = await adapter.observe(invocation.input, contextBase);
+          if (!doctorObservationValid(afterEvidence))
+            invalid("Doctor adapter returned invalid recovery observation evidence.");
+          if (afterEvidence.state === "succeeded") {
+            result = "succeeded";
+            break;
+          }
+          result = afterEvidence.state === "ready" ? "interrupted" : "quarantined";
+          reasonCode =
+            afterEvidence.state === "ready"
+              ? "DOCTOR_ADAPTER_FAILED"
+              : "REPAIR_RESULT_AMBIGUOUS";
+          break;
+        }
+        if (
+          !outcome ||
+          !["completed", "retryable_failure", "terminal_failure", "ambiguous"].includes(
+            outcome.outcome,
+          ) ||
+          !identifierPattern.test(outcome.outcomeCode) ||
+          !Array.isArray(outcome.evidenceRefs) ||
+          outcome.evidenceRefs.length === 0
+        )
+          invalid("Doctor adapter returned an invalid bounded outcome.");
+        adapterOutcomes.push({ attemptOrdinal, ...outcome });
+        await this.onDoctorBoundary?.("effect_completed", invocation);
+        afterEvidence = await adapter.observe(invocation.input, contextBase);
+        if (!doctorObservationValid(afterEvidence))
+          invalid("Doctor adapter returned invalid after-evidence.");
+        if (afterEvidence.state === "succeeded") {
+          result = "succeeded";
+          break;
+        }
+        if (afterEvidence.state === "ambiguous" || outcome.outcome === "ambiguous") {
+          result = "quarantined";
+          reasonCode = "REPAIR_RESULT_AMBIGUOUS";
+          break;
+        }
+        if (afterEvidence.state === "stop") {
+          result = "precondition_changed";
+          reasonCode = "RECIPE_PRECONDITION_FAILED";
+          break;
+        }
+        if (outcome.outcome === "terminal_failure") {
+          result = "failed";
+          reasonCode = "DOCTOR_ADAPTER_FAILED";
+          break;
+        }
+        if (attemptOrdinal === recipe.bounds.maxAttempts) {
+          result = "failed";
+          reasonCode = "DOCTOR_ADAPTER_FAILED";
+        }
+      }
+    }
+    return this.finishDoctorRepair(
+      projectId,
+      invocation,
+      afterEvidence,
+      adapterOutcomes,
+      result,
+      reasonCode,
+    );
+  }
+
+  private async finishDoctorRepair(
+    projectId: string,
+    invocation: DoctorRepairInvocationV1,
+    afterEvidence: DoctorObservationV1,
+    adapterOutcomes: DoctorRepairReceiptV1["adapterOutcomes"],
+    initialResult: DoctorRepairReceiptV1["result"],
+    initialReasonCode: DoctorRepairReceiptV1["reasonCode"],
+  ): Promise<DoctorAggregateV1> {
+    const finished = await this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const current = projected.doctorInvocations.get(invocation.receiptId);
+      if (!current || current.inputHash !== invocation.inputHash)
+        throw new ChangeControlError(
+          "Doctor invocation identity changed during execution.",
+          "CONFLICT",
+          409,
+        );
+      if (projected.doctorReceipts.has(invocation.receiptId))
+        return doctorAggregate(projected, invocation.receiptId);
+      const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+        sameWardenRecipeIdentity(candidate, current.recipe),
+      )!;
+      const lease = projected.repairLeases.get(current.lease.leaseId);
+      const verdict = projected.wardenVerdicts.get(current.verdictId);
+      const halt = projected.halts.get(current.haltId)!;
+      const leaseFence = Boolean(
+        lease &&
+          lease.state === "active" &&
+          lease.epoch === current.lease.epoch &&
+          projected.wardenVerdictsByHalt.get(current.haltId)?.at(-1)?.verdictId ===
+            verdict?.verdictId,
+      );
+      const latestHaltEvent = projected.haltEvents.get(current.haltId)?.at(-1);
+      const preconditionsLive = Boolean(
+        halt.state === "action_pending" &&
+          latestHaltEvent?.type === "halt.dispositioned" &&
+          latestHaltEvent.causationId === current.verdictId,
+      );
+      const result = !leaseFence
+        ? "quarantined"
+        : !preconditionsLive
+          ? "precondition_changed"
+          : initialResult;
+      const reasonCode = !leaseFence
+        ? "REPAIR_LEASE_LOST"
+        : !preconditionsLive
+          ? "RECIPE_PRECONDITION_FAILED"
+          : initialReasonCode;
+      const finishedAt = this.now();
+      const receipt: DoctorRepairReceiptV1 = {
+        contractType: "DoctorRepairReceiptV1",
+        contractVersion: "1.0",
+        receiptId: current.receiptId,
+        projectId,
+        changeId: current.changeId,
+        incidentId: current.incidentId,
+        haltId: current.haltId,
+        verdictId: current.verdictId,
+        policyVersion: current.policyVersion,
+        recipe: current.recipe,
+        invocationOrdinal: current.invocationOrdinal,
+        idempotencyKey: current.idempotencyKey,
+        lease: {
+          leaseId: current.lease.leaseId,
+          epoch: current.lease.epoch,
+          fenced: leaseFence,
+        },
+        input: current.input,
+        inputHash: current.inputHash,
+        beforeEvidence: current.beforeEvidence,
+        afterEvidence,
+        startedAt: current.startedAt,
+        finishedAt,
+        adapterOutcomes,
+        successOracle: {
+          oracleId: recipe.successOracle.oracleId,
+          outcome:
+            result === "succeeded" && leaseFence
+              ? "passed"
+              : result === "quarantined" || !leaseFence
+                ? "ambiguous"
+                : "failed",
+          evidenceRefs: afterEvidence.evidenceRefs,
+        },
+        stopOracle: {
+          oracleId: recipe.stopOracle.oracleId,
+          triggered:
+            afterEvidence.state === "stop" ||
+            result === "quarantined" ||
+            !leaseFence,
+          evidenceRefs: afterEvidence.evidenceRefs,
+        },
+        result,
+        reasonCode,
+        causationRefs: [current.verdictId, current.haltId, current.incidentId],
+        recordedBy: "system:doctor-v1",
+      };
+      const eventIds = new Set<string>();
+      const finishEvent = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "doctor.repair-finished",
+        occurredAt: finishedAt,
+        projectId,
+        changeId: current.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor: "system:doctor-v1",
+        causationId: current.receiptId,
+        correlationId: halt.correlationId,
+        payload: normalizePayload({ receipt }),
+      });
+      eventIds.add(finishEvent.id);
+      if (leaseFence && lease) {
+        const releaseEvent = this.append(ledger, {
+          id: requireIdentifier(this.createId(), "id"),
+          type: "warden.repair-lease-released",
+          occurredAt: finishedAt,
+          projectId,
+          changeId: current.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:warden-v1",
+          causationId: finishEvent.id,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({
+            haltId: current.haltId,
+            incidentId: current.incidentId,
+            leaseId: lease.leaseId,
+            leaseEpoch: lease.epoch,
+            previousState: "active",
+            state: "released",
+            evidenceRefs: ["doctor:receipt:" + current.receiptId],
+          }),
+        });
+        eventIds.add(releaseEvent.id);
+      }
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return doctorAggregate(next, current.receiptId, eventIds);
+    });
+    await this.onDoctorBoundary?.("finished_persisted", invocation);
+    return finished;
+  }
+
+  async recoverDoctorRepairs(
+    projectIdValue: string,
+  ): Promise<readonly DoctorAggregateV1[]> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const projection = await this.getDoctorProjection(projectId);
+    const recovered: DoctorAggregateV1[] = [];
+    for (const invocation of projection.pendingInvocations) {
+      const activeKey = `${projectId}\u0000${invocation.receiptId}`;
+      if (this.activeDoctorRepairKeys.has(activeKey)) continue;
+      this.activeDoctorRepairKeys.add(activeKey);
+      try {
+        const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+          sameWardenRecipeIdentity(candidate, invocation.recipe),
+        )!;
+        if (recipe.crashPolicy === "reobserve_then_retry") {
+          recovered.push(await this.continueDoctorRepair(projectId, invocation));
+          continue;
+        }
+        const adapter = this.doctorAdapters![
+          recipe.recipeId
+        ] as unknown as import("../halts-incidents-v1/index.ts").DoctorTypedAdapterV1<DoctorRecipeInputV1>;
+        const afterEvidence = await adapter.observe(invocation.input, {
+          projectId,
+          changeId: invocation.changeId,
+          incidentId: invocation.incidentId,
+          haltId: invocation.haltId,
+          verdictId: invocation.verdictId,
+          idempotencyKey: invocation.idempotencyKey,
+          leaseId: invocation.lease.leaseId,
+          leaseEpoch: invocation.lease.epoch,
+        });
+        if (!doctorObservationValid(afterEvidence))
+          invalid("Doctor adapter returned invalid recovery observation evidence.");
+        recovered.push(
+          await this.finishDoctorRepair(
+            projectId,
+            invocation,
+            afterEvidence,
+            [],
+            afterEvidence.state === "succeeded" ? "succeeded" : "quarantined",
+            afterEvidence.state === "succeeded" ? null : "REPAIR_RESULT_AMBIGUOUS",
+          ),
+        );
+      } finally {
+        this.activeDoctorRepairKeys.delete(activeKey);
+      }
+    }
+    return deepFreeze(structuredClone(recovered));
+  }
+
+  async getDoctorProjection(
+    projectIdValue: string,
+  ): Promise<DoctorProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return immutableDoctorProjection(projectId, validateAndProject(ledger));
+  }
+
+  async getDoctorRepair(
+    projectIdValue: string,
+    receiptIdValue: string,
+  ): Promise<DoctorAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const receiptId = requireIdentifier(receiptIdValue, "receiptId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return doctorAggregate(validateAndProject(ledger), receiptId);
   }
 
   async transitionWardenRepairLease(

@@ -20,6 +20,9 @@ import type {
   HaltIncidentAggregateV1,
   HaltRecordV1,
   WardenEvidenceSnapshotV1,
+  DoctorAdapterRegistryV1,
+  DoctorObservationV1,
+  DoctorRecipeInputV1,
 } from "./halts-incidents-v1/index.ts";
 import {
   HALT_CLASSES_V1,
@@ -30,6 +33,7 @@ import {
   observationFingerprintV1,
   wardenContractHashV1,
   wardenEvidenceSnapshotHashV1,
+  doctorObservationHashV1,
 } from "./halts-incidents-v1/index.ts";
 import haltsIncidentsV1Schema from "./halts-incidents-v1/schemas/halts-incidents-v1.schema.json";
 import haltsIncidentsV1Examples from "./halts-incidents-v1/schemas/halts-incidents-v1.examples.json";
@@ -177,11 +181,12 @@ function haltContractsV1(input: {
   haltClass?: AttributionAssessmentV1["haltClass"];
   confidence?: AttributionAssessmentV1["confidence"];
   normalizedRootCauseKey?: string;
+  taskId?: string;
 }) {
   const occurredAt = input.occurredAt ?? "2026-07-31T10:00:00.000Z";
   const scope = {
     waveId: "planning-wave",
-    taskId: "task-one",
+    taskId: input.taskId ?? "task-one",
     attemptId: null,
     planRevision: null,
     runId: null,
@@ -373,6 +378,83 @@ function wardenEvidenceSnapshotV1(
   return {
     ...snapshotWithoutHash,
     snapshotHash: wardenEvidenceSnapshotHashV1(snapshotWithoutHash),
+  };
+}
+
+function doctorObservationV1(
+  state: DoctorObservationV1["state"],
+  recipeId: string,
+): DoctorObservationV1 {
+  const body = {
+    state,
+    observationCode: ("doctor-" + recipeId + "-" + state).slice(0, 128),
+    evidenceRefs: ["doctor:" + recipeId + ":" + state],
+  };
+  return { ...body, evidenceHash: doctorObservationHashV1(body) };
+}
+
+function doctorAdaptersV1(
+  states = new Map<string, DoctorObservationV1["state"]>(),
+  executions = new Map<string, number>(),
+): DoctorAdapterRegistryV1 {
+  const adapter = {
+    observe: async (input: DoctorRecipeInputV1) =>
+      doctorObservationV1(
+        states.get(input.recipeId) ?? "ready",
+        input.recipeId,
+      ),
+    executeAttempt: async (
+      input: DoctorRecipeInputV1,
+      context: import("./halts-incidents-v1/index.ts").DoctorAdapterContextV1,
+    ) => {
+      await context.assertLiveFence();
+      executions.set(input.recipeId, (executions.get(input.recipeId) ?? 0) + 1);
+      states.set(input.recipeId, "succeeded");
+      return {
+        outcome: "completed" as const,
+        outcomeCode: "doctor-effect-completed",
+        evidenceRefs: ["doctor:" + input.recipeId + ":effect"],
+      };
+    },
+  };
+  return {
+    "provider-read-retry-v1": adapter,
+    "registered-process-retry-v1": adapter,
+    "workspace-reconcile-v1": adapter,
+    "merge-safe-abort-resume-v1": adapter,
+    "owned-cleanup-retry-v1": adapter,
+  } as unknown as DoctorAdapterRegistryV1;
+}
+
+function doctorInputV1(
+  recipeId: (typeof WARDEN_REPAIR_RECIPES_V1)[number]["recipeId"],
+): DoctorRecipeInputV1 {
+  if (recipeId === "provider-read-retry-v1")
+    return {
+      recipeId,
+      providerOperationId: "provider-operation-one",
+      resourceIdentity: "provider-resource-one",
+    };
+  if (recipeId === "registered-process-retry-v1")
+    return {
+      recipeId,
+      operationId: "registered-operation-one",
+      operationKind: "read-only-probe",
+      commandHash: "a".repeat(64),
+      fixedArgumentsHash: "b".repeat(64),
+      effectContract: "read_only_non_mutating",
+    };
+  if (recipeId === "merge-safe-abort-resume-v1")
+    return {
+      recipeId,
+      runId: "run-one",
+      workspaceAttemptId: "workspace-attempt-one",
+      mergeRequestId: "merge-request-one",
+    };
+  return {
+    recipeId,
+    runId: "run-one",
+    workspaceAttemptId: "workspace-attempt-one",
   };
 }
 
@@ -1296,6 +1378,921 @@ test("Warden accepts every exact allowlisted recipe identity and class pairing",
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("Doctor executes every closed typed recipe with exact idempotency and immutable receipts", async () => {
+  for (const recipe of WARDEN_REPAIR_RECIPES_V1) {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-doctor-recipe-"));
+    const states = new Map<string, DoctorObservationV1["state"]>();
+    const executions = new Map<string, number>();
+    try {
+      const store = new ChangeControlStore(root, {
+        now: () => "2026-07-31T10:00:00.000Z",
+        doctorAdapters: doctorAdaptersV1(states, executions),
+      });
+      await seedPhase4Scope(store);
+      const halt = await store.detectAndClassifyHalt(
+        "planning-project",
+        fingerprintedHaltContractsV1({
+          haltId: "halt-doctor-" + recipe.recipeId,
+          detectorEventId: "detector-doctor-" + recipe.recipeId,
+          haltClass: recipe.haltClass,
+        }),
+      );
+      const allowed = await store.evaluateWardenVerdict(
+        "planning-project",
+        halt.halt.haltId,
+        {
+          verdictId: "verdict-doctor-" + recipe.recipeId,
+          policyVersion: "warden-policy-v1",
+          verdictOrdinal: 1,
+          requestedAction:
+            recipe.disposition === "allow_auto_heal"
+              ? "auto_heal"
+              : "bounded_retry",
+          evidenceSnapshot: wardenEvidenceSnapshotV1(halt, {}, recipe),
+          recipe,
+          idempotencyKey: "doctor-key:" + recipe.recipeId,
+          lease: {
+            leaseId: "doctor-lease-" + recipe.recipeId,
+            expectedEpoch: 1,
+          },
+        },
+      );
+      const request = {
+        receiptId: "doctor-receipt-" + recipe.recipeId,
+        verdictId: allowed.verdict.verdictId,
+        invocationOrdinal: 1,
+        input: doctorInputV1(recipe.recipeId),
+      };
+      const completed = await store.executeDoctorRepair(
+        "planning-project",
+        halt.halt.haltId,
+        request,
+      );
+      assert.equal(completed.receipt?.result, "succeeded");
+      assert.equal(completed.receipt?.lease.fenced, true);
+      assert.equal(completed.receipt?.successOracle.outcome, "passed");
+      assert.equal(executions.get(recipe.recipeId), 1);
+      assert.deepEqual(
+        completed.events.map((event) => event.type),
+        ["doctor.repair-finished"],
+      );
+
+      const replay = await store.executeDoctorRepair(
+        "planning-project",
+        halt.halt.haltId,
+        request,
+      );
+      assert.deepEqual(replay.receipt, completed.receipt);
+      assert.equal(executions.get(recipe.recipeId), 1);
+      assert.equal(
+        (await store.getHalt("planning-project", halt.halt.haltId)).halt.state,
+        "action_pending",
+      );
+      assert.equal(
+        (await store.getHalt("planning-project", halt.halt.haltId)).incident.state,
+        "open",
+      );
+
+      const restarted = new ChangeControlStore(root, {
+        doctorAdapters: doctorAdaptersV1(states, executions),
+      });
+      const projection = await restarted.getDoctorProjection("planning-project");
+      assert.equal(projection.receipts.length, 1);
+      assert.equal(projection.pendingInvocations.length, 0);
+      assert.ok(
+        projection.events.some((event) => event.type === "doctor.repair-started"),
+      );
+      assert.ok(
+        projection.events.some((event) => event.type === "doctor.repair-finished"),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Doctor recovery never re-executes reobserve-then-finalize recipes", async () => {
+  for (const recipe of WARDEN_REPAIR_RECIPES_V1.filter(
+    (candidate) => candidate.crashPolicy === "reobserve_then_finalize",
+  )) {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-doctor-finalize-replay-"));
+    const states = new Map<string, DoctorObservationV1["state"]>();
+    const executions = new Map<string, number>();
+    let proveSuccessOnCrash = false;
+    try {
+      const adapters = doctorAdaptersV1(states, executions);
+      const store = new ChangeControlStore(root, {
+        now: () => "2026-07-31T10:00:00.000Z",
+        doctorAdapters: adapters,
+        onDoctorBoundary: (boundary) => {
+          if (boundary === "started_persisted") {
+            if (proveSuccessOnCrash) states.set(recipe.recipeId, "succeeded");
+            throw new Error("simulated crash");
+          }
+        },
+      });
+      await seedPhase4Scope(store);
+
+      const readyHalt = await store.detectAndClassifyHalt(
+        "planning-project",
+        fingerprintedHaltContractsV1({
+          haltId: "halt-finalize-ready-" + recipe.recipeId,
+          detectorEventId: "detector-finalize-ready-" + recipe.recipeId,
+          haltClass: recipe.haltClass,
+          normalizedRootCauseKey: "finalize-ready:" + recipe.recipeId,
+        }),
+      );
+      const readyVerdict = await store.evaluateWardenVerdict(
+        "planning-project",
+        readyHalt.halt.haltId,
+        {
+          verdictId: "verdict-finalize-ready-" + recipe.recipeId,
+          policyVersion: "warden-policy-v1",
+          verdictOrdinal: 1,
+          requestedAction: "auto_heal",
+          evidenceSnapshot: wardenEvidenceSnapshotV1(readyHalt, {}, recipe),
+          recipe,
+          idempotencyKey: "finalize-ready-key:" + recipe.recipeId,
+          lease: {
+            leaseId: "finalize-ready-lease-" + recipe.recipeId,
+            expectedEpoch: 1,
+          },
+        },
+      );
+      await assert.rejects(
+        store.executeDoctorRepair(
+          "planning-project",
+          readyHalt.halt.haltId,
+          {
+            receiptId: "finalize-ready-receipt-" + recipe.recipeId,
+            verdictId: readyVerdict.verdict.verdictId,
+            invocationOrdinal: 1,
+            input: doctorInputV1(recipe.recipeId),
+          },
+        ),
+        /simulated crash/,
+      );
+      const readyRecovery = await new ChangeControlStore(root, {
+        now: () => "2026-07-31T10:00:00.000Z",
+        doctorAdapters: adapters,
+      }).recoverDoctorRepairs("planning-project");
+      assert.equal(readyRecovery[0].receipt?.result, "quarantined");
+      assert.equal(
+        readyRecovery[0].receipt?.reasonCode,
+        "REPAIR_RESULT_AMBIGUOUS",
+      );
+      assert.equal(readyRecovery[0].receipt?.successOracle.outcome, "ambiguous");
+      assert.equal(executions.get(recipe.recipeId) ?? 0, 0);
+
+      proveSuccessOnCrash = true;
+      states.set(recipe.recipeId, "ready");
+      const succeededHalt = await store.detectAndClassifyHalt(
+        "planning-project",
+        fingerprintedHaltContractsV1({
+          haltId: "halt-finalize-succeeded-" + recipe.recipeId,
+          detectorEventId: "detector-finalize-succeeded-" + recipe.recipeId,
+          haltClass: recipe.haltClass,
+          normalizedRootCauseKey: "finalize-succeeded:" + recipe.recipeId,
+        }),
+      );
+      const succeededVerdict = await store.evaluateWardenVerdict(
+        "planning-project",
+        succeededHalt.halt.haltId,
+        {
+          verdictId: "verdict-finalize-succeeded-" + recipe.recipeId,
+          policyVersion: "warden-policy-v1",
+          verdictOrdinal: 1,
+          requestedAction: "auto_heal",
+          evidenceSnapshot: wardenEvidenceSnapshotV1(succeededHalt, {}, recipe),
+          recipe,
+          idempotencyKey: "finalize-succeeded-key:" + recipe.recipeId,
+          lease: {
+            leaseId: "finalize-succeeded-lease-" + recipe.recipeId,
+            expectedEpoch: 1,
+          },
+        },
+      );
+      await assert.rejects(
+        store.executeDoctorRepair(
+          "planning-project",
+          succeededHalt.halt.haltId,
+          {
+            receiptId: "finalize-succeeded-receipt-" + recipe.recipeId,
+            verdictId: succeededVerdict.verdict.verdictId,
+            invocationOrdinal: 1,
+            input: doctorInputV1(recipe.recipeId),
+          },
+        ),
+        /simulated crash/,
+      );
+      const succeededRecovery = await new ChangeControlStore(root, {
+        now: () => "2026-07-31T10:00:00.000Z",
+        doctorAdapters: adapters,
+      }).recoverDoctorRepairs("planning-project");
+      assert.equal(succeededRecovery[0].receipt?.result, "succeeded");
+      assert.equal(executions.get(recipe.recipeId) ?? 0, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Doctor rejects caller authority, recovers crashes, fences lease loss, and quarantines ambiguity", async () => {
+  const crashRoot = await mkdtemp(join(tmpdir(), "orchestrator-doctor-crash-"));
+  const states = new Map<string, DoctorObservationV1["state"]>();
+  const executions = new Map<string, number>();
+  let crashBoundary: "started_persisted" | "effect_completed" | undefined =
+    "started_persisted";
+  try {
+    const adapters = doctorAdaptersV1(states, executions);
+    const store = new ChangeControlStore(crashRoot, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      doctorAdapters: adapters,
+      onDoctorBoundary: (boundary) => {
+        if (boundary === crashBoundary) throw new Error("simulated crash");
+      },
+    });
+    await seedPhase4Scope(store);
+    const halt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-doctor-crash",
+        detectorEventId: "detector-doctor-crash",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    const recipe = WARDEN_REPAIR_RECIPES_V1[0];
+    const allowed = await store.evaluateWardenVerdict(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        verdictId: "verdict-doctor-crash",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(halt),
+        recipe,
+        idempotencyKey: "doctor-crash-key",
+        lease: { leaseId: "doctor-crash-lease", expectedEpoch: 1 },
+      },
+    );
+    const request = {
+      receiptId: "doctor-crash-receipt",
+      verdictId: allowed.verdict.verdictId,
+      invocationOrdinal: 1,
+      input: doctorInputV1(recipe.recipeId),
+    };
+    await assert.rejects(
+      store.executeDoctorRepair("planning-project", halt.halt.haltId, request),
+      /simulated crash/,
+    );
+    assert.equal(
+      (await store.getDoctorProjection("planning-project")).pendingInvocations.length,
+      1,
+    );
+    crashBoundary = undefined;
+    const recovered = await new ChangeControlStore(crashRoot, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      doctorAdapters: adapters,
+    }).recoverDoctorRepairs("planning-project");
+    assert.equal(recovered[0].receipt?.result, "succeeded");
+    assert.equal(executions.get(recipe.recipeId), 1);
+
+    states.set(recipe.recipeId, "ready");
+    crashBoundary = "effect_completed";
+    const afterEffectHalt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-doctor-crash-after-effect",
+        detectorEventId: "detector-doctor-crash-after-effect",
+        haltClass: "retryable_provider_or_process",
+        normalizedRootCauseKey: "provider:crash-after-effect",
+      }),
+    );
+    const afterEffectAllowed = await store.evaluateWardenVerdict(
+      "planning-project",
+      afterEffectHalt.halt.haltId,
+      {
+        verdictId: "verdict-doctor-crash-after-effect",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(afterEffectHalt),
+        recipe,
+        idempotencyKey: "doctor-crash-after-effect-key",
+        lease: { leaseId: "doctor-crash-after-effect-lease", expectedEpoch: 1 },
+      },
+    );
+    await assert.rejects(
+      store.executeDoctorRepair(
+        "planning-project",
+        afterEffectHalt.halt.haltId,
+        {
+          receiptId: "doctor-crash-after-effect-receipt",
+          verdictId: afterEffectAllowed.verdict.verdictId,
+          invocationOrdinal: 1,
+          input: doctorInputV1(recipe.recipeId),
+        },
+      ),
+      /simulated crash/,
+    );
+    crashBoundary = undefined;
+    const recoveredAfterEffect = await new ChangeControlStore(crashRoot, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      doctorAdapters: adapters,
+    }).recoverDoctorRepairs("planning-project");
+    assert.equal(recoveredAfterEffect[0].receipt?.result, "succeeded");
+    assert.equal(executions.get(recipe.recipeId), 2);
+
+    await assert.rejects(
+      store.executeDoctorRepair("planning-project", halt.halt.haltId, {
+        ...request,
+        receiptId: "doctor-conflicting-receipt",
+      }),
+      /idempotency key.*conflicting/i,
+    );
+    await assert.rejects(
+      store.executeDoctorRepair("planning-project", halt.halt.haltId, {
+        ...request,
+        input: {
+          ...doctorInputV1(recipe.recipeId),
+          shell: "git reset --hard",
+        } as unknown as DoctorRecipeInputV1,
+      }),
+      /closed typed recipe input/,
+    );
+  } finally {
+    await rm(crashRoot, { recursive: true, force: true });
+  }
+
+  const fencedRoot = await mkdtemp(join(tmpdir(), "orchestrator-doctor-fence-"));
+  try {
+    const fenceStates = new Map<string, DoctorObservationV1["state"]>();
+    const fenceAdapters = doctorAdaptersV1(fenceStates);
+    let fencedStore: InstanceType<typeof ChangeControlStore>;
+    fencedStore = new ChangeControlStore(fencedRoot, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      doctorAdapters: fenceAdapters,
+      onDoctorBoundary: async (boundary, invocation) => {
+        if (boundary !== "effect_completed") return;
+        await new ChangeControlStore(fencedRoot).transitionWardenRepairLease(
+          "planning-project",
+          invocation.haltId,
+          {
+            leaseId: invocation.lease.leaseId,
+            leaseEpoch: invocation.lease.epoch,
+            to: "lost",
+            actor: "policy:warden-v1",
+            evidenceRefs: ["doctor:test:lease-lost"],
+            verdictId: "verdict-doctor-fenced-lost",
+          },
+        );
+      },
+    });
+    await seedPhase4Scope(fencedStore);
+    const halt = await fencedStore.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-doctor-fenced",
+        detectorEventId: "detector-doctor-fenced",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    const recipe = WARDEN_REPAIR_RECIPES_V1[0];
+    const allowed = await fencedStore.evaluateWardenVerdict(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        verdictId: "verdict-doctor-fenced",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(halt),
+        recipe,
+        idempotencyKey: "doctor-fenced-key",
+        lease: { leaseId: "doctor-fenced-lease", expectedEpoch: 1 },
+      },
+    );
+    const fenced = await fencedStore.executeDoctorRepair(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        receiptId: "doctor-fenced-receipt",
+        verdictId: allowed.verdict.verdictId,
+        invocationOrdinal: 1,
+        input: doctorInputV1(recipe.recipeId),
+      },
+    );
+    assert.equal(fenced.receipt?.result, "quarantined");
+    assert.equal(fenced.receipt?.reasonCode, "REPAIR_LEASE_LOST");
+    assert.equal(fenced.receipt?.lease.fenced, false);
+    assert.notEqual(fenced.receipt?.successOracle.outcome, "passed");
+  } finally {
+    await rm(fencedRoot, { recursive: true, force: true });
+  }
+
+  const preEffectFenceRoot = await mkdtemp(
+    join(tmpdir(), "orchestrator-doctor-pre-effect-fence-"),
+  );
+  try {
+    const states = new Map<string, DoctorObservationV1["state"]>();
+    const baseAdapters = doctorAdaptersV1(states);
+    let effects = 0;
+    const adapters: DoctorAdapterRegistryV1 = {
+      ...baseAdapters,
+      "provider-read-retry-v1": {
+        ...baseAdapters["provider-read-retry-v1"],
+        executeAttempt: async (input, context) => {
+          await new ChangeControlStore(preEffectFenceRoot).transitionWardenRepairLease(
+            "planning-project",
+            context.haltId,
+            {
+              leaseId: context.leaseId,
+              leaseEpoch: context.leaseEpoch,
+              to: "lost",
+              actor: "policy:warden-v1",
+              evidenceRefs: ["doctor:test:pre-effect-lease-lost"],
+              verdictId: "verdict-doctor-pre-effect-lease-lost",
+            },
+          );
+          await context.assertLiveFence();
+          effects += 1;
+          return baseAdapters["provider-read-retry-v1"].executeAttempt(
+            input,
+            context,
+          );
+        },
+      },
+    };
+    const store = new ChangeControlStore(preEffectFenceRoot, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      doctorAdapters: adapters,
+    });
+    await seedPhase4Scope(store);
+    const halt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-doctor-pre-effect-fenced",
+        detectorEventId: "detector-doctor-pre-effect-fenced",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    const recipe = WARDEN_REPAIR_RECIPES_V1[0];
+    const allowed = await store.evaluateWardenVerdict(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        verdictId: "verdict-doctor-pre-effect-fenced",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(halt),
+        recipe,
+        idempotencyKey: "doctor-pre-effect-fenced-key",
+        lease: { leaseId: "doctor-pre-effect-fenced-lease", expectedEpoch: 1 },
+      },
+    );
+    const fenced = await store.executeDoctorRepair(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        receiptId: "doctor-pre-effect-fenced-receipt",
+        verdictId: allowed.verdict.verdictId,
+        invocationOrdinal: 1,
+        input: doctorInputV1(recipe.recipeId),
+      },
+    );
+    assert.equal(effects, 0);
+    assert.equal(fenced.receipt?.result, "quarantined");
+    assert.equal(fenced.receipt?.reasonCode, "REPAIR_LEASE_LOST");
+  } finally {
+    await rm(preEffectFenceRoot, { recursive: true, force: true });
+  }
+
+  const ambiguousRoot = await mkdtemp(join(tmpdir(), "orchestrator-doctor-ambiguous-"));
+  try {
+    const ambiguousStates = new Map<string, DoctorObservationV1["state"]>();
+    const baseAdapters = doctorAdaptersV1(ambiguousStates);
+    const ambiguousAdapters: DoctorAdapterRegistryV1 = {
+      ...baseAdapters,
+      "provider-read-retry-v1": {
+        ...baseAdapters["provider-read-retry-v1"],
+        executeAttempt: async () => {
+          ambiguousStates.set("provider-read-retry-v1", "ambiguous");
+          return {
+            outcome: "ambiguous",
+            outcomeCode: "provider-read-completion-ambiguous",
+            evidenceRefs: ["doctor:provider-read:ambiguous"],
+          };
+        },
+      },
+    };
+    const store = new ChangeControlStore(ambiguousRoot, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      doctorAdapters: ambiguousAdapters,
+    });
+    await seedPhase4Scope(store);
+    const halt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-doctor-ambiguous",
+        detectorEventId: "detector-doctor-ambiguous",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    const recipe = WARDEN_REPAIR_RECIPES_V1[0];
+    const allowed = await store.evaluateWardenVerdict(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        verdictId: "verdict-doctor-ambiguous",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(halt),
+        recipe,
+        idempotencyKey: "doctor-ambiguous-key",
+        lease: { leaseId: "doctor-ambiguous-lease", expectedEpoch: 1 },
+      },
+    );
+    const ambiguous = await store.executeDoctorRepair(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        receiptId: "doctor-ambiguous-receipt",
+        verdictId: allowed.verdict.verdictId,
+        invocationOrdinal: 1,
+        input: doctorInputV1(recipe.recipeId),
+      },
+    );
+    assert.equal(ambiguous.receipt?.result, "quarantined");
+    assert.equal(ambiguous.receipt?.reasonCode, "REPAIR_RESULT_AMBIGUOUS");
+    assert.equal(ambiguous.receipt?.successOracle.outcome, "ambiguous");
+  } finally {
+    await rm(ambiguousRoot, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 task retry authority must name a halt scoped to the retried task", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-phase4-retry-scope-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    });
+    await authorizePlanningWave(store);
+    await store.dispatchWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { actor: "human:dispatcher" },
+    );
+    await store.transitionWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { to: "running", actor: "system:runner" },
+    );
+    await store.transitionTask(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      "task-one",
+      { to: "running", actor: "system:runner" },
+    );
+    const failed = await store.transitionTask(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      "task-one",
+      { to: "failed", actor: "system:runner" },
+    );
+    const otherTaskHalt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-retry-other-task",
+        detectorEventId: "detector-retry-other-task",
+        haltClass: "retryable_provider_or_process",
+        normalizedRootCauseKey: "provider:other-task",
+        taskId: "task-two",
+      }),
+    );
+    const failedEvent = failed.events.find(
+      (event) => event.type === "task.failed",
+    )!;
+
+    await assert.rejects(
+      store.authorizeTaskRetry(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        "task-one",
+        {
+          authorizationId: "retry-wrong-task-halt",
+          priorTerminalEventId: failedEvent.id,
+          incidentId: otherTaskHalt.incident.incidentId,
+          haltId: otherTaskHalt.halt.haltId,
+          newAttemptId: "attempt-wrong-task-halt",
+          attemptAllocationNonce: "nonce-wrong-task-halt",
+          budgetOrdinal: 1,
+          reason: "The authority belongs to a different task halt.",
+          authority: {
+            kind: "audited_human",
+            actor: "human:operator",
+            decisionId: "decision-wrong-task-halt",
+            evidenceRefs: ["audit:human-retry:wrong-task"],
+          },
+        },
+      ),
+      /exact terminal event or independent recovery authority/,
+    );
+    const unchanged = await store.getWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.equal(unchanged.wave.tasks[0].status, "failed");
+    assert.equal(
+      unchanged.events.some((event) => event.type === "task.retry-authorized"),
+      false,
+    );
+
+    const taskHalt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-retry-correct-task",
+        detectorEventId: "detector-retry-correct-task",
+        haltClass: "retryable_provider_or_process",
+        normalizedRootCauseKey: "provider:correct-task",
+      }),
+    );
+    await store.authorizeTaskRetry(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      "task-one",
+      {
+        authorizationId: "retry-correct-task-halt",
+        priorTerminalEventId: failedEvent.id,
+        incidentId: taskHalt.incident.incidentId,
+        haltId: taskHalt.halt.haltId,
+        newAttemptId: "attempt-correct-task-halt",
+        attemptAllocationNonce: "nonce-correct-task-halt",
+        budgetOrdinal: 1,
+        reason: "The audited authority matches the failed task halt.",
+        authority: {
+          kind: "audited_human",
+          actor: "human:operator",
+          decisionId: "decision-correct-task-halt",
+          evidenceRefs: ["audit:human-retry:correct-task"],
+        },
+      },
+    );
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    const authorizationEvent = ledger.events.find(
+      (event) => event.type === "task.retry-authorized",
+    )!;
+    const payload = authorizationEvent.payload as Record<string, unknown>;
+    payload.haltId = otherTaskHalt.halt.haltId;
+    payload.incidentId = otherTaskHalt.incident.incidentId;
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+    await assert.rejects(
+      new ChangeControlStore(root).getWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+      ),
+      /reuses or bypasses a terminal attempt/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 4 retry and resume require independent authority, allocate a new attempt, and re-enter every gate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-phase4-retry-resume-"));
+  try {
+    let now = "2026-07-31T10:00:00.000Z";
+    const store = new ChangeControlStore(root, {
+      now: () => now,
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    });
+    await authorizePlanningWave(store);
+    await store.dispatchWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { actor: "human:dispatcher" },
+    );
+    await store.transitionWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { to: "running", actor: "system:runner" },
+    );
+    await store.transitionTask(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      "task-one",
+      { to: "running", actor: "system:runner" },
+    );
+    const failed = await store.transitionTask(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      "task-one",
+      { to: "failed", actor: "system:runner" },
+    );
+    const halted = await store.transitionWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { to: "halted", actor: "system:runner" },
+    );
+    const halt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-retry-authority",
+        detectorEventId: "detector-retry-authority",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    const recipe = WARDEN_REPAIR_RECIPES_V1[0];
+    const allowed = await store.evaluateWardenVerdict(
+      "planning-project",
+      halt.halt.haltId,
+      {
+        verdictId: "verdict-retry-authority",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(halt),
+        recipe,
+        idempotencyKey: "retry-authority-key",
+        lease: { leaseId: "retry-authority-lease", expectedEpoch: 1 },
+      },
+    );
+    const failedEvent = failed.events.find(
+      (event) => event.type === "task.failed",
+    )!;
+    const haltedEvent = halted.events.find(
+      (event) => event.type === "wave.halted",
+    )!;
+
+    await assert.rejects(
+      store.authorizeTaskRetry(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        "task-one",
+        {
+          authorizationId: "retry-forbidden",
+          priorTerminalEventId: failedEvent.id,
+          incidentId: halt.incident.incidentId,
+          haltId: halt.halt.haltId,
+          newAttemptId: "attempt-forbidden",
+          attemptAllocationNonce: "nonce-forbidden",
+          budgetOrdinal: 1,
+          reason: "An unaudited service actor cannot retry.",
+          authority: {
+            kind: "audited_human",
+            actor: "service:operator",
+            decisionId: "decision-forbidden",
+            evidenceRefs: ["audit:missing-human"],
+          },
+        },
+      ),
+      /independent recovery authority/,
+    );
+
+    const retryInput = {
+        authorizationId: "retry-authorized-one",
+        priorTerminalEventId: failedEvent.id,
+        incidentId: halt.incident.incidentId,
+        haltId: halt.halt.haltId,
+        newAttemptId: "attempt-immutable-two",
+        attemptAllocationNonce: "nonce-immutable-two",
+        budgetOrdinal: 1,
+        reason: "Warden independently permits one bounded retry.",
+        authority: {
+          kind: "warden",
+          actor: "policy:warden-v1",
+          verdictId: allowed.verdict.verdictId,
+        },
+      } as const;
+    now = "2026-07-31T10:05:01.000Z";
+    await assert.rejects(
+      store.authorizeTaskRetry(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        "task-one",
+        { ...retryInput, authorizationId: "retry-stale-verdict" },
+      ),
+      /independent recovery authority/,
+    );
+    now = "2026-07-31T10:00:00.000Z";
+    const retried = await store.authorizeTaskRetry(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      "task-one",
+      retryInput,
+    );
+    assert.equal(retried.wave.tasks[0].status, "ready");
+    assert.equal(
+      retried.wave.tasks[0].details.phase4AttemptId,
+      "attempt-immutable-two",
+    );
+    assert.ok(
+      retried.events.some((event) => event.type === "task.retry-authorized"),
+    );
+
+    await assert.rejects(
+      store.authorizeWaveResume(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        {
+          authorizationId: "resume-reused-warden-verdict",
+          priorTerminalEventId: haltedEvent.id,
+          incidentId: halt.incident.incidentId,
+          haltId: halt.halt.haltId,
+          budgetOrdinal: 2,
+          reason: "One Warden verdict cannot be consumed twice.",
+          authority: {
+            kind: "warden",
+            actor: "policy:warden-v1",
+            verdictId: allowed.verdict.verdictId,
+          },
+        },
+      ),
+      /independent recovery authority/,
+    );
+    const resumed = await store.authorizeWaveResume(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      {
+        authorizationId: "resume-authorized-one",
+        priorTerminalEventId: haltedEvent.id,
+        incidentId: halt.incident.incidentId,
+        haltId: halt.halt.haltId,
+        budgetOrdinal: 1,
+        reason: "An audited human independently authorizes gate re-entry.",
+        authority: {
+          kind: "audited_human",
+          actor: "human:operator",
+          decisionId: "human-resume-decision-one",
+          evidenceRefs: ["audit:human-resume:one"],
+        },
+      },
+    );
+    assert.equal(resumed.wave.status, "ready");
+    assert.ok(
+      resumed.events.some((event) => event.type === "wave.resume-authorized"),
+    );
+    const planning = await store.getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.equal(planning.plans.at(-1)?.status, "stale");
+    await assert.rejects(
+      store.dispatchWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { actor: "human:dispatcher", sendAnyway: true, reason: "cannot bypass" },
+      ),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "NOT_READY" &&
+        error.reasons?.includes("PLAN_STALE") === true &&
+        error.reasons?.includes("BLOCKING_INCIDENT_OPEN") === true,
+    );
+    const replay = await new ChangeControlStore(root, {
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    }).getWave("planning-project", "planning-change", "planning-wave");
+    assert.equal(replay.wave.status, "ready");
+    assert.equal(
+      replay.wave.tasks[0].details.phase4AttemptId,
+      "attempt-immutable-two",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

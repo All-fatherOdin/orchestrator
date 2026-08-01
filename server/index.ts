@@ -48,6 +48,9 @@ import {
   type CorrectIncidentCorrelationInputV1,
   type DetectAndClassifyHaltInputV1,
   type EvaluateWardenVerdictInputV1,
+  type ExecuteDoctorRepairInputV1,
+  type AuthorizeTaskRetryInputV1,
+  type AuthorizeWaveResumeInputV1,
   type PublishArchitectReplanReceiptInput,
   type PublishPlanAuthorizationInput,
   type PublishPlanningContractInput,
@@ -81,6 +84,18 @@ import {
   type WorkspaceMutationAuthorityV1,
   type MergeRequestTransitionEventV1,
 } from "./workspace-merge-v1/index.ts";
+import {
+  doctorObservationHashV1,
+  type DoctorAdapterContextV1,
+  type DoctorAdapterObservationContextV1,
+  type DoctorAdapterRegistryV1,
+  type DoctorObservationV1,
+  type MergeSafeAbortResumeInputV1,
+  type OwnedCleanupRetryInputV1,
+  type ProviderReadRetryInputV1,
+  type RegisteredProcessRetryInputV1,
+  type WorkspaceReconcileInputV1,
+} from "./halts-incidents-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -998,9 +1013,296 @@ const dataDirectory = resolve(
 const runsDirectory = join(dataDirectory, "runs");
 const pipelinesDirectory = join(dataDirectory, "plans");
 const projectsFile = join(dataDirectory, "projects.json");
+const doctorReadSuccesses = new Set<string>();
+export const DOCTOR_REGISTERED_GIT_HEAD_COMMAND_HASH_V1 = createHash("sha256")
+  .update("git\0rev-parse\0--verify\0HEAD^{commit}")
+  .digest("hex");
+export const DOCTOR_REGISTERED_GIT_HEAD_ARGUMENTS_HASH_V1 = createHash("sha256")
+  .update("rev-parse\0--verify\0HEAD^{commit}")
+  .digest("hex");
+
+function productionDoctorObservationV1(
+  state: DoctorObservationV1["state"],
+  code: string,
+  evidenceRefs: readonly string[],
+): DoctorObservationV1 {
+  const body = { state, observationCode: code, evidenceRefs };
+  return { ...body, evidenceHash: doctorObservationHashV1(body) };
+}
+
+async function productionDoctorRunV1(runId: string) {
+  const statePath = join(runsDirectory, runId, "run.json");
+  if (!existsSync(statePath)) return undefined;
+  const run = await loadCanonicalRunRecordV1(statePath);
+  const fields = await canonicalWorkspaceRunFieldsV1(statePath);
+  return { run, fields, statePath };
+}
+
+function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
+  const providerRead = {
+    observe: async (
+      input: ProviderReadRetryInputV1,
+      context: DoctorAdapterObservationContextV1,
+    ) => {
+      if (
+        input.providerOperationId !== "persisted-project-snapshot-v1" ||
+        input.resourceIdentity !== context.projectId
+      )
+        return productionDoctorObservationV1(
+          "stop",
+          "provider-read-not-registered",
+          ["doctor:provider-read:not-registered"],
+        );
+      return productionDoctorObservationV1(
+        doctorReadSuccesses.has(context.idempotencyKey) ? "succeeded" : "ready",
+        doctorReadSuccesses.has(context.idempotencyKey)
+          ? "provider-read-succeeded"
+          : "provider-read-ready",
+        ["doctor:provider-read:" + context.projectId],
+      );
+    },
+    executeAttempt: async (
+      _input: ProviderReadRetryInputV1,
+      context: DoctorAdapterContextV1,
+    ) => {
+      await context.assertLiveFence();
+      await resolvePersistedProjectSnapshot(context.projectId);
+      doctorReadSuccesses.add(context.idempotencyKey);
+      return {
+        outcome: "completed" as const,
+        outcomeCode: "provider-read-completed",
+        evidenceRefs: ["doctor:provider-read:" + context.projectId],
+      };
+    },
+  };
+  const registeredProcess = {
+    observe: async (
+      input: RegisteredProcessRetryInputV1,
+      context: DoctorAdapterObservationContextV1,
+    ) => {
+      const registered =
+        input.operationId === "project-git-head-read-v1" &&
+        input.operationKind === "git-read" &&
+        input.commandHash === DOCTOR_REGISTERED_GIT_HEAD_COMMAND_HASH_V1 &&
+        input.fixedArgumentsHash ===
+          DOCTOR_REGISTERED_GIT_HEAD_ARGUMENTS_HASH_V1 &&
+        input.effectContract === "read_only_non_mutating";
+      if (!registered)
+        return productionDoctorObservationV1(
+          "stop",
+          "registered-process-not-registered",
+          ["doctor:registered-process:not-registered"],
+        );
+      return productionDoctorObservationV1(
+        doctorReadSuccesses.has(context.idempotencyKey) ? "succeeded" : "ready",
+        doctorReadSuccesses.has(context.idempotencyKey)
+          ? "registered-process-succeeded"
+          : "registered-process-ready",
+        ["doctor:registered-process:" + context.projectId],
+      );
+    },
+    executeAttempt: async (
+      _input: RegisteredProcessRetryInputV1,
+      context: DoctorAdapterContextV1,
+    ) => {
+      await context.assertLiveFence();
+      await resolvePersistedProjectSnapshot(context.projectId);
+      doctorReadSuccesses.add(context.idempotencyKey);
+      return {
+        outcome: "completed" as const,
+        outcomeCode: "registered-process-completed",
+        evidenceRefs: ["doctor:registered-process:" + context.projectId],
+      };
+    },
+  };
+  const workspaceReconcile = {
+    observe: async (input: WorkspaceReconcileInputV1) => {
+      const found = await productionDoctorRunV1(input.runId);
+      const attempt = found?.fields.workspaceAttempts.find(
+        (candidate) => candidate.workspaceAttemptId === input.workspaceAttemptId,
+      );
+      if (!found || !attempt)
+        return productionDoctorObservationV1(
+          "stop",
+          "workspace-attempt-missing",
+          ["doctor:workspace:missing"],
+        );
+      const state =
+        attempt.state === "quarantined"
+          ? "ambiguous"
+          : ["active", "sealed"].includes(attempt.state)
+            ? "succeeded"
+            : ["provisioning", "recovery_pending"].includes(attempt.state)
+              ? "ready"
+              : "stop";
+      return productionDoctorObservationV1(
+        state,
+        "workspace-" + attempt.state.replaceAll("_", "-"),
+        ["workspace-attempt:" + attempt.workspaceAttemptId, "workspace-state:" + attempt.state],
+      );
+    },
+    executeAttempt: async (
+      input: WorkspaceReconcileInputV1,
+      context: DoctorAdapterContextV1,
+    ) => {
+      await context.assertLiveFence();
+      const found = await productionDoctorRunV1(input.runId);
+      if (!found) throw new Error("Registered run was not found.");
+      const attempt = await recoverOwnedWorkspaceAttemptV1(
+        found.statePath,
+        found.run.project.path,
+        input.workspaceAttemptId,
+      );
+      return {
+        outcome:
+          attempt.state === "quarantined"
+            ? ("ambiguous" as const)
+            : ("completed" as const),
+        outcomeCode: "workspace-reconcile-" + attempt.state.replaceAll("_", "-"),
+        evidenceRefs: attempt.evidenceRefs,
+      };
+    },
+  };
+  const mergeRecovery = {
+    observe: async (input: MergeSafeAbortResumeInputV1) => {
+      const found = await productionDoctorRunV1(input.runId);
+      const request = found?.fields.mergeRequests.find(
+        (candidate) =>
+          candidate.mergeRequestId === input.mergeRequestId &&
+          candidate.workspaceAttemptId === input.workspaceAttemptId,
+      );
+      const receipt = found?.fields.mergeReceipts.find(
+        (candidate) => candidate.mergeRequestId === input.mergeRequestId,
+      );
+      if (!found || !request)
+        return productionDoctorObservationV1(
+          "stop",
+          "merge-request-missing",
+          ["doctor:merge:missing"],
+        );
+      const state = receipt
+        ? receipt.result === "quarantined"
+          ? "ambiguous"
+          : "succeeded"
+        : request.state === "quarantined"
+          ? "ambiguous"
+          : "ready";
+      return productionDoctorObservationV1(
+        state,
+        receipt ? "merge-receipt-" + receipt.result.replaceAll("_", "-") : "merge-recovery-ready",
+        receipt?.evidenceRefs ?? request.evidenceRefs,
+      );
+    },
+    executeAttempt: async (
+      input: MergeSafeAbortResumeInputV1,
+      context: DoctorAdapterContextV1,
+    ) => {
+      await context.assertLiveFence();
+      const found = await productionDoctorRunV1(input.runId);
+      const request = found?.fields.mergeRequests.find(
+        (candidate) =>
+          candidate.mergeRequestId === input.mergeRequestId &&
+          candidate.workspaceAttemptId === input.workspaceAttemptId,
+      );
+      if (!found || !request) throw new Error("Registered merge request was not found.");
+      const receipt = await recoverOwnedMergeRequestV1(
+        {
+          statePath: found.statePath,
+          repositoryPath: found.run.project.path,
+          workspaceAttemptId: input.workspaceAttemptId,
+          plan: request.plan,
+          verificationCommands: request.verificationCommands.map(
+            ({ command }) => command,
+          ),
+          transitionedBy: "system:doctor-v1",
+          onReplanRequired: (evidence) => recordManagedMergeDriftV1(evidence),
+        },
+        input.mergeRequestId,
+      );
+      return {
+        outcome:
+          receipt.result === "quarantined"
+            ? ("ambiguous" as const)
+            : receipt.result === "recovery_pending"
+              ? ("terminal_failure" as const)
+              : ("completed" as const),
+        outcomeCode: "merge-recovery-" + receipt.result.replaceAll("_", "-"),
+        evidenceRefs: receipt.evidenceRefs,
+      };
+    },
+  };
+  const ownedCleanup = {
+    observe: async (input: OwnedCleanupRetryInputV1) => {
+      const found = await productionDoctorRunV1(input.runId);
+      const attempt = found?.fields.workspaceAttempts.find(
+        (candidate) => candidate.workspaceAttemptId === input.workspaceAttemptId,
+      );
+      if (!found || !attempt)
+        return productionDoctorObservationV1(
+          "stop",
+          "cleanup-attempt-missing",
+          ["doctor:cleanup:missing"],
+        );
+      const state =
+        attempt.state === "cleaned"
+          ? "succeeded"
+          : attempt.state === "quarantined"
+            ? "ambiguous"
+            : [
+                  "active",
+                  "sealed",
+                  "merged",
+                  "replan_required",
+                  "cleanup_pending",
+                  "recovery_pending",
+                ].includes(attempt.state)
+              ? "ready"
+              : "stop";
+      return productionDoctorObservationV1(
+        state,
+        "cleanup-" + attempt.state.replaceAll("_", "-"),
+        ["workspace-attempt:" + attempt.workspaceAttemptId, "workspace-state:" + attempt.state],
+      );
+    },
+    executeAttempt: async (
+      input: OwnedCleanupRetryInputV1,
+      context: DoctorAdapterContextV1,
+    ) => {
+      await context.assertLiveFence();
+      const found = await productionDoctorRunV1(input.runId);
+      if (!found) throw new Error("Registered cleanup run was not found.");
+      const attempt = await cleanupOwnedWorkspaceAttemptV1(
+        found.statePath,
+        found.run.project.path,
+        input.workspaceAttemptId,
+      );
+      return {
+        outcome:
+          attempt.state === "quarantined"
+            ? ("ambiguous" as const)
+            : attempt.state === "cleaned"
+              ? ("completed" as const)
+              : ("terminal_failure" as const),
+        outcomeCode: "owned-cleanup-" + attempt.state.replaceAll("_", "-"),
+        evidenceRefs: attempt.evidenceRefs,
+      };
+    },
+  };
+  return {
+    "provider-read-retry-v1": providerRead,
+    "registered-process-retry-v1": registeredProcess,
+    "workspace-reconcile-v1": workspaceReconcile,
+    "merge-safe-abort-resume-v1": mergeRecovery,
+    "owned-cleanup-retry-v1": ownedCleanup,
+  };
+}
+
 export const changeControlStore = new ChangeControlStore(
   join(dataDirectory, "change-control-v1"),
-  { resolveRepositorySnapshot: resolvePersistedProjectSnapshot },
+  {
+    resolveRepositorySnapshot: resolvePersistedProjectSnapshot,
+    doctorAdapters: productionDoctorAdaptersV1(),
+  },
 );
 const defaultReviewSettings: ReviewSettings = {
   enabled: true,
@@ -1353,6 +1655,10 @@ async function loadProjects() {
     savedProjects = JSON.parse(
       await readFile(projectsFile, "utf8"),
     ) as ProjectProfile[];
+}
+async function recoverDoctorRepairsForStartupV1() {
+  for (const project of savedProjects)
+    await changeControlStore.recoverDoctorRepairs(project.id);
 }
 async function persistProjects() {
   await mkdir(dataDirectory, { recursive: true });
@@ -5669,12 +5975,59 @@ app.get(
     }
   },
 );
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/tasks/:taskId/retry-authorizations",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.authorizeTaskRetry(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.params.taskId,
+          request.body as AuthorizeTaskRetryInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/waves/:waveId/resume-authorizations",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.authorizeWaveResume(
+          request.params.projectId,
+          request.params.changeId,
+          request.params.waveId,
+          request.body as AuthorizeWaveResumeInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
 app.get(
   "/api/change-control/projects/:projectId/warden",
   async (request, response) => {
     try {
       return response.json(
         await changeControlStore.getWardenProjection(request.params.projectId),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/doctor",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getDoctorProjection(request.params.projectId),
       );
     } catch (error) {
       return sendChangeControlError(response, error);
@@ -5768,6 +6121,37 @@ app.post(
           request.params.projectId,
           request.params.haltId,
           request.body as TransitionWardenRepairLeaseInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/halts/:haltId/doctor-repairs",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.executeDoctorRepair(
+          request.params.projectId,
+          request.params.haltId,
+          request.body as ExecuteDoctorRepairInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/doctor-repairs/:receiptId",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getDoctorRepair(
+          request.params.projectId,
+          request.params.receiptId,
         ),
       );
     } catch (error) {
@@ -6280,7 +6664,12 @@ if (process.env.ORCHESTRATOR_TEST !== "1") {
   void bindBeforeRecovery(
     listen,
     async () => {
-      await Promise.all([recoverInterruptedRuns(), ensureRunSummaries(), loadProjects()]);
+      await loadProjects();
+      await Promise.all([
+        recoverInterruptedRuns(),
+        ensureRunSummaries(),
+        recoverDoctorRepairsForStartupV1(),
+      ]);
     },
   ).then(() => {
       const url = `http://localhost:${port}`;
