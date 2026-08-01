@@ -17,15 +17,24 @@ import type {
 } from "./change-control-v1/index.ts";
 import type {
   AttributionAssessmentV1,
+  HaltIncidentAggregateV1,
   HaltRecordV1,
+  WardenEvidenceSnapshotV1,
 } from "./halts-incidents-v1/index.ts";
 import {
   HALT_CLASSES_V1,
+  WARDEN_DENIAL_REASON_CODES_V1,
+  WARDEN_DISPOSITIONS_V1,
+  WARDEN_REPAIR_RECIPES_V1,
   incidentFingerprintV1,
   observationFingerprintV1,
+  wardenContractHashV1,
+  wardenEvidenceSnapshotHashV1,
 } from "./halts-incidents-v1/index.ts";
 import haltsIncidentsV1Schema from "./halts-incidents-v1/schemas/halts-incidents-v1.schema.json";
 import haltsIncidentsV1Examples from "./halts-incidents-v1/schemas/halts-incidents-v1.examples.json";
+import wardenV1Schema from "./halts-incidents-v1/schemas/warden-v1.schema.json";
+import wardenV1Examples from "./halts-incidents-v1/schemas/warden-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -325,6 +334,45 @@ function mitigationReceiptV1(
     resolvedBy: "human:operator",
     taxonomyPolicyVersion: "halt-taxonomy-v1" as const,
     correlationWindowSeconds: 60,
+  };
+}
+
+function wardenEvidenceSnapshotV1(
+  aggregate: HaltIncidentAggregateV1,
+  overrides: Partial<Omit<WardenEvidenceSnapshotV1, "snapshotHash">> = {},
+  oracleRecipe: (typeof WARDEN_REPAIR_RECIPES_V1)[number] =
+    WARDEN_REPAIR_RECIPES_V1[0],
+): WardenEvidenceSnapshotV1 {
+  const snapshotWithoutHash = {
+    snapshotVersion: "warden-evidence-v1" as const,
+    capturedAt: "2026-07-31T10:00:00.000Z",
+    haltRecordHash: wardenContractHashV1(aggregate.halt),
+    incidentRecordHash: wardenContractHashV1(aggregate.incident),
+    attributionAssessmentHash: wardenContractHashV1(aggregate.assessment),
+    evidenceRefs: [
+      ...new Set([
+        ...aggregate.halt.evidenceRefs,
+        ...aggregate.assessment.evidence.detectorEvidenceRefs,
+        ...aggregate.assessment.evidence.outcomeEvidenceRefs,
+      ]),
+    ],
+    sideEffectState: aggregate.assessment.evidence.sideEffectState,
+    preconditionsUnchanged: true,
+    priorRepairResult: "none" as const,
+    quarantineReasonCodes: [],
+    successOracle: {
+      ...oracleRecipe.successOracle,
+      evidenceRefs: ["oracle:success:registered"],
+    },
+    stopOracle: {
+      ...oracleRecipe.stopOracle,
+      evidenceRefs: ["oracle:stop:registered"],
+    },
+    ...overrides,
+  };
+  return {
+    ...snapshotWithoutHash,
+    snapshotHash: wardenEvidenceSnapshotHashV1(snapshotWithoutHash),
   };
 }
 
@@ -787,6 +835,592 @@ test("Halts and Incidents Contract v1 examples validate and unsafe fixtures fail
     hash: "1".repeat(64),
   };
   assert.equal(validator(unknownEvent), false);
+});
+
+test("Warden Contract v1 examples validate and automatic verdicts cannot omit authority", () => {
+  const validator = new Ajv2020({
+    allErrors: true,
+    strict: true,
+  }).compile(wardenV1Schema);
+  for (const example of wardenV1Examples)
+    assert.equal(validator(example), true, JSON.stringify(validator.errors));
+
+  assert.deepEqual(WARDEN_DISPOSITIONS_V1, [
+    "allow_auto_heal",
+    "allow_bounded_retry",
+    "require_replan",
+    "require_human",
+    "quarantine",
+  ]);
+  assert.deepEqual(WARDEN_DENIAL_REASON_CODES_V1, [
+    "HALT_EVIDENCE_INVALID",
+    "HALT_CLASS_UNKNOWN",
+    "ATTRIBUTION_NOT_EXACT",
+    "WARDEN_POLICY_UNKNOWN",
+    "EVIDENCE_STALE",
+    "SIDE_EFFECT_AMBIGUOUS",
+    "RECIPE_NOT_ALLOWLISTED",
+    "RECIPE_PRECONDITION_FAILED",
+    "REPAIR_BUDGET_EXHAUSTED",
+    "REPAIR_LEASE_LOST",
+    "REPAIR_RESULT_AMBIGUOUS",
+    "REPLAN_REQUIRED",
+    "HUMAN_AUTHORITY_REQUIRED",
+    "BLOCKING_INCIDENT_OPEN",
+  ]);
+
+  const allowVerdict = structuredClone(
+    wardenV1Examples.find(
+      (example) =>
+        (example as { contractType?: string }).contractType ===
+        "WardenVerdictV1",
+    ),
+  ) as Record<string, unknown>;
+  assert.equal(allowVerdict.disposition, "allow_bounded_retry");
+  for (const requiredField of [
+    "attributionAssessmentId",
+    "evidenceSnapshot",
+    "recipe",
+    "budgets",
+    "repairLease",
+    "idempotencyKey",
+  ]) {
+    const unsafe = structuredClone(allowVerdict);
+    delete unsafe[requiredField];
+    assert.equal(validator(unsafe), false, requiredField);
+  }
+  const missingOracle = structuredClone(allowVerdict);
+  delete (
+    (missingOracle.evidenceSnapshot as Record<string, unknown>)
+  ).successOracle;
+  assert.equal(validator(missingOracle), false);
+  const openDisposition = structuredClone(allowVerdict);
+  openDisposition.disposition = "warn_and_continue";
+  assert.equal(validator(openDisposition), false);
+});
+
+test("Warden evaluates exact canonical evidence and every policy denial fail closed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-warden-denials-"));
+  let now = "2026-07-31T10:00:00.000Z";
+  try {
+    const store = new ChangeControlStore(root, { now: () => now });
+    await seedPhase4Scope(store);
+    let ordinal = 0;
+    const evaluate = async (input: {
+      name: string;
+      haltClass?: AttributionAssessmentV1["haltClass"];
+      confidence?: AttributionAssessmentV1["confidence"];
+      sideEffectState?: AttributionAssessmentV1["evidence"]["sideEffectState"];
+      policyVersion?: string;
+      requestedAction?: "auto_heal" | "bounded_retry" | "none";
+      snapshot?: Partial<Omit<WardenEvidenceSnapshotV1, "snapshotHash">>;
+      corruptSnapshotHash?: boolean;
+      recipe?: (typeof WARDEN_REPAIR_RECIPES_V1)[number] | {
+        recipeId: string;
+        recipeVersion: string;
+        codeHash: string;
+      };
+    }) => {
+      now = "2026-07-31T10:00:00.000Z";
+      const contracts = fingerprintedHaltContractsV1({
+        haltId: `halt-warden-${input.name}`,
+        detectorEventId: `detector-warden-${input.name}`,
+        haltClass: input.haltClass ?? "retryable_provider_or_process",
+        confidence: input.confidence ?? "exact",
+      });
+      if (input.sideEffectState)
+        contracts.assessment = {
+          ...contracts.assessment,
+          evidence: {
+            ...contracts.assessment.evidence,
+            sideEffectState: input.sideEffectState,
+          },
+        };
+      const aggregate = await store.detectAndClassifyHalt(
+        "planning-project",
+        contracts,
+      );
+      let snapshot = wardenEvidenceSnapshotV1(
+        aggregate,
+        input.snapshot,
+      );
+      if (input.corruptSnapshotHash)
+        snapshot = { ...snapshot, snapshotHash: "f".repeat(64) };
+      if (input.name === "stale") now = "2026-07-31T10:10:01.000Z";
+      ordinal += 1;
+      return store.evaluateWardenVerdict(
+        "planning-project",
+        aggregate.halt.haltId,
+        {
+          verdictId: `verdict-denial-${ordinal}`,
+          policyVersion: input.policyVersion ?? "warden-policy-v1",
+          verdictOrdinal: 1,
+          requestedAction: input.requestedAction ?? "bounded_retry",
+          evidenceSnapshot: snapshot,
+          recipe:
+            input.recipe ??
+            WARDEN_REPAIR_RECIPES_V1.find(
+              (recipe) => recipe.recipeId === "provider-read-retry-v1",
+            )!,
+          idempotencyKey: `warden-denial-${ordinal}`,
+          lease: {
+            leaseId: `repair-lease-denial-${ordinal}`,
+            expectedEpoch: 1,
+          },
+        },
+      );
+    };
+
+    assert.equal(
+      (await evaluate({ name: "invalid", corruptSnapshotHash: true })).verdict
+        .reasonCode,
+      "HALT_EVIDENCE_INVALID",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "conflicting-evidence",
+        snapshot: { sideEffectState: "possible" },
+      })).verdict.reasonCode,
+      "HALT_EVIDENCE_INVALID",
+    );
+    assert.equal(
+      (await evaluate({ name: "unknown", haltClass: "unknown", confidence: "none" }))
+        .verdict.reasonCode,
+      "HALT_CLASS_UNKNOWN",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "partial",
+        haltClass: "ownership_or_state_ambiguity",
+        confidence: "partial",
+      })).verdict.reasonCode,
+      "ATTRIBUTION_NOT_EXACT",
+    );
+    assert.equal(
+      (await evaluate({ name: "policy", policyVersion: "warden-policy-v2" }))
+        .verdict.reasonCode,
+      "WARDEN_POLICY_UNKNOWN",
+    );
+    assert.equal(
+      (await evaluate({ name: "stale" })).verdict.reasonCode,
+      "EVIDENCE_STALE",
+    );
+    assert.equal(
+      (await evaluate({ name: "side-effect", sideEffectState: "possible" }))
+        .verdict.reasonCode,
+      "SIDE_EFFECT_AMBIGUOUS",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "recipe",
+        recipe: {
+          recipeId: "unsupported-recipe-v1",
+          recipeVersion: "1.0",
+          codeHash: "9".repeat(64),
+        },
+      })).verdict.reasonCode,
+      "RECIPE_NOT_ALLOWLISTED",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "precondition",
+        snapshot: { preconditionsUnchanged: false },
+      })).verdict.reasonCode,
+      "RECIPE_PRECONDITION_FAILED",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "unregistered-oracle",
+        snapshot: {
+          successOracle: {
+            oracleId: "oracle:unregistered-success-v1",
+            kind: "typed_adapter",
+            evidenceRefs: ["oracle:unregistered:success"],
+          },
+        },
+      })).verdict.reasonCode,
+      "HALT_EVIDENCE_INVALID",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "unregistered-stop-oracle",
+        snapshot: {
+          stopOracle: {
+            oracleId: "oracle:unregistered-stop-v1",
+            kind: "typed_adapter",
+            evidenceRefs: ["oracle:unregistered:stop"],
+          },
+        },
+      })).verdict.reasonCode,
+      "HALT_EVIDENCE_INVALID",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "ambiguous-result",
+        snapshot: { priorRepairResult: "ambiguous" },
+      })).verdict.reasonCode,
+      "REPAIR_RESULT_AMBIGUOUS",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "replan",
+        haltClass: "plan_or_target_drift",
+        requestedAction: "none",
+      })).verdict.reasonCode,
+      "REPLAN_REQUIRED",
+    );
+    assert.equal(
+      (await evaluate({
+        name: "human",
+        haltClass: "human_decision_required",
+        requestedAction: "none",
+      })).verdict.reasonCode,
+      "HUMAN_AUTHORITY_REQUIRED",
+    );
+    const projection = await store.getWardenProjection("planning-project");
+    assert.equal(projection.verdicts.length, 14);
+    assert.ok(
+      projection.verdicts.every((verdict) =>
+        ["require_replan", "require_human", "quarantine"].includes(
+          verdict.disposition,
+        ),
+      ),
+    );
+    assert.equal(projection.leases.length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Warden allow verdicts hold one monotonic lease, preserve superseding history, and replay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-warden-replay-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+    const aggregate = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-warden-allow",
+        detectorEventId: "detector-warden-allow",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    const recipe = WARDEN_REPAIR_RECIPES_V1.find(
+      (candidate) => candidate.recipeId === "provider-read-retry-v1",
+    )!;
+    const allowed = await store.evaluateWardenVerdict(
+      "planning-project",
+      aggregate.halt.haltId,
+      {
+        verdictId: "verdict-allow-one",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(aggregate),
+        recipe,
+        idempotencyKey: "retry:halt-warden-allow:1",
+        lease: { leaseId: "repair-lease-one", expectedEpoch: 1 },
+      },
+    );
+    assert.equal(allowed.verdict.disposition, "allow_bounded_retry");
+    assert.equal(allowed.verdict.reasonCode, null);
+    assert.equal(allowed.verdict.repairLease?.epoch, 1);
+    assert.equal(allowed.halt.state, "action_pending");
+    assert.equal(allowed.verdict.budgets.remainingAfter.halt, 0);
+
+    await assert.rejects(
+      store.evaluateWardenVerdict("planning-project", aggregate.halt.haltId, {
+        verdictId: "verdict-conflicting-lease",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 2,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1({
+          ...aggregate,
+          halt: allowed.halt,
+        }),
+        recipe,
+        idempotencyKey: "retry:halt-warden-allow:2",
+        lease: { leaseId: "repair-lease-two", expectedEpoch: 2 },
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CONFLICT" &&
+        /active repair lease/.test(error.message),
+    );
+
+    const lost = await store.transitionWardenRepairLease(
+      "planning-project",
+      aggregate.halt.haltId,
+      {
+        leaseId: "repair-lease-one",
+        leaseEpoch: 1,
+        to: "lost",
+        actor: "policy:warden-v1",
+        evidenceRefs: ["lease:heartbeat:missing"],
+        verdictId: "verdict-lease-lost",
+      },
+    );
+    assert.equal(lost.verdict.disposition, "quarantine");
+    assert.equal(lost.verdict.reasonCode, "REPAIR_LEASE_LOST");
+    assert.equal(lost.verdict.verdictOrdinal, 2);
+    assert.equal(lost.halt.state, "quarantined");
+
+    const replayed = await new ChangeControlStore(root).getWardenProjection(
+      "planning-project",
+    );
+    assert.deepEqual(
+      replayed.verdicts.map((verdict) => [
+        verdict.verdictId,
+        verdict.verdictOrdinal,
+        verdict.disposition,
+      ]),
+      [
+        ["verdict-allow-one", 1, "allow_bounded_retry"],
+        ["verdict-lease-lost", 2, "quarantine"],
+      ],
+    );
+    assert.deepEqual(
+      replayed.leases.map((lease) => [lease.leaseId, lease.epoch, lease.state]),
+      [["repair-lease-one", 1, "lost"]],
+    );
+    assert.equal(replayed.activeVerdicts.length, 1);
+    assert.equal(replayed.activeVerdicts[0].verdictId, "verdict-lease-lost");
+    assert.ok(
+      replayed.events.some((event) => event.type === "warden.verdict-recorded"),
+    );
+
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    const persistedVerdict = ledger.events.find(
+      (event) => event.type === "warden.verdict-recorded",
+    )!;
+    const verdictPayload = persistedVerdict.payload as {
+      verdict: { budgets: { remainingAfter: { project: number } } };
+    };
+    verdictPayload.verdict.budgets.remainingAfter.project += 1;
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+    await assert.rejects(
+      new ChangeControlStore(root).getWardenProjection("planning-project"),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /deterministic policy/.test(error.message),
+    );
+
+    verdictPayload.verdict.budgets.remainingAfter.project -= 1;
+    const supersedingVerdict = ledger.events.filter(
+      (event) => event.type === "warden.verdict-recorded",
+    )[1]!;
+    const supersedingCausationId = supersedingVerdict.causationId;
+    supersedingVerdict.causationId = "unrelated-causation";
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+    await assert.rejects(
+      new ChangeControlStore(root).getWardenProjection("planning-project"),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /supersession causation/.test(error.message),
+    );
+
+    supersedingVerdict.causationId = supersedingCausationId;
+    const firstVerdictPayload = persistedVerdict.payload as {
+      verdict: { repairLease: { projectId: string } };
+    };
+    firstVerdictPayload.verdict.repairLease.projectId = "foreign-project";
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+    await assert.rejects(
+      new ChangeControlStore(root).getWardenProjection("planning-project"),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /exact repair authority/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Warden accepts every exact allowlisted recipe identity and class pairing", async () => {
+  for (const recipe of WARDEN_REPAIR_RECIPES_V1) {
+    const root = await mkdtemp(join(tmpdir(), "orchestrator-warden-recipe-"));
+    try {
+      const store = new ChangeControlStore(root, {
+        now: () => "2026-07-31T10:00:00.000Z",
+      });
+      await seedPhase4Scope(store);
+      const aggregate = await store.detectAndClassifyHalt(
+        "planning-project",
+        fingerprintedHaltContractsV1({
+          haltId: `halt-${recipe.recipeId}`,
+          detectorEventId: `detector-${recipe.recipeId}`,
+          haltClass: recipe.haltClass,
+        }),
+      );
+      const result = await store.evaluateWardenVerdict(
+        "planning-project",
+        aggregate.halt.haltId,
+        {
+          verdictId: `verdict-${recipe.recipeId}`,
+          policyVersion: "warden-policy-v1",
+          verdictOrdinal: 1,
+          requestedAction:
+            recipe.disposition === "allow_auto_heal"
+              ? "auto_heal"
+              : "bounded_retry",
+          evidenceSnapshot: wardenEvidenceSnapshotV1(aggregate, {}, recipe),
+          recipe,
+          idempotencyKey: `idempotency:${recipe.recipeId}`,
+          lease: {
+            leaseId: `lease-${recipe.recipeId}`,
+            expectedEpoch: 1,
+          },
+        },
+      );
+      assert.equal(result.verdict.disposition, recipe.disposition);
+      assert.deepEqual(result.verdict.recipe, {
+        recipeId: recipe.recipeId,
+        recipeVersion: recipe.recipeVersion,
+        codeHash: recipe.codeHash,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Warden budgets exhaust monotonically and blocking incidents reject dispatch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-warden-budget-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+    });
+    await seedPhase4Scope(store);
+    const aggregate = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-warden-budget",
+        detectorEventId: "detector-warden-budget",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    await assert.rejects(
+      store.dispatchWave("planning-project", "planning-change", "planning-wave", {
+        actor: "human:test",
+        sendAnyway: true,
+        reason: "An open blocking incident cannot be overridden.",
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "NOT_READY" &&
+        JSON.stringify(error.reasons).includes("BLOCKING_INCIDENT_OPEN"),
+    );
+
+    const recipe = WARDEN_REPAIR_RECIPES_V1[0];
+    const first = await store.evaluateWardenVerdict(
+      "planning-project",
+      aggregate.halt.haltId,
+      {
+        verdictId: "verdict-budget-one",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 1,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(aggregate),
+        recipe,
+        idempotencyKey: "budget-key-one",
+        lease: { leaseId: "budget-lease-one", expectedEpoch: 1 },
+      },
+    );
+    await store.transitionWardenRepairLease(
+      "planning-project",
+      aggregate.halt.haltId,
+      {
+        leaseId: "budget-lease-one",
+        leaseEpoch: 1,
+        to: "released",
+        actor: "policy:warden-v1",
+        evidenceRefs: ["lease:released:test"],
+      },
+    );
+    const current = await store.getHalt("planning-project", aggregate.halt.haltId);
+    const exhausted = await store.evaluateWardenVerdict(
+      "planning-project",
+      aggregate.halt.haltId,
+      {
+        verdictId: "verdict-budget-two",
+        policyVersion: "warden-policy-v1",
+        verdictOrdinal: 2,
+        requestedAction: "bounded_retry",
+        evidenceSnapshot: wardenEvidenceSnapshotV1(current),
+        recipe,
+        idempotencyKey: "budget-key-two",
+        lease: { leaseId: "budget-lease-two", expectedEpoch: 2 },
+      },
+    );
+    assert.equal(first.verdict.disposition, "allow_bounded_retry");
+    assert.equal(exhausted.verdict.disposition, "require_human");
+    assert.equal(exhausted.verdict.reasonCode, "REPAIR_BUDGET_EXHAUSTED");
+    assert.equal(exhausted.verdict.budgets.remainingAfter.halt, 0);
+    assert.equal((await store.getWardenProjection("planning-project")).leases.length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Warden blocking-incident gate persists a Phase 2 dispatch rejection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-warden-phase2-gate-"));
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-07-31T10:00:00.000Z",
+      resolveRepositorySnapshot: async () => planningSnapshot(),
+    });
+    await authorizePlanningWave(store);
+    const aggregate = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-warden-phase2-block",
+        detectorEventId: "detector-warden-phase2-block",
+        haltClass: "retryable_provider_or_process",
+      }),
+    );
+    await assert.rejects(
+      store.dispatchWave("planning-project", "planning-change", "planning-wave", {
+        actor: "human:test",
+        sendAnyway: true,
+        reason: "Blocking incidents have no dispatch override.",
+      }),
+      (error: unknown) =>
+        error instanceof ChangeControlError &&
+        error.code === "NOT_READY" &&
+        error.reasons?.includes("BLOCKING_INCIDENT_OPEN") === true,
+    );
+    const projection = await store.getPlanningProjection(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+    );
+    assert.equal(projection.dispatchGateReceipts.at(-1)?.result, "rejected");
+    assert.deepEqual(projection.dispatchGateReceipts.at(-1)?.reasons, [
+      "BLOCKING_INCIDENT_OPEN",
+    ]);
+    assert.equal(
+      (await store.getHalt("planning-project", aggregate.halt.haltId)).incident
+        .state,
+      "open",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Phase 4 accepts every closed halt taxonomy class", async () => {
@@ -1761,10 +2395,7 @@ test("Phase 4 HTTP APIs publish and read focused halt/incident projections", asy
     );
     const haltResponseText = await haltResponse.text();
     assert.equal(haltResponse.status, 201, haltResponseText);
-    const aggregate = JSON.parse(haltResponseText) as {
-      halt: { haltId: string; effectiveIncidentId: string };
-      incident: { incidentId: string };
-    };
+    const aggregate = JSON.parse(haltResponseText) as HaltIncidentAggregateV1;
     assert.equal(aggregate.halt.haltId, halt.haltId);
     assert.equal(
       aggregate.halt.effectiveIncidentId,
@@ -1786,6 +2417,41 @@ test("Phase 4 HTTP APIs publish and read focused halt/incident projections", asy
       `${origin}/api/change-control/projects/${projectId}/incidents/${aggregate.incident.incidentId}`,
     );
     assert.equal(getResponse.status, 200);
+
+    const verdictResponse = await fetch(
+      `${origin}/api/change-control/projects/${projectId}/halts/${halt.haltId}/warden-verdicts`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          verdictId: "phase4-http-warden-verdict",
+          policyVersion: "warden-policy-v1",
+          verdictOrdinal: 1,
+          requestedAction: "none",
+          evidenceSnapshot: wardenEvidenceSnapshotV1(aggregate, {
+            capturedAt: new Date().toISOString(),
+          }),
+        }),
+      },
+    );
+    const verdictText = await verdictResponse.text();
+    assert.equal(verdictResponse.status, 201, verdictText);
+    const verdict = JSON.parse(verdictText) as {
+      verdict: { disposition: string; reasonCode: string };
+    };
+    assert.equal(verdict.verdict.disposition, "require_human");
+    assert.equal(verdict.verdict.reasonCode, "HUMAN_AUTHORITY_REQUIRED");
+
+    const wardenProjectionResponse = await fetch(
+      `${origin}/api/change-control/projects/${projectId}/warden`,
+    );
+    assert.equal(wardenProjectionResponse.status, 200);
+    const wardenProjection = (await wardenProjectionResponse.json()) as {
+      verdicts: unknown[];
+      leases: unknown[];
+    };
+    assert.equal(wardenProjection.verdicts.length, 1);
+    assert.equal(wardenProjection.leases.length, 0);
   } finally {
     await new Promise<void>((resolveClose) =>
       server.close(() => resolveClose()),

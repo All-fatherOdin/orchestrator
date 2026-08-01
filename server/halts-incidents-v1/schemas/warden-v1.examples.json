@@ -1,0 +1,142 @@
+[
+  {
+    "contractType": "RepairLeaseV1",
+    "contractVersion": "1.0",
+    "leaseId": "repair-lease-example-001",
+    "projectId": "orchestrator",
+    "incidentId": "incident-example-001",
+    "haltId": "halt-example-001",
+    "epoch": 1,
+    "state": "active",
+    "acquiredAt": "2026-07-31T10:00:02.000Z",
+    "acquiredBy": "policy:warden-v1"
+  },
+  {
+    "contractType": "WardenVerdictV1",
+    "contractVersion": "1.0",
+    "verdictId": "warden-verdict-example-001",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "haltId": "halt-example-001",
+    "incidentId": "incident-example-001",
+    "attributionAssessmentId": "assessment-example-001",
+    "evidenceSnapshot": {
+      "snapshotVersion": "warden-evidence-v1",
+      "snapshotHash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "capturedAt": "2026-07-31T10:00:02.000Z",
+      "haltRecordHash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "incidentRecordHash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "attributionAssessmentHash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "evidenceRefs": ["evidence:snapshot:001"],
+      "sideEffectState": "none",
+      "preconditionsUnchanged": true,
+      "priorRepairResult": "none",
+      "quarantineReasonCodes": [],
+      "successOracle": {
+        "oracleId": "oracle:provider-read-success-v1",
+        "kind": "typed_adapter",
+        "evidenceRefs": ["oracle:registry:provider-read-success-v1"]
+      },
+      "stopOracle": {
+        "oracleId": "oracle:provider-read-stop-v1",
+        "kind": "typed_adapter",
+        "evidenceRefs": ["oracle:registry:provider-read-stop-v1"]
+      }
+    },
+    "policyVersion": "warden-policy-v1",
+    "verdictOrdinal": 1,
+    "requestedAction": "bounded_retry",
+    "disposition": "allow_bounded_retry",
+    "reasonCode": null,
+    "recipe": {
+      "recipeId": "provider-read-retry-v1",
+      "recipeVersion": "1.0",
+      "codeHash": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "budgets": {
+      "limits": { "halt": 1, "incident": 2, "project": 4 },
+      "consumedBefore": { "halt": 0, "incident": 0, "project": 0 },
+      "remainingAfter": { "halt": 0, "incident": 1, "project": 3 }
+    },
+    "repairLease": {
+      "leaseId": "repair-lease-example-001",
+      "projectId": "orchestrator",
+      "incidentId": "incident-example-001",
+      "haltId": "halt-example-001",
+      "epoch": 1,
+      "acquiredAt": "2026-07-31T10:00:02.000Z"
+    },
+    "idempotencyKey": "provider-read:halt-example-001:1",
+    "supersedesVerdictId": null,
+    "evaluatedAt": "2026-07-31T10:00:02.000Z",
+    "evaluatedBy": "policy:warden-v1"
+  },
+  {
+    "id": "warden-event-example-001",
+    "sequence": 4,
+    "type": "warden.verdict-recorded",
+    "occurredAt": "2026-07-31T10:00:02.000Z",
+    "projectId": "orchestrator",
+    "changeId": "change-phase4",
+    "waveId": "wave-phase4",
+    "taskId": "task-contract",
+    "actor": "policy:warden-v1",
+    "causationId": "repair-lease-example-001",
+    "correlationId": "correlation-example-001",
+    "payload": {
+      "verdict": {
+        "contractType": "WardenVerdictV1",
+        "contractVersion": "1.0",
+        "verdictId": "warden-verdict-denial-example-001",
+        "projectId": "orchestrator",
+        "changeId": "change-phase4",
+        "haltId": "halt-example-001",
+        "incidentId": "incident-example-001",
+        "attributionAssessmentId": "assessment-example-001",
+        "evidenceSnapshot": {
+          "snapshotVersion": "warden-evidence-v1",
+          "snapshotHash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "capturedAt": "2026-07-31T10:00:02.000Z",
+          "haltRecordHash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "incidentRecordHash": "5555555555555555555555555555555555555555555555555555555555555555",
+          "attributionAssessmentHash": "6666666666666666666666666666666666666666666666666666666666666666",
+          "evidenceRefs": ["evidence:snapshot:001"],
+          "sideEffectState": "possible",
+          "preconditionsUnchanged": true,
+          "priorRepairResult": "none",
+          "quarantineReasonCodes": ["SIDE_EFFECT_AMBIGUOUS"],
+          "successOracle": {
+            "oracleId": "oracle:success-v1",
+            "kind": "typed_adapter",
+            "evidenceRefs": ["oracle:registry:success-v1"]
+          },
+          "stopOracle": {
+            "oracleId": "oracle:stop-v1",
+            "kind": "typed_adapter",
+            "evidenceRefs": ["oracle:registry:stop-v1"]
+          }
+        },
+        "policyVersion": "warden-policy-v1",
+        "verdictOrdinal": 1,
+        "requestedAction": "bounded_retry",
+        "disposition": "quarantine",
+        "reasonCode": "SIDE_EFFECT_AMBIGUOUS",
+        "recipe": {
+          "recipeId": "provider-read-retry-v1",
+          "recipeVersion": "1.0",
+          "codeHash": "7777777777777777777777777777777777777777777777777777777777777777"
+        },
+        "budgets": {
+          "limits": { "halt": 1, "incident": 2, "project": 4 },
+          "consumedBefore": { "halt": 0, "incident": 0, "project": 0 },
+          "remainingAfter": { "halt": 1, "incident": 2, "project": 4 }
+        },
+        "supersedesVerdictId": null,
+        "evaluatedAt": "2026-07-31T10:00:02.000Z",
+        "evaluatedBy": "policy:warden-v1"
+      }
+    },
+    "previousHash": "8888888888888888888888888888888888888888888888888888888888888888",
+    "hash": "9999999999999999999999999999999999999999999999999999999999999999"
+  }
+]

@@ -47,6 +47,7 @@ import {
   type DispatchWaveInput,
   type CorrectIncidentCorrelationInputV1,
   type DetectAndClassifyHaltInputV1,
+  type EvaluateWardenVerdictInputV1,
   type PublishArchitectReplanReceiptInput,
   type PublishPlanAuthorizationInput,
   type PublishPlanningContractInput,
@@ -55,6 +56,7 @@ import {
   type TransitionChangeInput,
   type TransitionHaltInputV1,
   type TransitionIncidentInputV1,
+  type TransitionWardenRepairLeaseInputV1,
   type TransitionTaskInput,
   type TransitionWaveInput,
 } from "./change-control-v1/index.ts";
@@ -5668,6 +5670,18 @@ app.get(
   },
 );
 app.get(
+  "/api/change-control/projects/:projectId/warden",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getWardenProjection(request.params.projectId),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
   "/api/change-control/projects/:projectId/halts/:haltId",
   async (request, response) => {
     try {
@@ -5707,6 +5721,53 @@ app.post(
           request.params.projectId,
           request.params.haltId,
           request.body as CorrectIncidentCorrelationInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/halts/:haltId/warden-verdicts",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getWardenVerdict(
+          request.params.projectId,
+          request.params.haltId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/halts/:haltId/warden-verdicts",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.evaluateWardenVerdict(
+          request.params.projectId,
+          request.params.haltId,
+          request.body as EvaluateWardenVerdictInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/halts/:haltId/repair-lease/transitions",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.transitionWardenRepairLease(
+          request.params.projectId,
+          request.params.haltId,
+          request.body as TransitionWardenRepairLeaseInputV1,
         ),
       );
     } catch (error) {

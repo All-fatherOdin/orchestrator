@@ -191,14 +191,16 @@ cleanup is bounded and non-force. Orchestrator does not use `reset --hard`,
 `clean`, force branch/worktree removal, global worktree pruning, force ref
 updates, or remote publication for this lifecycle.
 
-### Halts and Incidents v1: contract and correlation slice
+### Halts and Incidents v1: core and Warden policy slice
 
 Detected halts, attribution assessments, incidents, resolution receipts, and
 their typed lifecycle events extend the existing per-project change-control
 hash chain. They do not create another scheduler, run record, or mutable
 incident database. The Draft 2020-12 schema and fixtures are in
 `server/halts-incidents-v1/schemas/halts-incidents-v1.schema.json` and
-`halts-incidents-v1.examples.json`.
+`halts-incidents-v1.examples.json`. `WardenVerdictV1`, repair-lease records,
+and their typed events have a separate Draft 2020-12 schema and fixtures in
+the same directory as `warden-v1.schema.json` and `warden-v1.examples.json`.
 
 Halt publication is atomic across detection, classification, and exact
 incident linkage. Detector retries are idempotent by
@@ -219,6 +221,10 @@ The focused APIs are:
 - `POST /api/change-control/projects/:projectId/halts`
 - `GET /api/change-control/projects/:projectId/halts-incidents`
 - `GET /api/change-control/projects/:projectId/halts/:haltId`
+- `GET /api/change-control/projects/:projectId/warden`
+- `GET /api/change-control/projects/:projectId/halts/:haltId/warden-verdicts`
+- `POST /api/change-control/projects/:projectId/halts/:haltId/warden-verdicts`
+- `POST /api/change-control/projects/:projectId/halts/:haltId/repair-lease/transitions`
 - `POST /api/change-control/projects/:projectId/halts/:haltId/transitions`
 - `POST /api/change-control/projects/:projectId/halts/:haltId/correlations`
 - `GET /api/change-control/projects/:projectId/incidents/:incidentId`
@@ -235,9 +241,17 @@ incident immediately, or a resolved incident only inside that window; an
 expired window creates a new incident with
 `INCIDENT_REOPEN_WINDOW_EXPIRED`.
 
-This slice does not implement Warden verdict publication, Doctor recipes or
-repair leases, automatic repair, or retry/resume authority. Those actions
-remain unavailable and fail closed.
+The Warden evaluates exact canonical halt, effective-incident, attribution,
+evidence-snapshot, policy, recipe, budget, idempotency, oracle, and quarantine
+state. Automatic dispositions require a live exclusive monotonic repair lease;
+unknown policy or recipe identity, stale/conflicting evidence, non-exact
+attribution, ambiguous effects/results, exhausted budgets, and lease loss fail
+closed. Higher-ordinal verdicts append superseding history. An open blocking
+incident rejects wave dispatch, including `sendAnyway`.
+
+The five v1 recipe identities are policy allowlist metadata only. This slice
+does not execute Doctor recipes, authorize retry/resume, edit source, or add
+general automatic healing.
 
 ## Sequential queue plans
 

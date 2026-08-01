@@ -777,7 +777,8 @@
         "ACCEPTANCE_ORACLE_UNEXECUTABLE",
         "BLAST_RADIUS_UNEVIDENCED",
         "REPLAN_RECEIPT_REQUIRED",
-        "WAVE_NOT_READY"
+        "WAVE_NOT_READY",
+        "BLOCKING_INCIDENT_OPEN"
       ]
     },
     "DispatchGateReceiptV1": {

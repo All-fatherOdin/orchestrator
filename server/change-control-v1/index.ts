@@ -17,9 +17,16 @@ import workspaceMergeV1Schema from "./schemas/workspace-merge-v1.schema.json";
 import {
   HALT_INCIDENT_EVENT_TYPES_V1,
   HALT_INCIDENT_REASON_CODES_V1,
+  WARDEN_EVENT_TYPES_V1,
+  WARDEN_DENIAL_REASON_CODES_V1,
+  WARDEN_POLICY_V1,
+  WARDEN_REPAIR_RECIPES_V1,
   assertHaltIncidentContractV1,
+  assertWardenContractV1,
   incidentFingerprintV1,
   observationFingerprintV1,
+  wardenContractHashV1,
+  wardenEvidenceSnapshotHashV1,
   type AttributionAssessmentV1,
   type CorrectIncidentCorrelationInputV1,
   type DetectAndClassifyHaltInputV1,
@@ -33,6 +40,16 @@ import {
   type ResolveIncidentInputV1,
   type TransitionHaltInputV1,
   type TransitionIncidentInputV1,
+  type EvaluateWardenVerdictInputV1,
+  type RepairLeaseV1,
+  type TransitionWardenRepairLeaseInputV1,
+  type WardenAggregateV1,
+  type WardenDenialReasonCodeV1,
+  type WardenEvidenceSnapshotV1,
+  type WardenEventV1,
+  type WardenProjectionV1,
+  type WardenRecipeIdentityV1,
+  type WardenVerdictV1,
 } from "../halts-incidents-v1/index.ts";
 
 export {
@@ -43,6 +60,10 @@ export {
   type ResolveIncidentInputV1,
   type TransitionHaltInputV1,
   type TransitionIncidentInputV1,
+  type EvaluateWardenVerdictInputV1,
+  type TransitionWardenRepairLeaseInputV1,
+  type WardenAggregateV1,
+  type WardenProjectionV1,
 } from "../halts-incidents-v1/index.ts";
 
 export const CHANGE_CONTROL_EVENT_TYPES = [
@@ -73,6 +94,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   "plan.dispatch-validated",
   "architect.replan-recorded",
   ...HALT_INCIDENT_EVENT_TYPES_V1,
+  ...WARDEN_EVENT_TYPES_V1,
 ] as const;
 
 export type ChangeControlEventType =
@@ -468,7 +490,8 @@ export type DispatchGateReasonV1 =
   | "ACCEPTANCE_ORACLE_UNEXECUTABLE"
   | "BLAST_RADIUS_UNEVIDENCED"
   | "REPLAN_RECEIPT_REQUIRED"
-  | "WAVE_NOT_READY";
+  | "WAVE_NOT_READY"
+  | "BLOCKING_INCIDENT_OPEN";
 
 export type DispatchGateReceiptV1 = Readonly<{
   contractType: "DispatchGateReceiptV1";
@@ -818,6 +841,7 @@ const planningEventTypes = new Set<ChangeControlEventType>([
 const haltIncidentEventTypes = new Set<ChangeControlEventType>(
   HALT_INCIDENT_EVENT_TYPES_V1,
 );
+const wardenEventTypes = new Set<ChangeControlEventType>(WARDEN_EVENT_TYPES_V1);
 const changeTargetForType = {
   "change.created": "draft",
   "change.planned": "planned",
@@ -1093,6 +1117,12 @@ type ProjectedLedger = {
   correlationHistory: Array<
     HaltIncidentProjectionV1["correlationHistory"][number]
   >;
+  wardenVerdicts: Map<string, WardenVerdictV1>;
+  wardenVerdictsByHalt: Map<string, WardenVerdictV1[]>;
+  repairLeases: Map<string, RepairLeaseV1>;
+  activeRepairLeaseByScope: Map<string, string>;
+  repairLeaseEpochByScope: Map<string, number>;
+  wardenEvents: WardenEventV1[];
 };
 
 function waveKey(changeId: string, waveId: string) {
@@ -1797,6 +1827,12 @@ type HaltIncidentProjectionState = Pick<
   | "incidentEvents"
   | "haltIncidentEvents"
   | "correlationHistory"
+  | "wardenVerdicts"
+  | "wardenVerdictsByHalt"
+  | "repairLeases"
+  | "activeRepairLeaseByScope"
+  | "repairLeaseEpochByScope"
+  | "wardenEvents"
 >;
 
 function haltDetectorKey(
@@ -2006,6 +2042,475 @@ function addHaltIncidentEvent(
   const events = map.get(id) ?? [];
   events.push(event);
   map.set(id, events);
+}
+
+function repairLeaseScopeKey(projectId: string, incidentId: string, haltId: string) {
+  return `${projectId}\u0000${incidentId}\u0000${haltId}`;
+}
+
+function sameWardenRecipeIdentity(
+  left: WardenRecipeIdentityV1 | undefined,
+  right: WardenRecipeIdentityV1 | undefined,
+) {
+  return Boolean(
+    left &&
+      right &&
+      left.recipeId === right.recipeId &&
+      left.recipeVersion === right.recipeVersion &&
+      left.codeHash === right.codeHash,
+  );
+}
+
+function sameWardenOracleIdentity(
+  left: Pick<WardenEvidenceSnapshotV1["successOracle"], "oracleId" | "kind">,
+  right: Pick<WardenEvidenceSnapshotV1["successOracle"], "oracleId" | "kind">,
+) {
+  return left.oracleId === right.oracleId && left.kind === right.kind;
+}
+
+function isRegisteredWardenOracle(
+  oracle: WardenEvidenceSnapshotV1["successOracle"],
+) {
+  return WARDEN_REPAIR_RECIPES_V1.some(
+    (recipe) =>
+      sameWardenOracleIdentity(recipe.successOracle, oracle) ||
+      sameWardenOracleIdentity(recipe.stopOracle, oracle),
+  );
+}
+
+function wardenBudgetSnapshot(
+  projected: Pick<ProjectedLedger, "wardenVerdicts">,
+  haltId: string,
+  incidentId: string,
+  consumesBudget: boolean,
+) {
+  const allowed = [...projected.wardenVerdicts.values()].filter((verdict) =>
+    ["allow_auto_heal", "allow_bounded_retry"].includes(verdict.disposition),
+  );
+  const consumedBefore = {
+    halt: allowed.filter((verdict) => verdict.haltId === haltId).length,
+    incident: allowed.filter((verdict) => verdict.incidentId === incidentId).length,
+    project: allowed.length,
+  };
+  const limits = {
+    halt: WARDEN_POLICY_V1.budgets.perHalt,
+    incident: WARDEN_POLICY_V1.budgets.perIncident,
+    project: WARDEN_POLICY_V1.budgets.perProject,
+  };
+  const cost = consumesBudget ? 1 : 0;
+  return {
+    limits,
+    consumedBefore,
+    remainingAfter: {
+      halt: Math.max(0, limits.halt - consumedBefore.halt - cost),
+      incident: Math.max(0, limits.incident - consumedBefore.incident - cost),
+      project: Math.max(0, limits.project - consumedBefore.project - cost),
+    },
+  };
+}
+
+function wardenEvidenceIssue(
+  snapshot: WardenEvidenceSnapshotV1,
+  halt: HaltRecordV1,
+  incident: IncidentRecordV1,
+  assessment: AttributionAssessmentV1,
+  evaluatedAt: string,
+): WardenDenialReasonCodeV1 | undefined {
+  const { snapshotHash, ...snapshotBody } = snapshot;
+  const capturedAt = canonicalTimestampMillis(snapshot.capturedAt);
+  const evaluated = canonicalTimestampMillis(evaluatedAt);
+  if (
+    snapshot.snapshotVersion !== "warden-evidence-v1" ||
+    snapshotHash !== wardenEvidenceSnapshotHashV1(snapshotBody) ||
+    snapshot.haltRecordHash !== wardenContractHashV1(halt) ||
+    snapshot.incidentRecordHash !== wardenContractHashV1(incident) ||
+    snapshot.attributionAssessmentHash !== wardenContractHashV1(assessment) ||
+    snapshot.sideEffectState !== assessment.evidence.sideEffectState ||
+    capturedAt === undefined ||
+    evaluated === undefined ||
+    capturedAt > evaluated ||
+    capturedAt < (canonicalTimestampMillis(halt.publishedAt) ?? Number.MAX_SAFE_INTEGER) ||
+    capturedAt < (canonicalTimestampMillis(assessment.assessedAt) ?? Number.MAX_SAFE_INTEGER) ||
+    !halt.evidenceRefs.every((reference) => snapshot.evidenceRefs.includes(reference)) ||
+    !assessment.evidence.detectorEvidenceRefs.every((reference) =>
+      snapshot.evidenceRefs.includes(reference),
+    ) ||
+    !assessment.evidence.outcomeEvidenceRefs.every((reference) =>
+      snapshot.evidenceRefs.includes(reference),
+    ) ||
+    snapshot.successOracle.evidenceRefs.length === 0 ||
+    snapshot.stopOracle.evidenceRefs.length === 0 ||
+    !isRegisteredWardenOracle(snapshot.successOracle) ||
+    !isRegisteredWardenOracle(snapshot.stopOracle)
+  )
+    return "HALT_EVIDENCE_INVALID";
+  if (
+    evaluated - capturedAt >
+    WARDEN_POLICY_V1.evidenceMaxAgeSeconds * 1000
+  )
+    return "EVIDENCE_STALE";
+  return undefined;
+}
+
+function wardenPolicyDecision(
+  projected: Pick<ProjectedLedger, "wardenVerdicts">,
+  input: Pick<
+    WardenVerdictV1,
+    "policyVersion" | "requestedAction" | "evidenceSnapshot" | "recipe"
+  >,
+  halt: HaltRecordV1,
+  incident: IncidentRecordV1,
+  assessment: AttributionAssessmentV1,
+  evaluatedAt: string,
+) {
+  const denied = (
+    disposition: "require_replan" | "require_human" | "quarantine",
+    reasonCode: WardenDenialReasonCodeV1,
+  ) => ({
+    disposition,
+    reasonCode,
+    budgets: wardenBudgetSnapshot(
+      projected,
+      halt.haltId,
+      incident.incidentId,
+      false,
+    ),
+  });
+  if (input.policyVersion !== WARDEN_POLICY_V1.policyVersion)
+    return denied("require_human", "WARDEN_POLICY_UNKNOWN");
+  const evidenceIssue = wardenEvidenceIssue(
+    input.evidenceSnapshot,
+    halt,
+    incident,
+    assessment,
+    evaluatedAt,
+  );
+  if (evidenceIssue)
+    return denied(
+      evidenceIssue === "HALT_EVIDENCE_INVALID" ? "quarantine" : "require_human",
+      evidenceIssue,
+    );
+  if (assessment.haltClass === "unknown")
+    return denied("require_human", "HALT_CLASS_UNKNOWN");
+  if (assessment.confidence !== "exact")
+    return denied("require_human", "ATTRIBUTION_NOT_EXACT");
+  if (input.evidenceSnapshot.quarantineReasonCodes.includes("REPAIR_LEASE_LOST"))
+    return denied("quarantine", "REPAIR_LEASE_LOST");
+  if (
+    input.evidenceSnapshot.quarantineReasonCodes.includes(
+      "REPAIR_RESULT_AMBIGUOUS",
+    ) ||
+    input.evidenceSnapshot.priorRepairResult === "ambiguous"
+  )
+    return denied("quarantine", "REPAIR_RESULT_AMBIGUOUS");
+  if (
+    input.evidenceSnapshot.sideEffectState !== "none" ||
+    input.evidenceSnapshot.quarantineReasonCodes.includes("SIDE_EFFECT_AMBIGUOUS")
+  )
+    return denied("quarantine", "SIDE_EFFECT_AMBIGUOUS");
+  const explicitQuarantine = input.evidenceSnapshot.quarantineReasonCodes[0];
+  if (explicitQuarantine)
+    return denied("quarantine", explicitQuarantine);
+  if (assessment.haltClass === "plan_or_target_drift")
+    return denied("require_replan", "REPLAN_REQUIRED");
+  if (
+    [
+      "acceptance_or_verification_failure",
+      "dependency_or_readiness_failure",
+      "human_decision_required",
+    ].includes(assessment.haltClass)
+  )
+    return denied("require_human", "HUMAN_AUTHORITY_REQUIRED");
+  if (
+    [
+      "scope_or_policy_violation",
+      "ownership_or_state_ambiguity",
+      "destructive_or_external_risk",
+    ].includes(assessment.haltClass)
+  )
+    return denied("quarantine", "HUMAN_AUTHORITY_REQUIRED");
+  if (input.requestedAction === "none")
+    return denied("require_human", "HUMAN_AUTHORITY_REQUIRED");
+  const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+    sameWardenRecipeIdentity(candidate, input.recipe),
+  );
+  if (!recipe) return denied("require_human", "RECIPE_NOT_ALLOWLISTED");
+  if (
+    !sameWardenOracleIdentity(
+      recipe.successOracle,
+      input.evidenceSnapshot.successOracle,
+    ) ||
+    !sameWardenOracleIdentity(recipe.stopOracle, input.evidenceSnapshot.stopOracle)
+  )
+    return denied("require_human", "RECIPE_PRECONDITION_FAILED");
+  const expectedAction =
+    assessment.haltClass === "deterministic_owned_recovery"
+      ? "auto_heal"
+      : "bounded_retry";
+  if (
+    input.requestedAction !== expectedAction ||
+    recipe.haltClass !== assessment.haltClass ||
+    !input.evidenceSnapshot.preconditionsUnchanged
+  )
+    return denied("require_human", "RECIPE_PRECONDITION_FAILED");
+  const before = wardenBudgetSnapshot(
+    projected,
+    halt.haltId,
+    incident.incidentId,
+    false,
+  );
+  if (
+    before.remainingAfter.halt === 0 ||
+    before.remainingAfter.incident === 0 ||
+    before.remainingAfter.project === 0
+  )
+    return denied("require_human", "REPAIR_BUDGET_EXHAUSTED");
+  return {
+    disposition: recipe.disposition,
+    reasonCode: null,
+    budgets: wardenBudgetSnapshot(
+      projected,
+      halt.haltId,
+      incident.incidentId,
+      true,
+    ),
+  } as const;
+}
+
+function assertWardenContractStored<
+  T extends "WardenVerdictV1" | "RepairLeaseV1",
+>(value: unknown, expectedType: T) {
+  try {
+    assertWardenContractV1(value, expectedType);
+  } catch (error) {
+    corrupt(
+      `A persisted ${expectedType} contract is invalid: ${
+        error instanceof Error ? error.message : "unknown validation error"
+      }`,
+    );
+  }
+  return value as unknown as T extends "WardenVerdictV1"
+    ? WardenVerdictV1
+    : RepairLeaseV1;
+}
+
+function hasExplicitWardenSupersessionCausation(
+  event: ChangeControlEvent,
+  verdict: WardenVerdictV1,
+  prior: WardenVerdictV1,
+  events: readonly WardenEventV1[],
+) {
+  if (event.causationId === prior.verdictId) return true;
+  const priorEvent = events.find(
+    (candidate) =>
+      candidate.type === "warden.verdict-recorded" &&
+      candidate.payload.verdict.verdictId === prior.verdictId,
+  );
+  const cause = events.find((candidate) => candidate.id === event.causationId);
+  if (
+    !priorEvent ||
+    !cause ||
+    cause.sequence <= priorEvent.sequence ||
+    cause.sequence >= event.sequence
+  )
+    return false;
+  if (cause.type === "warden.repair-lease-acquired")
+    return Boolean(
+      verdict.repairLease &&
+        cause.causationId === prior.verdictId &&
+        cause.payload.lease.leaseId === verdict.repairLease.leaseId &&
+        cause.payload.lease.haltId === prior.haltId &&
+        cause.payload.lease.incidentId === prior.incidentId,
+    );
+  if (cause.type === "warden.repair-lease-lost")
+    return Boolean(
+      prior.repairLease &&
+        cause.causationId === prior.repairLease.leaseId &&
+        cause.payload.leaseId === prior.repairLease.leaseId &&
+        cause.payload.leaseEpoch === prior.repairLease.epoch &&
+        cause.payload.haltId === prior.haltId &&
+        cause.payload.incidentId === prior.incidentId,
+    );
+  return false;
+}
+
+function applyWardenEvent(
+  event: ChangeControlEvent,
+  projected: HaltIncidentProjectionState,
+) {
+  const typedEvent = event as unknown as WardenEventV1;
+  projected.wardenEvents.push(typedEvent);
+  if (event.type === "warden.repair-lease-acquired") {
+    assertPayloadKeys(event, ["lease"]);
+    const lease = assertWardenContractStored(event.payload.lease, "RepairLeaseV1");
+    const halt = projected.halts.get(lease.haltId);
+    const incident = projected.incidents.get(lease.incidentId);
+    const scopeKey = repairLeaseScopeKey(
+      lease.projectId,
+      lease.incidentId,
+      lease.haltId,
+    );
+    if (
+      !halt ||
+      !incident ||
+      lease.projectId !== event.projectId ||
+      halt.changeId !== event.changeId ||
+      projected.effectiveIncidentByHalt.get(halt.haltId) !== incident.incidentId ||
+      lease.state !== "active" ||
+      lease.acquiredAt !== event.occurredAt ||
+      lease.acquiredBy !== event.actor ||
+      lease.acquiredBy !== "policy:warden-v1" ||
+      projected.repairLeases.has(lease.leaseId) ||
+      projected.activeRepairLeaseByScope.has(scopeKey) ||
+      lease.epoch !== (projected.repairLeaseEpochByScope.get(scopeKey) ?? 0) + 1
+    )
+      corrupt(`Repair lease acquisition ${lease.leaseId} is semantically invalid.`);
+    assertHaltEventIdentity(event, halt);
+    projected.repairLeases.set(lease.leaseId, lease);
+    projected.activeRepairLeaseByScope.set(scopeKey, lease.leaseId);
+    projected.repairLeaseEpochByScope.set(scopeKey, lease.epoch);
+    return;
+  }
+  if (
+    event.type === "warden.repair-lease-released" ||
+    event.type === "warden.repair-lease-lost"
+  ) {
+    assertPayloadKeys(event, [
+      "evidenceRefs",
+      "haltId",
+      "incidentId",
+      "leaseEpoch",
+      "leaseId",
+      "previousState",
+      "state",
+    ]);
+    const leaseId = requireStoredIdentifier(event.payload.leaseId, "leaseId");
+    const lease = projected.repairLeases.get(leaseId);
+    const expectedState = event.type.endsWith("lost") ? "lost" : "released";
+    if (!lease) corrupt(`Repair lease transition ${event.id} is missing its lease.`);
+    const halt = projected.halts.get(lease.haltId);
+    const scopeKey = repairLeaseScopeKey(
+      lease.projectId,
+      lease.incidentId,
+      lease.haltId,
+    );
+    if (
+      !halt ||
+      event.payload.haltId !== lease.haltId ||
+      event.payload.incidentId !== lease.incidentId ||
+      event.payload.leaseEpoch !== lease.epoch ||
+      event.payload.previousState !== "active" ||
+      event.payload.state !== expectedState ||
+      lease.state !== "active" ||
+      projected.activeRepairLeaseByScope.get(scopeKey) !== leaseId ||
+      !Array.isArray(event.payload.evidenceRefs) ||
+      event.payload.evidenceRefs.length === 0
+    )
+      corrupt(`Repair lease transition ${event.id} is semantically invalid.`);
+    assertHaltEventIdentity(event, halt);
+    projected.repairLeases.set(leaseId, {
+      ...lease,
+      state: expectedState,
+      terminalAt: event.occurredAt,
+      terminalBy: event.actor,
+      terminalEvidenceRefs: event.payload.evidenceRefs as string[],
+    });
+    projected.activeRepairLeaseByScope.delete(scopeKey);
+    return;
+  }
+  if (event.type === "warden.verdict-recorded") {
+    assertPayloadKeys(event, ["verdict"]);
+    const verdict = assertWardenContractStored(
+      event.payload.verdict,
+      "WardenVerdictV1",
+    );
+    const halt = projected.halts.get(verdict.haltId);
+    const incident = projected.incidents.get(verdict.incidentId);
+    const assessment = projected.assessments.get(verdict.attributionAssessmentId);
+    if (!halt || !incident || !assessment)
+      corrupt(`Warden verdict ${verdict.verdictId} has a missing canonical reference.`);
+    assertHaltEventIdentity(event, halt);
+    const history = projected.wardenVerdictsByHalt.get(halt.haltId) ?? [];
+    const prior = history.at(-1);
+    if (
+      verdict.projectId !== event.projectId ||
+      verdict.changeId !== event.changeId ||
+      verdict.incidentId !== projected.effectiveIncidentByHalt.get(halt.haltId) ||
+      verdict.attributionAssessmentId !== halt.classificationAssessmentId ||
+      verdict.evaluatedAt !== event.occurredAt ||
+      verdict.evaluatedBy !== event.actor ||
+      event.actor !== "policy:warden-v1" ||
+      projected.wardenVerdicts.has(verdict.verdictId) ||
+      verdict.verdictOrdinal !== (prior?.verdictOrdinal ?? 0) + 1 ||
+      verdict.supersedesVerdictId !== (prior?.verdictId ?? null) ||
+      (prior !== undefined &&
+        prior.evidenceSnapshot.snapshotHash === verdict.evidenceSnapshot.snapshotHash)
+    )
+      corrupt(`Warden verdict ${verdict.verdictId} has invalid identity or ordinal history.`);
+    if (
+      prior &&
+      !hasExplicitWardenSupersessionCausation(
+        event,
+        verdict,
+        prior,
+        projected.wardenEvents,
+      )
+    )
+      corrupt(`Warden verdict ${verdict.verdictId} has invalid supersession causation.`);
+    const expected = wardenPolicyDecision(
+      projected,
+      verdict,
+      halt,
+      incident,
+      assessment,
+      verdict.evaluatedAt,
+    );
+    if (
+      verdict.disposition !== expected.disposition ||
+      verdict.reasonCode !== expected.reasonCode ||
+      canonicalJson(verdict.budgets as unknown as JsonValue) !==
+        canonicalJson(expected.budgets as unknown as JsonValue)
+    )
+      corrupt(`Warden verdict ${verdict.verdictId} does not match deterministic policy.`);
+    const automatic = ["allow_auto_heal", "allow_bounded_retry"].includes(
+      verdict.disposition,
+    );
+    if (automatic) {
+      const lease = verdict.repairLease
+        ? projected.repairLeases.get(verdict.repairLease.leaseId)
+        : undefined;
+      const recipe = WARDEN_REPAIR_RECIPES_V1.find((candidate) =>
+        sameWardenRecipeIdentity(candidate, verdict.recipe),
+      );
+      const conflictingKey = [...projected.wardenVerdicts.values()].find(
+        (candidate) =>
+          candidate.idempotencyKey === verdict.idempotencyKey &&
+          (candidate.haltId !== verdict.haltId ||
+            !sameWardenRecipeIdentity(candidate.recipe, verdict.recipe)),
+      );
+      if (
+        !lease ||
+        lease.state !== "active" ||
+        lease.haltId !== halt.haltId ||
+        lease.incidentId !== incident.incidentId ||
+        verdict.repairLease?.projectId !== lease.projectId ||
+        verdict.repairLease.incidentId !== lease.incidentId ||
+        verdict.repairLease.haltId !== lease.haltId ||
+        verdict.repairLease?.epoch !== lease.epoch ||
+        verdict.repairLease.acquiredAt !== lease.acquiredAt ||
+        !recipe ||
+        !verdict.idempotencyKey ||
+        conflictingKey
+      )
+        corrupt(`Allowed Warden verdict ${verdict.verdictId} lacks exact repair authority.`);
+    } else if (verdict.repairLease || verdict.idempotencyKey) {
+      corrupt(`Denied Warden verdict ${verdict.verdictId} retained automatic authority.`);
+    }
+    projected.wardenVerdicts.set(verdict.verdictId, verdict);
+    projected.wardenVerdictsByHalt.set(halt.haltId, [...history, verdict]);
+    return;
+  }
+  corrupt(`Unsupported Warden event type: ${event.type}.`);
 }
 
 function maxSeverity(
@@ -2242,7 +2747,13 @@ function applyHaltIncidentEvent(
               : "recovered";
     const legal: Record<string, readonly string[]> = {
       classified: ["action_pending", "escalated", "quarantined"],
-      action_pending: ["healing", "recovered", "escalated", "quarantined"],
+      action_pending: [
+        "action_pending",
+        "healing",
+        "recovered",
+        "escalated",
+        "quarantined",
+      ],
       healing: ["recovered", "action_pending", "escalated", "quarantined"],
     };
     if (
@@ -2256,8 +2767,19 @@ function applyHaltIncidentEvent(
       event.payload.evidenceRefs.length === 0
     )
       corrupt(`Halt transition ${event.id} is semantically invalid.`);
-    if (target === "action_pending" || target === "healing")
-      corrupt(`Halt transition ${event.id} lacks an implemented Warden verdict.`);
+    if (target === "action_pending") {
+      const verdict = projected.wardenVerdictsByHalt.get(haltId)?.at(-1);
+      if (
+        !verdict ||
+        verdict.verdictId !== event.causationId ||
+        verdict.disposition === "quarantine" ||
+        event.payload.reasonCode !==
+          (verdict.reasonCode ?? "WARDEN_AUTO_ACTION_ALLOWED")
+      )
+        corrupt(`Halt transition ${event.id} lacks its exact Warden verdict.`);
+    }
+    if (target === "healing")
+      corrupt(`Halt transition ${event.id} lacks an implemented Doctor receipt.`);
     projected.halts.set(haltId, {
       ...halt,
       state: target,
@@ -2627,6 +3149,12 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   const correlationHistory: Array<
     HaltIncidentProjectionV1["correlationHistory"][number]
   > = [];
+  const wardenVerdicts = new Map<string, WardenVerdictV1>();
+  const wardenVerdictsByHalt = new Map<string, WardenVerdictV1[]>();
+  const repairLeases = new Map<string, RepairLeaseV1>();
+  const activeRepairLeaseByScope = new Map<string, string>();
+  const repairLeaseEpochByScope = new Map<string, number>();
+  const wardenEvents: WardenEventV1[] = [];
   const eventIds = new Set<string>();
   let previousHash: string | null = null;
 
@@ -2752,6 +3280,16 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(`Wave transition ${event.id} precedes wave creation.`);
         const target =
           waveTargetForType[event.type as keyof typeof waveTargetForType];
+        if (
+          (event.type === "wave.dispatched" ||
+            event.type === "wave.dispatch-overridden") &&
+          blockingDispatchIncidents(
+            { incidents, halts, effectiveIncidentByHalt },
+            event.changeId,
+            waveId,
+          ).length > 0
+        )
+          corrupt(`Wave ${waveId} was dispatched with an open blocking incident.`);
         if (
           (event.type === "wave.dispatched" ||
             event.type === "wave.dispatch-overridden") &&
@@ -3352,6 +3890,35 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         incidentEvents,
         haltIncidentEvents,
         correlationHistory,
+        wardenVerdicts,
+        wardenVerdictsByHalt,
+        repairLeases,
+        activeRepairLeaseByScope,
+        repairLeaseEpochByScope,
+        wardenEvents,
+      });
+    } else if (wardenEventTypes.has(event.type)) {
+      applyWardenEvent(event, {
+        projections,
+        waves,
+        tasks,
+        plans,
+        halts,
+        incidents,
+        assessments,
+        resolutionReceipts,
+        effectiveIncidentByHalt,
+        detectorHaltIds,
+        haltEvents,
+        incidentEvents,
+        haltIncidentEvents,
+        correlationHistory,
+        wardenVerdicts,
+        wardenVerdictsByHalt,
+        repairLeases,
+        activeRepairLeaseByScope,
+        repairLeaseEpochByScope,
+        wardenEvents,
       });
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
@@ -3466,6 +4033,12 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     incidentEvents,
     haltIncidentEvents,
     correlationHistory,
+    wardenVerdicts,
+    wardenVerdictsByHalt,
+    repairLeases,
+    activeRepairLeaseByScope,
+    repairLeaseEpochByScope,
+    wardenEvents,
   };
 }
 
@@ -3792,6 +4365,180 @@ function haltIncidentAggregate(
       events,
     }),
   );
+}
+
+function normalizeWardenEvidenceSnapshot(value: unknown) {
+  const snapshot = normalizeJson(value, "evidenceSnapshot");
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot))
+    invalid("evidenceSnapshot must be a JSON object.");
+  const candidate = snapshot as unknown as WardenEvidenceSnapshotV1;
+  if (
+    candidate.snapshotVersion !== "warden-evidence-v1" ||
+    typeof candidate.snapshotHash !== "string" ||
+    typeof candidate.haltRecordHash !== "string" ||
+    typeof candidate.incidentRecordHash !== "string" ||
+    typeof candidate.attributionAssessmentHash !== "string" ||
+    !["none", "committed", "possible", "unknown"].includes(
+      candidate.sideEffectState,
+    ) ||
+    typeof candidate.preconditionsUnchanged !== "boolean" ||
+    !["none", "unambiguous", "ambiguous"].includes(candidate.priorRepairResult) ||
+    !Array.isArray(candidate.quarantineReasonCodes) ||
+    !candidate.quarantineReasonCodes.every((reason) =>
+      WARDEN_DENIAL_REASON_CODES_V1.includes(reason),
+    ) ||
+    !candidate.successOracle ||
+    !candidate.stopOracle
+  )
+    invalid("evidenceSnapshot has invalid closed Warden fields.");
+  normalizeEvidenceRefs(candidate.evidenceRefs, "evidenceSnapshot.evidenceRefs");
+  normalizeEvidenceRefs(
+    candidate.successOracle.evidenceRefs,
+    "evidenceSnapshot.successOracle.evidenceRefs",
+  );
+  normalizeEvidenceRefs(
+    candidate.stopOracle.evidenceRefs,
+    "evidenceSnapshot.stopOracle.evidenceRefs",
+  );
+  return candidate;
+}
+
+function normalizeWardenRecipe(value: unknown) {
+  if (value === undefined) return undefined;
+  const recipe = normalizeJson(value, "recipe");
+  if (!recipe || typeof recipe !== "object" || Array.isArray(recipe))
+    invalid("recipe must be a JSON object.");
+  const candidate = recipe as Record<string, unknown>;
+  const codeHash = candidate.codeHash;
+  if (typeof codeHash !== "string" || !/^[0-9a-f]{64}$/.test(codeHash))
+    invalid("recipe.codeHash must be a SHA-256 hash.");
+  return {
+    recipeId: requireIdentifier(candidate.recipeId, "recipe.recipeId"),
+    recipeVersion: requireIdentifier(
+      candidate.recipeVersion,
+      "recipe.recipeVersion",
+    ),
+    codeHash,
+  } satisfies WardenRecipeIdentityV1;
+}
+
+function immutableWardenProjection(
+  projectId: string,
+  projected: ProjectedLedger,
+): WardenProjectionV1 {
+  const verdicts = [...projected.wardenVerdicts.values()].sort(
+    (left, right) =>
+      left.evaluatedAt.localeCompare(right.evaluatedAt) ||
+      left.verdictId.localeCompare(right.verdictId),
+  );
+  const activeVerdicts = [...projected.wardenVerdictsByHalt.values()]
+    .map((history) => history.at(-1)!)
+    .filter((verdict) => {
+      if (
+        !["allow_auto_heal", "allow_bounded_retry"].includes(
+          verdict.disposition,
+        )
+      )
+        return true;
+      const lease = verdict.repairLease
+        ? projected.repairLeases.get(verdict.repairLease.leaseId)
+        : undefined;
+      return lease?.state === "active";
+    })
+    .sort((left, right) => left.haltId.localeCompare(right.haltId));
+  return deepFreeze(
+    structuredClone({
+      projectId,
+      verdicts,
+      activeVerdicts,
+      leases: [...projected.repairLeases.values()].sort(
+        (left, right) =>
+          left.acquiredAt.localeCompare(right.acquiredAt) ||
+          left.leaseId.localeCompare(right.leaseId),
+      ),
+      events: projected.wardenEvents,
+    }),
+  );
+}
+
+function wardenAggregate(
+  projected: ProjectedLedger,
+  haltId: string,
+  operationEventIds?: ReadonlySet<string>,
+): WardenAggregateV1 {
+  const history = projected.wardenVerdictsByHalt.get(haltId) ?? [];
+  const verdict = history.at(-1);
+  const halt = projected.halts.get(haltId);
+  const incidentId = projected.effectiveIncidentByHalt.get(haltId);
+  const incident = incidentId ? projected.incidents.get(incidentId) : undefined;
+  if (!verdict || !halt || !incident)
+    throw new ChangeControlError(
+      `Warden verdict for halt ${haltId} was not found.`,
+      "NOT_FOUND",
+      404,
+    );
+  const lease = verdict.repairLease
+    ? projected.repairLeases.get(verdict.repairLease.leaseId)
+    : history
+        .slice()
+        .reverse()
+        .map((candidate) =>
+          candidate.repairLease
+            ? projected.repairLeases.get(candidate.repairLease.leaseId)
+            : undefined,
+        )
+        .find(Boolean);
+  return deepFreeze(
+    structuredClone({
+      verdict,
+      halt,
+      incident,
+      ...(lease ? { lease } : {}),
+      verdictHistory: history,
+      events: operationEventIds
+        ? projected.wardenEvents.filter((event) => operationEventIds.has(event.id))
+        : projected.wardenEvents.filter((event) => {
+            if (event.type === "warden.verdict-recorded")
+              return event.payload.verdict.haltId === haltId;
+            if (event.type === "warden.repair-lease-acquired")
+              return event.payload.lease.haltId === haltId;
+            return event.payload.haltId === haltId;
+          }),
+    }),
+  );
+}
+
+const blockingDispatchIncidentStates = new Set<IncidentRecordV1["state"]>([
+  "open",
+  "investigating",
+  "healing",
+  "escalated",
+  "reopened",
+]);
+
+function blockingDispatchIncidents(
+  projected: Pick<
+    ProjectedLedger,
+    "incidents" | "halts" | "effectiveIncidentByHalt"
+  >,
+  changeId: string,
+  waveId: string,
+) {
+  return [...projected.incidents.values()]
+    .filter(
+      (incident) =>
+        incident.changeId === changeId &&
+        blockingDispatchIncidentStates.has(incident.state) &&
+        ["blocking", "critical"].includes(incident.severity) &&
+        incident.haltIds.some((haltId) => {
+          const halt = projected.halts.get(haltId);
+          return (
+            projected.effectiveIncidentByHalt.get(haltId) === incident.incidentId &&
+            halt?.scope.waveId === waveId
+          );
+        }),
+    )
+    .sort((left, right) => left.incidentId.localeCompare(right.incidentId));
 }
 
 function validateCandidateLedger(ledger: Ledger) {
@@ -4967,12 +5714,26 @@ export class ChangeControlStore {
         projected.waves,
         projected.tasks,
       );
+      const blockingIncidents = blockingDispatchIncidents(
+        projected,
+        changeId,
+        waveId,
+      );
       const waveEvents = projected.eventsByWave.get(key)!;
 
       // A project ledger opts into Planning and Drift Contract v1 when its
       // first planning contract is published. Ledgers with no planning events
       // retain the exact Phase 1 dispatch behavior for replay compatibility.
       if (projected.plans.size === 0) {
+        if (blockingIncidents.length > 0)
+          throw new ChangeControlError(
+            `Wave ${waveId} has an open blocking incident.`,
+            "NOT_READY",
+            409,
+            deepFreeze(
+              structuredClone(["BLOCKING_INCIDENT_OPEN"]),
+            ),
+          );
         if (phaseOneReasons.length > 0 && !sendAnyway)
           throw new ChangeControlError(
             `Wave ${waveId} is not ready for dispatch.`,
@@ -5028,6 +5789,8 @@ export class ChangeControlStore {
       }
 
       const gateReasons = new Set<DispatchGateReasonV1>();
+      if (blockingIncidents.length > 0)
+        gateReasons.add("BLOCKING_INCIDENT_OPEN");
       const latestPlan = wavePlans(projected, changeId, waveId).at(-1);
       if (!latestPlan) gateReasons.add("PLAN_REQUIRED");
       if (
@@ -6267,6 +7030,435 @@ export class ChangeControlStore {
       await writeAtomically(this.file(projectId), ledger);
       return haltIncidentAggregate(next, haltId, new Set([event.id]));
     });
+  }
+
+  async evaluateWardenVerdict(
+    projectIdValue: string,
+    haltIdValue: string,
+    input: EvaluateWardenVerdictInputV1,
+  ): Promise<WardenAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const verdictId = requireIdentifier(input?.verdictId, "verdictId");
+    const policyVersion = requireIdentifier(
+      input?.policyVersion,
+      "policyVersion",
+    );
+    if (!Number.isSafeInteger(input?.verdictOrdinal) || input.verdictOrdinal < 1)
+      invalid("verdictOrdinal must be a positive integer.");
+    if (!["auto_heal", "bounded_retry", "none"].includes(input?.requestedAction))
+      invalid("requestedAction is not in the closed Warden action set.");
+    const evidenceSnapshot = normalizeWardenEvidenceSnapshot(
+      input?.evidenceSnapshot,
+    );
+    const recipe = normalizeWardenRecipe(input?.recipe);
+    const idempotencyKey =
+      input?.idempotencyKey === undefined
+        ? undefined
+        : requireIdentity(input.idempotencyKey, "idempotencyKey");
+    const leaseInput = input?.lease
+      ? {
+          leaseId: requireIdentifier(input.lease.leaseId, "lease.leaseId"),
+          expectedEpoch: input.lease.expectedEpoch,
+        }
+      : undefined;
+    if (
+      leaseInput &&
+      (!Number.isSafeInteger(leaseInput.expectedEpoch) || leaseInput.expectedEpoch < 1)
+    )
+      invalid("lease.expectedEpoch must be a positive integer.");
+
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const halt = projected.halts.get(haltId);
+      const incidentId = projected.effectiveIncidentByHalt.get(haltId);
+      const incident = incidentId ? projected.incidents.get(incidentId) : undefined;
+      const assessment = halt?.classificationAssessmentId
+        ? projected.assessments.get(halt.classificationAssessmentId)
+        : undefined;
+      if (!halt || !incident || !assessment)
+        throw new ChangeControlError(
+          `Classified halt ${haltId} was not found.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (["recovered", "quarantined"].includes(halt.state))
+        throw new ChangeControlError(
+          `Halt ${haltId} is terminal and cannot receive another Warden verdict.`,
+          "CONFLICT",
+          409,
+        );
+      const history = projected.wardenVerdictsByHalt.get(haltId) ?? [];
+      const prior = history.at(-1);
+      const scopeKey = repairLeaseScopeKey(
+        projectId,
+        incident.incidentId,
+        haltId,
+      );
+      if (projected.activeRepairLeaseByScope.has(scopeKey))
+        throw new ChangeControlError(
+          `Halt ${haltId} already has an active repair lease.`,
+          "CONFLICT",
+          409,
+        );
+      if (input.verdictOrdinal !== (prior?.verdictOrdinal ?? 0) + 1)
+        throw new ChangeControlError(
+          `Warden verdict ordinal must be ${(prior?.verdictOrdinal ?? 0) + 1}.`,
+          "CONFLICT",
+          409,
+        );
+      if (
+        prior &&
+        prior.evidenceSnapshot.snapshotHash === evidenceSnapshot.snapshotHash
+      )
+        throw new ChangeControlError(
+          "A superseding Warden verdict requires a new evidence snapshot.",
+          "CONFLICT",
+          409,
+        );
+      const evaluatedAt = this.now();
+      if (canonicalTimestampMillis(evaluatedAt) === undefined)
+        invalid("The publication clock did not return a canonical UTC instant.");
+      const decision = wardenPolicyDecision(
+        projected,
+        {
+          policyVersion,
+          requestedAction: input.requestedAction,
+          evidenceSnapshot,
+          ...(recipe ? { recipe } : {}),
+        },
+        halt,
+        incident,
+        assessment,
+        evaluatedAt,
+      );
+      const automatic = ["allow_auto_heal", "allow_bounded_retry"].includes(
+        decision.disposition,
+      );
+      let lease: RepairLeaseV1 | undefined;
+      const operationEventIds = new Set<string>();
+      let causationId = prior?.verdictId ?? assessment.assessmentId;
+      if (automatic) {
+        if (!recipe || !idempotencyKey)
+          invalid(
+            "An automatic Warden candidate requires exact recipe identity and an idempotency key.",
+          );
+        if (!leaseInput)
+          invalid("An automatic Warden candidate requires an exclusive repair lease.");
+        const expectedEpoch =
+          (projected.repairLeaseEpochByScope.get(scopeKey) ?? 0) + 1;
+        if (leaseInput.expectedEpoch !== expectedEpoch)
+          throw new ChangeControlError(
+            `REPAIR_LEASE_LOST: expected monotonic repair lease epoch ${expectedEpoch}.`,
+            "CONFLICT",
+            409,
+          );
+        const conflictingKey = [...projected.wardenVerdicts.values()].find(
+          (candidate) =>
+            candidate.idempotencyKey === idempotencyKey &&
+            (candidate.haltId !== haltId ||
+              !sameWardenRecipeIdentity(candidate.recipe, recipe)),
+        );
+        if (conflictingKey)
+          throw new ChangeControlError(
+            "The Warden idempotency key is already bound to conflicting repair authority.",
+            "CONFLICT",
+            409,
+          );
+        lease = {
+          contractType: "RepairLeaseV1",
+          contractVersion: "1.0",
+          leaseId: leaseInput.leaseId,
+          projectId,
+          incidentId: incident.incidentId,
+          haltId,
+          epoch: expectedEpoch,
+          state: "active",
+          acquiredAt: evaluatedAt,
+          acquiredBy: "policy:warden-v1",
+        };
+        assertWardenContractV1(lease, "RepairLeaseV1");
+        const leaseEvent = this.append(ledger, {
+          id: requireIdentifier(this.createId(), "id"),
+          type: "warden.repair-lease-acquired",
+          occurredAt: evaluatedAt,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:warden-v1",
+          causationId,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({ lease }),
+        });
+        operationEventIds.add(leaseEvent.id);
+        causationId = leaseEvent.id;
+      }
+      const verdict: WardenVerdictV1 = {
+        contractType: "WardenVerdictV1",
+        contractVersion: "1.0",
+        verdictId,
+        projectId,
+        changeId: halt.changeId,
+        haltId,
+        incidentId: incident.incidentId,
+        attributionAssessmentId: assessment.assessmentId,
+        evidenceSnapshot,
+        policyVersion,
+        verdictOrdinal: input.verdictOrdinal,
+        requestedAction: input.requestedAction,
+        disposition: decision.disposition,
+        reasonCode: decision.reasonCode,
+        ...(recipe ? { recipe } : {}),
+        budgets: decision.budgets,
+        ...(lease
+          ? {
+              repairLease: {
+                leaseId: lease.leaseId,
+                projectId: lease.projectId,
+                incidentId: lease.incidentId,
+                haltId: lease.haltId,
+                epoch: lease.epoch,
+                acquiredAt: lease.acquiredAt,
+              },
+              idempotencyKey: idempotencyKey!,
+            }
+          : {}),
+        supersedesVerdictId: prior?.verdictId ?? null,
+        evaluatedAt,
+        evaluatedBy: "policy:warden-v1",
+      };
+      try {
+        assertWardenContractV1(verdict, "WardenVerdictV1");
+      } catch (error) {
+        invalid(error instanceof Error ? error.message : "Warden verdict is invalid.");
+      }
+      const verdictEvent = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "warden.verdict-recorded",
+        occurredAt: evaluatedAt,
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor: "policy:warden-v1",
+        causationId,
+        correlationId: halt.correlationId,
+        payload: normalizePayload({ verdict }),
+      });
+      operationEventIds.add(verdictEvent.id);
+      if (["classified", "action_pending", "healing"].includes(halt.state)) {
+        const quarantine = verdict.disposition === "quarantine";
+        const transitionEvent = this.append(ledger, {
+          id: requireIdentifier(this.createId(), "id"),
+          type: quarantine ? "halt.quarantined" : "halt.dispositioned",
+          occurredAt: evaluatedAt,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:warden-v1",
+          causationId: verdict.verdictId,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({
+            haltId,
+            previousState: halt.state,
+            state: quarantine ? "quarantined" : "action_pending",
+            reasonCode: verdict.reasonCode ?? "WARDEN_AUTO_ACTION_ALLOWED",
+            evidenceRefs: evidenceSnapshot.evidenceRefs,
+          }),
+        });
+        operationEventIds.add(transitionEvent.id);
+      }
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return wardenAggregate(next, haltId, operationEventIds);
+    });
+  }
+
+  async transitionWardenRepairLease(
+    projectIdValue: string,
+    haltIdValue: string,
+    input: TransitionWardenRepairLeaseInputV1,
+  ): Promise<WardenAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const leaseId = requireIdentifier(input?.leaseId, "leaseId");
+    if (!Number.isSafeInteger(input?.leaseEpoch) || input.leaseEpoch < 1)
+      invalid("leaseEpoch must be a positive integer.");
+    if (!["released", "lost"].includes(input?.to))
+      invalid("A repair lease may transition only to released or lost.");
+    const actor = requireIdentity(input?.actor, "actor");
+    if (actor !== "policy:warden-v1")
+      invalid("Repair lease transitions require the deterministic Warden actor.");
+    const evidenceRefs = normalizeEvidenceRefs(input?.evidenceRefs);
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const lease = projected.repairLeases.get(leaseId);
+      const halt = projected.halts.get(haltId);
+      const incidentId = projected.effectiveIncidentByHalt.get(haltId);
+      const incident = incidentId ? projected.incidents.get(incidentId) : undefined;
+      const assessment = halt?.classificationAssessmentId
+        ? projected.assessments.get(halt.classificationAssessmentId)
+        : undefined;
+      if (!lease || !halt || !incident || !assessment)
+        throw new ChangeControlError(
+          `Active repair lease ${leaseId} was not found.`,
+          "NOT_FOUND",
+          404,
+        );
+      if (
+        lease.haltId !== haltId ||
+        lease.incidentId !== incident.incidentId ||
+        lease.epoch !== input.leaseEpoch ||
+        lease.state !== "active"
+      )
+        throw new ChangeControlError(
+          "REPAIR_LEASE_LOST: repair lease identity or epoch no longer matches.",
+          "CONFLICT",
+          409,
+        );
+      const publicationTime = this.now();
+      const operationEventIds = new Set<string>();
+      const transitionEvent = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type:
+          input.to === "lost"
+            ? "warden.repair-lease-lost"
+            : "warden.repair-lease-released",
+        occurredAt: publicationTime,
+        projectId,
+        changeId: halt.changeId,
+        ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+        ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+        actor,
+        causationId: lease.leaseId,
+        correlationId: halt.correlationId,
+        payload: normalizePayload({
+          haltId,
+          incidentId: incident.incidentId,
+          leaseId,
+          leaseEpoch: lease.epoch,
+          previousState: "active",
+          state: input.to,
+          evidenceRefs,
+        }),
+      });
+      operationEventIds.add(transitionEvent.id);
+      if (input.to === "lost") {
+        const history = projected.wardenVerdictsByHalt.get(haltId) ?? [];
+        const prior = history.at(-1);
+        if (!prior || prior.repairLease?.leaseId !== leaseId)
+          throw new ChangeControlError(
+            "REPAIR_LEASE_LOST: the lease lacks an active Warden verdict.",
+            "CONFLICT",
+            409,
+          );
+        const verdictId = requireIdentifier(input.verdictId, "verdictId");
+        const snapshotBody = {
+          ...prior.evidenceSnapshot,
+          capturedAt: publicationTime,
+          haltRecordHash: wardenContractHashV1(halt),
+          incidentRecordHash: wardenContractHashV1(incident),
+          attributionAssessmentHash: wardenContractHashV1(assessment),
+          evidenceRefs: [...new Set([...prior.evidenceSnapshot.evidenceRefs, ...evidenceRefs])],
+          sideEffectState: assessment.evidence.sideEffectState,
+          priorRepairResult: "ambiguous" as const,
+          quarantineReasonCodes: ["REPAIR_LEASE_LOST" as const],
+        };
+        const { snapshotHash: _priorHash, ...withoutHash } = snapshotBody;
+        const evidenceSnapshot: WardenEvidenceSnapshotV1 = {
+          ...withoutHash,
+          snapshotHash: wardenEvidenceSnapshotHashV1(withoutHash),
+        };
+        const verdict: WardenVerdictV1 = {
+          contractType: "WardenVerdictV1",
+          contractVersion: "1.0",
+          verdictId,
+          projectId,
+          changeId: halt.changeId,
+          haltId,
+          incidentId: incident.incidentId,
+          attributionAssessmentId: assessment.assessmentId,
+          evidenceSnapshot,
+          policyVersion: prior.policyVersion,
+          verdictOrdinal: prior.verdictOrdinal + 1,
+          requestedAction: prior.requestedAction,
+          disposition: "quarantine",
+          reasonCode: "REPAIR_LEASE_LOST",
+          ...(prior.recipe ? { recipe: prior.recipe } : {}),
+          budgets: wardenBudgetSnapshot(
+            projected,
+            haltId,
+            incident.incidentId,
+            false,
+          ),
+          supersedesVerdictId: prior.verdictId,
+          evaluatedAt: publicationTime,
+          evaluatedBy: "policy:warden-v1",
+        };
+        assertWardenContractV1(verdict, "WardenVerdictV1");
+        const verdictEvent = this.append(ledger, {
+          id: requireIdentifier(this.createId(), "id"),
+          type: "warden.verdict-recorded",
+          occurredAt: publicationTime,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:warden-v1",
+          causationId: transitionEvent.id,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({ verdict }),
+        });
+        operationEventIds.add(verdictEvent.id);
+        const haltEvent = this.append(ledger, {
+          id: requireIdentifier(this.createId(), "id"),
+          type: "halt.quarantined",
+          occurredAt: publicationTime,
+          projectId,
+          changeId: halt.changeId,
+          ...(halt.scope.waveId ? { waveId: halt.scope.waveId } : {}),
+          ...(halt.scope.taskId ? { taskId: halt.scope.taskId } : {}),
+          actor: "policy:warden-v1",
+          causationId: verdict.verdictId,
+          correlationId: halt.correlationId,
+          payload: normalizePayload({
+            haltId,
+            previousState: halt.state,
+            state: "quarantined",
+            reasonCode: "REPAIR_LEASE_LOST",
+            evidenceRefs: evidenceSnapshot.evidenceRefs,
+          }),
+        });
+        operationEventIds.add(haltEvent.id);
+      }
+      const next = validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return wardenAggregate(next, haltId, operationEventIds);
+    });
+  }
+
+  async getWardenProjection(
+    projectIdValue: string,
+  ): Promise<WardenProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return immutableWardenProjection(projectId, validateAndProject(ledger));
+  }
+
+  async getWardenVerdict(
+    projectIdValue: string,
+    haltIdValue: string,
+  ): Promise<WardenAggregateV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const haltId = requireIdentifier(haltIdValue, "haltId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return wardenAggregate(validateAndProject(ledger), haltId);
   }
 
   async executionBucket(

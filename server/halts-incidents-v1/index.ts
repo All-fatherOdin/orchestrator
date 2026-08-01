@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import Ajv2020 from "ajv8/dist/2020.js";
 import haltsIncidentsV1Schema from "./schemas/halts-incidents-v1.schema.json";
+import wardenV1Schema from "./schemas/warden-v1.schema.json";
 
 export const HALT_CLASSES_V1 = [
   "deterministic_owned_recovery",
@@ -34,6 +35,101 @@ export const HALT_INCIDENT_EVENT_TYPES_V1 = [
   "incident.correlation-superseded",
 ] as const;
 
+export const WARDEN_EVENT_TYPES_V1 = [
+  "warden.repair-lease-acquired",
+  "warden.repair-lease-released",
+  "warden.repair-lease-lost",
+  "warden.verdict-recorded",
+] as const;
+
+export const WARDEN_DISPOSITIONS_V1 = [
+  "allow_auto_heal",
+  "allow_bounded_retry",
+  "require_replan",
+  "require_human",
+  "quarantine",
+] as const;
+
+export const WARDEN_DENIAL_REASON_CODES_V1 = [
+  "HALT_EVIDENCE_INVALID",
+  "HALT_CLASS_UNKNOWN",
+  "ATTRIBUTION_NOT_EXACT",
+  "WARDEN_POLICY_UNKNOWN",
+  "EVIDENCE_STALE",
+  "SIDE_EFFECT_AMBIGUOUS",
+  "RECIPE_NOT_ALLOWLISTED",
+  "RECIPE_PRECONDITION_FAILED",
+  "REPAIR_BUDGET_EXHAUSTED",
+  "REPAIR_LEASE_LOST",
+  "REPAIR_RESULT_AMBIGUOUS",
+  "REPLAN_REQUIRED",
+  "HUMAN_AUTHORITY_REQUIRED",
+  "BLOCKING_INCIDENT_OPEN",
+] as const;
+
+const recipeCodeHash = (recipeId: string) =>
+  createHash("sha256").update(`warden-recipe-v1\n${recipeId}\n1.0`).digest("hex");
+
+const typedAdapterOracle = (oracleId: string) =>
+  Object.freeze({ oracleId, kind: "typed_adapter" as const });
+
+const registeredCommandOracle = (oracleId: string) =>
+  Object.freeze({ oracleId, kind: "registered_command" as const });
+
+export const WARDEN_REPAIR_RECIPES_V1 = [
+  {
+    recipeId: "provider-read-retry-v1",
+    recipeVersion: "1.0",
+    codeHash: recipeCodeHash("provider-read-retry-v1"),
+    haltClass: "retryable_provider_or_process",
+    disposition: "allow_bounded_retry",
+    successOracle: typedAdapterOracle("oracle:provider-read-success-v1"),
+    stopOracle: typedAdapterOracle("oracle:provider-read-stop-v1"),
+  },
+  {
+    recipeId: "registered-process-retry-v1",
+    recipeVersion: "1.0",
+    codeHash: recipeCodeHash("registered-process-retry-v1"),
+    haltClass: "retryable_provider_or_process",
+    disposition: "allow_bounded_retry",
+    successOracle: registeredCommandOracle("oracle:registered-process-success-v1"),
+    stopOracle: registeredCommandOracle("oracle:registered-process-stop-v1"),
+  },
+  {
+    recipeId: "workspace-reconcile-v1",
+    recipeVersion: "1.0",
+    codeHash: recipeCodeHash("workspace-reconcile-v1"),
+    haltClass: "deterministic_owned_recovery",
+    disposition: "allow_auto_heal",
+    successOracle: typedAdapterOracle("oracle:workspace-reconcile-success-v1"),
+    stopOracle: typedAdapterOracle("oracle:workspace-reconcile-stop-v1"),
+  },
+  {
+    recipeId: "merge-safe-abort-resume-v1",
+    recipeVersion: "1.0",
+    codeHash: recipeCodeHash("merge-safe-abort-resume-v1"),
+    haltClass: "deterministic_owned_recovery",
+    disposition: "allow_auto_heal",
+    successOracle: typedAdapterOracle("oracle:merge-safe-abort-resume-success-v1"),
+    stopOracle: typedAdapterOracle("oracle:merge-safe-abort-resume-stop-v1"),
+  },
+  {
+    recipeId: "owned-cleanup-retry-v1",
+    recipeVersion: "1.0",
+    codeHash: recipeCodeHash("owned-cleanup-retry-v1"),
+    haltClass: "deterministic_owned_recovery",
+    disposition: "allow_auto_heal",
+    successOracle: typedAdapterOracle("oracle:owned-cleanup-success-v1"),
+    stopOracle: typedAdapterOracle("oracle:owned-cleanup-stop-v1"),
+  },
+] as const;
+
+export const WARDEN_POLICY_V1 = Object.freeze({
+  policyVersion: "warden-policy-v1" as const,
+  evidenceMaxAgeSeconds: 300,
+  budgets: Object.freeze({ perHalt: 1, perIncident: 2, perProject: 4 }),
+});
+
 export const HALT_INCIDENT_REASON_CODES_V1 = [
   "HALT_EVIDENCE_INVALID",
   "HALT_CLASS_UNKNOWN",
@@ -55,6 +151,7 @@ export const HALT_INCIDENT_REASON_CODES_V1 = [
   "REPLAN_REQUIRED",
   "HUMAN_AUTHORITY_REQUIRED",
   "BLOCKING_INCIDENT_OPEN",
+  "WARDEN_AUTO_ACTION_ALLOWED",
 ] as const;
 
 export type HaltClassV1 = (typeof HALT_CLASSES_V1)[number];
@@ -62,6 +159,10 @@ export type HaltIncidentEventTypeV1 =
   (typeof HALT_INCIDENT_EVENT_TYPES_V1)[number];
 export type HaltIncidentReasonCodeV1 =
   (typeof HALT_INCIDENT_REASON_CODES_V1)[number];
+export type WardenEventTypeV1 = (typeof WARDEN_EVENT_TYPES_V1)[number];
+export type WardenDispositionV1 = (typeof WARDEN_DISPOSITIONS_V1)[number];
+export type WardenDenialReasonCodeV1 =
+  (typeof WARDEN_DENIAL_REASON_CODES_V1)[number];
 export type HaltStateV1 =
   | "detected"
   | "classified"
@@ -221,6 +322,175 @@ export type IncidentRecordV1 = Readonly<{
   correlationReasonCode: HaltIncidentReasonCodeV1;
   openedAt: string;
   closureReceiptId?: string;
+}>;
+
+export type WardenRecipeIdentityV1 = Readonly<{
+  recipeId: string;
+  recipeVersion: string;
+  codeHash: string;
+}>;
+
+export type WardenExecutableOracleV1 = Readonly<{
+  oracleId: string;
+  kind: "registered_command" | "typed_adapter";
+  evidenceRefs: readonly string[];
+}>;
+
+export type WardenEvidenceSnapshotV1 = Readonly<{
+  snapshotVersion: "warden-evidence-v1";
+  snapshotHash: string;
+  capturedAt: string;
+  haltRecordHash: string;
+  incidentRecordHash: string;
+  attributionAssessmentHash: string;
+  evidenceRefs: readonly string[];
+  sideEffectState: AttributionAssessmentV1["evidence"]["sideEffectState"];
+  preconditionsUnchanged: boolean;
+  priorRepairResult: "none" | "unambiguous" | "ambiguous";
+  quarantineReasonCodes: readonly WardenDenialReasonCodeV1[];
+  successOracle: WardenExecutableOracleV1;
+  stopOracle: WardenExecutableOracleV1;
+}>;
+
+export type WardenBudgetCountersV1 = Readonly<{
+  halt: number;
+  incident: number;
+  project: number;
+}>;
+
+export type WardenBudgetSnapshotV1 = Readonly<{
+  limits: WardenBudgetCountersV1;
+  consumedBefore: WardenBudgetCountersV1;
+  remainingAfter: WardenBudgetCountersV1;
+}>;
+
+export type RepairLeaseV1 = Readonly<{
+  contractType: "RepairLeaseV1";
+  contractVersion: "1.0";
+  leaseId: string;
+  projectId: string;
+  incidentId: string;
+  haltId: string;
+  epoch: number;
+  state: "active" | "released" | "lost";
+  acquiredAt: string;
+  acquiredBy: "policy:warden-v1";
+  terminalAt?: string;
+  terminalBy?: string;
+  terminalEvidenceRefs?: readonly string[];
+}>;
+
+export type RepairLeaseReferenceV1 = Readonly<
+  Pick<
+    RepairLeaseV1,
+    "leaseId" | "projectId" | "incidentId" | "haltId" | "epoch" | "acquiredAt"
+  >
+>;
+
+export type WardenVerdictV1 = Readonly<{
+  contractType: "WardenVerdictV1";
+  contractVersion: "1.0";
+  verdictId: string;
+  projectId: string;
+  changeId: string;
+  haltId: string;
+  incidentId: string;
+  attributionAssessmentId: string;
+  evidenceSnapshot: WardenEvidenceSnapshotV1;
+  policyVersion: string;
+  verdictOrdinal: number;
+  requestedAction: "auto_heal" | "bounded_retry" | "none";
+  disposition: WardenDispositionV1;
+  reasonCode: WardenDenialReasonCodeV1 | null;
+  recipe?: WardenRecipeIdentityV1;
+  budgets: WardenBudgetSnapshotV1;
+  repairLease?: RepairLeaseReferenceV1;
+  idempotencyKey?: string;
+  supersedesVerdictId: string | null;
+  evaluatedAt: string;
+  evaluatedBy: "policy:warden-v1";
+}>;
+
+type WardenEventEnvelopeV1<
+  T extends WardenEventTypeV1,
+  P extends Readonly<Record<string, unknown>>,
+> = Readonly<{
+  id: string;
+  sequence: number;
+  type: T;
+  occurredAt: string;
+  projectId: string;
+  changeId: string;
+  waveId?: string;
+  taskId?: string;
+  actor: string;
+  causationId: string;
+  correlationId: string;
+  payload: P;
+  previousHash: string | null;
+  hash: string;
+}>;
+
+export type WardenRepairLeaseAcquiredEventV1 = WardenEventEnvelopeV1<
+  "warden.repair-lease-acquired",
+  Readonly<{ lease: RepairLeaseV1 }>
+>;
+export type WardenRepairLeaseTransitionEventV1 = WardenEventEnvelopeV1<
+  "warden.repair-lease-released" | "warden.repair-lease-lost",
+  Readonly<{
+    haltId: string;
+    incidentId: string;
+    leaseId: string;
+    leaseEpoch: number;
+    previousState: "active";
+    state: "released" | "lost";
+    evidenceRefs: readonly string[];
+  }>
+>;
+export type WardenVerdictRecordedEventV1 = WardenEventEnvelopeV1<
+  "warden.verdict-recorded",
+  Readonly<{ verdict: WardenVerdictV1 }>
+>;
+export type WardenEventV1 =
+  | WardenRepairLeaseAcquiredEventV1
+  | WardenRepairLeaseTransitionEventV1
+  | WardenVerdictRecordedEventV1;
+
+export type WardenProjectionV1 = Readonly<{
+  projectId: string;
+  verdicts: readonly WardenVerdictV1[];
+  activeVerdicts: readonly WardenVerdictV1[];
+  leases: readonly RepairLeaseV1[];
+  events: readonly WardenEventV1[];
+}>;
+
+export type EvaluateWardenVerdictInputV1 = Readonly<{
+  verdictId: string;
+  policyVersion: string;
+  verdictOrdinal: number;
+  requestedAction: "auto_heal" | "bounded_retry" | "none";
+  evidenceSnapshot: WardenEvidenceSnapshotV1;
+  recipe?: WardenRecipeIdentityV1;
+  idempotencyKey?: string;
+  lease?: Readonly<{ leaseId: string; expectedEpoch: number }>;
+}>;
+
+export type TransitionWardenRepairLeaseInputV1 = Readonly<{
+  leaseId: string;
+  leaseEpoch: number;
+  to: "released" | "lost";
+  actor: string;
+  evidenceRefs: readonly string[];
+  verdictId?: string;
+}>;
+
+export type WardenAggregateV1 = Readonly<{
+  verdict: WardenVerdictV1;
+  halt: HaltRecordV1;
+  incident: IncidentRecordV1;
+  lease?: RepairLeaseV1;
+  verdictHistory: readonly WardenVerdictV1[];
+  events: readonly WardenEventV1[];
 }>;
 
 type HaltIncidentEventEnvelopeV1<
@@ -428,6 +698,10 @@ const validator = new Ajv2020({
   allErrors: true,
   strict: true,
 }).compile(haltsIncidentsV1Schema);
+const wardenValidator = new Ajv2020({
+  allErrors: true,
+  strict: true,
+}).compile(wardenV1Schema);
 
 type ContractByTypeV1 = {
   HaltRecordV1: HaltRecordV1;
@@ -456,6 +730,29 @@ export function assertHaltIncidentContractV1<
   }
 }
 
+type WardenContractByTypeV1 = {
+  WardenVerdictV1: WardenVerdictV1;
+  RepairLeaseV1: RepairLeaseV1;
+};
+
+export function assertWardenContractV1<T extends keyof WardenContractByTypeV1>(
+  value: unknown,
+  expectedType: T,
+): asserts value is WardenContractByTypeV1[T] {
+  if (
+    !wardenValidator(value) ||
+    (value as { contractType?: unknown } | null)?.contractType !== expectedType
+  ) {
+    const detail =
+      wardenValidator.errors
+        ?.map((error) => `${error.instancePath || "/"} ${error.message}`)
+        .join("; ") ?? "unknown validation error";
+    throw new Error(
+      `${expectedType} does not satisfy Warden Contract v1: ${detail}`,
+    );
+  }
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value))
@@ -471,6 +768,16 @@ function versionedHash(version: string, value: unknown) {
   return createHash("sha256")
     .update(`${version}\n${canonicalJson(value)}`)
     .digest("hex");
+}
+
+export function wardenContractHashV1(value: unknown) {
+  return versionedHash("warden-contract-v1", value);
+}
+
+export function wardenEvidenceSnapshotHashV1(
+  snapshot: Omit<WardenEvidenceSnapshotV1, "snapshotHash">,
+) {
+  return versionedHash("warden-evidence-v1", snapshot);
 }
 
 export function observationFingerprintV1(
