@@ -277,7 +277,7 @@ allocates a new immutable attempt identity and records a stale-plan assessment;
 the next dispatch must pass fresh Phase 2 planning, authorization, drift,
 dependency, acceptance, Phase 3 ownership, and blocking-incident gates.
 
-### Prompt and model lineage v1
+### Prompt, model, and eval lineage v1
 
 The first Phase 5 slice extends the same per-project hash chain with immutable
 `PromptArtifactV1`, `ModelRouteV1`, `AttemptConfigurationBindingV1`, and
@@ -289,8 +289,13 @@ events are `prompt.artifact-published`, `prompt.artifact-revoked`,
 `model.execution-resolved`. Publisher occurrence IDs are idempotent across
 threads, processes, and restart; reuse with different content is rejected.
 
-This slice is explicitly configuration-lineage only. It does not implement
-eval suites, eval runs, reports, comparisons, or champion decisions.
+The second Phase 5 slice adds immutable `EvalSuiteV1`, fixed `EvalCohortV1`,
+`EvalRunV1`, observations, deterministic reports, credential-free
+`runtime-evals-v1` import receipts, and separately authorized champion
+decisions. A run cannot seal until its declared case/sample/candidate matrix is
+complete. Failed, interrupted, and unsupported results remain visible in the
+declared denominator; promotion fails closed on non-comparability, insufficient
+sample size, missed objectives or guardrails, and missing authority.
 
 The focused APIs are:
 
@@ -301,6 +306,10 @@ The focused APIs are:
 - `POST /api/change-control/projects/:projectId/changes/:changeId/model-routes/:routeId/revocations`
 - `POST /api/change-control/projects/:projectId/changes/:changeId/attempt-configuration-bindings`
 - `POST /api/change-control/projects/:projectId/changes/:changeId/model-executions`
+- `GET /api/change-control/projects/:projectId/eval-lineage`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/eval-events`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/eval-reports`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/runtime-eval-imports`
 
 A managed task opts into this boundary with a
 `PromptModelExecutionConfigurationV1` reference under `promptModel`. It names

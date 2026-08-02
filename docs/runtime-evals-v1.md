@@ -17,3 +17,9 @@ The JSON report gives every metric an explicit state. Quality, safety, and evide
 For a local gate regression, add `--inject-critical-failure AMK-SE-002`. It writes a report where all four required outcomes for that case and their aggregates fail, then exits nonzero because the critical gate fails.
 
 Only `--mode mock` is supported. Any live or provider mode fails closed: it does not invoke a CLI, use credentials, access the network, or make a side effect. Provider event semantics, cache values, pricing, and usage remain unsupported until a separately scoped implementation can measure and label them truthfully.
+
+Phase 5 may import a schema-shaped mock JSON report through the
+`runtime-eval-imports` change-control endpoint. The import stores a content
+hash and explicit unsupported dimension names against an existing eval run; it
+does not upgrade mock evidence into provider measurements. Non-mock or
+provider-executing reports fail closed.

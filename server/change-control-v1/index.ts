@@ -86,6 +86,29 @@ import {
   type PromptModelReplayContextV1,
   type ResolvedModelExecutionV1,
 } from "../prompt-model-eval-v1/index.ts";
+import {
+  EVAL_LINEAGE_EVENT_TYPES_V1,
+  EvalLineageErrorV1,
+  applyEvalLineageEventV1,
+  computeEvalReportV1,
+  createEvalLineageProjectionV1,
+  duplicateEvalPublisherEventV1,
+  immutableEvalLineageProjectionV1,
+  runtimeEvalsV1ImportIdentity,
+  type ChampionDecisionV1,
+  type EvalCohortV1,
+  type EvalImportReceiptV1,
+  type EvalLineageEventTypeV1,
+  type EvalLineageEventV1,
+  type EvalLineageProjectionV1,
+  type EvalLineageReasonCodeV1,
+  type EvalObservationV1,
+  type EvalReportV1,
+  type EvalRevocationV1,
+  type EvalRunV1,
+  type EvalSuiteV1,
+  type MutableEvalLineageProjectionV1,
+} from "../prompt-model-eval-v1/eval-lineage-v1.ts";
 
 export {
   type CorrectIncidentCorrelationInputV1,
@@ -123,6 +146,24 @@ export {
   type ResolvedModelExecutionV1,
 } from "../prompt-model-eval-v1/index.ts";
 
+export {
+  EVAL_LINEAGE_EVENT_TYPES_V1,
+  EVAL_LINEAGE_REASON_CODES_V1,
+  computeEvalReportV1,
+  evalContentHashV1,
+  runtimeEvalsV1ImportIdentity,
+  type ChampionDecisionV1,
+  type EvalCohortV1,
+  type EvalImportReceiptV1,
+  type EvalLineageEventV1,
+  type EvalLineageProjectionV1,
+  type EvalLineageReasonCodeV1,
+  type EvalObservationV1,
+  type EvalReportV1,
+  type EvalRunV1,
+  type EvalSuiteV1,
+} from "../prompt-model-eval-v1/eval-lineage-v1.ts";
+
 export const CHANGE_CONTROL_EVENT_TYPES = [
   "change.created",
   "change.planned",
@@ -155,6 +196,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   ...DOCTOR_EVENT_TYPES_V1,
   ...RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
   ...PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
+  ...EVAL_LINEAGE_EVENT_TYPES_V1,
 ] as const;
 
 export type ChangeControlEventType =
@@ -771,6 +813,7 @@ export class ChangeControlError extends Error {
       | DispatchReadinessReason
       | DispatchGateReasonV1
       | PromptModelLineageReasonCodeV1
+      | EvalLineageReasonCodeV1
     )[],
   ) {
     super(message);
@@ -959,6 +1002,33 @@ export type RecordResolvedModelExecutionInputV1 = Readonly<{
   correlationId?: string;
 }>;
 
+export type PublishEvalLineageEventInputV1 = Readonly<{
+  type: EvalLineageEventTypeV1;
+  publisherOccurrenceId: string;
+  actor: string;
+  occurredAt: string;
+  payload: Readonly<{
+    suite?: EvalSuiteV1; cohort?: EvalCohortV1; run?: EvalRunV1;
+    observation?: EvalObservationV1; report?: EvalReportV1;
+    importReceipt?: EvalImportReceiptV1; championDecision?: ChampionDecisionV1;
+    revocation?: EvalRevocationV1;
+  }>;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type PublishComputedEvalReportInputV1 = Readonly<{
+  publisherOccurrenceId: string; actor: string; occurredAt: string;
+  evalRunId: string; evalReportId: string; baselineCandidateId?: string;
+  causationId?: string; correlationId?: string;
+}>;
+
+export type RecordRuntimeEvalImportInputV1 = Readonly<{
+  publisherOccurrenceId: string; actor: string; occurredAt: string;
+  sourceReport: unknown; receipt: EvalImportReceiptV1;
+  causationId?: string; correlationId?: string;
+}>;
+
 const eventTypeSet = new Set<string>(CHANGE_CONTROL_EVENT_TYPES);
 const changeEventTypes = new Set<ChangeControlEventType>([
   "change.created",
@@ -996,6 +1066,9 @@ const recoveryAuthorizationEventTypes = new Set<ChangeControlEventType>(
 );
 const promptModelLineageEventTypes = new Set<ChangeControlEventType>(
   PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
+);
+const evalLineageEventTypes = new Set<ChangeControlEventType>(
+  EVAL_LINEAGE_EVENT_TYPES_V1,
 );
 const changeTargetForType = {
   "change.created": "draft",
@@ -1285,6 +1358,7 @@ type ProjectedLedger = {
   recoveryAuthorizationIds: Set<string>;
   recoveryAttemptIds: Set<string>;
   promptModelLineage: MutablePromptModelLineageProjectionV1;
+  evalLineage: MutableEvalLineageProjectionV1;
 };
 
 function waveKey(changeId: string, waveId: string) {
@@ -1330,6 +1404,25 @@ function promptModelReplayContext(
           : {}),
       };
     },
+  };
+}
+
+function evalReplayContext(
+  projected: Pick<ProjectedLedger, "projections" | "promptModelLineage" | "halts" | "incidents">,
+) {
+  return {
+    hasChange: (changeId: string) => projected.projections.has(changeId),
+    hasBinding: (
+      bindingId: string,
+      member: { changeId: string; waveId: string; taskId: string; bindingId: string; commitSha?: string },
+    ) => {
+      const binding = projected.promptModelLineage.bindings.get(bindingId);
+      return !!binding && binding.bindingId === member.bindingId &&
+        binding.changeId === member.changeId && binding.waveId === member.waveId &&
+        binding.taskId === member.taskId;
+    },
+    hasHalt: (haltId: string) => projected.halts.has(haltId),
+    hasIncident: (incidentId: string) => projected.incidents.has(incidentId),
   };
 }
 
@@ -3855,6 +3948,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   const promptModelLineage = createPromptModelLineageProjectionV1(
     ledger.projectId,
   );
+  const evalLineage = createEvalLineageProjectionV1(ledger.projectId);
   const eventIds = new Set<string>();
   let previousHash: string | null = null;
 
@@ -4722,6 +4816,18 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(`${error.reasonCode}: ${error.message}`);
         throw error;
       }
+    } else if (evalLineageEventTypes.has(event.type)) {
+      try {
+        applyEvalLineageEventV1(
+          event as unknown as EvalLineageEventV1,
+          evalLineage,
+          evalReplayContext({ projections, promptModelLineage, halts, incidents }),
+        );
+      } catch (error) {
+        if (error instanceof EvalLineageErrorV1)
+          corrupt(`${error.reasonCode}: ${error.message}`);
+        throw error;
+      }
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
       const taskId = requireStoredIdentifier(event.taskId, "taskId");
@@ -4848,6 +4954,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     recoveryAuthorizationIds,
     recoveryAttemptIds,
     promptModelLineage,
+    evalLineage,
   };
 }
 
@@ -5934,6 +6041,120 @@ export class ChangeControlStore {
     const ledger = await readLedger(this.file(projectId), projectId);
     return immutablePromptModelLineageProjectionV1(
       validateAndProject(ledger).promptModelLineage,
+    );
+  }
+
+  async publishEvalLineageEventV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: PublishEvalLineageEventInputV1,
+  ): Promise<EvalLineageEventV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const occurrenceId = requireIdentifier(input?.publisherOccurrenceId, "publisherOccurrenceId");
+      const payload = input?.payload as Record<string, unknown>;
+      try {
+        const duplicate = duplicateEvalPublisherEventV1(
+          projected.evalLineage,
+          occurrenceId,
+          input?.type,
+          payload,
+        );
+        if (duplicate) return duplicate;
+      } catch (error) {
+        if (error instanceof EvalLineageErrorV1)
+          throw new ChangeControlError(error.message, "CONFLICT", 409, [error.reasonCode]);
+        throw error;
+      }
+      const changeEvents = projected.eventsByChange.get(changeId);
+      if (!changeEvents)
+        throw new ChangeControlError(`Change ${changeId} was not found.`, "NOT_FOUND", 404);
+      const event = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: input.type,
+        occurredAt: input.occurredAt,
+        projectId,
+        changeId,
+        actor: requireIdentity(input.actor, "actor"),
+        causationId: requireIdentity(input.causationId ?? ledger.events.at(-1)!.id, "causationId"),
+        correlationId: requireIdentity(input.correlationId ?? changeEvents[0]!.correlationId, "correlationId"),
+        payload: normalizePayload({ publisherOccurrenceId: occurrenceId, ...payload }),
+      }) as unknown as EvalLineageEventV1;
+      try {
+        applyEvalLineageEventV1(
+          event,
+          projected.evalLineage,
+          evalReplayContext(projected),
+        );
+      } catch (error) {
+        ledger.events.pop();
+        if (error instanceof EvalLineageErrorV1)
+          throw new ChangeControlError(error.message, "INVALID_INPUT", 400, [error.reasonCode]);
+        throw error;
+      }
+      validateAndProject(ledger);
+      await writeAtomically(file, ledger);
+      return deepFreeze(structuredClone(event));
+    });
+  }
+
+  async publishComputedEvalReportV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: PublishComputedEvalReportInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const projected = validateAndProject(await readLedger(this.file(projectId), projectId));
+    const run = projected.evalLineage.runs.get(input.evalRunId);
+    if (!run) throw new ChangeControlError("Eval run was not found.", "NOT_FOUND", 404, ["EVAL_RUN_STATE_INVALID"]);
+    const suite = projected.evalLineage.suites.get(run.run.evalSuiteId)?.value;
+    const cohort = projected.evalLineage.cohorts.get(run.run.evalCohortId)?.value;
+    if (!suite || !cohort) throw new ChangeControlError("Eval suite or cohort was not found.", "NOT_FOUND", 404, ["EVAL_SUITE_UNKNOWN"]);
+    const report = computeEvalReportV1({ evalReportId: input.evalReportId, run, suite, cohort, baselineCandidateId: input.baselineCandidateId, computedAt: input.occurredAt, evaluatorId: input.actor });
+    return this.publishEvalLineageEventV1(projectId, changeIdValue, {
+      type: "eval.report-published", publisherOccurrenceId: input.publisherOccurrenceId,
+      actor: input.actor, occurredAt: input.occurredAt, payload: { report },
+      causationId: input.causationId, correlationId: input.correlationId,
+    });
+  }
+
+  async recordRuntimeEvalImportV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: RecordRuntimeEvalImportInputV1,
+  ) {
+    let identity: ReturnType<typeof runtimeEvalsV1ImportIdentity>;
+    try {
+      identity = runtimeEvalsV1ImportIdentity(input.sourceReport);
+    } catch (error) {
+      if (error instanceof EvalLineageErrorV1)
+        throw new ChangeControlError(error.message, "INVALID_INPUT", 400, [error.reasonCode]);
+      throw error;
+    }
+    if (
+      input.receipt.sourceReportHash !== identity.sourceReportHash ||
+      JSON.stringify([...input.receipt.unsupportedDimensions].sort()) !==
+        JSON.stringify([...identity.unsupportedDimensions].sort())
+    )
+      throw new ChangeControlError("Runtime eval import receipt does not match the source report.", "INVALID_INPUT", 400, ["EVAL_IMPORT_INVALID"]);
+    return this.publishEvalLineageEventV1(projectIdValue, changeIdValue, {
+      type: "eval.import-recorded", publisherOccurrenceId: input.publisherOccurrenceId,
+      actor: input.actor, occurredAt: input.occurredAt,
+      payload: { importReceipt: input.receipt }, causationId: input.causationId,
+      correlationId: input.correlationId,
+    });
+  }
+
+  async getEvalLineageProjectionV1(
+    projectIdValue: string,
+  ): Promise<EvalLineageProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    return immutableEvalLineageProjectionV1(
+      validateAndProject(await readLedger(this.file(projectId), projectId)).evalLineage,
     );
   }
 

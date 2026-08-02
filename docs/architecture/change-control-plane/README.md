@@ -1,7 +1,7 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-4 implemented, Phase 5 contract proposed
-Last reviewed: 2026-08-01
+Status: evidence-backed target, Phase 1-5 implemented
+Last reviewed: 2026-08-02
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -24,7 +24,7 @@ were observed.
 8. [halts-incidents-contract-v1.md](halts-incidents-contract-v1.md) defines
    the accepted Phase 4 halt, incident, Warden, and Doctor boundary.
 9. [prompt-model-eval-lineage-contract-v1.md](prompt-model-eval-lineage-contract-v1.md)
-   defines the proposed Phase 5 prompt, model, and eval lineage boundary.
+   defines the implemented Phase 5 prompt, model, and eval lineage boundary.
 
 ## Current Boundary
 
@@ -41,9 +41,8 @@ It does not authorize agent execution, Git mutation, worktree management,
 merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
-Phase 1-4 implementation evidence is available. The completed local queues
-remain ignored execution history. The Phase 5 contract is proposed and does
-not yet authorize an implementation queue.
+Phase 1-5 implementation evidence is available. The completed local queues
+remain ignored execution history. Phase 6 remains separately authorized.
 
 ## Authority
 

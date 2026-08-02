@@ -1,10 +1,9 @@
 # Prompt, Model, and Eval Lineage Contract v1
 
-Status: proposed contract for Phase 5 authorization
+Status: implemented Phase 5 contract
 
 This document defines the normative Phase 5 boundary. The words MUST, MUST
-NOT, SHOULD, and MAY are requirements. Implementation is not authorized merely
-by publishing this proposal. Before runtime events are accepted, the
+NOT, SHOULD, and MAY are requirements. Before runtime events are accepted, the
 implementation MUST publish Draft 2020-12 schemas, examples, semantic
 validators, and deterministic replay tests.
 

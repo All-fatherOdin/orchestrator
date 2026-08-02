@@ -1,7 +1,7 @@
 # Current Status
 
 Status: active compact context pack
-Last updated: 2026-08-01
+Last updated: 2026-08-02
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run
@@ -48,6 +48,12 @@ executes only five fixed typed adapters, publishes fenced
 Independent Warden or audited-human events authorize retry/resume; Doctor
 success alone changes neither task/wave authority nor incident closure.
 
+Phase 5 Prompt/Model/Eval Lineage is implemented. Published prompt artifacts,
+model routes, attempt bindings, resolved executions, eval suites, fixed cohorts,
+run observations, deterministic reports, import receipts, and champion
+decisions replay from the same project ledger and fail closed at their declared
+identity, comparability, sample, guardrail, and authority boundaries.
+
 Current boundary:
 
 - `.orchestrator/runs/*/run.json` remains canonical for runs.
@@ -60,6 +66,6 @@ Current boundary:
 The evidence ledger, target architecture, roadmap, Planning and Drift Contract
 v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
 remain under `docs/architecture/change-control-plane/`. Completed local
-Phase 1-4 queues remain ignored execution history under `queues/`; they are
+Phase 1-5 queues remain ignored execution history under `queues/`; they are
 not the next operational step. The next product phase is separately authorized
-prompt/model/eval lineage; operator projections remain later.
+operator projections.

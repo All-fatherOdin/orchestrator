@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/eval-lineage-v1.schema.json",
+  "title": "Eval lineage contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/EvalSuiteV1" }, { "$ref": "#/$defs/EvalCohortV1" },
+    { "$ref": "#/$defs/EvalRunV1" }, { "$ref": "#/$defs/EvalObservationV1" },
+    { "$ref": "#/$defs/EvalReportV1" }, { "$ref": "#/$defs/EvalImportReceiptV1" },
+    { "$ref": "#/$defs/ChampionDecisionV1" }, { "$ref": "#/$defs/EvalLineageEventV1" }
+  ],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[a-f0-9]{40}(?:[a-f0-9]{24})?$" },
+    "utc": { "type": "string", "format": "date-time" },
+    "uniqueIds": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "dimension": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "reason"], "properties": { "state": { "const": "unsupported" }, "reason": { "$ref": "#/$defs/text" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "reason"], "properties": { "state": { "const": "measured" }, "value": { "$ref": "#/$defs/text" }, "reason": { "$ref": "#/$defs/text" } } }
+      ]
+    },
+    "metric": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "reason"], "properties": { "state": { "const": "unsupported" }, "reason": { "$ref": "#/$defs/text" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "unit"], "properties": { "state": { "const": "measured" }, "value": { "type": "number" }, "unit": { "$ref": "#/$defs/id" } } }
+      ]
+    },
+    "member": {
+      "type": "object", "additionalProperties": false,
+      "required": ["changeId", "waveId", "taskId", "bindingId"],
+      "properties": { "changeId": { "$ref": "#/$defs/id" }, "waveId": { "$ref": "#/$defs/id" }, "taskId": { "$ref": "#/$defs/id" }, "bindingId": { "$ref": "#/$defs/id" }, "commitSha": { "$ref": "#/$defs/gitSha" } }
+    },
+    "EvalCaseV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["evalCaseId", "inputFixtureRef", "acceptanceOracle", "severity", "expectedEvidenceRefs"],
+      "properties": {
+        "evalCaseId": { "$ref": "#/$defs/id" }, "inputFixtureRef": { "$ref": "#/$defs/text" },
+        "acceptanceOracle": { "type": "object", "additionalProperties": false, "required": ["kind", "oracleRef"], "properties": { "kind": { "enum": ["executable", "human"] }, "oracleRef": { "$ref": "#/$defs/text" } } },
+        "severity": { "enum": ["warning", "blocking", "critical"] }, "expectedEvidenceRefs": { "$ref": "#/$defs/uniqueIds" }
+      }
+    },
+    "EvalSuiteV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "evalSuiteId", "version", "purpose", "orderedCaseIds", "cases", "requiredOutcomeDimensions", "metricPolicyVersion", "criticalGate", "samplingPolicy", "environmentClass", "privacyClassification", "publishedBy", "publishedAt"],
+      "properties": {
+        "contractType": { "const": "EvalSuiteV1" }, "contractVersion": { "const": "1.0" }, "evalSuiteId": { "$ref": "#/$defs/id" }, "version": { "$ref": "#/$defs/id" }, "purpose": { "$ref": "#/$defs/text" },
+        "orderedCaseIds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }, "cases": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/EvalCaseV1" } },
+        "requiredOutcomeDimensions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }, "metricPolicyVersion": { "$ref": "#/$defs/id" },
+        "criticalGate": { "type": "object", "additionalProperties": false, "required": ["requiredPassRate", "criticalCaseIds"], "properties": { "requiredPassRate": { "type": "number", "minimum": 0, "maximum": 1 }, "criticalCaseIds": { "$ref": "#/$defs/uniqueIds" } } },
+        "samplingPolicy": { "type": "object", "additionalProperties": false, "required": ["samplesPerCandidate", "retryPolicy"], "properties": { "samplesPerCandidate": { "type": "integer", "minimum": 1, "maximum": 1000 }, "retryPolicy": { "enum": ["none", "new_sample"] } } },
+        "environmentClass": { "$ref": "#/$defs/id" }, "privacyClassification": { "enum": ["public_fixture", "approved_internal_fixture"] }, "supersedesId": { "$ref": "#/$defs/id" }, "publishedBy": { "$ref": "#/$defs/text" }, "publishedAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "EvalCohortV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "evalCohortId", "orderedMembers", "eligibilityRule", "inclusionRules", "exclusionRules", "selectionSeed", "selectedAt", "observationWindow", "taskMix", "baselineProvenance", "publishedBy", "publishedAt"],
+      "properties": {
+        "contractType": { "const": "EvalCohortV1" }, "contractVersion": { "const": "1.0" }, "evalCohortId": { "$ref": "#/$defs/id" }, "orderedMembers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/member" } },
+        "eligibilityRule": { "$ref": "#/$defs/text" }, "inclusionRules": { "type": "array", "items": { "$ref": "#/$defs/text" } }, "exclusionRules": { "type": "array", "items": { "$ref": "#/$defs/text" } }, "selectionSeed": { "$ref": "#/$defs/id" }, "selectedAt": { "$ref": "#/$defs/utc" },
+        "observationWindow": { "type": "object", "additionalProperties": false, "required": ["startsAt", "endsAt"], "properties": { "startsAt": { "$ref": "#/$defs/utc" }, "endsAt": { "$ref": "#/$defs/utc" } } },
+        "taskMix": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "baselineProvenance": { "type": "object", "additionalProperties": false, "required": ["kind", "evidenceRefs"], "properties": { "kind": { "enum": ["prior", "manual", "none"] }, "evidenceRefs": { "$ref": "#/$defs/uniqueIds" } } },
+        "supersedesId": { "$ref": "#/$defs/id" }, "publishedBy": { "$ref": "#/$defs/text" }, "publishedAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "candidate": {
+      "type": "object", "additionalProperties": false, "required": ["candidateId", "promptManifestHash", "modelRouteId", "dimensions"],
+      "properties": { "candidateId": { "$ref": "#/$defs/id" }, "promptManifestHash": { "$ref": "#/$defs/sha256" }, "modelRouteId": { "$ref": "#/$defs/id" }, "dimensions": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/dimension" } } }
+    },
+    "EvalRunV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "evalRunId", "evalSuiteId", "evalCohortId", "candidates", "runner", "environmentClass", "executionMode", "registeredBy", "registeredAt"],
+      "properties": {
+        "contractType": { "const": "EvalRunV1" }, "contractVersion": { "const": "1.0" }, "evalRunId": { "$ref": "#/$defs/id" }, "evalSuiteId": { "$ref": "#/$defs/id" }, "evalCohortId": { "$ref": "#/$defs/id" }, "candidates": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/candidate" } },
+        "runner": { "type": "object", "additionalProperties": false, "required": ["runnerId", "version", "codeHash"], "properties": { "runnerId": { "$ref": "#/$defs/id" }, "version": { "$ref": "#/$defs/id" }, "codeHash": { "$ref": "#/$defs/sha256" } } },
+        "environmentClass": { "$ref": "#/$defs/id" }, "executionMode": { "enum": ["mock", "provider", "imported"] }, "registeredBy": { "$ref": "#/$defs/text" }, "registeredAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "outcome": { "type": "object", "additionalProperties": false, "required": ["state", "evidenceRefs"], "properties": { "state": { "enum": ["pass", "fail", "unsupported"] }, "evidenceRefs": { "$ref": "#/$defs/uniqueIds" } } },
+    "EvalObservationV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "evalObservationId", "evalRunId", "evalCaseId", "sampleOrdinal", "candidateId", "invocationId", "member", "result", "outcomes", "metrics", "policyViolationCodes", "haltIds", "incidentIds", "incidentCoverage", "observedAt"],
+      "properties": {
+        "contractType": { "const": "EvalObservationV1" }, "contractVersion": { "const": "1.0" }, "evalObservationId": { "$ref": "#/$defs/id" }, "evalRunId": { "$ref": "#/$defs/id" }, "evalCaseId": { "$ref": "#/$defs/id" }, "sampleOrdinal": { "type": "integer", "minimum": 1 }, "candidateId": { "$ref": "#/$defs/id" }, "invocationId": { "$ref": "#/$defs/id" }, "member": { "$ref": "#/$defs/member" }, "result": { "enum": ["passed", "failed", "interrupted", "unsupported"] },
+        "outcomes": { "type": "object", "minProperties": 1, "additionalProperties": { "$ref": "#/$defs/outcome" } }, "metrics": { "type": "object", "additionalProperties": { "$ref": "#/$defs/metric" } }, "policyViolationCodes": { "$ref": "#/$defs/uniqueIds" }, "haltIds": { "$ref": "#/$defs/uniqueIds" }, "incidentIds": { "$ref": "#/$defs/uniqueIds" },
+        "incidentCoverage": { "type": "object", "additionalProperties": false, "required": ["startsAt", "endsAt", "sourceRefs"], "properties": { "startsAt": { "$ref": "#/$defs/utc" }, "endsAt": { "$ref": "#/$defs/utc" }, "sourceRefs": { "$ref": "#/$defs/uniqueIds" } } }, "observedAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "metricResult": { "type": "object", "additionalProperties": false, "required": ["state", "numerator", "denominator"], "properties": { "state": { "enum": ["measured", "unsupported"] }, "numerator": { "type": "number" }, "denominator": { "type": "number", "minimum": 0 }, "value": { "type": "number" }, "unit": { "$ref": "#/$defs/id" }, "uncertainty": { "type": "object", "additionalProperties": false, "required": ["method", "lower", "upper"], "properties": { "method": { "const": "wilson95" }, "lower": { "type": "number" }, "upper": { "type": "number" } } }, "reason": { "$ref": "#/$defs/text" } } },
+    "EvalReportV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "evalReportId", "evalRunId", "metricPolicyVersion", "cohortSize", "taskMix", "candidateResults", "comparisons", "exclusions", "computedAt", "evaluatorId"],
+      "properties": {
+        "contractType": { "const": "EvalReportV1" }, "contractVersion": { "const": "1.0" }, "evalReportId": { "$ref": "#/$defs/id" }, "evalRunId": { "$ref": "#/$defs/id" }, "metricPolicyVersion": { "$ref": "#/$defs/id" }, "cohortSize": { "type": "integer", "minimum": 1 }, "taskMix": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "candidateResults": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["candidateId", "metrics"], "properties": { "candidateId": { "$ref": "#/$defs/id" }, "metrics": { "type": "object", "additionalProperties": { "$ref": "#/$defs/metricResult" } } } } }, "baselineCandidateId": { "$ref": "#/$defs/id" },
+        "comparisons": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["baselineCandidateId", "candidateId", "verdict", "blockers", "deltas"], "properties": { "baselineCandidateId": { "$ref": "#/$defs/id" }, "candidateId": { "$ref": "#/$defs/id" }, "verdict": { "enum": ["comparable", "not_comparable"] }, "blockers": { "type": "array", "items": { "$ref": "#/$defs/text" } }, "deltas": { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": false, "required": ["absolute"], "properties": { "absolute": { "type": "number" }, "relative": { "type": "number" } } } } } } },
+        "exclusions": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["observationId", "reasonCode"], "properties": { "observationId": { "$ref": "#/$defs/id" }, "reasonCode": { "$ref": "#/$defs/id" } } } }, "computedAt": { "$ref": "#/$defs/utc" }, "evaluatorId": { "$ref": "#/$defs/text" }
+      }
+    },
+    "EvalImportReceiptV1": {
+      "type": "object", "additionalProperties": false, "required": ["contractType", "contractVersion", "importReceiptId", "sourceKind", "sourceReportHash", "sourceReportVersion", "importedEvalRunId", "unsupportedDimensions", "importedBy", "importedAt"],
+      "properties": { "contractType": { "const": "EvalImportReceiptV1" }, "contractVersion": { "const": "1.0" }, "importReceiptId": { "$ref": "#/$defs/id" }, "sourceKind": { "const": "runtime-evals-v1" }, "sourceReportHash": { "$ref": "#/$defs/sha256" }, "sourceReportVersion": { "const": "runtime-evals-v1" }, "importedEvalRunId": { "$ref": "#/$defs/id" }, "unsupportedDimensions": { "$ref": "#/$defs/uniqueIds" }, "importedBy": { "$ref": "#/$defs/text" }, "importedAt": { "$ref": "#/$defs/utc" } }
+    },
+    "ChampionDecisionV1": {
+      "type": "object", "additionalProperties": false, "required": ["contractType", "contractVersion", "championDecisionId", "scopeId", "baselineCandidateId", "candidateId", "evalRunIds", "evalReportIds", "objective", "guardrails", "minimumSampleSize", "decision", "authority", "reason", "decidedAt"],
+      "properties": {
+        "contractType": { "const": "ChampionDecisionV1" }, "contractVersion": { "const": "1.0" }, "championDecisionId": { "$ref": "#/$defs/id" }, "scopeId": { "$ref": "#/$defs/id" }, "baselineCandidateId": { "$ref": "#/$defs/id" }, "candidateId": { "$ref": "#/$defs/id" }, "evalRunIds": { "$ref": "#/$defs/uniqueIds" }, "evalReportIds": { "$ref": "#/$defs/uniqueIds" },
+        "objective": { "type": "object", "additionalProperties": false, "required": ["metric", "minimumImprovement"], "properties": { "metric": { "$ref": "#/$defs/id" }, "minimumImprovement": { "type": "number" } } }, "guardrails": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["metric", "maximumRegression"], "properties": { "metric": { "$ref": "#/$defs/id" }, "maximumRegression": { "type": "number", "minimum": 0 } } } }, "minimumSampleSize": { "type": "integer", "minimum": 1 }, "decision": { "enum": ["promote", "retain", "reject", "inconclusive"] },
+        "authority": { "type": "object", "additionalProperties": false, "required": ["kind", "actor", "authoritySource"], "properties": { "kind": { "enum": ["human", "policy"] }, "actor": { "$ref": "#/$defs/text" }, "authoritySource": { "$ref": "#/$defs/text" } } }, "reason": { "$ref": "#/$defs/text" }, "decidedAt": { "$ref": "#/$defs/utc" }, "expiresAt": { "$ref": "#/$defs/utc" }
+      }
+    },
+    "revocation": { "type": "object", "additionalProperties": false, "required": ["entityId", "reasonCode", "reason", "evidenceRefs", "revokedBy", "revokedAt"], "properties": { "entityId": { "$ref": "#/$defs/id" }, "reasonCode": { "$ref": "#/$defs/id" }, "reason": { "$ref": "#/$defs/text" }, "evidenceRefs": { "$ref": "#/$defs/uniqueIds" }, "revokedBy": { "$ref": "#/$defs/text" }, "revokedAt": { "$ref": "#/$defs/utc" } } },
+    "EvalLineageEventV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "sequence", "type", "occurredAt", "projectId", "changeId", "actor", "causationId", "correlationId", "payload", "previousHash", "hash"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" }, "sequence": { "type": "integer", "minimum": 1 }, "type": { "enum": ["eval.suite-published", "eval.suite-revoked", "eval.cohort-published", "eval.cohort-revoked", "eval.run-registered", "eval.run-started", "eval.observation-recorded", "eval.run-sealed", "eval.run-failed", "eval.run-cancelled", "eval.report-published", "eval.import-recorded", "lineage.champion-decided", "lineage.champion-revoked"] }, "occurredAt": { "$ref": "#/$defs/utc" }, "projectId": { "$ref": "#/$defs/id" }, "changeId": { "$ref": "#/$defs/id" }, "actor": { "$ref": "#/$defs/text" }, "causationId": { "$ref": "#/$defs/text" }, "correlationId": { "$ref": "#/$defs/text" },
+        "payload": { "type": "object", "additionalProperties": false, "required": ["publisherOccurrenceId"], "properties": { "publisherOccurrenceId": { "$ref": "#/$defs/id" }, "suite": { "$ref": "#/$defs/EvalSuiteV1" }, "cohort": { "$ref": "#/$defs/EvalCohortV1" }, "run": { "$ref": "#/$defs/EvalRunV1" }, "observation": { "$ref": "#/$defs/EvalObservationV1" }, "report": { "$ref": "#/$defs/EvalReportV1" }, "importReceipt": { "$ref": "#/$defs/EvalImportReceiptV1" }, "championDecision": { "$ref": "#/$defs/ChampionDecisionV1" }, "revocation": { "$ref": "#/$defs/revocation" } } },
+        "previousHash": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }] }, "hash": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

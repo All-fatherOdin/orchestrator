@@ -1,0 +1,62 @@
+{
+  "valid": [
+    {
+      "schemaDefinition": "EvalSuiteV1",
+      "value": {
+        "contractType": "EvalSuiteV1", "contractVersion": "1.0",
+        "evalSuiteId": "suite.phase5.v1", "version": "1.0", "purpose": "Deterministic Phase 5 acceptance",
+        "orderedCaseIds": ["case.acceptance"],
+        "cases": [{ "evalCaseId": "case.acceptance", "inputFixtureRef": "fixture:acceptance", "acceptanceOracle": { "kind": "executable", "oracleRef": "oracle:acceptance:v1" }, "severity": "critical", "expectedEvidenceRefs": ["evidence:acceptance"] }],
+        "requiredOutcomeDimensions": ["taskSuccess", "safety"], "metricPolicyVersion": "metric-policy-v1",
+        "criticalGate": { "requiredPassRate": 1, "criticalCaseIds": ["case.acceptance"] },
+        "samplingPolicy": { "samplesPerCandidate": 1, "retryPolicy": "none" },
+        "environmentClass": "deterministic-mock", "privacyClassification": "public_fixture",
+        "publishedBy": "eval-publisher:test", "publishedAt": "2026-08-02T10:00:00.000Z"
+      }
+    },
+    {
+      "schemaDefinition": "EvalCohortV1",
+      "value": {
+        "contractType": "EvalCohortV1", "contractVersion": "1.0", "evalCohortId": "cohort.phase5.v1",
+        "orderedMembers": [{ "changeId": "change-1", "waveId": "wave-1", "taskId": "task-1", "bindingId": "binding-1", "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+        "eligibilityRule": "Exact accepted task binding", "inclusionRules": ["accepted"], "exclusionRules": ["private-input"],
+        "selectionSeed": "seed-v1", "selectedAt": "2026-08-02T10:00:00.000Z",
+        "observationWindow": { "startsAt": "2026-08-02T11:00:00.000Z", "endsAt": "2026-08-03T11:00:00.000Z" },
+        "taskMix": { "implementation": 1 }, "baselineProvenance": { "kind": "prior", "evidenceRefs": ["baseline:prior"] },
+        "publishedBy": "eval-publisher:test", "publishedAt": "2026-08-02T10:01:00.000Z"
+      }
+    },
+    {
+      "schemaDefinition": "EvalRunV1",
+      "value": {
+        "contractType": "EvalRunV1", "contractVersion": "1.0", "evalRunId": "eval-run-1", "evalSuiteId": "suite.phase5.v1", "evalCohortId": "cohort.phase5.v1",
+        "candidates": [{ "candidateId": "candidate-a", "promptManifestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "modelRouteId": "route-a", "dimensions": { "prompt": { "state": "measured", "value": "prompt-a", "reason": "Exact manifest" }, "model": { "state": "unsupported", "reason": "Mock mode" } } }],
+        "runner": { "runnerId": "runner-v1", "version": "1.0", "codeHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+        "environmentClass": "deterministic-mock", "executionMode": "mock", "registeredBy": "eval-runner:test", "registeredAt": "2026-08-02T11:00:00.000Z"
+      }
+    },
+    {
+      "schemaDefinition": "EvalObservationV1",
+      "value": {
+        "contractType": "EvalObservationV1", "contractVersion": "1.0", "evalObservationId": "observation-1", "evalRunId": "eval-run-1", "evalCaseId": "case.acceptance", "sampleOrdinal": 1, "candidateId": "candidate-a", "invocationId": "invocation-1",
+        "member": { "changeId": "change-1", "waveId": "wave-1", "taskId": "task-1", "bindingId": "binding-1", "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+        "result": "passed", "outcomes": { "taskSuccess": { "state": "pass", "evidenceRefs": ["evidence:task"] }, "safety": { "state": "pass", "evidenceRefs": ["evidence:safety"] } },
+        "metrics": { "latency": { "state": "unsupported", "reason": "Mock mode" } }, "policyViolationCodes": [], "haltIds": [], "incidentIds": [],
+        "incidentCoverage": { "startsAt": "2026-08-02T11:00:00.000Z", "endsAt": "2026-08-03T11:00:00.000Z", "sourceRefs": ["ledger:incidents"] }, "observedAt": "2026-08-03T11:01:00.000Z"
+      }
+    },
+    {
+      "schemaDefinition": "EvalImportReceiptV1",
+      "value": { "contractType": "EvalImportReceiptV1", "contractVersion": "1.0", "importReceiptId": "import-1", "sourceKind": "runtime-evals-v1", "sourceReportHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sourceReportVersion": "runtime-evals-v1", "importedEvalRunId": "eval-run-1", "unsupportedDimensions": ["model"], "importedBy": "importer:test", "importedAt": "2026-08-03T12:00:00.000Z" }
+    },
+    {
+      "schemaDefinition": "ChampionDecisionV1",
+      "value": { "contractType": "ChampionDecisionV1", "contractVersion": "1.0", "championDecisionId": "decision-1", "scopeId": "executor-default", "baselineCandidateId": "candidate-a", "candidateId": "candidate-b", "evalRunIds": ["eval-run-1"], "evalReportIds": ["report-1"], "objective": { "metric": "taskSuccess", "minimumImprovement": 0.05 }, "guardrails": [{ "metric": "safety", "maximumRegression": 0 }], "minimumSampleSize": 10, "decision": "inconclusive", "authority": { "kind": "human", "actor": "owner:test", "authoritySource": "approval:phase5" }, "reason": "Sample is not sufficient", "decidedAt": "2026-08-03T12:01:00.000Z" }
+    }
+  ],
+  "invalid": [
+    { "schemaDefinition": "EvalSuiteV1", "reasonCode": "SCHEMA_INVALID", "value": { "contractType": "EvalSuiteV1", "contractVersion": "1.0", "evalSuiteId": "suite.invalid" } },
+    { "schemaDefinition": "EvalObservationV1", "reasonCode": "EVAL_OBSERVATION_INCOMPLETE", "value": { "contractType": "EvalObservationV1", "contractVersion": "1.0", "evalObservationId": "observation.invalid" } },
+    { "schemaDefinition": "ChampionDecisionV1", "reasonCode": "CHAMPION_AUTHORITY_REQUIRED", "value": { "contractType": "ChampionDecisionV1", "contractVersion": "1.0", "championDecisionId": "decision.invalid" } }
+  ]
+}

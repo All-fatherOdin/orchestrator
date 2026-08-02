@@ -45,14 +45,13 @@ blocking incidents are re-entered rather than bypassed.
 
 ## Phase 5: Prompt/Model/Eval Lineage
 
-Proposed contract:
+Implemented contract:
 `docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
 It fixes immutable prompt artifacts, model-route and resolved-execution
 identity, pre-execution attempt bindings, versioned suites and cohorts,
 deterministic eval reports, comparability gates, and separately authorized
-champion decisions. The proposal does not authorize implementation; after
-acceptance, its two ordered implementation slices may be expressed as an
-ordinary Orchestrator queue.
+champion decisions. Both implementation slices are present in the canonical
+ledger, HTTP API, schemas, replay logic, and tests.
 
 ## Phase 6: Operator Projections
 

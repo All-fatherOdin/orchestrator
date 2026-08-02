@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-01
+Last updated: 2026-08-02
 
 ## Current Priority
 
@@ -20,12 +20,16 @@ receipts, crash/restart replay, and independently authorized task retry and
 wave resume all fail closed against stale, ambiguous, conflicting, exhausted,
 or unfenced evidence.
 
+Phase 5 is implemented: immutable prompt/model configuration lineage, exact
+attempt and invocation bindings, fixed eval suites and cohorts, complete run
+matrices, deterministic reports, explicit unsupported import evidence, and
+authority-gated champion decisions share the canonical hash chain.
+
 ## Current Safe Step
 
-Treat the verified Phase 4 boundary as complete. The next separately
-authorized product slice is Phase 5 prompt/model/eval lineage. Phase 6
-operator projections remain later; no UI should gain canonical write
-authority from this handoff.
+Treat the verified Phase 5 boundary as complete. The next separately
+authorized product slice is Phase 6 operator projections; no UI should gain
+canonical write authority from this handoff.
 
 ## Source Boundaries
 
@@ -42,7 +46,9 @@ authority from this handoff.
   `docs/architecture/change-control-plane/workspace-merge-contract-v1.md`.
 - Accepted Phase 4 contract:
   `docs/architecture/change-control-plane/halts-incidents-contract-v1.md`.
-- Phase 2-4 product evidence: current code and `server/index.test.ts`.
+- Implemented Phase 5 contract:
+  `docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
+- Phase 2-5 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 
@@ -55,8 +61,9 @@ authority from this handoff.
 - Do not claim that the full Nikolay-like system is implemented.
 - Do not infer destructive Git, force cleanup, or remote-publication authority
   from Phase 3 ownership records.
-- Prompt/eval lineage and operator UI remain later independently authorized
-  slices. No Phase 4 component has general-purpose auto-heal authority.
+- Operator UI remains a later independently authorized slice. No Phase 4
+  component has general-purpose auto-heal authority, and no Phase 5 decision
+  grants runtime authority outside its explicit champion scope.
 
 ## Verification
 

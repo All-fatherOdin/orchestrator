@@ -64,6 +64,9 @@ import {
   type RevokeModelRouteInputV1,
   type BindAttemptConfigurationInputV1,
   type RecordResolvedModelExecutionInputV1,
+  type PublishEvalLineageEventInputV1,
+  type PublishComputedEvalReportInputV1,
+  type RecordRuntimeEvalImportInputV1,
   type ResolveIncidentInputV1,
   type TrustedRepositorySnapshotV1,
   type TransitionChangeInput,
@@ -6429,6 +6432,68 @@ app.post(
           request.params.projectId,
           request.params.changeId,
           request.body as RecordResolvedModelExecutionInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/eval-lineage",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getEvalLineageProjectionV1(
+          request.params.projectId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/eval-events",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishEvalLineageEventV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as PublishEvalLineageEventInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/eval-reports",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishComputedEvalReportV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as PublishComputedEvalReportInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/runtime-eval-imports",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.recordRuntimeEvalImportV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as RecordRuntimeEvalImportInputV1,
         ),
       );
     } catch (error) {

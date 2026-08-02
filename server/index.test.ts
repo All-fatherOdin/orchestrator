@@ -45,6 +45,8 @@ import wardenV1Schema from "./halts-incidents-v1/schemas/warden-v1.schema.json";
 import wardenV1Examples from "./halts-incidents-v1/schemas/warden-v1.examples.json";
 import promptModelLineageV1Schema from "./prompt-model-eval-v1/schemas/prompt-model-lineage-v1.schema.json";
 import promptModelLineageV1Examples from "./prompt-model-eval-v1/schemas/prompt-model-lineage-v1.examples.json";
+import evalLineageV1Schema from "./prompt-model-eval-v1/schemas/eval-lineage-v1.schema.json";
+import evalLineageV1Examples from "./prompt-model-eval-v1/schemas/eval-lineage-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -180,6 +182,11 @@ const {
 } = await import("./change-control-v1/index.ts");
 const {
   assertPromptModelSchemaV1,
+  applyEvalLineageEventV1,
+  computeEvalReportV1,
+  createEvalLineageProjectionV1,
+  evalContentHashV1,
+  runtimeEvalsV1ImportIdentity,
 } = await import("./prompt-model-eval-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
@@ -4603,6 +4610,162 @@ test("Prompt/model lineage Draft 2020-12 examples validate and prohibited shapes
     assert.ok(validate, `missing schema ${example.schemaDefinition}`);
     assert.equal(validate!(example.value), false, example.reasonCode);
   }
+});
+
+test("Eval lineage Draft 2020-12 examples validate and prohibited shapes fail closed", () => {
+  const contractAjv = new Ajv2020({ allErrors: true, strict: true });
+  contractAjv.addFormat("date-time", true);
+  contractAjv.addSchema(evalLineageV1Schema);
+  for (const example of evalLineageV1Examples.valid) {
+    const validate = contractAjv.getSchema(
+      `${evalLineageV1Schema.$id}#/$defs/${example.schemaDefinition}`,
+    );
+    assert.ok(validate, `missing schema ${example.schemaDefinition}`);
+    assert.equal(validate!(example.value), true, ajvErrors(validate!.errors));
+  }
+  for (const example of evalLineageV1Examples.invalid) {
+    const validate = contractAjv.getSchema(
+      `${evalLineageV1Schema.$id}#/$defs/${example.schemaDefinition}`,
+    );
+    assert.ok(validate, `missing schema ${example.schemaDefinition}`);
+    assert.equal(validate!(example.value), false, example.reasonCode);
+  }
+});
+
+test("Eval runs fix cohorts before outcomes, require a complete matrix, and gate champion promotion", () => {
+  const projection = createEvalLineageProjectionV1("eval-project");
+  const context = {
+    hasChange: (changeId: string) => changeId === "change-1",
+    hasBinding: (bindingId: string) => bindingId === "binding-1",
+    hasHalt: (haltId: string) => haltId === "halt-1",
+    hasIncident: (incidentId: string) => incidentId === "incident-1",
+  };
+  let sequence = 0;
+  const append = (type: string, payload: Record<string, unknown>, actor = "eval-publisher:test") => {
+    sequence += 1;
+    return applyEvalLineageEventV1({
+      id: `eval-event-${sequence}`,
+      sequence,
+      type,
+      occurredAt: `2026-08-02T${String(10 + sequence).padStart(2, "0")}:00:00.000Z`,
+      projectId: "eval-project",
+      changeId: "change-1",
+      actor,
+      causationId: "eval-test",
+      correlationId: "eval-test",
+      payload: { publisherOccurrenceId: `eval-occurrence-${sequence}`, ...payload },
+      previousHash: sequence === 1 ? null : "a".repeat(64),
+      hash: "b".repeat(64),
+    }, projection, context);
+  };
+  const suite = structuredClone(evalLineageV1Examples.valid[0]!.value) as any;
+  suite.samplingPolicy.samplesPerCandidate = 2;
+  const cohort = structuredClone(evalLineageV1Examples.valid[1]!.value) as any;
+  const run = structuredClone(evalLineageV1Examples.valid[2]!.value) as any;
+  run.candidates = [
+    { ...run.candidates[0], candidateId: "baseline", promptManifestHash: "1".repeat(64) },
+    { ...run.candidates[0], candidateId: "candidate", promptManifestHash: "2".repeat(64) },
+  ];
+  append("eval.suite-published", { suite });
+  append("eval.cohort-published", { cohort });
+  append("eval.run-registered", { run }, "eval-runner:test");
+  append("eval.run-started", { run }, "eval-runner:test");
+  assert.throws(
+    () => append("eval.run-sealed", { run }, "eval-runner:test"),
+    (error: any) => error.reasonCode === "EVAL_OBSERVATION_INCOMPLETE",
+  );
+  sequence -= 1;
+
+  const baseObservation = structuredClone(evalLineageV1Examples.valid[3]!.value) as any;
+  const results = [
+    ["baseline", 1, "failed", "fail"],
+    ["baseline", 2, "interrupted", "fail"],
+    ["candidate", 1, "passed", "pass"],
+    ["candidate", 2, "failed", "fail"],
+  ] as const;
+  for (const [candidateId, sampleOrdinal, result, outcome] of results) {
+    const observation = structuredClone(baseObservation);
+    observation.evalObservationId = `observation-${candidateId}-${sampleOrdinal}`;
+    observation.candidateId = candidateId;
+    observation.sampleOrdinal = sampleOrdinal;
+    observation.invocationId = `invocation-${candidateId}-${sampleOrdinal}`;
+    observation.result = result;
+    observation.outcomes.taskSuccess.state = outcome;
+    observation.outcomes.safety.state = "pass";
+    if (result === "interrupted") {
+      observation.haltIds = ["halt-1"];
+      observation.incidentIds = ["incident-1"];
+    }
+    append("eval.observation-recorded", { observation }, "eval-runner:test");
+  }
+  append("eval.run-sealed", { run }, "eval-runner:test");
+  const sealed = projection.runs.get(run.evalRunId)!;
+  const report = computeEvalReportV1({
+    evalReportId: "report-1",
+    run: sealed,
+    suite,
+    cohort,
+    baselineCandidateId: "baseline",
+    computedAt: "2026-08-03T12:00:00.000Z",
+    evaluatorId: "evaluator:test",
+  });
+  assert.equal(report.candidateResults[0]!.metrics.firstPassAcceptance!.denominator, 2);
+  assert.equal(report.candidateResults[1]!.metrics.firstPassAcceptance!.value, 0.5);
+  assert.equal(report.exclusions.length, 1);
+  assert.equal(report.comparisons[0]!.verdict, "comparable");
+  append("eval.report-published", { report }, "evaluator:test");
+  assert.equal(evalContentHashV1(report), evalContentHashV1(computeEvalReportV1({
+    evalReportId: "report-1", run: sealed, suite, cohort,
+    baselineCandidateId: "baseline", computedAt: report.computedAt,
+    evaluatorId: report.evaluatorId,
+  })));
+
+  const decision = {
+    contractType: "ChampionDecisionV1", contractVersion: "1.0",
+    championDecisionId: "champion-1", scopeId: "executor-default",
+    baselineCandidateId: "baseline", candidateId: "candidate",
+    evalRunIds: [run.evalRunId], evalReportIds: [report.evalReportId],
+    objective: { metric: "firstPassAcceptance", minimumImprovement: 0.5 },
+    guardrails: [{ metric: "safety", maximumRegression: 0 }],
+    minimumSampleSize: 3, decision: "promote",
+    authority: { kind: "human", actor: "owner:test", authoritySource: "approval:phase5" },
+    reason: "Candidate meets the declared objective and guardrail.",
+    decidedAt: "2026-08-03T13:00:00.000Z",
+  };
+  assert.throws(
+    () => append("lineage.champion-decided", { championDecision: decision }, "owner:test"),
+    (error: any) => error.reasonCode === "EVAL_SAMPLE_INSUFFICIENT",
+  );
+  sequence -= 1;
+  decision.minimumSampleSize = 2;
+  append("lineage.champion-decided", { championDecision: decision }, "owner:test");
+  assert.equal(projection.championDecisions.get("champion-1")?.decision, "promote");
+});
+
+test("runtime-evals-v1 imports preserve unsupported dimensions and reject upgraded evidence", () => {
+  const report = {
+    reportVersion: "runtime-evals-v1",
+    configuration: {
+      mode: "mock",
+      providerExecution: false,
+      identity: {
+        prompt: { state: "measured", value: "prompt-v1" },
+        model: { state: "unsupported", reason: "Mock mode has no provider model." },
+        reasoning: { state: "unsupported", reason: "Mock mode has no provider reasoning." },
+      },
+    },
+    cases: [{ caseId: "case-1", status: "passed" }],
+  };
+  const identity = runtimeEvalsV1ImportIdentity(report);
+  assert.deepEqual(identity.unsupportedDimensions, ["model", "reasoning"]);
+  assert.equal(identity.sourceReportHash.length, 64);
+  assert.throws(
+    () => runtimeEvalsV1ImportIdentity({
+      ...report,
+      configuration: { ...report.configuration, mode: "provider", providerExecution: true },
+    }),
+    (error: any) => error.reasonCode === "EVAL_IMPORT_INVALID",
+  );
 });
 
 test("PromptArtifactV1 and ModelRouteV1 publish atomically, replay deterministically, and deduplicate concurrent publishers", async () => {
