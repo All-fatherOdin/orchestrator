@@ -1002,6 +1002,35 @@ export type RecordResolvedModelExecutionInputV1 = Readonly<{
   correlationId?: string;
 }>;
 
+export type OperatorSourceSnapshotV1 = Readonly<{
+  projectId: string;
+  sourceRef: string;
+  watermark: Readonly<{ sequence: number; hash: string | null }>;
+  changes: readonly ChangeProjection[];
+  waves: readonly WaveProjection[];
+  executionBucket: readonly ExecutionBucketItem[];
+  haltIncidents: HaltIncidentProjectionV1;
+  warden: WardenProjectionV1;
+  doctor: DoctorProjectionV1;
+  recoveryAuthorizations: readonly Readonly<{
+    authorizationId: string; type: "task.retry-authorized" | "wave.resume-authorized";
+    incidentId: string; haltId: string; changeId: string; waveId?: string;
+    taskId?: string; actor: string; occurredAt: string;
+  }>[];
+  promptModelLineage: PromptModelLineageProjectionV1;
+  evalLineage: EvalLineageProjectionV1;
+}>;
+
+export type OperatorSourceReadResultV1 = Readonly<{
+  totalSourceCount: number;
+  sources: readonly OperatorSourceSnapshotV1[];
+  unavailable: readonly Readonly<{
+    sourceRef: string;
+    projectId?: string;
+    code: "SOURCE_UNAVAILABLE";
+  }>[];
+}>;
+
 export type PublishEvalLineageEventInputV1 = Readonly<{
   type: EvalLineageEventTypeV1;
   publisherOccurrenceId: string;
@@ -9695,5 +9724,101 @@ export class ChangeControlStore {
           left.waveId.localeCompare(right.waveId),
       );
     return deepFreeze(structuredClone(items));
+  }
+
+  async readOperatorSourcesV1(
+    projectIdValues?: readonly string[],
+  ): Promise<OperatorSourceReadResultV1> {
+    if (projectIdValues && projectIdValues.length > 50)
+      invalid("Operator projection scope cannot exceed 50 projects.");
+    const projectsDirectory = join(this.rootDirectory, "projects");
+    const requested = projectIdValues?.map((value) =>
+      requireIdentifier(value, "projectId"),
+    );
+    if (requested && new Set(requested).size !== requested.length)
+      invalid("Operator projection project scope cannot contain duplicates.");
+
+    const candidates: Array<{ projectId?: string; sourceRef: string; file: string }> = [];
+    if (requested) {
+      for (const projectId of requested)
+        candidates.push({ projectId, sourceRef: `change-control:${projectId}`, file: this.file(projectId) });
+    } else {
+      const entries = await readdir(projectsDirectory, { withFileTypes: true }).catch(
+        (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error),
+      );
+      for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith(".json"))) {
+        const file = join(projectsDirectory, entry.name);
+        const sourceRef = `change-control-file:${entry.name}`;
+        try {
+          const parsed = JSON.parse(await readFile(file, "utf8")) as { projectId?: unknown };
+          candidates.push({
+            ...(typeof parsed.projectId === "string" ? { projectId: parsed.projectId } : {}),
+            sourceRef,
+            file,
+          });
+        } catch {
+          candidates.push({ sourceRef, file });
+        }
+      }
+    }
+    if (candidates.length > 50)
+      invalid("Operator projection scope cannot exceed 50 projects; select projectId values explicitly.");
+
+    const sources: OperatorSourceSnapshotV1[] = [];
+    const unavailable: OperatorSourceReadResultV1["unavailable"][number][] = [];
+    for (const candidate of candidates) {
+      if (!candidate.projectId) {
+        unavailable.push({ sourceRef: candidate.sourceRef, code: "SOURCE_UNAVAILABLE" });
+        continue;
+      }
+      try {
+        if (requested) await readFile(candidate.file, "utf8");
+        const ledger = await readLedger(candidate.file, candidate.projectId);
+        const projected = validateAndProject(ledger);
+        const waves = [...projected.waves.values()]
+          .map((wave) => publicWaveProjection(wave, projected))
+          .sort((left, right) => left.sequence - right.sequence || left.waveId.localeCompare(right.waveId));
+        const executionBucket = waves
+          .filter((wave) => wave.readiness.ready)
+          .map((wave) => ({
+            projectId: candidate.projectId!, changeId: wave.changeId, waveId: wave.waveId,
+            readyAt: wave.updatedAt, readySequence: wave.sequence,
+          }))
+          .sort((left, right) => left.readySequence - right.readySequence || left.waveId.localeCompare(right.waveId));
+        const last = ledger.events.at(-1);
+        sources.push({
+          projectId: candidate.projectId,
+          sourceRef: candidate.sourceRef,
+          watermark: { sequence: last?.sequence ?? 0, hash: last?.hash ?? null },
+          changes: [...projected.projections.values()].sort((left, right) => left.sequence - right.sequence),
+          waves,
+          executionBucket,
+          haltIncidents: immutableHaltIncidentProjection(candidate.projectId, projected),
+          warden: immutableWardenProjection(candidate.projectId, projected),
+          doctor: immutableDoctorProjection(candidate.projectId, projected),
+          recoveryAuthorizations: ledger.events
+            .filter((event) => recoveryAuthorizationEventTypes.has(event.type))
+            .map((event) => ({
+              authorizationId: String(event.payload.authorizationId),
+              type: event.type as "task.retry-authorized" | "wave.resume-authorized",
+              incidentId: String(event.payload.incidentId), haltId: String(event.payload.haltId),
+              changeId: event.changeId, ...(event.waveId ? { waveId: event.waveId } : {}),
+              ...(event.taskId ? { taskId: event.taskId } : {}), actor: event.actor,
+              occurredAt: event.occurredAt,
+            })),
+          promptModelLineage: immutablePromptModelLineageProjectionV1(projected.promptModelLineage),
+          evalLineage: immutableEvalLineageProjectionV1(projected.evalLineage),
+        });
+      } catch {
+        unavailable.push({
+          sourceRef: candidate.sourceRef,
+          projectId: candidate.projectId,
+          code: "SOURCE_UNAVAILABLE",
+        });
+      }
+    }
+    sources.sort((left, right) => left.projectId.localeCompare(right.projectId));
+    unavailable.sort((left, right) => left.sourceRef.localeCompare(right.sourceRef));
+    return deepFreeze(structuredClone({ totalSourceCount: candidates.length, sources, unavailable }));
   }
 }

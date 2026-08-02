@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/operator-projection-v1.schema.json",
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "SourceWatermarkV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["projectId", "sourceRef", "sequence", "hash"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/id" }, "sourceRef": { "$ref": "#/$defs/id" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "OperatorWarningV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "sourceRef", "message"],
+      "properties": {
+        "code": { "enum": ["SOURCE_UNAVAILABLE", "UNSUPPORTED_DIMENSION"] },
+        "sourceRef": { "$ref": "#/$defs/id" }, "projectId": { "$ref": "#/$defs/id" },
+        "message": { "$ref": "#/$defs/id" }
+      }
+    },
+    "OperatorProjectionItemV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "projectId", "entityId", "sortKey", "evidenceRefs", "data"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/id" }, "projectId": { "$ref": "#/$defs/id" },
+        "entityId": { "$ref": "#/$defs/id" }, "sortKey": { "$ref": "#/$defs/id" },
+        "evidenceRefs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "data": { "type": "object" }
+      }
+    },
+    "OperatorProjectionV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "view", "generatedAt", "sourceWatermarks", "sourceWatermark", "scope", "filters", "sort", "page", "aggregates", "items", "warnings"],
+      "properties": {
+        "contractType": { "const": "OperatorProjectionV1" }, "contractVersion": { "const": "1.0" },
+        "view": { "enum": ["overview", "execution-bucket", "incidents", "prompt-registry", "eval-lineage"] },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "sourceWatermarks": { "type": "array", "items": { "$ref": "#/$defs/SourceWatermarkV1" } },
+        "sourceWatermark": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "scope": { "type": "object", "additionalProperties": false, "required": ["mode", "projectIds"], "properties": { "mode": { "enum": ["all", "selected"] }, "projectIds": { "type": "array", "maxItems": 50, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } } } },
+        "filters": { "type": "object" },
+        "sort": { "type": "object", "additionalProperties": false, "required": ["field", "direction"], "properties": { "field": { "const": "sortKey" }, "direction": { "const": "asc" } } },
+        "page": { "type": "object", "additionalProperties": false, "required": ["limit", "cursor", "nextCursor", "totalItems"], "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 100 }, "cursor": { "type": ["string", "null"] }, "nextCursor": { "type": ["string", "null"] }, "totalItems": { "type": "integer", "minimum": 0 } } },
+        "aggregates": { "type": "object" }, "items": { "type": "array", "items": { "$ref": "#/$defs/OperatorProjectionItemV1" } },
+        "warnings": { "type": "array", "items": { "$ref": "#/$defs/OperatorWarningV1" } }
+      }
+    }
+  }
+}

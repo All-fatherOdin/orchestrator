@@ -331,6 +331,28 @@ unrelated file contents, provider-hidden reasoning, and raw provider payloads.
 Historical ledgers, queues, and run records without Phase 5 fields remain
 readable and do not acquire implicit prompt/model authority.
 
+### Operator projections v1
+
+Phase 6 Slice 1 provides deterministic read-only projections over validated
+Phase 1-5 project ledgers. Responses carry per-project sequence/hash
+watermarks, stable cursor pagination, explicit scope and unavailable-source
+warnings. They preserve unsupported eval dimensions and omit prompt bodies,
+secrets, environment values, hidden reasoning, raw provider payloads, and
+unbounded logs.
+
+The five GET-only endpoints are:
+
+- `GET /api/operator-projections/v1/overview`
+- `GET /api/operator-projections/v1/execution-bucket`
+- `GET /api/operator-projections/v1/incidents`
+- `GET /api/operator-projections/v1/prompt-registry`
+- `GET /api/operator-projections/v1/eval-lineage`
+
+Use comma-separated `projectId` values for a selected scope, plus an optional
+`limit` from 1 to 100 and the returned opaque `cursor`. Unknown filters,
+malformed or stale cursors, oversized scopes, and unavailable single-project
+sources fail closed. These routes never append events or mutate run records.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

@@ -62,5 +62,10 @@ overview, execution bucket, incidents, prompt registry, and eval lineage.
 Slice 2 consumes only those APIs in the dashboard. Neither slice adds canonical
 write authority.
 
+Slice 1 is implemented with Draft 2020-12 schemas, stable cursor pagination,
+bounded project scope, partial-source warnings, privacy-safe summaries, and
+integration tests proving the GET routes do not mutate canonical state. Slice 2
+remains next.
+
 No sequential queue plan exists for the remaining phases. Later queue
 boundaries will be fixed from completed Phase 5 evidence.

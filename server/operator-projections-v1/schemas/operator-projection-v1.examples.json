@@ -1,0 +1,18 @@
+{
+  "valid": [{
+    "contractType": "OperatorProjectionV1", "contractVersion": "1.0", "view": "overview",
+    "generatedAt": "2026-08-02T15:00:00.000Z",
+    "sourceWatermarks": [{ "projectId": "project-1", "sourceRef": "change-control:project-1", "sequence": 1, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    "sourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "scope": { "mode": "selected", "projectIds": ["project-1"] },
+    "filters": { "projectId": ["project-1"] }, "sort": { "field": "sortKey", "direction": "asc" },
+    "page": { "limit": 25, "cursor": null, "nextCursor": null, "totalItems": 1 },
+    "aggregates": { "totalSources": 1, "availableSources": 1, "unavailableSources": 0, "totalItems": 1 },
+    "items": [{ "kind": "project-overview", "projectId": "project-1", "entityId": "project-1", "sortKey": "project-1/project-overview/project-1", "evidenceRefs": ["change-control:project-1"], "data": { "changes": 1 } }],
+    "warnings": []
+  }],
+  "invalid": [
+    { "reasonCode": "SCHEMA_INVALID", "value": { "contractType": "OperatorProjectionV1", "contractVersion": "1.0", "view": "overview" } },
+    { "reasonCode": "PRIVACY_VIOLATION", "value": { "contractType": "OperatorProjectionV1", "contractVersion": "1.0", "view": "overview", "generatedAt": "2026-08-02T15:00:00.000Z", "sourceWatermarks": [], "sourceWatermark": "bad", "scope": { "mode": "all", "projectIds": [] }, "filters": {}, "sort": { "field": "sortKey", "direction": "asc" }, "page": { "limit": 0, "cursor": null, "nextCursor": null, "totalItems": 0 }, "aggregates": {}, "items": [], "warnings": [] } }
+  ]
+}

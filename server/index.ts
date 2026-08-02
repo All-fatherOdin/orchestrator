@@ -110,6 +110,13 @@ import {
   type RegisteredProcessRetryInputV1,
   type WorkspaceReconcileInputV1,
 } from "./halts-incidents-v1/index.ts";
+import {
+  OPERATOR_PROJECTION_VIEWS_V1,
+  OperatorProjectionErrorV1,
+  OperatorProjectionServiceV1,
+  parseOperatorProjectionQueryV1,
+  type OperatorProjectionViewV1,
+} from "./operator-projections-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -6439,6 +6446,9 @@ app.post(
     }
   },
 );
+export const operatorProjectionServiceV1 = new OperatorProjectionServiceV1(
+  changeControlStore,
+);
 app.get(
   "/api/change-control/projects/:projectId/eval-lineage",
   async (request, response) => {
@@ -6773,6 +6783,28 @@ app.get(
     }
   },
 );
+for (const view of OPERATOR_PROJECTION_VIEWS_V1) {
+  app.get(`/api/operator-projections/v1/${view}`, async (request, response) => {
+    try {
+      const query = parseOperatorProjectionQueryV1(
+        request.query as Record<string, unknown>,
+      );
+      return response.json(
+        await operatorProjectionServiceV1.project(
+          view as OperatorProjectionViewV1,
+          query,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof OperatorProjectionErrorV1)
+        return response.status(error.status).json({
+          error: error.message,
+          code: error.code,
+        });
+      return sendChangeControlError(response, error);
+    }
+  });
+}
 app.get("/api/run", (_, response) => response.json(activeRun ?? null));
 app.get("/api/run/scheduler", (_, response) =>
   response.json(activeRun ? schedulerSnapshot(activeRun) : null),

@@ -1,6 +1,6 @@
 # Operator Projections Contract v1
 
-Status: accepted contract for Phase 6 implementation
+Status: accepted contract; Slice 1 implemented, Slice 2 pending
 
 This document fixes the Phase 6 read boundary. The words MUST, MUST NOT,
 SHOULD, and MAY are requirements. It authorizes implementation only within the

@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-5 implemented
+Status: evidence-backed target, Phase 1-5 and Phase 6 Slice 1 implemented
 Last reviewed: 2026-08-02
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -44,8 +44,8 @@ merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
 Phase 1-5 implementation evidence is available. The completed local queues
-remain ignored execution history. The Phase 6 contract is accepted; its two
-implementation slices have not started.
+remain ignored execution history. Phase 6 Slice 1 is implemented; the read-only
+dashboard in Slice 2 has not started.
 
 ## Authority
 

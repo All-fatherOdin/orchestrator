@@ -47,6 +47,8 @@ import promptModelLineageV1Schema from "./prompt-model-eval-v1/schemas/prompt-mo
 import promptModelLineageV1Examples from "./prompt-model-eval-v1/schemas/prompt-model-lineage-v1.examples.json";
 import evalLineageV1Schema from "./prompt-model-eval-v1/schemas/eval-lineage-v1.schema.json";
 import evalLineageV1Examples from "./prompt-model-eval-v1/schemas/eval-lineage-v1.examples.json";
+import operatorProjectionV1Schema from "./operator-projections-v1/schemas/operator-projection-v1.schema.json";
+import operatorProjectionV1Examples from "./operator-projections-v1/schemas/operator-projection-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -188,6 +190,10 @@ const {
   evalContentHashV1,
   runtimeEvalsV1ImportIdentity,
 } = await import("./prompt-model-eval-v1/index.ts");
+const {
+  OperatorProjectionServiceV1,
+  parseOperatorProjectionQueryV1,
+} = await import("./operator-projections-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 const planningShaOne = "1".repeat(40);
@@ -4766,6 +4772,129 @@ test("runtime-evals-v1 imports preserve unsupported dimensions and reject upgrad
     }),
     (error: any) => error.reasonCode === "EVAL_IMPORT_INVALID",
   );
+});
+
+test("OperatorProjectionV1 Draft 2020-12 examples validate and invalid envelopes fail closed", () => {
+  const contractAjv = new Ajv2020({ allErrors: true, strict: true });
+  contractAjv.addFormat("date-time", true);
+  contractAjv.addSchema(operatorProjectionV1Schema);
+  const validate = contractAjv.getSchema(
+    `${operatorProjectionV1Schema.$id}#/$defs/OperatorProjectionV1`,
+  );
+  assert.ok(validate);
+  for (const example of operatorProjectionV1Examples.valid)
+    assert.equal(validate!(example), true, ajvErrors(validate!.errors));
+  for (const example of operatorProjectionV1Examples.invalid)
+    assert.equal(validate!(example.value), false, example.reasonCode);
+});
+
+test("operator projections are deterministic, privacy-bounded, paginated, and watermark-fenced", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-projection-"));
+  try {
+    const { store, route } = await promptModelPlanningFixture(root);
+    const service = new OperatorProjectionServiceV1(
+      store,
+      () => "2026-08-02T15:00:00.000Z",
+    );
+    const query = parseOperatorProjectionQueryV1({
+      projectId: "planning-project",
+      limit: "1",
+    });
+    const first = await service.project("prompt-registry", query);
+    assert.deepEqual(first, await service.project("prompt-registry", query));
+    assert.equal(first.page.totalItems, 2);
+    assert.ok(first.page.nextCursor);
+    const second = await service.project(
+      "prompt-registry",
+      parseOperatorProjectionQueryV1({
+        projectId: "planning-project",
+        limit: "1",
+        cursor: first.page.nextCursor!,
+      }),
+    );
+    assert.notEqual(first.items[0]!.entityId, second.items[0]!.entityId);
+    const serialized = JSON.stringify([first, second]);
+    for (const prohibited of [
+      "You are an approved reusable executor",
+      "renderedPrompt",
+      "environmentValues",
+      "hiddenReasoning",
+      "rawProviderPayload",
+    ]) assert.equal(serialized.includes(prohibited), false, prohibited);
+
+    await store.revokeModelRouteV1("planning-project", "planning-change", {
+      publisherOccurrenceId: "operator-projection-route-revocation",
+      revocation: {
+        entityId: route.modelRouteId,
+        reasonCode: "ROUTE_RETIRED",
+        reason: "Watermark fencing test.",
+        evidenceRefs: ["test:operator-watermark"],
+        revokedBy: "human:test",
+        revokedAt: "2026-08-02T15:01:00.000Z",
+      },
+    });
+    await assert.rejects(
+      service.project("prompt-registry", parseOperatorProjectionQueryV1({
+        projectId: "planning-project", limit: "1", cursor: first.page.nextCursor!,
+      })),
+      (error: any) => error.code === "SOURCE_WATERMARK_CHANGED" && error.status === 409,
+    );
+    assert.throws(
+      () => parseOperatorProjectionQueryV1({ limit: "101" }),
+      (error: any) => error.code === "INVALID_QUERY",
+    );
+    assert.throws(
+      () => parseOperatorProjectionQueryV1({ unknown: "value" }),
+      (error: any) => error.code === "INVALID_QUERY",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator projections expose partial source failure and never mutate canonical state over HTTP", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-unavailable-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await store.create("healthy-project", { changeId: "healthy-change", actor: "user:test" });
+    const projectsPath = join(root, "projects");
+    await writeFile(join(projectsPath, "corrupt.json"), "{not-json", "utf8");
+    const projection = await new OperatorProjectionServiceV1(store).project("overview", { limit: 25 });
+    assert.equal(projection.aggregates.totalSources, 2);
+    assert.equal(projection.aggregates.availableSources, 1);
+    assert.equal(projection.aggregates.unavailableSources, 1);
+    assert.equal(projection.warnings[0]!.code, "SOURCE_UNAVAILABLE");
+
+    const projectId = `operator-http-${Date.now()}`;
+    await changeControlStore.create(projectId, { changeId: "change-one", actor: "user:test" });
+    const before = await changeControlStore.list(projectId);
+    const server = app.listen(0, "127.0.0.1");
+    try {
+      await new Promise<void>((resolve) => server.once("listening", resolve));
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const rootUrl = `http://127.0.0.1:${address.port}/api/operator-projections/v1`;
+      const views = ["overview", "execution-bucket", "incidents", "prompt-registry", "eval-lineage"];
+      for (const view of views) {
+        const response = await fetch(`${rootUrl}/${view}?projectId=${projectId}`);
+        assert.equal(response.status, 200, view);
+        const body = await response.json() as { contractType: string; view: string; items: unknown[] };
+        assert.equal(body.contractType, "OperatorProjectionV1");
+        assert.equal(body.view, view);
+        assert.equal(body.items.length, view === "overview" ? 1 : 0);
+      }
+      const base = `${rootUrl}/overview?projectId=${projectId}`;
+      const mutation = await fetch(base, { method: "POST" });
+      assert.equal(mutation.status, 404);
+      assert.equal((await fetch(`${rootUrl}/overview?unknown=true`)).status, 400);
+      assert.equal((await fetch(`${rootUrl}/overview?projectId=missing-project`)).status, 503);
+      assert.deepEqual(await changeControlStore.list(projectId), before);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("PromptArtifactV1 and ModelRouteV1 publish atomically, replay deterministically, and deduplicate concurrent publishers", async () => {
