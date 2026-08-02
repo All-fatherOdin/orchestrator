@@ -13,6 +13,10 @@ import type {
   ArchitectReplanReceiptV1,
   PlanAuthorizationV1,
   PlanningContractV1,
+  PromptArtifactV1,
+  ModelRouteV1,
+  AttemptConfigurationBindingV1,
+  ResolvedModelExecutionV1,
   TrustedRepositorySnapshotV1,
 } from "./change-control-v1/index.ts";
 import type {
@@ -39,6 +43,8 @@ import haltsIncidentsV1Schema from "./halts-incidents-v1/schemas/halts-incidents
 import haltsIncidentsV1Examples from "./halts-incidents-v1/schemas/halts-incidents-v1.examples.json";
 import wardenV1Schema from "./halts-incidents-v1/schemas/warden-v1.schema.json";
 import wardenV1Examples from "./halts-incidents-v1/schemas/warden-v1.examples.json";
+import promptModelLineageV1Schema from "./prompt-model-eval-v1/schemas/prompt-model-lineage-v1.schema.json";
+import promptModelLineageV1Examples from "./prompt-model-eval-v1/schemas/prompt-model-lineage-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -168,7 +174,13 @@ const {
 const {
   ChangeControlError,
   ChangeControlStore,
+  attemptEvidenceSnapshotHashV1,
+  compositePromptManifestHashV1,
+  promptArtifactContentIdentityV1,
 } = await import("./change-control-v1/index.ts");
+const {
+  assertPromptModelSchemaV1,
+} = await import("./prompt-model-eval-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 const planningShaOne = "1".repeat(40);
@@ -602,6 +614,229 @@ async function authorizePlanningWave(
       }),
     },
   );
+}
+
+function promptArtifactV1(
+  overrides: Partial<PromptArtifactV1> = {},
+): PromptArtifactV1 {
+  const content = {
+    storage: "approved_reusable_content" as const,
+    mediaType: "text/plain; charset=utf-8" as const,
+    text: "You are an approved reusable executor.",
+  };
+  const identity = promptArtifactContentIdentityV1({ content });
+  return {
+    contractType: "PromptArtifactV1",
+    contractVersion: "1.0",
+    promptArtifactId: "prompt-executor-root-v1",
+    purpose: "Approved reusable executor instruction",
+    artifactKind: "executor",
+    schemaVersion: "1.0",
+    content,
+    ...identity,
+    compiler: { compilerId: "legacy-prompt-renderer", version: "1.0" },
+    inputSchemaRef: "orchestrator-task-input-v1",
+    behaviorContractRefs: ["executor-outcome-v1"],
+    parentArtifactIds: [],
+    publishedBy: "artifact-publisher:test",
+    publishedAt: "2026-08-01T10:00:00.000Z",
+    privacy: {
+      classification: "approved_reusable",
+      validationReceipt: {
+        validatorId: "prompt-privacy-validator",
+        validatorVersion: "1.0",
+        decision: "approved",
+        validatedAt: "2026-08-01T09:59:00.000Z",
+        evidenceRefs: ["review:prompt-executor-root-v1"],
+      },
+    },
+    ...overrides,
+  };
+}
+
+function modelRouteV1(overrides: Partial<ModelRouteV1> = {}): ModelRouteV1 {
+  return {
+    contractType: "ModelRouteV1",
+    contractVersion: "1.0",
+    modelRouteId: "route-terra-medium-v1",
+    routePolicyId: "codex-gpt56-routing",
+    routePolicyVersion: "1.0",
+    requestedModelClass: "terra",
+    minimumModelClass: "terra",
+    reasoningLevel: "medium",
+    requiredCapabilities: {
+      runtimeId: "codex-cli",
+      toolRoute: "local-tools",
+      capabilityMapVersion: "codex-cli-capabilities-v1",
+    },
+    fallbackPolicy: {
+      mode: "denied",
+      allowedResolvedModelClasses: [],
+      allowedReasonCodes: [],
+    },
+    allowedProviderAdapters: [
+      {
+        providerId: "openai",
+        adapterId: "codex-cli",
+        adapterVersion: "1.0",
+      },
+    ],
+    failClosedUnsupported: true,
+    routingRationaleCode: "EXPLICIT_TASK_ROUTE",
+    publishedBy: "route-publisher:test",
+    publishedAt: "2026-08-01T10:01:00.000Z",
+    ...overrides,
+  };
+}
+
+async function promptModelPlanningFixture(root: string) {
+  const store = new ChangeControlStore(root, {
+    resolveRepositorySnapshot: async () => planningSnapshot(),
+  });
+  await authorizePlanningWave(store);
+  await store.dispatchWave(
+    "planning-project",
+    "planning-change",
+    "planning-wave",
+    { actor: "user:dispatcher" },
+  );
+  const artifact = promptArtifactV1();
+  const route = modelRouteV1();
+  await store.publishPromptArtifactV1("planning-project", "planning-change", {
+    publisherOccurrenceId: "occurrence-prompt-root",
+    artifact,
+  });
+  await store.publishModelRouteV1("planning-project", "planning-change", {
+    publisherOccurrenceId: "occurrence-route-terra",
+    route,
+  });
+  return { store, artifact, route };
+}
+
+function attemptBindingV1(
+  artifact: PromptArtifactV1,
+  route: ModelRouteV1,
+  overrides: Partial<Omit<AttemptConfigurationBindingV1, "publicationSequence">> = {},
+) {
+  const identity = {
+    bindingScope: "attempt" as const,
+    role: "executor" as const,
+    projectId: "planning-project",
+    changeId: "planning-change",
+    waveId: "planning-wave",
+    taskId: "task-one",
+    runId: "run-one",
+    attemptId: "attempt-one",
+    plan: {
+      planId: "plan-one",
+      revision: 1,
+      planBaseSha: planningShaOne,
+    },
+    authorizationId: "authorization-one",
+    workspace: {
+      workspaceAttemptId: "workspace-attempt-one",
+      repositoryId: "planning-repository",
+      baseSha: planningShaOne,
+    },
+    promptArtifactIds: [artifact.promptArtifactId],
+    compositeManifestHash: compositePromptManifestHashV1(
+      [artifact.promptArtifactId],
+      { compilerId: "legacy-prompt-renderer", version: "1.0" },
+    ),
+    compiler: { compilerId: "legacy-prompt-renderer", version: "1.0" },
+    inputSchemaVersion: "orchestrator-task-input-v1",
+    inputFingerprint: {
+      algorithm: "scoped-sha256" as const,
+      scopeId: "run-one-attempt-one",
+      value: "3".repeat(64),
+    },
+    modelRouteId: route.modelRouteId,
+    expectedRuntime: route.requiredCapabilities,
+  };
+  const mergedIdentity = { ...identity, ...overrides };
+  const snapshotIdentity = {
+    bindingScope: mergedIdentity.bindingScope,
+    role: mergedIdentity.role,
+    projectId: mergedIdentity.projectId,
+    changeId: mergedIdentity.changeId,
+    waveId: mergedIdentity.waveId,
+    taskId: mergedIdentity.taskId,
+    runId: mergedIdentity.runId,
+    attemptId: mergedIdentity.attemptId,
+    ...(mergedIdentity.invocationId
+      ? { invocationId: mergedIdentity.invocationId }
+      : {}),
+    ...(mergedIdentity.parentAttemptBindingId
+      ? { parentAttemptBindingId: mergedIdentity.parentAttemptBindingId }
+      : {}),
+    plan: mergedIdentity.plan,
+    authorizationId: mergedIdentity.authorizationId,
+    workspace: mergedIdentity.workspace,
+    promptArtifactIds: mergedIdentity.promptArtifactIds,
+    compositeManifestHash: mergedIdentity.compositeManifestHash,
+    compiler: mergedIdentity.compiler,
+    inputSchemaVersion: mergedIdentity.inputSchemaVersion,
+    inputFingerprint: mergedIdentity.inputFingerprint,
+    modelRouteId: mergedIdentity.modelRouteId,
+    expectedRuntime: mergedIdentity.expectedRuntime,
+  };
+  return {
+    contractType: "AttemptConfigurationBindingV1" as const,
+    contractVersion: "1.0" as const,
+    bindingId: "binding-attempt-one",
+    ...mergedIdentity,
+    boundBy: "dispatch-gate:prompt-model-v1",
+    reason: "managed-executor-pre-execution-binding",
+    boundAt: "2026-08-01T10:02:00.000Z",
+    evidenceSnapshotHash: attemptEvidenceSnapshotHashV1(snapshotIdentity),
+  };
+}
+
+function lineageRejected(reasonCode: string) {
+  return (error: unknown) =>
+    error instanceof ChangeControlError &&
+    Boolean(error.reasons?.includes(reasonCode as never));
+}
+
+function resolvedExecutionV1(
+  binding: AttemptConfigurationBindingV1,
+  overrides: Partial<ResolvedModelExecutionV1> = {},
+): ResolvedModelExecutionV1 {
+  return {
+    contractType: "ResolvedModelExecutionV1",
+    contractVersion: "1.0",
+    resolutionId: `resolution-${binding.attemptId}`,
+    bindingId: binding.bindingId,
+    projectId: binding.projectId,
+    changeId: binding.changeId,
+    waveId: binding.waveId,
+    taskId: binding.taskId,
+    runId: binding.runId,
+    attemptId: binding.attemptId,
+    ...(binding.invocationId ? { invocationId: binding.invocationId } : {}),
+    modelRouteId: binding.modelRouteId,
+    providerId: "openai",
+    providerAdapterId: "codex-cli",
+    providerAdapterVersion: "1.0",
+    runtimeId: "codex-cli",
+    providerModelId: "gpt-5.6-terra",
+    resolvedModelClass: "terra",
+    capabilityMapVersion: "codex-cli-capabilities-v1",
+    reasoningLevel: "medium",
+    toolRoute: "local-tools",
+    resolutionReasonCode: "REQUESTED_ROUTE_RESOLVED",
+    fallback: { used: false },
+    startedAt: "2026-08-01T10:02:00.000Z",
+    measurements: {
+      inputTokens: { state: "unsupported" },
+      outputTokens: { state: "unsupported" },
+      latency: { state: "unsupported" },
+      cost: { state: "unsupported" },
+      cache: { state: "unsupported" },
+      providerMetadata: { state: "unsupported" },
+    },
+    ...overrides,
+  };
 }
 
 function canonicalTestJson(value: unknown): string {
@@ -4331,6 +4566,544 @@ test("Phase 2 dispatch persists fresh drift and an allowed immutable gate receip
       "planning-wave",
     );
     assert.deepEqual(replayed, projection);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Prompt/model lineage Draft 2020-12 examples validate and prohibited shapes fail closed", () => {
+  const contractAjv = new Ajv2020({ allErrors: true, strict: true });
+  contractAjv.addFormat("date-time", true);
+  contractAjv.addSchema(promptModelLineageV1Schema);
+  for (const example of promptModelLineageV1Examples.valid) {
+    const validate = contractAjv.getSchema(
+      `${promptModelLineageV1Schema.$id}#/$defs/${example.schemaDefinition}`,
+    );
+    assert.ok(validate, `missing schema ${example.schemaDefinition}`);
+    assert.equal(
+      validate!(example.value),
+      true,
+      ajvErrors(validate!.errors),
+    );
+    assert.doesNotThrow(() =>
+      assertPromptModelSchemaV1(
+        example.schemaDefinition as
+          | "PromptArtifactV1"
+          | "ModelRouteV1"
+          | "AttemptConfigurationBindingV1"
+          | "ResolvedModelExecutionV1",
+        example.value,
+      ),
+    );
+  }
+  for (const example of promptModelLineageV1Examples.invalid) {
+    const validate = contractAjv.getSchema(
+      `${promptModelLineageV1Schema.$id}#/$defs/${example.schemaDefinition}`,
+    );
+    assert.ok(validate, `missing schema ${example.schemaDefinition}`);
+    assert.equal(validate!(example.value), false, example.reasonCode);
+  }
+});
+
+test("PromptArtifactV1 and ModelRouteV1 publish atomically, replay deterministically, and deduplicate concurrent publishers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-prompt-model-publication-"));
+  try {
+    const { store, artifact } = await promptModelPlanningFixture(root);
+    const duplicateStores = [store, new ChangeControlStore(root)];
+    const duplicates = await Promise.all(
+      duplicateStores.map((candidate) =>
+        candidate.publishPromptArtifactV1(
+          "planning-project",
+          "planning-change",
+          {
+            publisherOccurrenceId: "occurrence-prompt-root",
+            artifact,
+          },
+        ),
+      ),
+    );
+    assert.equal(duplicates[0].id, duplicates[1].id);
+
+    const changedContent = {
+      storage: "approved_reusable_content" as const,
+      mediaType: "text/plain; charset=utf-8" as const,
+      text: "You are an approved reusable executor with bounded scope.",
+    };
+    const derived = promptArtifactV1({
+      promptArtifactId: "prompt-executor-derived-v1",
+      content: changedContent,
+      ...promptArtifactContentIdentityV1({ content: changedContent }),
+      parentArtifactIds: [artifact.promptArtifactId],
+      derivation: { operation: "edit", operationVersion: "1.0" },
+      supersedesId: artifact.promptArtifactId,
+      publishedAt: "2026-08-01T10:03:00.000Z",
+    });
+    await store.publishPromptArtifactV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-prompt-derived",
+        artifact: derived,
+      },
+    );
+
+    const beforeInvalid = await store.getPromptModelLineageProjectionV1(
+      "planning-project",
+    );
+    await assert.rejects(
+      store.publishPromptArtifactV1("planning-project", "planning-change", {
+        publisherOccurrenceId: "occurrence-hash-mismatch",
+        artifact: promptArtifactV1({
+          promptArtifactId: "prompt-hash-mismatch",
+          contentHash: "f".repeat(64),
+        }),
+      }),
+      lineageRejected("PROMPT_CONTENT_HASH_MISMATCH"),
+    );
+    await assert.rejects(
+      store.publishPromptArtifactV1("planning-project", "planning-change", {
+        publisherOccurrenceId: "occurrence-private",
+        artifact: promptArtifactV1({
+          promptArtifactId: "prompt-private",
+          content: {
+            storage: "approved_reusable_content",
+            mediaType: "text/plain; charset=utf-8",
+            text: "api_key = sk-abcdefghijklmnop",
+          },
+          contentHash: createHash("sha256")
+            .update("api_key = sk-abcdefghijklmnop")
+            .digest("hex"),
+          byteLength: Buffer.byteLength("api_key = sk-abcdefghijklmnop"),
+        }),
+      }),
+      lineageRejected("PROMPT_PRIVACY_VIOLATION"),
+    );
+    await assert.rejects(
+      store.publishPromptArtifactV1("planning-project", "planning-change", {
+        publisherOccurrenceId: "occurrence-cycle",
+        artifact: promptArtifactV1({
+          promptArtifactId: "prompt-self-cycle",
+          parentArtifactIds: ["prompt-self-cycle"],
+          derivation: { operation: "edit", operationVersion: "1.0" },
+        }),
+      }),
+      lineageRejected("PROMPT_DERIVATION_CYCLE"),
+    );
+    const afterInvalid = await store.getPromptModelLineageProjectionV1(
+      "planning-project",
+    );
+    assert.equal(afterInvalid.events.length, beforeInvalid.events.length);
+    assert.deepEqual(
+      afterInvalid,
+      await new ChangeControlStore(root).getPromptModelLineageProjectionV1(
+        "planning-project",
+      ),
+    );
+    assert.equal(afterInvalid.promptArtifacts.length, 2);
+    assert.equal(
+      afterInvalid.promptArtifacts[1].artifact.supersedesId,
+      artifact.promptArtifactId,
+    );
+    const persisted = JSON.stringify(afterInvalid);
+    for (const prohibited of [
+      "renderedPrompt",
+      "environmentValues",
+      "hiddenReasoning",
+      "rawProviderPayload",
+      "sk-abcdefghijklmnop",
+    ])
+      assert.equal(persisted.includes(prohibited), false, prohibited);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AttemptConfigurationBindingV1 is mandatory, exact, immutable, child-scoped, and revocation-aware at dispatch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-attempt-binding-"));
+  try {
+    const { store, artifact, route } = await promptModelPlanningFixture(root);
+    const dispatchIdentity = {
+      projectId: "planning-project",
+      changeId: "planning-change",
+      waveId: "planning-wave",
+      taskId: "task-one",
+      runId: "run-one",
+      attemptId: "attempt-one",
+      plan: {
+        planId: "plan-one",
+        revision: 1,
+        planBaseSha: planningShaOne,
+      },
+      authorizationId: "authorization-one",
+      workspace: {
+        workspaceAttemptId: "workspace-attempt-one",
+        repositoryId: "planning-repository",
+        baseSha: planningShaOne,
+      },
+    };
+    await assert.rejects(
+      store.assertAttemptConfigurationDispatchableV1(
+        "planning-project",
+        dispatchIdentity,
+      ),
+      lineageRejected("ATTEMPT_BINDING_MISSING"),
+    );
+    await assert.rejects(
+      store.bindAttemptConfigurationV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-binding-unknown-prompt",
+          binding: attemptBindingV1(artifact, route, {
+            bindingId: "binding-unknown-prompt",
+            attemptId: "attempt-unknown-prompt",
+            promptArtifactIds: ["prompt-unknown"],
+          }),
+        },
+      ),
+      lineageRejected("PROMPT_ARTIFACT_UNKNOWN"),
+    );
+    await assert.rejects(
+      store.bindAttemptConfigurationV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-binding-unknown-route",
+          binding: attemptBindingV1(artifact, route, {
+            bindingId: "binding-unknown-route",
+            attemptId: "attempt-unknown-route",
+            modelRouteId: "route-unknown",
+          }),
+        },
+      ),
+      lineageRejected("MODEL_ROUTE_UNKNOWN"),
+    );
+    await assert.rejects(
+      store.bindAttemptConfigurationV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-binding-stale",
+          binding: attemptBindingV1(artifact, route, {
+            bindingId: "binding-stale",
+            attemptId: "attempt-stale",
+            authorizationId: "authorization-stale",
+          }),
+        },
+      ),
+      lineageRejected("ATTEMPT_BINDING_STALE"),
+    );
+    const bindingEvent = await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-binding-attempt-one",
+        binding: attemptBindingV1(artifact, route),
+      },
+    );
+    const binding = bindingEvent.payload.binding as AttemptConfigurationBindingV1;
+    assert.equal(
+      binding.publicationSequence,
+      bindingEvent.sequence,
+      "binding sequence is fixed by its atomic publication",
+    );
+    assert.equal(
+      (
+        await store.assertAttemptConfigurationDispatchableV1(
+          "planning-project",
+          dispatchIdentity,
+        )
+      ).bindingId,
+      binding.bindingId,
+    );
+    await assert.rejects(
+      store.assertAttemptConfigurationDispatchableV1("planning-project", {
+        ...dispatchIdentity,
+        workspace: {
+          ...dispatchIdentity.workspace,
+          workspaceAttemptId: "workspace-foreign",
+        },
+      }),
+      lineageRejected("CROSS_ENTITY_IDENTITY_MISMATCH"),
+    );
+    await assert.rejects(
+      store.bindAttemptConfigurationV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-binding-conflict",
+          binding: {
+            ...attemptBindingV1(artifact, route),
+            bindingId: "binding-conflict",
+          },
+        },
+      ),
+      lineageRejected("ATTEMPT_BINDING_CONFLICT"),
+    );
+
+    const child = attemptBindingV1(artifact, route, {
+      bindingId: "binding-review-one",
+      bindingScope: "invocation",
+      role: "reviewer",
+      invocationId: "invocation-review-one",
+      parentAttemptBindingId: binding.bindingId,
+    });
+    await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-binding-review-one",
+        binding: child,
+      },
+    );
+    assert.equal(
+      (
+        await store.assertInvocationConfigurationDispatchableV1(
+          "planning-project",
+          { ...dispatchIdentity, invocationId: "invocation-review-one" },
+        )
+      ).role,
+      "reviewer",
+    );
+    await assert.rejects(
+      store.assertInvocationConfigurationDispatchableV1(
+        "planning-project",
+        { ...dispatchIdentity, invocationId: "invocation-missing" },
+      ),
+      lineageRejected("INVOCATION_BINDING_MISSING"),
+    );
+
+    await store.revokePromptArtifactV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-revoke-prompt-root",
+        revocation: {
+          entityId: artifact.promptArtifactId,
+          reasonCode: "PRIVACY_REVIEW_REQUIRED",
+          reason: "The reusable artifact requires quarantine review.",
+          evidenceRefs: ["incident:prompt-review"],
+          revokedBy: "human:security-reviewer",
+          revokedAt: "2026-08-01T10:04:00.000Z",
+        },
+      },
+    );
+    await assert.rejects(
+      store.assertAttemptConfigurationDispatchableV1(
+        "planning-project",
+        dispatchIdentity,
+      ),
+      lineageRejected("PROMPT_ARTIFACT_REVOKED"),
+    );
+    const replayed = await new ChangeControlStore(root)
+      .getPromptModelLineageProjectionV1("planning-project");
+    assert.equal(replayed.bindings.length, 2);
+    assert.equal(replayed.promptArtifacts[0].status, "revoked");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ResolvedModelExecutionV1 preserves requested routes and rejects mismatch, unsupported capability, and unpermitted fallback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-model-resolution-"));
+  try {
+    const { store, artifact, route } = await promptModelPlanningFixture(root);
+    const firstEvent = await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-resolution-binding-one",
+        binding: attemptBindingV1(artifact, route),
+      },
+    );
+    const firstBinding = firstEvent.payload.binding as AttemptConfigurationBindingV1;
+    await store.recordResolvedModelExecutionV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-resolution-one",
+        actor: "runtime-adapter:codex-cli-v1",
+        resolution: resolvedExecutionV1(firstBinding),
+      },
+    );
+    const projection = await store.getPromptModelLineageProjectionV1(
+      "planning-project",
+    );
+    assert.equal(projection.modelRoutes[0].route.requestedModelClass, "terra");
+    assert.equal(projection.resolvedExecutions[0].providerModelId, "gpt-5.6-terra");
+
+    const mismatchEvent = await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-resolution-binding-two",
+        binding: attemptBindingV1(artifact, route, {
+          bindingId: "binding-attempt-two",
+          attemptId: "attempt-two",
+        }),
+      },
+    );
+    const mismatchBinding = mismatchEvent.payload
+      .binding as AttemptConfigurationBindingV1;
+    await assert.rejects(
+      store.recordResolvedModelExecutionV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-resolution-mismatch",
+          actor: "runtime-adapter:codex-cli-v1",
+          resolution: resolvedExecutionV1(mismatchBinding, {
+            resolutionId: "resolution-mismatch",
+            providerModelId: "gpt-5.6-sol",
+            resolvedModelClass: "sol",
+          }),
+        },
+      ),
+      lineageRejected("MODEL_RESOLUTION_MISMATCH"),
+    );
+    await assert.rejects(
+      store.recordResolvedModelExecutionV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-resolution-capability",
+          actor: "runtime-adapter:codex-cli-v1",
+          resolution: resolvedExecutionV1(mismatchBinding, {
+            resolutionId: "resolution-capability",
+            capabilityMapVersion: "unknown-capabilities-v9",
+          }),
+        },
+      ),
+      lineageRejected("MODEL_CAPABILITY_UNSUPPORTED"),
+    );
+
+    const fallbackRoute = modelRouteV1({
+      modelRouteId: "route-luna-fallback-terra-v1",
+      requestedModelClass: "luna",
+      minimumModelClass: "luna",
+      fallbackPolicy: {
+        mode: "permitted",
+        allowedResolvedModelClasses: ["terra"],
+        allowedReasonCodes: ["LUNA_RUNTIME_UNAVAILABLE"],
+      },
+      routingRationaleCode: "DECLARED_LUNA_FALLBACK",
+      publishedAt: "2026-08-01T10:05:00.000Z",
+    });
+    await store.publishModelRouteV1("planning-project", "planning-change", {
+      publisherOccurrenceId: "occurrence-route-fallback",
+      route: fallbackRoute,
+    });
+    const fallbackEvent = await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-fallback-binding",
+        binding: attemptBindingV1(artifact, fallbackRoute, {
+          bindingId: "binding-attempt-fallback",
+          attemptId: "attempt-fallback",
+          modelRouteId: fallbackRoute.modelRouteId,
+        }),
+      },
+    );
+    const fallbackBinding = fallbackEvent.payload
+      .binding as AttemptConfigurationBindingV1;
+    await assert.rejects(
+      store.recordResolvedModelExecutionV1(
+        "planning-project",
+        "planning-change",
+        {
+          publisherOccurrenceId: "occurrence-fallback-denied",
+          actor: "runtime-adapter:codex-cli-v1",
+          resolution: resolvedExecutionV1(fallbackBinding, {
+            resolutionId: "resolution-fallback-denied",
+            fallback: {
+              used: true,
+              sourceModelClass: "luna",
+              reasonCode: "UNDECLARED_REASON",
+            },
+          }),
+        },
+      ),
+      lineageRejected("MODEL_FALLBACK_NOT_PERMITTED"),
+    );
+    const allowed = await store.recordResolvedModelExecutionV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-fallback-allowed",
+        actor: "runtime-adapter:codex-cli-v1",
+        resolution: resolvedExecutionV1(fallbackBinding, {
+          resolutionId: "resolution-fallback-allowed",
+          fallback: {
+            used: true,
+            sourceModelClass: "luna",
+            reasonCode: "LUNA_RUNTIME_UNAVAILABLE",
+          },
+        }),
+      },
+    );
+    assert.equal(
+      (allowed.payload.resolution as ResolvedModelExecutionV1).fallback.used,
+      true,
+    );
+    await store.revokeModelRouteV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "occurrence-revoke-route-terra",
+        revocation: {
+          entityId: route.modelRouteId,
+          reasonCode: "ROUTE_RETIRED",
+          reason: "The exact requested route was retired.",
+          evidenceRefs: ["decision:route-retirement"],
+          revokedBy: "human:route-owner",
+          revokedAt: "2026-08-01T10:06:00.000Z",
+        },
+      },
+    );
+    await assert.rejects(
+      store.assertAttemptConfigurationDispatchableV1("planning-project", {
+        projectId: firstBinding.projectId,
+        changeId: firstBinding.changeId,
+        waveId: firstBinding.waveId,
+        taskId: firstBinding.taskId,
+        runId: firstBinding.runId,
+        attemptId: firstBinding.attemptId,
+        plan: firstBinding.plan,
+        authorizationId: firstBinding.authorizationId,
+        workspace: firstBinding.workspace,
+      }),
+      lineageRejected("MODEL_ROUTE_REVOKED"),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy Phase 1-4 ledgers and queues remain readable without implicit Phase 5 state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-lineage-legacy-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await store.create("legacy-project", {
+      changeId: "legacy-change",
+      actor: "user:creator",
+    });
+    const projection = await new ChangeControlStore(root)
+      .getPromptModelLineageProjectionV1("legacy-project");
+    assert.deepEqual(projection.promptArtifacts, []);
+    assert.deepEqual(projection.modelRoutes, []);
+    assert.deepEqual(projection.bindings, []);
+    assert.deepEqual(projection.resolvedExecutions, []);
+    assert.equal(
+      validateQueue({
+        project: { name: "Legacy", path: process.cwd() },
+        tasks: [
+          { title: "Legacy one", prompt: "Do one bounded thing." },
+          { title: "Legacy two", prompt: "Do another bounded thing." },
+        ],
+      }).tasks.every((task: { promptModel?: unknown }) => task.promptModel === undefined),
+      true,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1,0 +1,197 @@
+{
+  "valid": [
+    {
+      "schemaDefinition": "PromptArtifactV1",
+      "value": {
+        "contractType": "PromptArtifactV1",
+        "contractVersion": "1.0",
+        "promptArtifactId": "prompt.executor.root.v1",
+        "purpose": "Approved reusable executor instruction",
+        "artifactKind": "executor",
+        "schemaVersion": "1.0",
+        "content": {
+          "storage": "approved_reusable_content",
+          "mediaType": "text/plain; charset=utf-8",
+          "text": "You are an approved reusable executor."
+        },
+        "contentHash": "0e2051b21c9101283b42bf60f76696cc50c734a5277968e96a76f2db5371819d",
+        "byteLength": 38,
+        "compiler": { "compilerId": "legacy-prompt-renderer", "version": "1.0" },
+        "inputSchemaRef": "orchestrator-task-input-v1",
+        "behaviorContractRefs": ["executor-outcome-v1"],
+        "parentArtifactIds": [],
+        "publishedBy": "artifact-publisher:test",
+        "publishedAt": "2026-08-01T10:00:00.000Z",
+        "privacy": {
+          "classification": "approved_reusable",
+          "validationReceipt": {
+            "validatorId": "prompt-privacy-validator",
+            "validatorVersion": "1.0",
+            "decision": "approved",
+            "validatedAt": "2026-08-01T09:59:00.000Z",
+            "evidenceRefs": ["review:prompt.executor.root.v1"]
+          }
+        }
+      }
+    },
+    {
+      "schemaDefinition": "ModelRouteV1",
+      "value": {
+        "contractType": "ModelRouteV1",
+        "contractVersion": "1.0",
+        "modelRouteId": "route.terra.medium.v1",
+        "routePolicyId": "codex-gpt56-routing",
+        "routePolicyVersion": "1.0",
+        "requestedModelClass": "terra",
+        "minimumModelClass": "terra",
+        "reasoningLevel": "medium",
+        "requiredCapabilities": {
+          "runtimeId": "codex-cli",
+          "toolRoute": "local-tools",
+          "capabilityMapVersion": "codex-cli-capabilities-v1"
+        },
+        "fallbackPolicy": {
+          "mode": "denied",
+          "allowedResolvedModelClasses": [],
+          "allowedReasonCodes": []
+        },
+        "allowedProviderAdapters": [
+          { "providerId": "openai", "adapterId": "codex-cli", "adapterVersion": "1.0" }
+        ],
+        "failClosedUnsupported": true,
+        "routingRationaleCode": "EXPLICIT_TASK_ROUTE",
+        "publishedBy": "route-publisher:test",
+        "publishedAt": "2026-08-01T10:01:00.000Z"
+      }
+    },
+    {
+      "schemaDefinition": "AttemptConfigurationBindingV1",
+      "value": {
+        "contractType": "AttemptConfigurationBindingV1",
+        "contractVersion": "1.0",
+        "bindingId": "binding.run-1.task-1.attempt-1",
+        "bindingScope": "attempt",
+        "role": "executor",
+        "projectId": "project-1",
+        "changeId": "change-1",
+        "waveId": "wave-1",
+        "taskId": "task-1",
+        "runId": "run-1",
+        "attemptId": "attempt-1",
+        "plan": {
+          "planId": "plan-1",
+          "revision": 1,
+          "planBaseSha": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "authorizationId": "authorization-1",
+        "workspace": {
+          "workspaceAttemptId": "workspace-1",
+          "repositoryId": "repository-1",
+          "baseSha": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "promptArtifactIds": ["prompt.executor.root.v1"],
+        "compositeManifestHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "compiler": { "compilerId": "legacy-prompt-renderer", "version": "1.0" },
+        "inputSchemaVersion": "orchestrator-task-input-v1",
+        "inputFingerprint": {
+          "algorithm": "scoped-sha256",
+          "scopeId": "run-1.task-1.attempt-1",
+          "value": "3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "modelRouteId": "route.terra.medium.v1",
+        "expectedRuntime": {
+          "runtimeId": "codex-cli",
+          "toolRoute": "local-tools",
+          "capabilityMapVersion": "codex-cli-capabilities-v1"
+        },
+        "boundBy": "dispatch-gate:prompt-model-v1",
+        "reason": "managed-executor-pre-execution-binding",
+        "boundAt": "2026-08-01T10:02:00.000Z",
+        "publicationSequence": 9,
+        "evidenceSnapshotHash": "4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    },
+    {
+      "schemaDefinition": "ResolvedModelExecutionV1",
+      "value": {
+        "contractType": "ResolvedModelExecutionV1",
+        "contractVersion": "1.0",
+        "resolutionId": "resolution-1",
+        "bindingId": "binding.run-1.task-1.attempt-1",
+        "projectId": "project-1",
+        "changeId": "change-1",
+        "waveId": "wave-1",
+        "taskId": "task-1",
+        "runId": "run-1",
+        "attemptId": "attempt-1",
+        "modelRouteId": "route.terra.medium.v1",
+        "providerId": "openai",
+        "providerAdapterId": "codex-cli",
+        "providerAdapterVersion": "1.0",
+        "runtimeId": "codex-cli",
+        "providerModelId": "gpt-5.6-terra",
+        "resolvedModelClass": "terra",
+        "capabilityMapVersion": "codex-cli-capabilities-v1",
+        "reasoningLevel": "medium",
+        "toolRoute": "local-tools",
+        "resolutionReasonCode": "REQUESTED_ROUTE_RESOLVED",
+        "fallback": { "used": false },
+        "startedAt": "2026-08-01T10:02:00.000Z",
+        "measurements": {
+          "inputTokens": { "state": "unsupported" },
+          "outputTokens": { "state": "unsupported" },
+          "latency": { "state": "unsupported" },
+          "cost": { "state": "unsupported" },
+          "cache": { "state": "unsupported" },
+          "providerMetadata": { "state": "unsupported" }
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "schemaDefinition": "PromptArtifactV1",
+      "reasonCode": "PROMPT_PRIVACY_VIOLATION",
+      "value": {
+        "contractType": "PromptArtifactV1",
+        "contractVersion": "1.0",
+        "promptArtifactId": "prompt.invalid.rendered",
+        "purpose": "Invalid rendered prompt capture",
+        "artifactKind": "executor",
+        "schemaVersion": "1.0",
+        "renderedPrompt": "private user prompt"
+      }
+    },
+    {
+      "schemaDefinition": "ModelRouteV1",
+      "reasonCode": "MODEL_CAPABILITY_UNSUPPORTED",
+      "value": {
+        "contractType": "ModelRouteV1",
+        "contractVersion": "1.0",
+        "modelRouteId": "route.invalid",
+        "failClosedUnsupported": false
+      }
+    },
+    {
+      "schemaDefinition": "AttemptConfigurationBindingV1",
+      "reasonCode": "ATTEMPT_BINDING_MISSING",
+      "value": {
+        "contractType": "AttemptConfigurationBindingV1",
+        "contractVersion": "1.0",
+        "bindingScope": "attempt",
+        "role": "executor",
+        "renderedPrompt": "must never be persisted"
+      }
+    },
+    {
+      "schemaDefinition": "ResolvedModelExecutionV1",
+      "reasonCode": "MODEL_RESOLUTION_MISMATCH",
+      "value": {
+        "contractType": "ResolvedModelExecutionV1",
+        "contractVersion": "1.0",
+        "resolutionId": "resolution.invalid",
+        "rawProviderPayload": { "hidden_reasoning": "forbidden" }
+      }
+    }
+  ]
+}
