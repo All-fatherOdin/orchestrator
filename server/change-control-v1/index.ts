@@ -64,6 +64,28 @@ import {
   type DoctorRecipeInputV1,
   type ExecuteDoctorRepairInputV1,
 } from "../halts-incidents-v1/index.ts";
+import {
+  PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
+  PromptModelLineageErrorV1,
+  applyPromptModelLineageEventV1,
+  assertAttemptConfigurationDispatchableV1,
+  assertInvocationConfigurationDispatchableV1,
+  createPromptModelLineageProjectionV1,
+  duplicatePublisherEventV1,
+  immutablePromptModelLineageProjectionV1,
+  type AssertAttemptDispatchInputV1,
+  type AttemptConfigurationBindingV1,
+  type LineageRevocationV1,
+  type ModelRouteV1,
+  type MutablePromptModelLineageProjectionV1,
+  type PromptArtifactV1,
+  type PromptModelLineageEventTypeV1,
+  type PromptModelLineageEventV1,
+  type PromptModelLineageProjectionV1,
+  type PromptModelLineageReasonCodeV1,
+  type PromptModelReplayContextV1,
+  type ResolvedModelExecutionV1,
+} from "../prompt-model-eval-v1/index.ts";
 
 export {
   type CorrectIncidentCorrelationInputV1,
@@ -81,6 +103,25 @@ export {
   type DoctorProjectionV1,
   type ExecuteDoctorRepairInputV1,
 } from "../halts-incidents-v1/index.ts";
+
+export {
+  PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
+  PROMPT_MODEL_LINEAGE_REASON_CODES_V1,
+  attemptEvidenceSnapshotHashV1,
+  compositePromptManifestHashV1,
+  promptArtifactContentIdentityV1,
+  promptModelSha256V1,
+  scopedInputFingerprintV1,
+  type AssertAttemptDispatchInputV1,
+  type AttemptConfigurationBindingV1,
+  type LineageRevocationV1,
+  type ModelRouteV1,
+  type PromptArtifactV1,
+  type PromptModelLineageEventV1,
+  type PromptModelLineageProjectionV1,
+  type PromptModelLineageReasonCodeV1,
+  type ResolvedModelExecutionV1,
+} from "../prompt-model-eval-v1/index.ts";
 
 export const CHANGE_CONTROL_EVENT_TYPES = [
   "change.created",
@@ -113,6 +154,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   ...WARDEN_EVENT_TYPES_V1,
   ...DOCTOR_EVENT_TYPES_V1,
   ...RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
+  ...PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
 ] as const;
 
 export type ChangeControlEventType =
@@ -728,6 +770,7 @@ export class ChangeControlError extends Error {
     readonly reasons?: readonly (
       | DispatchReadinessReason
       | DispatchGateReasonV1
+      | PromptModelLineageReasonCodeV1
     )[],
   ) {
     super(message);
@@ -873,6 +916,49 @@ export type ChangeControlStoreOptions = {
   ) => void | Promise<void>;
 };
 
+export type PublishPromptArtifactInputV1 = Readonly<{
+  publisherOccurrenceId: string;
+  artifact: PromptArtifactV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type RevokePromptArtifactInputV1 = Readonly<{
+  publisherOccurrenceId: string;
+  revocation: LineageRevocationV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type PublishModelRouteInputV1 = Readonly<{
+  publisherOccurrenceId: string;
+  route: ModelRouteV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type RevokeModelRouteInputV1 = Readonly<{
+  publisherOccurrenceId: string;
+  revocation: LineageRevocationV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type BindAttemptConfigurationInputV1 = Readonly<{
+  publisherOccurrenceId: string;
+  binding: Omit<AttemptConfigurationBindingV1, "publicationSequence">;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
+export type RecordResolvedModelExecutionInputV1 = Readonly<{
+  publisherOccurrenceId: string;
+  actor: string;
+  resolution: ResolvedModelExecutionV1;
+  causationId?: string;
+  correlationId?: string;
+}>;
+
 const eventTypeSet = new Set<string>(CHANGE_CONTROL_EVENT_TYPES);
 const changeEventTypes = new Set<ChangeControlEventType>([
   "change.created",
@@ -907,6 +993,9 @@ const wardenEventTypes = new Set<ChangeControlEventType>(WARDEN_EVENT_TYPES_V1);
 const doctorEventTypes = new Set<ChangeControlEventType>(DOCTOR_EVENT_TYPES_V1);
 const recoveryAuthorizationEventTypes = new Set<ChangeControlEventType>(
   RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
+);
+const promptModelLineageEventTypes = new Set<ChangeControlEventType>(
+  PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
 );
 const changeTargetForType = {
   "change.created": "draft",
@@ -1195,6 +1284,7 @@ type ProjectedLedger = {
   doctorEvents: DoctorEventV1[];
   recoveryAuthorizationIds: Set<string>;
   recoveryAttemptIds: Set<string>;
+  promptModelLineage: MutablePromptModelLineageProjectionV1;
 };
 
 function waveKey(changeId: string, waveId: string) {
@@ -1216,6 +1306,31 @@ function planKey(
 
 function planRevisionKey(changeId: string, waveId: string, revision: number) {
   return `${changeId}\u0000${waveId}\u0000${revision}`;
+}
+
+function promptModelReplayContext(
+  projected: Pick<ProjectedLedger, "projections" | "waves" | "tasks" | "plans">,
+): PromptModelReplayContextV1 {
+  return {
+    hasChange: (changeId) => projected.projections.has(changeId),
+    hasWave: (changeId, waveId) =>
+      projected.waves.has(waveKey(changeId, waveId)),
+    hasTask: (changeId, waveId, taskId) =>
+      projected.tasks.has(taskKey(changeId, waveId, taskId)),
+    planIdentity: (changeId, waveId, planId, revision) => {
+      const plan = projected.plans.get(
+        planKey(changeId, waveId, planId, revision),
+      );
+      if (!plan) return undefined;
+      return {
+        planBaseSha: plan.contract.planBase.sha,
+        status: plan.status,
+        ...(plan.authorization
+          ? { authorizationId: plan.authorization.authorizationId }
+          : {}),
+      };
+    },
+  };
 }
 
 function samePlanReference(
@@ -3737,6 +3852,9 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   const doctorEvents: DoctorEventV1[] = [];
   const recoveryAuthorizationIds = new Set<string>();
   const recoveryAttemptIds = new Set<string>();
+  const promptModelLineage = createPromptModelLineageProjectionV1(
+    ledger.projectId,
+  );
   const eventIds = new Set<string>();
   let previousHash: string | null = null;
 
@@ -4592,6 +4710,18 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
         recoveryAuthorizationIds,
         recoveryAttemptIds,
       });
+    } else if (promptModelLineageEventTypes.has(event.type)) {
+      try {
+        applyPromptModelLineageEventV1(
+          event as unknown as PromptModelLineageEventV1,
+          promptModelLineage,
+          promptModelReplayContext({ projections, waves, tasks, plans }),
+        );
+      } catch (error) {
+        if (error instanceof PromptModelLineageErrorV1)
+          corrupt(`${error.reasonCode}: ${error.message}`);
+        throw error;
+      }
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
       const taskId = requireStoredIdentifier(event.taskId, "taskId");
@@ -4717,6 +4847,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     doctorEvents,
     recoveryAuthorizationIds,
     recoveryAttemptIds,
+    promptModelLineage,
   };
 }
 
@@ -5577,6 +5708,293 @@ export class ChangeControlStore {
     }) as ChangeControlEvent;
     ledger.events.push(event);
     return event;
+  }
+
+  private async publishPromptModelEventV1(
+    projectId: string,
+    changeId: string,
+    input: Readonly<{
+      type: PromptModelLineageEventTypeV1;
+      actor: string;
+      occurredAt: string;
+      publisherOccurrenceId: string;
+      waveId?: string;
+      taskId?: string;
+      causationId?: string;
+      correlationId?: string;
+      payloadForSequence: (sequence: number) => Record<string, unknown>;
+    }>,
+  ): Promise<PromptModelLineageEventV1> {
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const occurrenceId = requireIdentifier(
+        input.publisherOccurrenceId,
+        "publisherOccurrenceId",
+      );
+      const existing = projected.promptModelLineage.occurrenceEvents.get(
+        occurrenceId,
+      );
+      const expectedSequence = existing?.sequence ?? ledger.events.length + 1;
+      const payloadWithoutOccurrence = input.payloadForSequence(expectedSequence);
+      try {
+        const duplicate = duplicatePublisherEventV1(
+          projected.promptModelLineage,
+          occurrenceId,
+          input.type,
+          payloadWithoutOccurrence,
+        );
+        if (duplicate) return duplicate;
+      } catch (error) {
+        if (error instanceof PromptModelLineageErrorV1)
+          throw new ChangeControlError(
+            error.message,
+            "CONFLICT",
+            409,
+            [error.reasonCode],
+          );
+        throw error;
+      }
+      const changeEvents = projected.eventsByChange.get(changeId);
+      if (!changeEvents)
+        throw new ChangeControlError(
+          `Change ${changeId} was not found.`,
+          "NOT_FOUND",
+          404,
+        );
+      const event = this.append(ledger, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: input.type,
+        occurredAt: input.occurredAt,
+        projectId,
+        changeId,
+        ...(input.waveId ? { waveId: input.waveId } : {}),
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+        actor: input.actor,
+        causationId: requireIdentity(
+          input.causationId ?? ledger.events.at(-1)!.id,
+          "causationId",
+        ),
+        correlationId: requireIdentity(
+          input.correlationId ?? changeEvents[0]!.correlationId,
+          "correlationId",
+        ),
+        payload: normalizePayload({
+          publisherOccurrenceId: occurrenceId,
+          ...payloadWithoutOccurrence,
+        }),
+      }) as unknown as PromptModelLineageEventV1;
+      try {
+        applyPromptModelLineageEventV1(
+          event,
+          projected.promptModelLineage,
+          promptModelReplayContext(projected),
+        );
+      } catch (error) {
+        ledger.events.pop();
+        if (error instanceof PromptModelLineageErrorV1)
+          throw new ChangeControlError(
+            error.message,
+            "INVALID_INPUT",
+            400,
+            [error.reasonCode],
+          );
+        throw error;
+      }
+      validateAndProject(ledger);
+      await writeAtomically(file, ledger);
+      return deepFreeze(structuredClone(event));
+    });
+  }
+
+  async publishPromptArtifactV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: PublishPromptArtifactInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    return this.publishPromptModelEventV1(projectId, changeId, {
+      type: "prompt.artifact-published",
+      actor: requireIdentity(input?.artifact?.publishedBy, "publishedBy"),
+      occurredAt: input?.artifact?.publishedAt,
+      publisherOccurrenceId: input?.publisherOccurrenceId,
+      causationId: input?.causationId,
+      correlationId: input?.correlationId,
+      payloadForSequence: () => ({ artifact: input.artifact }),
+    });
+  }
+
+  async revokePromptArtifactV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: RevokePromptArtifactInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    return this.publishPromptModelEventV1(projectId, changeId, {
+      type: "prompt.artifact-revoked",
+      actor: requireIdentity(input?.revocation?.revokedBy, "revokedBy"),
+      occurredAt: input?.revocation?.revokedAt,
+      publisherOccurrenceId: input?.publisherOccurrenceId,
+      causationId: input?.causationId,
+      correlationId: input?.correlationId,
+      payloadForSequence: () => ({ revocation: input.revocation }),
+    });
+  }
+
+  async publishModelRouteV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: PublishModelRouteInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    return this.publishPromptModelEventV1(projectId, changeId, {
+      type: "model.route-published",
+      actor: requireIdentity(input?.route?.publishedBy, "publishedBy"),
+      occurredAt: input?.route?.publishedAt,
+      publisherOccurrenceId: input?.publisherOccurrenceId,
+      causationId: input?.causationId,
+      correlationId: input?.correlationId,
+      payloadForSequence: () => ({ route: input.route }),
+    });
+  }
+
+  async revokeModelRouteV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: RevokeModelRouteInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    return this.publishPromptModelEventV1(projectId, changeId, {
+      type: "model.route-revoked",
+      actor: requireIdentity(input?.revocation?.revokedBy, "revokedBy"),
+      occurredAt: input?.revocation?.revokedAt,
+      publisherOccurrenceId: input?.publisherOccurrenceId,
+      causationId: input?.causationId,
+      correlationId: input?.correlationId,
+      payloadForSequence: () => ({ revocation: input.revocation }),
+    });
+  }
+
+  async bindAttemptConfigurationV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: BindAttemptConfigurationInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const binding = input?.binding;
+    return this.publishPromptModelEventV1(projectId, changeId, {
+      type:
+        binding?.bindingScope === "invocation"
+          ? "invocation.configuration-bound"
+          : "attempt.configuration-bound",
+      actor: requireIdentity(binding?.boundBy, "boundBy"),
+      occurredAt: binding?.boundAt,
+      publisherOccurrenceId: input?.publisherOccurrenceId,
+      waveId: requireIdentifier(binding?.waveId, "waveId"),
+      taskId: requireIdentifier(binding?.taskId, "taskId"),
+      causationId: input?.causationId,
+      correlationId: input?.correlationId,
+      payloadForSequence: (publicationSequence) => ({
+        binding: { ...binding, publicationSequence },
+      }),
+    });
+  }
+
+  async recordResolvedModelExecutionV1(
+    projectIdValue: string,
+    changeIdValue: string,
+    input: RecordResolvedModelExecutionInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = requireIdentifier(changeIdValue, "changeId");
+    const resolution = input?.resolution;
+    return this.publishPromptModelEventV1(projectId, changeId, {
+      type: "model.execution-resolved",
+      actor: requireIdentity(input?.actor, "actor"),
+      occurredAt: resolution?.startedAt,
+      publisherOccurrenceId: input?.publisherOccurrenceId,
+      waveId: requireIdentifier(resolution?.waveId, "waveId"),
+      taskId: requireIdentifier(resolution?.taskId, "taskId"),
+      causationId: input?.causationId,
+      correlationId: input?.correlationId,
+      payloadForSequence: () => ({ resolution }),
+    });
+  }
+
+  async getPromptModelLineageProjectionV1(
+    projectIdValue: string,
+  ): Promise<PromptModelLineageProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    return immutablePromptModelLineageProjectionV1(
+      validateAndProject(ledger).promptModelLineage,
+    );
+  }
+
+  async assertAttemptConfigurationDispatchableV1(
+    projectIdValue: string,
+    input: AssertAttemptDispatchInputV1,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const projected = validateAndProject(
+      await readLedger(this.file(projectId), projectId),
+    );
+    try {
+      return deepFreeze(
+        structuredClone(
+          assertAttemptConfigurationDispatchableV1(
+            projected.promptModelLineage,
+            promptModelReplayContext(projected),
+            input,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof PromptModelLineageErrorV1)
+        throw new ChangeControlError(
+          error.message,
+          "NOT_READY",
+          409,
+          [error.reasonCode],
+        );
+      throw error;
+    }
+  }
+
+  async assertInvocationConfigurationDispatchableV1(
+    projectIdValue: string,
+    input: AssertAttemptDispatchInputV1 & Readonly<{ invocationId: string }>,
+  ) {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const projected = validateAndProject(
+      await readLedger(this.file(projectId), projectId),
+    );
+    try {
+      return deepFreeze(
+        structuredClone(
+          assertInvocationConfigurationDispatchableV1(
+            projected.promptModelLineage,
+            promptModelReplayContext(projected),
+            input,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof PromptModelLineageErrorV1)
+        throw new ChangeControlError(
+          error.message,
+          "NOT_READY",
+          409,
+          [error.reasonCode],
+        );
+      throw error;
+    }
   }
 
   private appendRecoveryPlanInvalidation(

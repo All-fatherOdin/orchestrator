@@ -277,6 +277,51 @@ allocates a new immutable attempt identity and records a stale-plan assessment;
 the next dispatch must pass fresh Phase 2 planning, authorization, drift,
 dependency, acceptance, Phase 3 ownership, and blocking-incident gates.
 
+### Prompt and model lineage v1
+
+The first Phase 5 slice extends the same per-project hash chain with immutable
+`PromptArtifactV1`, `ModelRouteV1`, `AttemptConfigurationBindingV1`, and
+`ResolvedModelExecutionV1` records. Its Draft 2020-12 schema and positive and
+negative fixtures are under `server/prompt-model-eval-v1/schemas/`. The typed
+events are `prompt.artifact-published`, `prompt.artifact-revoked`,
+`model.route-published`, `model.route-revoked`,
+`attempt.configuration-bound`, `invocation.configuration-bound`, and
+`model.execution-resolved`. Publisher occurrence IDs are idempotent across
+threads, processes, and restart; reuse with different content is rejected.
+
+This slice is explicitly configuration-lineage only. It does not implement
+eval suites, eval runs, reports, comparisons, or champion decisions.
+
+The focused APIs are:
+
+- `GET /api/change-control/projects/:projectId/prompt-model-lineage`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/prompt-artifacts`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/prompt-artifacts/:artifactId/revocations`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/model-routes`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/model-routes/:routeId/revocations`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/attempt-configuration-bindings`
+- `POST /api/change-control/projects/:projectId/changes/:changeId/model-executions`
+
+A managed task opts into this boundary with a
+`PromptModelExecutionConfigurationV1` reference under `promptModel`. It names
+the ordered artifact IDs, requested route ID, compiler identity, input schema,
+and expected runtime capabilities separately for executor, reviewer, and
+correction roles. Once opted in, each executor retry receives a new immutable
+attempt binding before provider start. Reviewer and correction calls require
+distinct child invocation bindings. The runtime preserves the requested route
+ID separately from provider, adapter, concrete model, capability-map,
+reasoning, and tool-route observations. Unknown, revoked, stale,
+hash-mismatched, privacy-invalid, capability-incompatible, mismatched, and
+unpermitted-fallback configurations fail before a provider process starts.
+
+Canonical storage is intentionally narrow. Prompt artifacts may contain only
+approved reusable instruction content or ordered manifests. Bindings store a
+scoped SHA-256 input fingerprint, never the rendered task or reviewer prompt.
+The ledger and run record reject or omit secrets, environment values,
+unrelated file contents, provider-hidden reasoning, and raw provider payloads.
+Historical ledgers, queues, and run records without Phase 5 fields remain
+readable and do not acquire implicit prompt/model authority.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

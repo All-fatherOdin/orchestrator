@@ -39,6 +39,10 @@ import {
 import {
   ChangeControlError,
   ChangeControlStore,
+  attemptEvidenceSnapshotHashV1,
+  compositePromptManifestHashV1,
+  promptModelSha256V1,
+  scopedInputFingerprintV1,
   type DriftAssessmentV1,
   type MergeRequestV1,
   type PlanReferenceV1,
@@ -54,6 +58,12 @@ import {
   type PublishArchitectReplanReceiptInput,
   type PublishPlanAuthorizationInput,
   type PublishPlanningContractInput,
+  type PublishPromptArtifactInputV1,
+  type RevokePromptArtifactInputV1,
+  type PublishModelRouteInputV1,
+  type RevokeModelRouteInputV1,
+  type BindAttemptConfigurationInputV1,
+  type RecordResolvedModelExecutionInputV1,
   type ResolveIncidentInputV1,
   type TrustedRepositorySnapshotV1,
   type TransitionChangeInput,
@@ -62,6 +72,7 @@ import {
   type TransitionWardenRepairLeaseInputV1,
   type TransitionTaskInput,
   type TransitionWaveInput,
+  type AttemptConfigurationBindingV1,
 } from "./change-control-v1/index.ts";
 import {
   canonicalWorkspaceRunFieldsV1,
@@ -299,6 +310,28 @@ export type TaskInput = {
     changeId: string;
     waveId: string;
     taskId: string;
+  };
+  /** Explicit Phase 5 opt-in. Rendered prompts are fingerprinted, never persisted. */
+  promptModel?: {
+    contractType: "PromptModelExecutionConfigurationV1";
+    contractVersion: "1.0";
+    roles: {
+      executor: PromptModelRoleConfigurationV1;
+      reviewer?: PromptModelRoleConfigurationV1;
+      correction?: PromptModelRoleConfigurationV1;
+    };
+  };
+};
+
+type PromptModelRoleConfigurationV1 = {
+  promptArtifactIds: string[];
+  modelRouteId: string;
+  compiler: { compilerId: string; version: string };
+  inputSchemaVersion: string;
+  expectedRuntime: {
+    runtimeId: string;
+    toolRoute: string;
+    capabilityMapVersion: string;
   };
 };
 
@@ -749,6 +782,15 @@ type Task = ResolvedTask & {
   providerRuntimeIdentity?: ProviderRuntimeIdentityV1;
   workspaceAttemptId?: string;
   workspacePath?: string;
+  /** Non-sensitive references into the canonical Phase 5 project ledger. */
+  promptModelExecutionRefs?: Array<{
+    role: "executor" | "reviewer" | "correction";
+    attemptOrdinal: number;
+    attemptId: string;
+    invocationId?: string;
+    bindingId: string;
+    resolutionId: string;
+  }>;
 };
 type UsageRecord = {
   phase: "executor" | "reviewer" | "correction";
@@ -3166,6 +3208,58 @@ export function validateQueue(value: unknown): {
           `Task ${index + 1}: Phase 3 workspace isolation requires an enabled reversible apply authorization.`,
         );
     }
+    const promptModel = task.promptModel;
+    if (promptModel !== undefined) {
+      if (
+        !workspace ||
+        promptModel.contractType !== "PromptModelExecutionConfigurationV1" ||
+        promptModel.contractVersion !== "1.0" ||
+        !promptModel.roles ||
+        typeof promptModel.roles !== "object"
+      )
+        throw new Error(
+          `Task ${index + 1}: promptModel requires a managed Phase 2/3 workspace and the v1 configuration envelope.`,
+        );
+      const configuredRoles = Object.entries(promptModel.roles) as Array<
+        [string, PromptModelRoleConfigurationV1 | undefined]
+      >;
+      if (
+        !configuredRoles.some(([role, value]) => role === "executor" && value) ||
+        configuredRoles.some(
+          ([role]) => !["executor", "reviewer", "correction"].includes(role),
+        )
+      )
+        throw new Error(
+          `Task ${index + 1}: promptModel.roles must declare executor and only known invocation roles.`,
+        );
+      for (const [role, configuration] of configuredRoles) {
+        if (!configuration) continue;
+        const identifiers = [
+          configuration.modelRouteId,
+          configuration.compiler?.compilerId,
+          configuration.compiler?.version,
+          configuration.inputSchemaVersion,
+          configuration.expectedRuntime?.runtimeId,
+          configuration.expectedRuntime?.toolRoute,
+          configuration.expectedRuntime?.capabilityMapVersion,
+          ...(configuration.promptArtifactIds ?? []),
+        ];
+        if (
+          !Array.isArray(configuration.promptArtifactIds) ||
+          configuration.promptArtifactIds.length === 0 ||
+          new Set(configuration.promptArtifactIds).size !==
+            configuration.promptArtifactIds.length ||
+          identifiers.some(
+            (value) =>
+              typeof value !== "string" ||
+              !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value),
+          )
+        )
+          throw new Error(
+            `Task ${index + 1}: promptModel ${role} configuration has invalid or duplicate immutable identities.`,
+          );
+      }
+    }
     return {
       key: task.key,
       dependsOn: task.dependsOn,
@@ -3187,6 +3281,7 @@ export function validateQueue(value: unknown): {
       requireRepositoryContext: task.requireRepositoryContext,
       authorization: task.authorization,
       workspace: task.workspace,
+      promptModel: task.promptModel,
       requestedModel: selection.requestedModel,
       modelSelectionReason: selection.reason,
     };
@@ -3695,6 +3790,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       requireRepositoryContext: task.requireRepositoryContext,
       authorization: task.authorization,
       workspace: task.workspace,
+      promptModel: task.promptModel,
       requestedModel: task.requestedModel,
       modelSelectionReason: task.modelSelectionReason,
     })),
@@ -3839,6 +3935,7 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     workspacePath: undefined,
     providerRuntimeDecision: undefined,
     providerRuntimeIdentity: undefined,
+    promptModelExecutionRefs: undefined,
   };
 }
 
@@ -3921,6 +4018,7 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
       workspacePath: undefined,
       providerRuntimeDecision: undefined,
       providerRuntimeIdentity: undefined,
+      promptModelExecutionRefs: undefined,
     }));
   return {
     id: identifier(),
@@ -4162,6 +4260,7 @@ async function authorizedWorkspacePlanV1(run: Run, task: Task) {
   return {
     binding,
     reference,
+    authorizationId: plan.authorization.authorizationId,
     repositoryId,
     targetRef: plan.contract.planBase.ref,
     baseSha: plan.contract.planBase.sha,
@@ -4350,6 +4449,244 @@ async function taskExecutionPathV1(run: Run, task: Task) {
   if (!context)
     throw new Error("Managed workspace binding did not produce an owned workspace.");
   return context.workspacePath;
+}
+
+function promptModelRuntimeIdentityV1(...parts: unknown[]) {
+  return promptModelSha256V1(JSON.stringify(parts)).slice(0, 40);
+}
+
+function unsupportedRuntimeMeasurementsV1() {
+  return {
+    inputTokens: { state: "unsupported" as const },
+    outputTokens: { state: "unsupported" as const },
+    latency: { state: "unsupported" as const },
+    cost: { state: "unsupported" as const },
+    cache: { state: "unsupported" as const },
+    providerMetadata: { state: "unsupported" as const },
+  };
+}
+
+async function preparePromptModelExecutionV1(
+  run: Run,
+  task: Task,
+  role: "executor" | "reviewer" | "correction",
+  attemptOrdinal: number,
+  renderedPrompt: string,
+  resolvedModel: Model,
+  reasoningLevel: Effort,
+) {
+  if (!task.promptModel) return undefined;
+  const configuration = task.promptModel.roles[role];
+  if (!configuration)
+    throw new ChangeControlError(
+      `Phase 5 ${role} invocation has no published configuration reference.`,
+      "NOT_READY",
+      409,
+      ["ATTEMPT_BINDING_MISSING"],
+    );
+  const authorized = await authorizedWorkspacePlanV1(run, task);
+  if (!authorized || !task.workspaceAttemptId)
+    throw new ChangeControlError(
+      "Phase 5 requires the exact managed workspace and Phase 2 authorization before binding.",
+      "NOT_READY",
+      409,
+      ["ATTEMPT_BINDING_STALE"],
+    );
+  const workspaceAttempt = await inspectOwnedWorkspaceAttemptV1(
+    runStatePath(run.id),
+    task.workspaceAttemptId,
+  );
+  if (
+    workspaceAttempt.projectId !== authorized.binding.projectId ||
+    workspaceAttempt.changeId !== authorized.binding.changeId ||
+    workspaceAttempt.waveId !== authorized.binding.waveId ||
+    workspaceAttempt.taskId !== authorized.binding.taskId ||
+    workspaceAttempt.repositoryId !== authorized.repositoryId ||
+    workspaceAttempt.baseSha !== authorized.baseSha ||
+    !samePlanReferenceV1(workspaceAttempt.plan, authorized.reference)
+  )
+    throw new ChangeControlError(
+      "Phase 5 workspace identity disagrees with the exact Phase 2/3 attempt.",
+      "NOT_READY",
+      409,
+      ["CROSS_ENTITY_IDENTITY_MISMATCH"],
+    );
+
+  const attemptId = `pm-attempt:${promptModelRuntimeIdentityV1(run.id, task.id, attemptOrdinal)}`;
+  const priorAttempt = task.promptModelExecutionRefs?.find(
+    (reference) =>
+      reference.role === "executor" &&
+      reference.attemptOrdinal === attemptOrdinal,
+  );
+  const invocationId =
+    role === "executor"
+      ? undefined
+      : `pm-invocation:${promptModelRuntimeIdentityV1(run.id, task.id, attemptOrdinal, role, task.attempts ?? 1)}`;
+  if (role !== "executor" && !priorAttempt)
+    throw new ChangeControlError(
+      `Phase 5 ${role} invocation has no exact parent attempt binding.`,
+      "NOT_READY",
+      409,
+      ["ATTEMPT_BINDING_MISSING"],
+    );
+  const bindingId = `pm-binding:${promptModelRuntimeIdentityV1(attemptId, invocationId ?? "executor")}`;
+  const scopeId = `pm-input:${promptModelRuntimeIdentityV1(bindingId, role)}`;
+  const boundAt = task.startedAt ?? run.startedAt;
+  if (!boundAt)
+    throw new Error("Phase 5 binding requires a persisted attempt start time.");
+  const bindingIdentity = {
+    bindingScope: role === "executor" ? ("attempt" as const) : ("invocation" as const),
+    role,
+    projectId: authorized.binding.projectId,
+    changeId: authorized.binding.changeId,
+    waveId: authorized.binding.waveId,
+    taskId: authorized.binding.taskId,
+    runId: run.id,
+    attemptId,
+    ...(invocationId ? { invocationId } : {}),
+    ...(priorAttempt ? { parentAttemptBindingId: priorAttempt.bindingId } : {}),
+    plan: authorized.reference,
+    authorizationId: authorized.authorizationId,
+    workspace: {
+      workspaceAttemptId: workspaceAttempt.workspaceAttemptId,
+      repositoryId: workspaceAttempt.repositoryId,
+      baseSha: workspaceAttempt.baseSha,
+    },
+    promptArtifactIds: configuration.promptArtifactIds,
+    compositeManifestHash: compositePromptManifestHashV1(
+      configuration.promptArtifactIds,
+      configuration.compiler,
+    ),
+    compiler: configuration.compiler,
+    inputSchemaVersion: configuration.inputSchemaVersion,
+    inputFingerprint: scopedInputFingerprintV1(scopeId, renderedPrompt),
+    modelRouteId: configuration.modelRouteId,
+    expectedRuntime: configuration.expectedRuntime,
+  };
+  const binding: Omit<AttemptConfigurationBindingV1, "publicationSequence"> = {
+    contractType: "AttemptConfigurationBindingV1",
+    contractVersion: "1.0",
+    bindingId,
+    ...bindingIdentity,
+    boundBy: "dispatch-gate:prompt-model-v1",
+    reason: `managed-${role}-pre-execution-binding`,
+    boundAt,
+    evidenceSnapshotHash: attemptEvidenceSnapshotHashV1(bindingIdentity),
+  };
+  const bindingEvent = await changeControlStore.bindAttemptConfigurationV1(
+    authorized.binding.projectId,
+    authorized.binding.changeId,
+    {
+      publisherOccurrenceId: `pm-occurrence:${promptModelRuntimeIdentityV1("binding", bindingId)}`,
+      binding,
+    },
+  );
+  const publishedBinding = bindingEvent.payload
+    .binding as AttemptConfigurationBindingV1;
+  const dispatchIdentity = {
+    projectId: authorized.binding.projectId,
+    changeId: authorized.binding.changeId,
+    waveId: authorized.binding.waveId,
+    taskId: authorized.binding.taskId,
+    runId: run.id,
+    attemptId,
+    plan: authorized.reference,
+    authorizationId: authorized.authorizationId,
+    workspace: binding.workspace,
+  };
+  if (invocationId)
+    await changeControlStore.assertInvocationConfigurationDispatchableV1(
+      authorized.binding.projectId,
+      { ...dispatchIdentity, invocationId },
+    );
+  else
+    await changeControlStore.assertAttemptConfigurationDispatchableV1(
+      authorized.binding.projectId,
+      dispatchIdentity,
+    );
+
+  const projection = await changeControlStore.getPromptModelLineageProjectionV1(
+    authorized.binding.projectId,
+  );
+  const route = projection.modelRoutes.find(
+    (candidate) => candidate.route.modelRouteId === configuration.modelRouteId,
+  )?.route;
+  if (!route)
+    throw new ChangeControlError(
+      "Phase 5 resolution references an unknown model route.",
+      "NOT_READY",
+      409,
+      ["MODEL_ROUTE_UNKNOWN"],
+    );
+  const fallbackUsed =
+    route.requestedModelClass !== "auto" &&
+    route.requestedModelClass !== resolvedModel;
+  const resolutionId = `pm-resolution:${promptModelRuntimeIdentityV1(bindingId, MODEL_IDS[resolvedModel], reasoningLevel)}`;
+  const resolution = {
+    contractType: "ResolvedModelExecutionV1" as const,
+    contractVersion: "1.0" as const,
+    resolutionId,
+    bindingId: publishedBinding.bindingId,
+    projectId: publishedBinding.projectId,
+    changeId: publishedBinding.changeId,
+    waveId: publishedBinding.waveId,
+    taskId: publishedBinding.taskId,
+    runId: publishedBinding.runId,
+    attemptId: publishedBinding.attemptId,
+    ...(publishedBinding.invocationId
+      ? { invocationId: publishedBinding.invocationId }
+      : {}),
+    modelRouteId: publishedBinding.modelRouteId,
+    providerId: "openai",
+    providerAdapterId: "codex-cli",
+    providerAdapterVersion: "1.0",
+    runtimeId: "codex-cli",
+    providerModelId: MODEL_IDS[resolvedModel],
+    resolvedModelClass: resolvedModel,
+    capabilityMapVersion: "codex-cli-capabilities-v1",
+    reasoningLevel,
+    toolRoute: "local-tools",
+    resolutionReasonCode: fallbackUsed
+      ? "RUNTIME_DECLARED_FALLBACK"
+      : "REQUESTED_ROUTE_RESOLVED",
+    fallback: fallbackUsed
+      ? {
+          used: true as const,
+          sourceModelClass: route.requestedModelClass,
+          reasonCode: "RUNTIME_DECLARED_FALLBACK",
+        }
+      : { used: false as const },
+    startedAt: boundAt,
+    measurements: unsupportedRuntimeMeasurementsV1(),
+  };
+  await changeControlStore.recordResolvedModelExecutionV1(
+    authorized.binding.projectId,
+    authorized.binding.changeId,
+    {
+      publisherOccurrenceId: `pm-occurrence:${promptModelRuntimeIdentityV1("resolution", resolutionId)}`,
+      actor: "runtime-adapter:codex-cli-v1",
+      resolution,
+    },
+  );
+  const reference = {
+    role,
+    attemptOrdinal,
+    attemptId,
+    ...(invocationId ? { invocationId } : {}),
+    bindingId,
+    resolutionId,
+  };
+  task.promptModelExecutionRefs ??= [];
+  const existingIndex = task.promptModelExecutionRefs.findIndex(
+    (candidate) =>
+      candidate.role === role &&
+      candidate.attemptOrdinal === attemptOrdinal &&
+      candidate.invocationId === invocationId,
+  );
+  if (existingIndex === -1) task.promptModelExecutionRefs.push(reference);
+  else task.promptModelExecutionRefs[existingIndex] = reference;
+  await persist(run);
+  return reference;
 }
 
 async function taskReadPathV1(run: Run, task: Task) {
@@ -4875,6 +5212,15 @@ async function reviewTask(run: Run, task: Task) {
   const prompt = buildReviewerPrompt(task, run.project);
   let child: ReturnType<typeof spawn>;
   try {
+    await preparePromptModelExecutionV1(
+      run,
+      task,
+      "reviewer",
+      task.executionAttempts ?? 1,
+      prompt,
+      run.review.model,
+      run.review.effort,
+    );
     child = spawnCodexWithPrompt(
       [
         ...codexExecCommandStartArgs(
@@ -5001,6 +5347,15 @@ async function correctTask(run: Run, task: Task) {
   await prepareExecutorProviderRuntime(run, task, "correction");
   let child: ReturnType<typeof spawn>;
   try {
+    await preparePromptModelExecutionV1(
+      run,
+      task,
+      "correction",
+      task.executionAttempts ?? 1,
+      prompt,
+      task.model,
+      task.effort,
+    );
     child = spawnCodexWithPrompt(
       [
         ...codexExecCommandStartArgs(
@@ -5335,6 +5690,15 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
             run.project.path,
             task.workspaceAttemptId,
           );
+        await preparePromptModelExecutionV1(
+          run,
+          task,
+          "executor",
+          attempt,
+          prompt,
+          task.model,
+          task.effort,
+        );
         child = spawnCodexWithPrompt(args, prompt, executionPath);
       } catch (error) {
         task.exitCode = 1;
@@ -5939,6 +6303,132 @@ app.post(
           request.params.waveId,
           request.params.taskId,
           request.body as TransitionTaskInput,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.get(
+  "/api/change-control/projects/:projectId/prompt-model-lineage",
+  async (request, response) => {
+    try {
+      return response.json(
+        await changeControlStore.getPromptModelLineageProjectionV1(
+          request.params.projectId,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/prompt-artifacts",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishPromptArtifactV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as PublishPromptArtifactInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/prompt-artifacts/:artifactId/revocations",
+  async (request, response) => {
+    try {
+      const input = request.body as RevokePromptArtifactInputV1;
+      if (input.revocation?.entityId !== request.params.artifactId)
+        throw new ChangeControlError(
+          "Prompt artifact path and revocation identity must match exactly.",
+          "INVALID_INPUT",
+          400,
+          ["CROSS_ENTITY_IDENTITY_MISMATCH"],
+        );
+      return response.status(201).json(
+        await changeControlStore.revokePromptArtifactV1(
+          request.params.projectId,
+          request.params.changeId,
+          input,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/model-routes",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.publishModelRouteV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as PublishModelRouteInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/model-routes/:routeId/revocations",
+  async (request, response) => {
+    try {
+      const input = request.body as RevokeModelRouteInputV1;
+      if (input.revocation?.entityId !== request.params.routeId)
+        throw new ChangeControlError(
+          "Model route path and revocation identity must match exactly.",
+          "INVALID_INPUT",
+          400,
+          ["CROSS_ENTITY_IDENTITY_MISMATCH"],
+        );
+      return response.status(201).json(
+        await changeControlStore.revokeModelRouteV1(
+          request.params.projectId,
+          request.params.changeId,
+          input,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/attempt-configuration-bindings",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.bindAttemptConfigurationV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as BindAttemptConfigurationInputV1,
+        ),
+      );
+    } catch (error) {
+      return sendChangeControlError(response, error);
+    }
+  },
+);
+app.post(
+  "/api/change-control/projects/:projectId/changes/:changeId/model-executions",
+  async (request, response) => {
+    try {
+      return response.status(201).json(
+        await changeControlStore.recordResolvedModelExecutionV1(
+          request.params.projectId,
+          request.params.changeId,
+          request.body as RecordResolvedModelExecutionInputV1,
         ),
       );
     } catch (error) {

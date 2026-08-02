@@ -45,8 +45,14 @@ blocking incidents are re-entered rather than bypassed.
 
 ## Phase 5: Prompt/Model/Eval Lineage
 
-Persist prompt artifacts and model routing identities, join attempts,
-incidents, commits, and versioned eval runs, then establish baseline cohorts.
+Proposed contract:
+`docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
+It fixes immutable prompt artifacts, model-route and resolved-execution
+identity, pre-execution attempt bindings, versioned suites and cohorts,
+deterministic eval reports, comparability gates, and separately authorized
+champion decisions. The proposal does not authorize implementation; after
+acceptance, its two ordered implementation slices may be expressed as an
+ordinary Orchestrator queue.
 
 ## Phase 6: Operator Projections
 
