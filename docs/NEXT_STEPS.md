@@ -27,10 +27,11 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat the verified Phase 5 boundary as complete. Phase 6 Slice 1 is implemented:
-the versioned, watermarked, read-only backend projection API is covered by
-schema, pagination, privacy, partial-source, and no-mutation tests. The next
-safe implementation slice is the read-only dashboard consuming only this API.
+Treat Phase 6 as implemented, with its feature-specific checks verified. Its
+versioned, watermarked backend projection API and read-only dashboard cover
+overview, execution bucket, incidents, prompt registry, and eval lineage
+without adding canonical write authority. Define and accept a new contract
+before starting another phase.
 
 ## Source Boundaries
 
@@ -64,9 +65,10 @@ safe implementation slice is the read-only dashboard consuming only this API.
 - Do not claim that the full Nikolay-like system is implemented.
 - Do not infer destructive Git, force cleanup, or remote-publication authority
   from Phase 3 ownership records.
-- The Phase 6 read-only dashboard remains the next independently bounded slice. No Phase 4
-  component has general-purpose auto-heal authority, and no Phase 5 decision
-  grants runtime authority outside its explicit champion scope.
+- No Phase 4 component has general-purpose auto-heal authority, and no Phase 5
+  decision grants runtime authority outside its explicit champion scope.
+- Do not infer a Phase 7 scope from the completion of the Phase 6 read boundary;
+  the next implementation requires a separately accepted contract.
 
 ## Verification
 

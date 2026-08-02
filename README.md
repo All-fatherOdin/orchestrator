@@ -353,6 +353,11 @@ Use comma-separated `projectId` values for a selected scope, plus an optional
 malformed or stale cursors, oversized scopes, and unavailable single-project
 sources fail closed. These routes never append events or mutate run records.
 
+Open **Control plane** in the dashboard to inspect the same five projections.
+The UI is intentionally read-only: it provides refresh, evidence summaries,
+explicit loading/empty/unavailable states, and cursor pagination, but no
+dispatch, incident, prompt, eval, or other canonical mutation controls.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

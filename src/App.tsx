@@ -1,6 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse, stringify } from "yaml";
 import { UsagePage } from "./UsagePage";
+import { OperatorDashboard } from "./OperatorDashboard";
 
 type Status =
   | "pending"
@@ -327,6 +328,7 @@ export function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
+  const [showOperator, setShowOperator] = useState(false);
   const [projects, setProjects] = useState<ProjectProfile[]>([]);
   const [projectForm, setProjectForm] = useState({
     name: "",
@@ -858,7 +860,7 @@ export function App() {
   void clock;
 
   return (
-    <main className="shell">
+    <main className={`shell ${showOperator ? "operatorShell" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <BrandIcon /> Orchestrator
@@ -870,11 +872,12 @@ export function App() {
         </div>
         <nav>
           <button
-            className={!showHistory && !showProjects && !showUsage ? "active" : ""}
+            className={!showHistory && !showProjects && !showUsage && !showOperator ? "active" : ""}
             onClick={() => {
               setShowHistory(false);
               setShowProjects(false);
               setShowUsage(false);
+              setShowOperator(false);
             }}
           >
             Очередь
@@ -885,6 +888,7 @@ export function App() {
               setShowHistory(true);
               setShowProjects(false);
               setShowUsage(false);
+              setShowOperator(false);
               void refreshHistory(0);
             }}
           >
@@ -896,6 +900,7 @@ export function App() {
               setShowProjects(true);
               setShowHistory(false);
               setShowUsage(false);
+              setShowOperator(false);
             }}
           >
             Проекты <em>{projects.length}</em>
@@ -906,9 +911,21 @@ export function App() {
               setShowUsage(true);
               setShowHistory(false);
               setShowProjects(false);
+              setShowOperator(false);
             }}
           >
             Расход
+          </button>
+          <button
+            className={showOperator ? "active" : ""}
+            onClick={() => {
+              setShowOperator(true);
+              setShowUsage(false);
+              setShowHistory(false);
+              setShowProjects(false);
+            }}
+          >
+            Control plane
           </button>
         </nav>
         <div className="sidebarFoot">
@@ -918,7 +935,7 @@ export function App() {
         </div>
       </aside>
       <section className="workspace">
-        {!showUsage && <header>
+        {!showUsage && !showOperator && <header>
           <div>
             <h1>
               <FolderIcon />
@@ -983,7 +1000,7 @@ export function App() {
             onConfirm={() => void deleteHistoryRun(runToDelete.id)}
           />
         )}
-        {showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
+        {showOperator ? <OperatorDashboard /> : showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
           <section className="projectsPanel">
             <div className="sectionHeading">
               <h2>Сохранённые проекты</h2>
@@ -1579,7 +1596,7 @@ export function App() {
           </>
         )}
       </section>
-      <aside className="inspector">
+      {showOperator ? null : <aside className="inspector">
         <div className="inspectorTop">
           <span>ИНСПЕКТОР</span>
           <i className={run?.status === "running" ? "pulse" : ""}>●</i>
@@ -1742,7 +1759,7 @@ export function App() {
             The selected task will show its live details and event output here.
           </div>
         )}
-      </aside>
+      </aside>}
     </main>
   );
 }
