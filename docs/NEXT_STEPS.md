@@ -27,9 +27,9 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat the verified Phase 5 boundary as complete. The next separately
-authorized product slice is Phase 6 operator projections; no UI should gain
-canonical write authority from this handoff.
+Treat the verified Phase 5 boundary as complete. The Phase 6 contract is now
+accepted. The next safe implementation slice is its backend projection API;
+the read-only dashboard follows only after that API and schema are verified.
 
 ## Source Boundaries
 
@@ -48,6 +48,8 @@ canonical write authority from this handoff.
   `docs/architecture/change-control-plane/halts-incidents-contract-v1.md`.
 - Implemented Phase 5 contract:
   `docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
+- Accepted Phase 6 contract:
+  `docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
 - Phase 2-5 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.

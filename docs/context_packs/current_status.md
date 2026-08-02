@@ -67,5 +67,6 @@ The evidence ledger, target architecture, roadmap, Planning and Drift Contract
 v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
 remain under `docs/architecture/change-control-plane/`. Completed local
 Phase 1-5 queues remain ignored execution history under `queues/`; they are
-not the next operational step. The next product phase is separately authorized
-operator projections.
+not the next operational step. The accepted Phase 6 contract fixes two ordered
+slices: deterministic read-only projection APIs, then a dashboard that consumes
+only those APIs. Implementation has not started.

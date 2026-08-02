@@ -55,8 +55,12 @@ ledger, HTTP API, schemas, replay logic, and tests.
 
 ## Phase 6: Operator Projections
 
-Build cross-project wave, bucket, incident, Warden, Doctor, and prompt-registry
-views from canonical APIs. UI never writes projection state directly.
+Accepted contract:
+`docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
+Slice 1 builds deterministic, watermarked, read-only cross-project APIs for
+overview, execution bucket, incidents, prompt registry, and eval lineage.
+Slice 2 consumes only those APIs in the dashboard. Neither slice adds canonical
+write authority.
 
 No sequential queue plan exists for the remaining phases. Later queue
-boundaries will be fixed from completed Phase 4 evidence.
+boundaries will be fixed from completed Phase 5 evidence.

@@ -25,6 +25,8 @@ were observed.
    the accepted Phase 4 halt, incident, Warden, and Doctor boundary.
 9. [prompt-model-eval-lineage-contract-v1.md](prompt-model-eval-lineage-contract-v1.md)
    defines the implemented Phase 5 prompt, model, and eval lineage boundary.
+10. [operator-projections-contract-v1.md](operator-projections-contract-v1.md)
+    defines the accepted Phase 6 read-only projection and dashboard boundary.
 
 ## Current Boundary
 
@@ -42,7 +44,8 @@ merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
 Phase 1-5 implementation evidence is available. The completed local queues
-remain ignored execution history. Phase 6 remains separately authorized.
+remain ignored execution history. The Phase 6 contract is accepted; its two
+implementation slices have not started.
 
 ## Authority
 
