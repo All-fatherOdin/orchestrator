@@ -10316,7 +10316,7 @@ test("startup preserves sealed legacy records without live Phase 2 merge authori
   }
 });
 
-test("Phase 6 dashboard exposes five read-only operator views without command controls", () => {
+test("Phase 6 dashboard exposes five read-only operator views without command controls", async () => {
   const markup = renderToStaticMarkup(createElement(OperatorDashboard));
   assert.equal(operatorViews.length, 5);
   for (const label of [
@@ -10328,6 +10328,8 @@ test("Phase 6 dashboard exposes five read-only operator views without command co
   ]) assert.match(markup, new RegExp(`>${label}<`));
   assert.match(markup, /Read-only operational evidence/);
   assert.match(markup, /Reading canonical projections/);
+  assert.match(await readFile(join("src", "OperatorDashboard.tsx"), "utf8"), /requestId === requestIdRef\.current/);
+  assert.match(await readFile(join("src", "styles.css"), "utf8"), /\.operatorShell \.sidebar nav\{display:flex/);
   for (const prohibited of [
     "Dispatch",
     "Retry task",

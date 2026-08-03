@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export const operatorViews = [
   { id: "overview", label: "Overview" },
@@ -69,16 +69,20 @@ export function OperatorDashboard() {
   const [projection, setProjection] = useState<OperatorProjection | null>(null);
   const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [cursorHistory, setCursorHistory] = useState<string[]>([]); const cursor = cursorHistory.at(-1);
+  const requestIdRef = useRef(0);
   async function load(targetView = view, targetCursor = cursor) {
+    const requestId = ++requestIdRef.current;
     setLoading(true); setError("");
     try {
       const query = new URLSearchParams({ limit: "25" }); if (targetCursor) query.set("cursor", targetCursor);
       const response = await fetch(`/api/operator-projections/v1/${targetView}?${query}`, { cache: "no-store" });
       const body = await response.json() as OperatorProjection | { error?: string; code?: string };
       if (!response.ok) throw new Error(`${"code" in body && body.code ? `${body.code}: ` : ""}${"error" in body && body.error ? body.error : "Projection request failed."}`);
-      setProjection(body as OperatorProjection);
-    } catch (reason) { setProjection(null); setError(reason instanceof Error ? reason.message : "Projection request failed."); }
-    finally { setLoading(false); }
+      if (requestId === requestIdRef.current) setProjection(body as OperatorProjection);
+    } catch (reason) {
+      if (requestId === requestIdRef.current) { setProjection(null); setError(reason instanceof Error ? reason.message : "Projection request failed."); }
+    }
+    finally { if (requestId === requestIdRef.current) setLoading(false); }
   }
   useEffect(() => { void load(view, cursor); }, [view, cursor]);
   const totals = useMemo(() => ({ sources: Number(projection?.aggregates.totalSources ?? 0), available: Number(projection?.aggregates.availableSources ?? 0), unavailable: Number(projection?.aggregates.unavailableSources ?? 0), records: projection?.page.totalItems ?? 0 }), [projection]);
