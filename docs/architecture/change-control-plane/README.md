@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-5 and Phase 6 Slice 1 implemented
+Status: evidence-backed target, Phase 1-6 implemented
 Last reviewed: 2026-08-02
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -43,9 +43,9 @@ It does not authorize agent execution, Git mutation, worktree management,
 merge automation, auto-healing, or UI work. Later queues are deferred until
 the event spine has implementation evidence.
 
-Phase 1-5 implementation evidence is available. The completed local queues
-remain ignored execution history. Phase 6 Slice 1 is implemented; the read-only
-dashboard in Slice 2 has not started.
+Phase 1-6 implementation evidence is available. The completed local queues
+remain ignored execution history. Phase 6 includes the projection API and its
+read-only five-view dashboard; neither surface adds mutation authority.
 
 ## Authority
 

@@ -175,6 +175,9 @@ const {
   emptyQueue,
   optionalNumberValue,
 } = await import("../src/App.tsx");
+const { OperatorDashboard, operatorViews } = await import(
+  "../src/OperatorDashboard.tsx"
+);
 const {
   ChangeControlError,
   ChangeControlStore,
@@ -10311,6 +10314,30 @@ test("startup preserves sealed legacy records without live Phase 2 merge authori
     });
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Phase 6 dashboard exposes five read-only operator views without command controls", async () => {
+  const markup = renderToStaticMarkup(createElement(OperatorDashboard));
+  assert.equal(operatorViews.length, 5);
+  for (const label of [
+    "Overview",
+    "Execution bucket",
+    "Incidents",
+    "Prompt registry",
+    "Eval lineage",
+  ]) assert.match(markup, new RegExp(`>${label}<`));
+  assert.match(markup, /Read-only operational evidence/);
+  assert.match(markup, /Reading canonical projections/);
+  assert.match(await readFile(join("src", "OperatorDashboard.tsx"), "utf8"), /requestId === requestIdRef\.current/);
+  assert.match(await readFile(join("src", "styles.css"), "utf8"), /\.operatorShell \.sidebar nav\{display:flex/);
+  for (const prohibited of [
+    "Dispatch",
+    "Retry task",
+    "Resume wave",
+    "Run Doctor",
+    "Close incident",
+    "Promote champion",
+  ]) assert.equal(markup.includes(prohibited), false, prohibited);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {

@@ -65,7 +65,9 @@ write authority.
 Slice 1 is implemented with Draft 2020-12 schemas, stable cursor pagination,
 bounded project scope, partial-source warnings, privacy-safe summaries, and
 integration tests proving the GET routes do not mutate canonical state. Slice 2
-remains next.
+is implemented as a read-only dashboard with all five views, explicit loading
+and evidence states, refresh, and cursor pagination. It contains no canonical
+mutation controls.
 
-No sequential queue plan exists for the remaining phases. Later queue
-boundaries will be fixed from completed Phase 5 evidence.
+No sequential queue plan exists for later phases. Their boundaries require a
+new accepted contract grounded in completed Phase 6 evidence.

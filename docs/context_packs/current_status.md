@@ -67,7 +67,9 @@ The evidence ledger, target architecture, roadmap, Planning and Drift Contract
 v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
 remain under `docs/architecture/change-control-plane/`. Completed local
 Phase 1-5 queues remain ignored execution history under `queues/`; they are
-not the next operational step. Phase 6 Slice 1 now exposes deterministic,
-watermarked, paginated read-only overview, execution-bucket, incident,
-prompt-registry, and eval-lineage APIs with explicit partial-source and privacy
-semantics. Slice 2, a dashboard consuming only those APIs, is next.
+not the next operational step. Phase 6 now exposes deterministic, watermarked,
+paginated read-only overview, execution-bucket, incident, prompt-registry, and
+eval-lineage APIs with explicit partial-source and privacy semantics. The
+dashboard consumes only those APIs and exposes loading, empty, unavailable,
+unsupported, and pagination states without command controls. A later phase
+requires a newly accepted contract before implementation.
