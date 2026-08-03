@@ -26,12 +26,15 @@
 10. **Warden gates; Doctor executes.** Only a deterministic Warden verdict can
     authorize an allowlisted, bounded, idempotent Doctor recipe. LLM judgment
     alone never grants repair authority.
+11. **Operator controls reuse authority.** Phase 7 may expose only a closed set
+    of explicit-confirmation actions. Preview grants no authority; execution
+    must re-enter the existing owning gate and atomically publish a receipt.
 
 ## Deferred
 
 - database versus compact files after data-volume evidence;
 - prompt registry and eval storage;
-- operator UI.
+- search/index infrastructure and notifications.
 
 ## Rejected for the Foundation
 

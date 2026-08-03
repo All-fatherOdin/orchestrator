@@ -69,5 +69,15 @@ is implemented as a read-only dashboard with all five views, explicit loading
 and evidence states, refresh, and cursor pagination. It contains no canonical
 mutation controls.
 
-No sequential queue plan exists for later phases. Their boundaries require a
-new accepted contract grounded in completed Phase 6 evidence.
+## Phase 7: Operator Actions
+
+Accepted contract:
+`docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
+Slice 1 adds deterministic preview/execute/receipt APIs for five closed action
+kinds while delegating every mutation to its existing Phase 2-4 authority
+gate. Slice 2 adds explicit-confirmation controls to the operator dashboard.
+Neither slice adds autonomous action or a new authority type.
+
+No sequential queue plan exists for Phase 7. Create an ordinary queue only
+after Slice 1 task boundaries, allowed paths, verification, and stop guards are
+fully specified from the accepted contract.

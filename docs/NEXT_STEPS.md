@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 
 ## Current Priority
 
@@ -27,11 +27,11 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat Phase 6 as implemented, with its feature-specific checks verified. Its
-versioned, watermarked backend projection API and read-only dashboard cover
-overview, execution bucket, incidents, prompt registry, and eval lineage
-without adding canonical write authority. Define and accept a new contract
-before starting another phase.
+Treat Phase 6 as implemented, with its feature-specific checks verified. Phase
+7 now has an accepted Operator Actions Contract v1. The next safe implementation
+slice is its backend schema and command service: preview, execute, receipt,
+freshness, idempotency, and replay for the five closed action kinds. Do not add
+dashboard command controls until that slice is verified.
 
 ## Source Boundaries
 
@@ -52,7 +52,9 @@ before starting another phase.
   `docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
 - Accepted Phase 6 contract:
   `docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
-- Phase 2-5 product evidence: current code and `server/index.test.ts`.
+- Accepted Phase 7 contract:
+  `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
+- Phase 2-6 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 
@@ -67,8 +69,8 @@ before starting another phase.
   from Phase 3 ownership records.
 - No Phase 4 component has general-purpose auto-heal authority, and no Phase 5
   decision grants runtime authority outside its explicit champion scope.
-- Do not infer a Phase 7 scope from the completion of the Phase 6 read boundary;
-  the next implementation requires a separately accepted contract.
+- Do not extend Phase 7 beyond its five closed action kinds or infer new
+  authority from dashboard visibility, preview, or receipt state.
 
 ## Verification
 
