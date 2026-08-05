@@ -86,3 +86,20 @@ coverage for all five actions. Slice 2 adds contextual incident controls with
 fresh preview, explicit confirmation, denial/stale handling, immutable receipt
 rendering, keyboard access, and projection refresh. Controls remain hidden when
 the projection cannot prove a complete target.
+
+## Phase 8: Audit Bundles
+
+Accepted contract:
+`docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
+Slice 1 defines deterministic privacy-safe read-only audit bundles for one
+bounded project sequence range or one exact change. Slice 2 adds a read-only
+dashboard view and direct bounded JSON download. Neither slice adds a second
+ledger, persistent archive, external publication, notification, background
+capture, new action, or new authority type.
+
+Slice 1 is implemented with closed Draft 2020-12 schemas, canonical hashing,
+strict GET-only parsing, exact optional watermark preconditions, fixed count
+and byte limits, privacy-safe errors, Phase 6 projection and Phase 7 receipt
+summaries, legacy/restart replay, and explicit no-mutation HTTP evidence for
+both selectors. Slice 2 dashboard and bounded browser download work remain
+pending.

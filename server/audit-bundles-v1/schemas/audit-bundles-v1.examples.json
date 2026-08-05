@@ -1,0 +1,168 @@
+{
+  "validSelectors": [
+    {
+      "selectorType": "project-sequence-range",
+      "projectId": "project-1",
+      "fromSequence": 1,
+      "toSequence": 2
+    },
+    {
+      "selectorType": "exact-change",
+      "projectId": "project-1",
+      "changeId": "change-1"
+    }
+  ],
+  "invalidSelectors": [
+    {
+      "reasonCode": "SEQUENCE_RANGE_INVALID",
+      "value": {
+        "selectorType": "project-sequence-range",
+        "projectId": "project-1",
+        "fromSequence": 2
+      }
+    },
+    {
+      "reasonCode": "SEQUENCE_RANGE_INVALID",
+      "value": {
+        "selectorType": "project-sequence-range",
+        "projectId": "project-1",
+        "fromSequence": 3,
+        "toSequence": 2
+      }
+    },
+    {
+      "reasonCode": "INVALID_SELECTOR",
+      "value": {
+        "selectorType": "exact-change",
+        "projectId": "project-1",
+        "changeId": "change-1",
+        "fromSequence": 1,
+        "toSequence": 2
+      }
+    },
+    {
+      "reasonCode": "INVALID_SELECTOR",
+      "value": {
+        "selectorType": "all-project-evidence",
+        "projectId": "project-1"
+      }
+    }
+  ],
+  "validBundles": [
+    {
+      "contractType": "AuditBundleV1",
+      "contractVersion": "1.0",
+      "policyVersion": "audit-bundle-policy-v1",
+      "selector": {
+        "selectorType": "project-sequence-range",
+        "projectId": "project-1",
+        "fromSequence": 1,
+        "toSequence": 1
+      },
+      "source": {
+        "sourceRef": "change-control:project-1",
+        "sourceWatermark": "ce48692d8404b7d84f2b761ceb2ccd185cd8710b24a869f598233b0ac64e555e",
+        "projectSequence": 1,
+        "projectHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "sequenceBoundaries": {
+        "requestedFromSequence": 1,
+        "requestedToSequence": 1,
+        "observedFromSequence": 1,
+        "observedToSequence": 1,
+        "sourceFromSequence": 1,
+        "sourceToSequence": 1
+      },
+      "canonicalEvents": [
+        {
+          "eventId": "event-1",
+          "sequence": 1,
+          "eventType": "change.created",
+          "occurredAt": "2026-08-05T10:00:00.000Z",
+          "projectId": "project-1",
+          "changeId": "change-1",
+          "eventHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "previousEventHash": null,
+          "evidenceRefs": ["change:change-1", "event:event-1"]
+        }
+      ],
+      "entityReferences": [
+        {
+          "entityType": "change",
+          "entityId": "change-1",
+          "changeId": "change-1",
+          "waveId": null,
+          "taskId": null,
+          "eventIds": ["event-1"]
+        }
+      ],
+      "receiptReferences": [],
+      "projectionSnapshots": [
+        {
+          "view": "overview",
+          "entityId": "project-1",
+          "changeId": null,
+          "sequence": null,
+          "status": null,
+          "summary": { "totalEntities": 1, "relatedEntities": 0, "flaggedEntities": 0 },
+          "evidenceRefs": ["change:change-1"],
+          "summaryHash": "27e61f3a370ae689a6199809397b7c3d02ea91a163862bf1cbc5c0dd74d33977"
+        }
+      ],
+      "completeness": {
+        "status": "complete",
+        "checks": [
+          { "code": "CANONICAL_REPLAY", "status": "passed", "evidenceRefs": ["change-control:project-1"] },
+          { "code": "PRIVACY_SCAN", "status": "passed", "evidenceRefs": ["privacy-policy:audit-bundle-privacy-v1"] },
+          { "code": "PROJECTION_COVERAGE", "status": "passed", "evidenceRefs": ["projection:overview:project-1"] },
+          { "code": "RECEIPT_LINEAGE", "status": "passed", "evidenceRefs": [] },
+          { "code": "SELECTOR_COVERAGE", "status": "passed", "evidenceRefs": ["event:event-1"] }
+        ]
+      },
+      "warnings": [],
+      "privacy": {
+        "policyVersion": "audit-bundle-privacy-v1",
+        "scanStatus": "passed",
+        "excludedFieldClasses": [
+          "credentials",
+          "environment-values",
+          "file-contents",
+          "prompt-bodies",
+          "provider-hidden-reasoning",
+          "raw-provider-payloads",
+          "unbounded-logs"
+        ],
+        "includedFieldClasses": [
+          "canonical-event-headers",
+          "entity-identities",
+          "hashes",
+          "projection-summaries",
+          "receipt-identities"
+        ]
+      },
+      "bundleHash": "a0341571c981d476a863335717c167f77dc954f54318b07fa5bb14a8936b5d86"
+    }
+  ],
+  "invalidBundles": [
+    {
+      "reasonCode": "SCHEMA_INVALID",
+      "value": { "contractType": "AuditBundleV1", "contractVersion": "1.0" }
+    },
+    {
+      "reasonCode": "PRIVACY_VIOLATION",
+      "value": {
+        "contractType": "AuditBundleV1",
+        "contractVersion": "1.0",
+        "fileContents": "prohibited"
+      }
+    },
+    {
+      "reasonCode": "SCHEMA_INVALID",
+      "value": {
+        "contractType": "AuditBundleV1",
+        "contractVersion": "1.0",
+        "unexpected": true
+      }
+    }
+  ]
+}

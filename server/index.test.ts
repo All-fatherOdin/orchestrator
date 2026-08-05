@@ -52,6 +52,8 @@ import operatorProjectionV1Schema from "./operator-projections-v1/schemas/operat
 import operatorProjectionV1Examples from "./operator-projections-v1/schemas/operator-projection-v1.examples.json";
 import operatorActionsV1Schema from "./operator-actions-v1/schemas/operator-actions-v1.schema.json";
 import operatorActionsV1Examples from "./operator-actions-v1/schemas/operator-actions-v1.examples.json";
+import auditBundlesV1Schema from "./audit-bundles-v1/schemas/audit-bundles-v1.schema.json";
+import auditBundlesV1Examples from "./audit-bundles-v1/schemas/audit-bundles-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -162,6 +164,7 @@ const {
   repositoryIdentityV1,
   sealWorkspaceAttemptV1,
   workspacePathContainedV1,
+  installAuditBundleRoutesV1,
   installOperatorActionRoutesV1,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
@@ -216,6 +219,17 @@ const {
   parseOperatorActionReceiptV1,
   parseOperatorActionRequestV1,
 } = await import("./operator-actions-v1/index.ts");
+const {
+  AuditBundleErrorV1,
+  AuditBundleServiceV1,
+  ChangeControlAuditEvidenceAdapterV1,
+  assertAuditBundlePrivacyV1,
+  auditBundleCanonicalJsonV1,
+  auditBundleHashV1,
+  parseAuditBundleRequestV1,
+  parseAuditBundleSelectorV1,
+  parseAuditBundleV1,
+} = await import("./audit-bundles-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 const planningShaOne = "1".repeat(40);
@@ -1100,6 +1114,542 @@ test("change-control ledger serializes project writes and rebuilds immutable pro
         /Unknown change-control event type/.test(error.message),
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function auditBundleFixtureV1(root: string) {
+  let id = 0;
+  const store = new ChangeControlStore(root, {
+    now: () => "2026-08-05T10:00:00.000Z",
+    createId: () => `audit-id-${++id}`,
+  });
+  await store.create("audit-project", {
+    changeId: "audit-change-one",
+    actor: "human:auditor",
+    payload: { title: "First bounded change" },
+  });
+  await store.create("audit-project", {
+    changeId: "audit-change-two",
+    actor: "human:auditor",
+    payload: { title: "Second bounded change" },
+  });
+  return store;
+}
+
+function assertAuditBundleReasonV1(
+  operation: () => unknown,
+  code: InstanceType<typeof AuditBundleErrorV1>["code"],
+) {
+  assert.throws(operation, (error) => {
+    assert.ok(error instanceof AuditBundleErrorV1);
+    assert.equal(error.code, code);
+    assert.ok(error.message.length <= 160);
+    return true;
+  });
+}
+
+test("AuditBundleV1 Draft 2020-12 schema and closed selector examples validate", () => {
+  assert.equal(auditBundlesV1Schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+  const validator = new Ajv2020({ allErrors: true, strict: true });
+  validator.addFormat("date-time", true);
+  validator.addSchema(auditBundlesV1Schema);
+  const selectorSchema = validator.getSchema(
+    `${auditBundlesV1Schema.$id}#/$defs/AuditBundleSelectorV1`,
+  )!;
+  const bundleSchema = validator.getSchema(
+    `${auditBundlesV1Schema.$id}#/$defs/AuditBundleV1`,
+  )!;
+
+  for (const selector of auditBundlesV1Examples.validSelectors) {
+    assert.equal(selectorSchema(selector), true, JSON.stringify(selectorSchema.errors));
+    assert.deepEqual(parseAuditBundleSelectorV1(selector), selector);
+  }
+  for (const example of auditBundlesV1Examples.invalidSelectors) {
+    assertAuditBundleReasonV1(
+      () => parseAuditBundleSelectorV1(example.value),
+      example.reasonCode as InstanceType<typeof AuditBundleErrorV1>["code"],
+    );
+  }
+  for (const bundle of auditBundlesV1Examples.validBundles) {
+    assert.equal(bundleSchema(bundle), true, JSON.stringify(bundleSchema.errors));
+    assert.deepEqual(parseAuditBundleV1(bundle), bundle);
+  }
+  for (const example of auditBundlesV1Examples.invalidBundles) {
+    assertAuditBundleReasonV1(
+      () => parseAuditBundleV1(example.value),
+      example.reasonCode as InstanceType<typeof AuditBundleErrorV1>["code"],
+    );
+  }
+});
+
+test("audit bundle parsing rejects unknown, mixed, inverted, and unbounded selectors", () => {
+  assert.deepEqual(parseAuditBundleRequestV1({
+    selector: {
+      selectorType: "project-sequence-range",
+      projectId: "audit-project",
+      fromSequence: 1,
+      toSequence: 2,
+    },
+  }), {
+    selector: {
+      selectorType: "project-sequence-range",
+      projectId: "audit-project",
+      fromSequence: 1,
+      toSequence: 2,
+    },
+  });
+  for (const selector of [
+    { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: 1 },
+    { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: 0, toSequence: 1 },
+    { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: 2, toSequence: 1 },
+    { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: Number.MAX_SAFE_INTEGER + 1, toSequence: Number.MAX_SAFE_INTEGER + 1 },
+  ]) assertAuditBundleReasonV1(() => parseAuditBundleSelectorV1(selector), "SEQUENCE_RANGE_INVALID");
+  for (const selector of [
+    { selectorType: "exact-change", projectId: "audit-project" },
+    { selectorType: "exact-change", projectId: "audit-project", changeId: "change", toSequence: 2 },
+    { selectorType: "all", projectId: "audit-project" },
+  ]) assertAuditBundleReasonV1(() => parseAuditBundleSelectorV1(selector), "INVALID_SELECTOR");
+  assertAuditBundleReasonV1(() => parseAuditBundleRequestV1({
+    selector: { selectorType: "exact-change", projectId: "audit-project", changeId: "change" },
+    unexpected: true,
+  }), "SCHEMA_INVALID");
+  assertAuditBundleReasonV1(() => parseAuditBundleRequestV1({
+    selector: { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: 1 },
+  }), "SEQUENCE_RANGE_INVALID");
+});
+
+test("equal audit bundle selectors and canonical evidence normalize byte-equivalently with the same bundleHash", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-determinism-"));
+  try {
+    const store = await auditBundleFixtureV1(root);
+    const adapter = new ChangeControlAuditEvidenceAdapterV1(store);
+    const service = new AuditBundleServiceV1(adapter);
+    const request = {
+      selector: {
+        selectorType: "project-sequence-range" as const,
+        projectId: "audit-project",
+        fromSequence: 1,
+        toSequence: 2,
+      },
+    };
+    const first = await service.create(request);
+    const second = await service.create({ ...request, sourceWatermark: first.source.sourceWatermark });
+    assert.equal(JSON.stringify(first), JSON.stringify(second));
+    assert.equal(first.bundleHash, second.bundleHash);
+    assert.equal(first.bundleHash, auditBundleHashV1((({ bundleHash: _, ...content }) => content)(first)));
+    assert.deepEqual(first.canonicalEvents.map((event) => event.sequence), [1, 2]);
+    assert.equal(first.canonicalEvents[1]!.previousEventHash, first.canonicalEvents[0]!.eventHash);
+
+    const shuffled = structuredClone(first) as any;
+    shuffled.canonicalEvents.reverse();
+    shuffled.completeness.checks.reverse();
+    const normalized = parseAuditBundleV1(shuffled);
+    assert.equal(auditBundleCanonicalJsonV1(normalized), auditBundleCanonicalJsonV1(first));
+    assert.ok(Object.isFrozen(normalized));
+
+    const exact = await service.create({
+      selector: { selectorType: "exact-change", projectId: "audit-project", changeId: "audit-change-one" },
+      sourceWatermark: first.source.sourceWatermark,
+    });
+    assert.deepEqual(new Set(exact.canonicalEvents.map((event) => event.changeId)), new Set(["audit-change-one"]));
+    assert.deepEqual(exact.entityReferences.map((reference) => reference.entityId), ["audit-change-one"]);
+    assert.equal(exact.sequenceBoundaries.requestedFromSequence, null);
+    assert.equal(exact.sequenceBoundaries.requestedToSequence, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit bundle semantics fail closed on stale watermarks and missing or conflicting evidence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-fail-closed-"));
+  try {
+    const store = await auditBundleFixtureV1(root);
+    const service = new AuditBundleServiceV1(new ChangeControlAuditEvidenceAdapterV1(store));
+    const request = {
+      selector: {
+        selectorType: "project-sequence-range" as const,
+        projectId: "audit-project",
+        fromSequence: 1,
+        toSequence: 2,
+      },
+    };
+    await assert.rejects(
+      service.create({ ...request, sourceWatermark: "0".repeat(64) }),
+      (error) => error instanceof AuditBundleErrorV1 && error.code === "SOURCE_WATERMARK_CHANGED",
+    );
+    await assert.rejects(
+      service.create({ selector: { selectorType: "exact-change", projectId: "audit-project", changeId: "missing-change" } }),
+      (error) => error instanceof AuditBundleErrorV1 && error.code === "CHANGE_NOT_FOUND",
+    );
+    await assert.rejects(
+      new AuditBundleServiceV1(new ChangeControlAuditEvidenceAdapterV1(
+        new ChangeControlStore(join(root, "missing-source")),
+      )).create(request),
+      (error) => error instanceof AuditBundleErrorV1 && error.code === "SOURCE_UNAVAILABLE",
+    );
+    await assert.rejects(
+      new ChangeControlAuditEvidenceAdapterV1({
+        readAuditEvidenceV1: async () => {
+          throw new ChangeControlError("source moved", "CONFLICT", 409);
+        },
+      }).read("audit-project"),
+      (error) => error instanceof AuditBundleErrorV1 && error.code === "SOURCE_WATERMARK_CHANGED",
+    );
+
+    const bundle = await service.create(request);
+    const conflict = structuredClone(bundle) as any;
+    conflict.canonicalEvents[0]!.eventHash = "f".repeat(64);
+    conflict.bundleHash = auditBundleHashV1((({ bundleHash: _, ...content }) => content)(conflict));
+    assertAuditBundleReasonV1(() => parseAuditBundleV1(conflict), "EVIDENCE_CONFLICT");
+
+    const incomplete = structuredClone(bundle) as any;
+    incomplete.receiptReferences.push({
+      receiptType: "SyntheticReceiptV1",
+      receiptId: "missing-receipt",
+      changeId: "audit-change-one",
+      eventId: "missing-event",
+      eventSequence: 2,
+      eventHash: "a".repeat(64),
+      receiptHash: "b".repeat(64),
+      canonicalEventId: null,
+      canonicalEventHash: null,
+    });
+    incomplete.bundleHash = auditBundleHashV1((({ bundleHash: _, ...content }) => content)(incomplete));
+    assertAuditBundleReasonV1(() => parseAuditBundleV1(incomplete), "EVIDENCE_INCOMPLETE");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit bundle privacy checks reject prohibited fields and never release sensitive payload classes", async () => {
+  for (const value of [
+    { fileContents: "private" },
+    { nested: { promptBody: "private" } },
+    { note: "api_key=0123456789abcdef" },
+    { authorization: "Bearer abcdefghijklmnop" },
+  ]) assertAuditBundleReasonV1(() => assertAuditBundlePrivacyV1(value), "PRIVACY_VIOLATION");
+
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-privacy-"));
+  try {
+    const store = await auditBundleFixtureV1(root);
+    const bundle = await new AuditBundleServiceV1(new ChangeControlAuditEvidenceAdapterV1(store)).create({
+      selector: { selectorType: "exact-change", projectId: "audit-project", changeId: "audit-change-one" },
+    });
+    const serialized = JSON.stringify(bundle);
+    assert.doesNotMatch(serialized, /fileContents|promptBody|environmentValues|rawProviderPayload|hiddenReasoning|Bearer\s|api[_-]?key=/i);
+    assert.equal(bundle.privacy.scanStatus, "passed");
+    assert.equal(bundle.privacy.excludedFieldClasses.length, 7);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit bundle limits return stable bounded reason codes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-limits-"));
+  try {
+    const store = await auditBundleFixtureV1(root);
+    const adapter = new ChangeControlAuditEvidenceAdapterV1(store);
+    await assert.rejects(
+      new AuditBundleServiceV1(adapter, { maxEvents: 1 }).create({
+        selector: { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: 1, toSequence: 2 },
+      }),
+      (error) => error instanceof AuditBundleErrorV1 && error.code === "BUNDLE_LIMIT_EXCEEDED" && error.message.length <= 160,
+    );
+    await assert.rejects(
+      new AuditBundleServiceV1(adapter, { maxBytes: 256 }).create({
+        selector: { selectorType: "exact-change", projectId: "audit-project", changeId: "audit-change-one" },
+      }),
+      (error) => error instanceof AuditBundleErrorV1 && error.code === "BUNDLE_TOO_LARGE" && error.message.length <= 160,
+    );
+    assertAuditBundleReasonV1(() => new AuditBundleServiceV1(adapter, { maxEvents: 501 }), "BUNDLE_LIMIT_EXCEEDED");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit bundle legacy replay and real ChangeControlStore evidence adapter perform no mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-no-mutation-"));
+  try {
+    await auditBundleFixtureV1(root);
+    const projectFiles = (await readdir(join(root, "projects"))).sort();
+    assert.equal(projectFiles.length, 1);
+    const projectFile = join(root, "projects", projectFiles[0]!);
+    const bytesBefore = await readFile(projectFile);
+    const namesBefore = (await readdir(root, { recursive: true })).map(String).sort();
+
+    const bundle = await new AuditBundleServiceV1(
+      new ChangeControlAuditEvidenceAdapterV1(new ChangeControlStore(root)),
+    ).create({
+      selector: { selectorType: "project-sequence-range", projectId: "audit-project", fromSequence: 1, toSequence: 2 },
+    });
+    assert.equal(bundle.completeness.status, "complete");
+    assert.equal(bundle.receiptReferences.length, 0);
+    assert.deepEqual(await readFile(projectFile), bytesBefore);
+    assert.deepEqual((await readdir(root, { recursive: true })).map(String).sort(), namesBefore);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit bundle includes exact Phase 7 receipt and canonical-event lineage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-phase7-"));
+  try {
+    const { store, request } = await operatorActionFixtureV1(root, "transition-incident");
+    const preview = await store.previewOperatorActionV1(request);
+    assert.equal(preview.allowed, true);
+    const receipt = await store.executeOperatorActionV1({ request, previewHash: preview.previewHash, confirmed: true });
+    const bundle = await new AuditBundleServiceV1(
+      new ChangeControlAuditEvidenceAdapterV1(new ChangeControlStore(root)),
+    ).create({
+      selector: { selectorType: "exact-change", projectId: request.target.projectId, changeId: request.target.changeId },
+    });
+    const reference = bundle.receiptReferences.find((item) => item.receiptId === receipt.receiptId);
+    assert.ok(reference);
+    assert.equal(reference.receiptType, "OperatorActionReceiptV1");
+    assert.equal(reference.receiptHash, receipt.receiptHash);
+    assert.equal(reference.canonicalEventId, receipt.canonicalEvent!.eventId);
+    assert.equal(reference.canonicalEventHash, receipt.canonicalEvent!.eventHash);
+    assert.equal(bundle.canonicalEvents.find((event) => event.eventId === reference.eventId)!.eventHash, reference.eventHash);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function startAuditBundleHttpV1(
+  service: Pick<InstanceType<typeof AuditBundleServiceV1>, "create">,
+) {
+  const httpApp = express();
+  installAuditBundleRoutesV1(httpApp, service);
+  const server = httpApp.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    base: `http://127.0.0.1:${address.port}/api/audit-bundles/v1`,
+    close: () => new Promise<void>((resolveClose) => server.close(() => resolveClose())),
+  };
+}
+
+test("audit-bundles/v1 GET routes return deterministic range and exact-change bundles across restart with no mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-http-positive-"));
+  let firstHttp: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  let restartedHttp: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  try {
+    await auditBundleFixtureV1(root);
+    const projectFiles = (await readdir(join(root, "projects"))).sort();
+    const projectFile = join(root, "projects", projectFiles[0]!);
+    const bytesBefore = await readFile(projectFile);
+    const namesBefore = (await readdir(root, { recursive: true })).map(String).sort();
+
+    firstHttp = await startAuditBundleHttpV1(new AuditBundleServiceV1(
+      new ChangeControlAuditEvidenceAdapterV1(new ChangeControlStore(root)),
+    ));
+    const rangeUrl = `${firstHttp.base}/projects/audit-project?fromSequence=1&toSequence=2`;
+    const firstRangeResponse = await fetch(rangeUrl);
+    assert.equal(firstRangeResponse.status, 200);
+    const firstRangeText = await firstRangeResponse.text();
+    const firstRange = JSON.parse(firstRangeText) as any;
+    assert.equal(firstRange.selector.selectorType, "project-sequence-range");
+    assert.deepEqual(firstRange.canonicalEvents.map((event: any) => event.sequence), [1, 2]);
+    assert.equal(
+      firstRange.bundleHash,
+      auditBundleHashV1((({ bundleHash: _, ...content }) => content)(firstRange)),
+    );
+    assert.deepEqual(await readFile(projectFile), bytesBefore);
+    assert.deepEqual((await readdir(root, { recursive: true })).map(String).sort(), namesBefore);
+
+    const exactUrl = `${firstHttp.base}/projects/audit-project/changes/audit-change-one` +
+      `?sourceWatermark=${firstRange.source.sourceWatermark}`;
+    const firstExactResponse = await fetch(exactUrl);
+    assert.equal(firstExactResponse.status, 200);
+    const firstExactText = await firstExactResponse.text();
+    const firstExact = JSON.parse(firstExactText) as any;
+    assert.equal(firstExact.selector.selectorType, "exact-change");
+    assert.deepEqual([...new Set(firstExact.canonicalEvents.map((event: any) => event.changeId))], ["audit-change-one"]);
+    assert.doesNotMatch(firstExactText, /First bounded change|Second bounded change|fileContents|promptBody/i);
+    assert.deepEqual(await readFile(projectFile), bytesBefore);
+    assert.deepEqual((await readdir(root, { recursive: true })).map(String).sort(), namesBefore);
+
+    const repeatedRangeResponse = await fetch(
+      `${rangeUrl}&sourceWatermark=${firstRange.source.sourceWatermark}`,
+    );
+    assert.equal(repeatedRangeResponse.status, 200);
+    assert.equal(await repeatedRangeResponse.text(), firstRangeText);
+    await firstHttp.close();
+    firstHttp = undefined;
+
+    restartedHttp = await startAuditBundleHttpV1(new AuditBundleServiceV1(
+      new ChangeControlAuditEvidenceAdapterV1(new ChangeControlStore(root)),
+    ));
+    const restartedExactResponse = await fetch(
+      `${restartedHttp.base}/projects/audit-project/changes/audit-change-one` +
+      `?sourceWatermark=${firstRange.source.sourceWatermark}`,
+    );
+    assert.equal(restartedExactResponse.status, 200);
+    assert.equal(await restartedExactResponse.text(), firstExactText);
+    assert.deepEqual(await readFile(projectFile), bytesBefore);
+    assert.deepEqual((await readdir(root, { recursive: true })).map(String).sort(), namesBefore);
+  } finally {
+    await firstHttp?.close();
+    await restartedHttp?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit-bundles/v1 routes strictly reject malformed identities, query ambiguity, unsafe diagnostics, and non-GET methods", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-http-negative-"));
+  let http: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  try {
+    const store = await auditBundleFixtureV1(root);
+    http = await startAuditBundleHttpV1(new AuditBundleServiceV1(
+      new ChangeControlAuditEvidenceAdapterV1(store),
+    ));
+    const invalidCases: Array<[string, number, string]> = [
+      ["/projects/audit-project?toSequence=2", 400, "SEQUENCE_RANGE_INVALID"],
+      ["/projects/audit-project?fromSequence=1&toSequence=", 400, "SEQUENCE_RANGE_INVALID"],
+      ["/projects/audit-project?fromSequence=01&toSequence=2", 400, "SEQUENCE_RANGE_INVALID"],
+      ["/projects/audit-project?fromSequence=2&toSequence=1", 400, "SEQUENCE_RANGE_INVALID"],
+      ["/projects/audit-project?fromSequence=1&fromSequence=1&toSequence=2", 400, "SCHEMA_INVALID"],
+      ["/projects/%20audit-project?fromSequence=1&toSequence=2", 400, "INVALID_SELECTOR"],
+      ["/projects/audit-project?fromSequence=1&toSequence=2&sourceWatermark=bad", 400, "SCHEMA_INVALID"],
+      ["/projects/audit-project?fromSequence=1&toSequence=2&password=operator-secret-value", 400, "INVALID_SELECTOR"],
+      ["/projects/audit-project/changes/%20bad-change", 400, "INVALID_SELECTOR"],
+      ["/projects/audit-project/changes/audit-change-one?fromSequence=1", 400, "INVALID_SELECTOR"],
+      ["/projects/missing-project?fromSequence=1&toSequence=1", 503, "SOURCE_UNAVAILABLE"],
+      ["/projects/audit-project/changes/missing-change", 404, "CHANGE_NOT_FOUND"],
+    ];
+    for (const [path, status, code] of invalidCases) {
+      const response: globalThis.Response = await fetch(`${http.base}${path}`);
+      assert.equal(response.status, status, path);
+      const text = await response.text();
+      assert.equal((JSON.parse(text) as any).code, code, path);
+      assert.equal(text.includes("operator-secret-value"), false, path);
+      assert.equal(Buffer.byteLength(text, "utf8") < 160, true, path);
+    }
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+      const response: globalThis.Response = await fetch(
+        `${http.base}/projects/audit-project?fromSequence=1&toSequence=2`,
+        { method },
+      );
+      assert.equal(response.status, 404, method);
+    }
+  } finally {
+    await http?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+
+  let privacyHttp: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  try {
+    privacyHttp = await startAuditBundleHttpV1({
+      create: async () => {
+        throw new AuditBundleErrorV1(
+          "PRIVACY_VIOLATION",
+          "password=should-never-leave-the-service",
+          400,
+        );
+      },
+    });
+    const response = await fetch(
+      `${privacyHttp.base}/projects/audit-project/changes/audit-change-one`,
+    );
+    assert.equal(response.status, 400);
+    const text = await response.text();
+    assert.equal((JSON.parse(text) as any).code, "PRIVACY_VIOLATION");
+    assert.equal(text.includes("should-never-leave-the-service"), false);
+    assert.equal(Buffer.byteLength(text, "utf8") < 160, true);
+  } finally {
+    await privacyHttp?.close();
+  }
+});
+
+test("audit-bundles/v1 routes preserve exact watermark conflicts and range and byte limits without mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-http-conflicts-"));
+  let http: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  let limitedHttp: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  try {
+    await auditBundleFixtureV1(root);
+    const projectFile = join(root, "projects", (await readdir(join(root, "projects")))[0]!);
+    const bytesBefore = await readFile(projectFile);
+    const namesBefore = (await readdir(root, { recursive: true })).map(String).sort();
+    const adapter = new ChangeControlAuditEvidenceAdapterV1(new ChangeControlStore(root));
+    http = await startAuditBundleHttpV1(new AuditBundleServiceV1(adapter));
+    const stale = "0".repeat(64);
+    for (const path of [
+      `/projects/audit-project?fromSequence=1&toSequence=2&sourceWatermark=${stale}`,
+      `/projects/audit-project/changes/audit-change-one?sourceWatermark=${stale}`,
+    ]) {
+      const response: globalThis.Response = await fetch(`${http.base}${path}`);
+      assert.equal(response.status, 409, path);
+      assert.equal((await response.json() as any).code, "SOURCE_WATERMARK_CHANGED", path);
+    }
+
+    limitedHttp = await startAuditBundleHttpV1(new AuditBundleServiceV1(adapter, {
+      maxEvents: 1,
+      maxBytes: 256,
+    }));
+    const rangeLimit = await fetch(
+      `${limitedHttp.base}/projects/audit-project?fromSequence=1&toSequence=2`,
+    );
+    assert.equal(rangeLimit.status, 413);
+    assert.equal((await rangeLimit.json() as any).code, "BUNDLE_LIMIT_EXCEEDED");
+    const byteLimit = await fetch(
+      `${limitedHttp.base}/projects/audit-project/changes/audit-change-one`,
+    );
+    assert.equal(byteLimit.status, 413);
+    assert.equal((await byteLimit.json() as any).code, "BUNDLE_TOO_LARGE");
+    assert.deepEqual(await readFile(projectFile), bytesBefore);
+    assert.deepEqual((await readdir(root, { recursive: true })).map(String).sort(), namesBefore);
+  } finally {
+    await http?.close();
+    await limitedHttp?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("audit-bundles/v1 exact-change GET exposes bounded Phase 6 projections and Phase 7 receipt summaries after restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-audit-http-phase6-phase7-"));
+  let http: Awaited<ReturnType<typeof startAuditBundleHttpV1>> | undefined;
+  try {
+    const { store, request } = await operatorActionFixtureV1(root, "transition-incident");
+    const preview = await store.previewOperatorActionV1(request);
+    const receipt = await store.executeOperatorActionV1({
+      request,
+      previewHash: preview.previewHash,
+      confirmed: true,
+    });
+    const projectFile = join(root, "projects", (await readdir(join(root, "projects")))[0]!);
+    const bytesBefore = await readFile(projectFile);
+    const namesBefore = (await readdir(root, { recursive: true })).map(String).sort();
+    http = await startAuditBundleHttpV1(new AuditBundleServiceV1(
+      new ChangeControlAuditEvidenceAdapterV1(new ChangeControlStore(root)),
+    ));
+    const response = await fetch(
+      `${http.base}/projects/${request.target.projectId}/changes/${request.target.changeId}`,
+    );
+    assert.equal(response.status, 200);
+    const bundle = await response.json() as any;
+    const views = new Set(bundle.projectionSnapshots.map((item: any) => item.view));
+    assert.equal(views.has("overview"), true);
+    assert.equal(views.has("execution-bucket"), true);
+    assert.equal(views.has("incidents"), true);
+    for (const snapshot of bundle.projectionSnapshots)
+      assert.equal(snapshot.summaryHash, auditBundleHashV1((({ summaryHash: _, ...content }) => content)(snapshot)));
+    const receiptSummary = bundle.receiptReferences.find(
+      (item: any) => item.receiptId === receipt.receiptId,
+    );
+    assert.ok(receiptSummary);
+    assert.equal(receiptSummary.receiptType, "OperatorActionReceiptV1");
+    assert.equal(receiptSummary.receiptHash, receipt.receiptHash);
+    assert.equal(receiptSummary.canonicalEventId, receipt.canonicalEvent!.eventId);
+    assert.equal(receiptSummary.canonicalEventHash, receipt.canonicalEvent!.eventHash);
+    assert.deepEqual(await readFile(projectFile), bytesBefore);
+    assert.deepEqual((await readdir(root, { recursive: true })).map(String).sort(), namesBefore);
+  } finally {
+    await http?.close();
     await rm(root, { recursive: true, force: true });
   }
 });

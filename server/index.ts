@@ -121,6 +121,12 @@ import {
   OperatorActionContractErrorV1,
   OperatorActionServiceV1,
 } from "./operator-actions-v1/index.ts";
+import {
+  AuditBundleErrorV1,
+  AuditBundleServiceV1,
+  ChangeControlAuditEvidenceAdapterV1,
+  parseAuditBundleRequestV1,
+} from "./audit-bundles-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -6456,6 +6462,9 @@ export const operatorProjectionServiceV1 = new OperatorProjectionServiceV1(
 export const operatorActionServiceV1 = new OperatorActionServiceV1(
   changeControlStore,
 );
+export const auditBundleServiceV1 = new AuditBundleServiceV1(
+  new ChangeControlAuditEvidenceAdapterV1(changeControlStore),
+);
 app.get(
   "/api/change-control/projects/:projectId/eval-lineage",
   async (request, response) => {
@@ -6812,6 +6821,134 @@ for (const view of OPERATOR_PROJECTION_VIEWS_V1) {
     }
   });
 }
+function auditBundleQueryValueV1(
+  query: Record<string, unknown>,
+  name: string,
+): string | undefined {
+  const value = query[name];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string")
+    throw new AuditBundleErrorV1(
+      "SCHEMA_INVALID",
+      "Audit bundle query values must be singular strings.",
+      400,
+    );
+  return value;
+}
+
+function auditBundleSequenceV1(
+  query: Record<string, unknown>,
+  name: "fromSequence" | "toSequence",
+): number {
+  const value = auditBundleQueryValueV1(query, name);
+  if (value === undefined || !/^[1-9][0-9]*$/.test(value))
+    throw new AuditBundleErrorV1(
+      "SEQUENCE_RANGE_INVALID",
+      "Audit bundle sequence bounds must be canonical positive integers.",
+      400,
+    );
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed))
+    throw new AuditBundleErrorV1(
+      "SEQUENCE_RANGE_INVALID",
+      "Audit bundle sequence bounds must be safe integers.",
+      400,
+    );
+  return parsed;
+}
+
+function auditBundleIdentifierV1(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)
+  )
+    throw new AuditBundleErrorV1(
+      "INVALID_SELECTOR",
+      "Audit bundle path identity is invalid.",
+      400,
+    );
+  return value;
+}
+
+function assertAuditBundleQueryKeysV1(
+  query: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+): void {
+  if (Object.keys(query).some((key) => !allowed.has(key)))
+    throw new AuditBundleErrorV1(
+      "INVALID_SELECTOR",
+      "Audit bundle query contains an unsupported selector field.",
+      400,
+    );
+}
+
+function sendAuditBundleErrorV1(
+  response: express.Response,
+  error: unknown,
+) {
+  if (error instanceof AuditBundleErrorV1)
+    return response.status(error.status).json({
+      error: "Audit bundle request rejected.",
+      code: error.code,
+    });
+  return response.status(503).json({
+    error: "Audit bundle service unavailable.",
+    code: "SOURCE_UNAVAILABLE",
+  });
+}
+
+export function installAuditBundleRoutesV1(
+  targetApp: express.Express,
+  service: Pick<AuditBundleServiceV1, "create">,
+) {
+  targetApp.get(
+    "/api/audit-bundles/v1/projects/:projectId",
+    async (request, response) => {
+      try {
+        const query = request.query as Record<string, unknown>;
+        assertAuditBundleQueryKeysV1(
+          query,
+          new Set(["fromSequence", "toSequence", "sourceWatermark"]),
+        );
+        const sourceWatermark = auditBundleQueryValueV1(query, "sourceWatermark");
+        const bundleRequest = parseAuditBundleRequestV1({
+          selector: {
+            selectorType: "project-sequence-range",
+            projectId: auditBundleIdentifierV1(request.params.projectId),
+            fromSequence: auditBundleSequenceV1(query, "fromSequence"),
+            toSequence: auditBundleSequenceV1(query, "toSequence"),
+          },
+          ...(sourceWatermark !== undefined ? { sourceWatermark } : {}),
+        });
+        return response.json(await service.create(bundleRequest));
+      } catch (error) {
+        return sendAuditBundleErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.get(
+    "/api/audit-bundles/v1/projects/:projectId/changes/:changeId",
+    async (request, response) => {
+      try {
+        const query = request.query as Record<string, unknown>;
+        assertAuditBundleQueryKeysV1(query, new Set(["sourceWatermark"]));
+        const sourceWatermark = auditBundleQueryValueV1(query, "sourceWatermark");
+        const bundleRequest = parseAuditBundleRequestV1({
+          selector: {
+            selectorType: "exact-change",
+            projectId: auditBundleIdentifierV1(request.params.projectId),
+            changeId: auditBundleIdentifierV1(request.params.changeId),
+          },
+          ...(sourceWatermark !== undefined ? { sourceWatermark } : {}),
+        });
+        return response.json(await service.create(bundleRequest));
+      } catch (error) {
+        return sendAuditBundleErrorV1(response, error);
+      }
+    },
+  );
+}
+installAuditBundleRoutesV1(app, auditBundleServiceV1);
 function sendOperatorActionErrorV1(
   response: express.Response,
   error: unknown,

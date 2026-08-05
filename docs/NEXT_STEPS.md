@@ -27,14 +27,18 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat Phase 6 and both Phase 7 slices as implemented, with their
-feature-specific checks verified. The backend provides deterministic
+Treat Phase 6 and Phase 7 as implemented and completion-reviewed. The backend
+provides deterministic
 no-mutation preview, fresh explicit-confirmation execution, atomic immutable
 receipts, exact idempotency, serialized conflict handling, and replay for the
 five closed action kinds. The dashboard exposes contextual controls only when
 the projection proves a complete target; it never invents missing plan,
-authorization, terminal-event, or recovery evidence. The next safe step is a
-bounded Phase 7 completion review before defining any Phase 8 contract.
+authorization, terminal-event, or recovery evidence. The bounded Phase 8 Audit
+Bundles contract is accepted, and Slice 1 is implemented and verified with
+strict deterministic in-memory GET APIs, privacy and size limits, legacy
+replay, restart, and explicit no-mutation evidence. Phase 8 Slice 2 remains
+pending: no dashboard or browser download work is implemented. Every external
+publication capability remains deferred.
 
 ## Source Boundaries
 
@@ -55,9 +59,11 @@ bounded Phase 7 completion review before defining any Phase 8 contract.
   `docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
 - Accepted Phase 6 contract:
   `docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
-- Phase 7 Slice 1 implemented contract:
+- Implemented and completion-reviewed Phase 7 contract:
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
-- Phase 2-7 Slice 1 product evidence: current code and `server/index.test.ts`.
+- Accepted Phase 8 contract with Slice 1 implementation evidence:
+  `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
+- Phase 2-8 Slice 1 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 
@@ -74,6 +80,8 @@ bounded Phase 7 completion review before defining any Phase 8 contract.
   decision grants runtime authority outside its explicit champion scope.
 - Do not extend Phase 7 beyond its five closed action kinds or infer new
   authority from dashboard visibility, preview, or receipt state.
+- Do not treat Phase 8 bundles as a second ledger, persistent archive,
+  publication channel, approval, operator action, or execution authority.
 
 ## Verification
 
