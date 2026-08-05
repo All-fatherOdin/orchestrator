@@ -101,5 +101,7 @@ Slice 1 is implemented with closed Draft 2020-12 schemas, canonical hashing,
 strict GET-only parsing, exact optional watermark preconditions, fixed count
 and byte limits, privacy-safe errors, Phase 6 projection and Phase 7 receipt
 summaries, legacy/restart replay, and explicit no-mutation HTTP evidence for
-both selectors. Slice 2 dashboard and bounded browser download work remain
-pending.
+both selectors. Slice 2 is implemented as a read-only Control plane view that
+selects existing Phase 6 project/change evidence, renders the bounded Phase 8
+response and explicit failure states, and downloads the already-returned JSON
+only after a direct user action.

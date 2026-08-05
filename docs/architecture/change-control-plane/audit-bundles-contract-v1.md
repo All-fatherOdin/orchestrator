@@ -1,8 +1,9 @@
 # Audit Bundles Contract v1
 
-Status: accepted contract; Slice 1 implemented, Slice 2 pending
+Status: implemented
 Accepted: 2026-08-05
 Slice 1 implemented: 2026-08-05
+Slice 2 implemented: 2026-08-05
 
 ## Outcome
 

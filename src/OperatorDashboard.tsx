@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AuditBundlesDashboard } from "./AuditBundlesDashboard";
 
 export const operatorViews = [
   { id: "overview", label: "Overview" },
@@ -127,6 +128,7 @@ function ActionDialog({ selection, mark, onClose, onExecuted }: { selection: Act
 }
 
 export function OperatorDashboard() {
+  const [section, setSection] = useState<"projections" | "audit">("projections");
   const [view, setView] = useState<OperatorView>("overview");
   const [projection, setProjection] = useState<OperatorProjection | null>(null);
   const [loading, setLoading] = useState(true); const [error, setError] = useState("");
@@ -152,10 +154,11 @@ export function OperatorDashboard() {
   function selectView(next: OperatorView) { setView(next); setProjection(null); setCursorHistory([]); }
   return <section className="operatorPage">
     <header className="operatorHeader"><div><h1>Control plane</h1><p>Operational evidence and explicitly confirmed actions across validated project ledgers.</p></div><button className="operatorRefresh" onClick={() => void load()} disabled={loading}><RefreshIcon /> Refresh</button></header>
-    <nav className="operatorTabs" aria-label="Operator views">{operatorViews.map((item) => <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => selectView(item.id)}>{item.label}</button>)}</nav>
+    <nav className="operatorTabs" aria-label="Operator views">{operatorViews.map((item) => <button key={item.id} className={section === "projections" && view === item.id ? "active" : ""} onClick={() => { setSection("projections"); selectView(item.id); }}>{item.label}</button>)}<button className={section === "audit" ? "active" : ""} onClick={() => { setSection("audit"); setAction(null); }}>Audit bundles</button></nav>
+    {section === "audit" ? <AuditBundlesDashboard /> : <>
     <div className="operatorSummary" aria-label="Projection summary"><div><span>Sources</span><strong>{totals.sources}</strong></div><div><span>Available</span><strong>{totals.available}</strong></div><div><span>Unavailable</span><strong className={totals.unavailable ? "alert" : ""}>{totals.unavailable}</strong></div><div><span>Records</span><strong>{totals.records}</strong></div><div className="operatorWatermark"><span>Watermark</span><code>{projection?.sourceWatermark.slice(0, 12) ?? "waiting"}</code></div></div>
     {projection?.warnings.length ? <div className="operatorWarnings" role="status">{projection.warnings.map((warning) => <p key={`${warning.sourceRef}-${warning.message}`}><b>{warning.code.replaceAll("_", " ")}</b><span>{warning.projectId ?? warning.sourceRef}</span><small>{warning.message}</small></p>)}</div> : null}
     {loading ? <div className="operatorLoading"><i /><span>Reading canonical projections…</span></div> : error ? <div className="operatorError" role="alert"><b>Projection unavailable</b><p>{error}</p><button onClick={() => { setCursorHistory([]); void load(view, undefined); }}>Retry from current sources</button></div> : projection ? <>{view === "overview" ? <Overview projection={projection} /> : <ProjectionTable projection={projection} onAction={setAction} />}<footer className="operatorPagination"><span>{projection.page.totalItems ? `${cursorHistory.length * projection.page.limit + 1}–${Math.min((cursorHistory.length + 1) * projection.page.limit, projection.page.totalItems)} of ${projection.page.totalItems}` : "0 records"}</span><button aria-label="Previous page" disabled={!cursorHistory.length || loading} onClick={() => setCursorHistory((items) => items.slice(0, -1))}><ArrowIcon direction="left" /></button><button aria-label="Next page" disabled={!projection.page.nextCursor || loading} onClick={() => setCursorHistory((items) => [...items, projection.page.nextCursor!])}><ArrowIcon direction="right" /></button></footer></> : null}
-    {action && projection ? <ActionDialog selection={action} mark={projection.sourceWatermarks.find((item) => item.projectId === action.item.projectId)!} onClose={() => setAction(null)} onExecuted={async () => { await load(view, cursor); }} /> : null}
+    {action && projection ? <ActionDialog selection={action} mark={projection.sourceWatermarks.find((item) => item.projectId === action.item.projectId)!} onClose={() => setAction(null)} onExecuted={async () => { await load(view, cursor); }} /> : null}</>}
   </section>;
 }

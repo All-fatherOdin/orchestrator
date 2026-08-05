@@ -399,9 +399,13 @@ evidence, privacy failures, and count or byte-limit breaches fail closed with
 stable diagnostics. Generation is request-scoped and in-memory: neither route
 writes an export, changes canonical state, starts work, or grants authority.
 
-Phase 8 Slice 2 remains pending. No audit dashboard or browser download control
-is implemented, and no sharing, uploads, notifications, search/indexing,
-background capture, database storage, or external publication is authorized.
+Phase 8 Slice 2 adds an `Audit bundles` view to the existing Control plane. It
+selects only projects and exact changes already visible through bounded Phase 6
+projections, renders completeness, privacy, watermark, sequence, event, and
+receipt evidence from the Phase 8 GET response, and offers a direct
+user-initiated download of that already-returned bounded JSON. It performs no
+automatic download and adds no sharing, uploads, notifications, search/indexing,
+background capture, database storage, or external publication.
 
 ## Sequential queue plans
 
