@@ -381,6 +381,28 @@ affected projection. Controls remain hidden when the read projection cannot
 prove the complete target; the browser never imports the command store or
 invents missing authority evidence.
 
+### Audit Bundles v1
+
+Phase 8 Slice 1 provides bounded, deterministic, privacy-safe audit bundles
+over the existing canonical project ledger. The two GET-only endpoints are:
+
+- `GET /api/audit-bundles/v1/projects/:projectId?fromSequence=&toSequence=&sourceWatermark=`
+- `GET /api/audit-bundles/v1/projects/:projectId/changes/:changeId?sourceWatermark=`
+
+Project-range requests require canonical positive `fromSequence` and
+`toSequence` values. `sourceWatermark` is optional for initial discovery and,
+when supplied, is an exact freshness precondition. Responses contain bounded
+event/hash lineage, Phase 6 projection summaries, Phase 7 receipt references,
+completeness findings, privacy metadata, and a deterministic `bundleHash`.
+Unknown or ambiguous query values, stale watermarks, missing or conflicting
+evidence, privacy failures, and count or byte-limit breaches fail closed with
+stable diagnostics. Generation is request-scoped and in-memory: neither route
+writes an export, changes canonical state, starts work, or grants authority.
+
+Phase 8 Slice 2 remains pending. No audit dashboard or browser download control
+is implemented, and no sharing, uploads, notifications, search/indexing,
+background capture, database storage, or external publication is authorized.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

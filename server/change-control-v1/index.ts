@@ -1057,6 +1057,15 @@ export type OperatorSourceReadResultV1 = Readonly<{
   }>[];
 }>;
 
+export type AuditEvidenceSourceV1 = Readonly<{
+  projectId: string;
+  sourceRef: string;
+  watermark: Readonly<{ sequence: number; hash: string | null }>;
+  events: readonly ChangeControlEvent[];
+  projection: OperatorSourceSnapshotV1;
+  operatorActionReceipts: readonly OperatorActionReceiptV1[];
+}>;
+
 export type PublishEvalLineageEventInputV1 = Readonly<{
   type: EvalLineageEventTypeV1;
   publisherOccurrenceId: string;
@@ -10311,6 +10320,45 @@ export class ChangeControlStore {
       );
     }
     return deepFreeze(structuredClone(matches[0]));
+  }
+
+  async readAuditEvidenceV1(
+    projectIdValue: string,
+  ): Promise<AuditEvidenceSourceV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const read = await this.readOperatorSourcesV1([projectId]);
+    const projection = read.sources[0];
+    if (!projection || read.unavailable.length !== 0)
+      throw new ChangeControlError(
+        "The canonical project source is unavailable.",
+        "NOT_FOUND",
+        404,
+      );
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    const last = ledger.events.at(-1);
+    const watermark = { sequence: last?.sequence ?? 0, hash: last?.hash ?? null };
+    if (
+      projection.watermark.sequence !== watermark.sequence ||
+      projection.watermark.hash !== watermark.hash
+    )
+      throw new ChangeControlError(
+        "The canonical project source changed during the bounded audit read.",
+        "CONFLICT",
+        409,
+      );
+    return deepFreeze(structuredClone({
+      projectId,
+      sourceRef: projection.sourceRef,
+      watermark,
+      events: ledger.events,
+      projection,
+      operatorActionReceipts: [...projected.operatorActionReceipts.values()]
+        .sort((left, right) =>
+          left.resultingProjectSequence! - right.resultingProjectSequence! ||
+          left.receiptId.localeCompare(right.receiptId),
+        ),
+    }));
   }
 
   async readOperatorSourcesV1(

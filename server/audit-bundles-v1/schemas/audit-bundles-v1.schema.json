@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/audit-bundles-v1.schema.json",
+  "title": "Audit Bundles Contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/AuditBundleSelectorV1" },
+    { "$ref": "#/$defs/AuditBundleRequestV1" },
+    { "$ref": "#/$defs/AuditBundleV1" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "text": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "ProjectSequenceRangeSelectorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorType", "projectId", "fromSequence", "toSequence"],
+      "properties": {
+        "selectorType": { "const": "project-sequence-range" },
+        "projectId": { "$ref": "#/$defs/id" },
+        "fromSequence": { "type": "integer", "minimum": 1 },
+        "toSequence": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ExactChangeSelectorV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorType", "projectId", "changeId"],
+      "properties": {
+        "selectorType": { "const": "exact-change" },
+        "projectId": { "$ref": "#/$defs/id" },
+        "changeId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "AuditBundleSelectorV1": {
+      "oneOf": [
+        { "$ref": "#/$defs/ProjectSequenceRangeSelectorV1" },
+        { "$ref": "#/$defs/ExactChangeSelectorV1" }
+      ]
+    },
+    "AuditBundleRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selector"],
+      "properties": {
+        "selector": { "$ref": "#/$defs/AuditBundleSelectorV1" },
+        "sourceWatermark": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "SequenceBoundariesV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestedFromSequence", "requestedToSequence", "observedFromSequence", "observedToSequence", "sourceFromSequence", "sourceToSequence"],
+      "properties": {
+        "requestedFromSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "requestedToSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "observedFromSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "observedToSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "sourceFromSequence": { "type": ["integer", "null"], "minimum": 1 },
+        "sourceToSequence": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "CanonicalEventSummaryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventId", "sequence", "eventType", "occurredAt", "projectId", "changeId", "eventHash", "previousEventHash", "evidenceRefs"],
+      "properties": {
+        "eventId": { "$ref": "#/$defs/id" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "eventType": { "$ref": "#/$defs/text" },
+        "occurredAt": { "type": "string", "format": "date-time" },
+        "projectId": { "$ref": "#/$defs/id" },
+        "changeId": { "$ref": "#/$defs/id" },
+        "waveId": { "$ref": "#/$defs/id" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "eventHash": { "$ref": "#/$defs/hash" },
+        "previousEventHash": { "oneOf": [{ "$ref": "#/$defs/hash" }, { "type": "null" }] },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "EntityReferenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entityType", "entityId", "changeId", "waveId", "taskId", "eventIds"],
+      "properties": {
+        "entityType": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "entityId": { "$ref": "#/$defs/id" },
+        "changeId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "waveId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "taskId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "eventIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "ReceiptReferenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receiptType", "receiptId", "changeId", "eventId", "eventSequence", "eventHash", "receiptHash", "canonicalEventId", "canonicalEventHash"],
+      "properties": {
+        "receiptType": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]{0,126}ReceiptV1$" },
+        "receiptId": { "$ref": "#/$defs/id" },
+        "changeId": { "$ref": "#/$defs/id" },
+        "eventId": { "$ref": "#/$defs/id" },
+        "eventSequence": { "type": "integer", "minimum": 1 },
+        "eventHash": { "$ref": "#/$defs/hash" },
+        "receiptHash": { "$ref": "#/$defs/hash" },
+        "canonicalEventId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "canonicalEventHash": { "oneOf": [{ "$ref": "#/$defs/hash" }, { "type": "null" }] }
+      }
+    },
+    "ProjectionSnapshotV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["view", "entityId", "changeId", "sequence", "status", "summary", "evidenceRefs", "summaryHash"],
+      "properties": {
+        "view": { "enum": ["overview", "execution-bucket", "incidents", "prompt-registry", "eval-lineage"] },
+        "entityId": { "$ref": "#/$defs/id" },
+        "changeId": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "sequence": { "type": ["integer", "null"], "minimum": 1 },
+        "status": { "type": ["string", "null"], "maxLength": 64 },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["totalEntities", "relatedEntities", "flaggedEntities"],
+          "properties": {
+            "totalEntities": { "type": "integer", "minimum": 0 },
+            "relatedEntities": { "type": "integer", "minimum": 0 },
+            "flaggedEntities": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "summaryHash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "CompletenessCheckV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "status", "evidenceRefs"],
+      "properties": {
+        "code": { "enum": ["CANONICAL_REPLAY", "SELECTOR_COVERAGE", "RECEIPT_LINEAGE", "PROJECTION_COVERAGE", "PRIVACY_SCAN", "UNSUPPORTED_EVIDENCE"] },
+        "status": { "enum": ["passed", "unsupported"] },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 1000,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "AuditWarningV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "evidenceRef"],
+      "properties": {
+        "code": { "enum": ["UNSUPPORTED_EVIDENCE", "EVIDENCE_INCOMPLETE", "EVIDENCE_CONFLICT"] },
+        "evidenceRef": { "$ref": "#/$defs/text" }
+      }
+    },
+    "PrivacyMetadataV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyVersion", "scanStatus", "excludedFieldClasses", "includedFieldClasses"],
+      "properties": {
+        "policyVersion": { "const": "audit-bundle-privacy-v1" },
+        "scanStatus": { "const": "passed" },
+        "excludedFieldClasses": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "enum": ["credentials", "environment-values", "file-contents", "prompt-bodies", "provider-hidden-reasoning", "raw-provider-payloads", "unbounded-logs"] }
+        },
+        "includedFieldClasses": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": { "enum": ["canonical-event-headers", "entity-identities", "hashes", "projection-summaries", "receipt-identities"] }
+        }
+      }
+    },
+    "AuditBundleV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "policyVersion", "selector", "source", "sequenceBoundaries", "canonicalEvents", "entityReferences", "receiptReferences", "projectionSnapshots", "completeness", "warnings", "privacy", "bundleHash"],
+      "properties": {
+        "contractType": { "const": "AuditBundleV1" },
+        "contractVersion": { "const": "1.0" },
+        "policyVersion": { "const": "audit-bundle-policy-v1" },
+        "selector": { "$ref": "#/$defs/AuditBundleSelectorV1" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceRef", "sourceWatermark", "projectSequence", "projectHash"],
+          "properties": {
+            "sourceRef": { "$ref": "#/$defs/text" },
+            "sourceWatermark": { "$ref": "#/$defs/hash" },
+            "projectSequence": { "type": "integer", "minimum": 0 },
+            "projectHash": { "oneOf": [{ "$ref": "#/$defs/hash" }, { "type": "null" }] }
+          }
+        },
+        "sequenceBoundaries": { "$ref": "#/$defs/SequenceBoundariesV1" },
+        "canonicalEvents": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/CanonicalEventSummaryV1" } },
+        "entityReferences": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/EntityReferenceV1" } },
+        "receiptReferences": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/ReceiptReferenceV1" } },
+        "projectionSnapshots": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/ProjectionSnapshotV1" } },
+        "completeness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "checks"],
+          "properties": {
+            "status": { "enum": ["complete", "complete-with-warnings"] },
+            "checks": { "type": "array", "minItems": 5, "maxItems": 6, "items": { "$ref": "#/$defs/CompletenessCheckV1" } }
+          }
+        },
+        "warnings": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/AuditWarningV1" } },
+        "privacy": { "$ref": "#/$defs/PrivacyMetadataV1" },
+        "bundleHash": { "$ref": "#/$defs/hash" }
+      }
+    }
+  }
+}
