@@ -82,4 +82,7 @@ Slice 1 is implemented with Draft 2020-12 contracts, deterministic no-write
 preview, fresh explicit-confirmation execution, atomic
 `OperatorActionReceiptV1` publication, exact idempotency, serialized conflict
 handling, bounded private diagnostics, restart replay, and HTTP integration
-coverage for all five actions. Slice 2 dashboard controls are not implemented.
+coverage for all five actions. Slice 2 adds contextual incident controls with
+fresh preview, explicit confirmation, denial/stale handling, immutable receipt
+rendering, keyboard access, and projection refresh. Controls remain hidden when
+the projection cannot prove a complete target.

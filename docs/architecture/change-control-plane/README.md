@@ -48,9 +48,11 @@ the event spine has implementation evidence.
 Phase 1-6 implementation evidence is available. The completed local queues
 remain ignored execution history. Phase 6 includes the projection API and its
 read-only five-view dashboard; neither surface adds mutation authority.
-Phase 7 Slice 1 is implemented. Its five closed operator actions reuse existing
-authority gates and produce atomic, idempotent receipts. Slice 2 dashboard
-controls are not implemented, so the existing dashboard remains read-only.
+Phase 7 Slices 1 and 2 are implemented. The five closed operator actions reuse
+existing authority gates and produce atomic, idempotent receipts. The dashboard
+adds contextual incident controls only where projections prove a complete
+target, requires fresh preview and direct confirmation, and never infers
+missing authority evidence.
 
 ## Authority
 

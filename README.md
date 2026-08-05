@@ -374,7 +374,12 @@ serializes through the project writer and delegates to the existing Phase 2-4
 domain handler. The owning mutation and immutable `OperatorActionReceiptV1`
 event are published in one atomic ledger replacement. Exact idempotent retries
 return the original receipt, while stale evidence and conflicting key reuse
-fail closed. Phase 7 Slice 2 dashboard controls are not implemented.
+fail closed. Phase 7 Slice 2 adds contextual incident transition and resolution
+controls to the dashboard. Each control requires a fresh allowed preview and a
+direct human confirmation, renders the immutable receipt, and refreshes the
+affected projection. Controls remain hidden when the read projection cannot
+prove the complete target; the browser never imports the command store or
+invents missing authority evidence.
 
 ## Sequential queue plans
 

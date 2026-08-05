@@ -78,5 +78,7 @@ deterministic no-mutation preview plus explicit-confirmation execution through
 their existing Phase 2-4 handlers. The project writer publishes each owning
 mutation and immutable `OperatorActionReceiptV1` atomically; exact retries,
 conflicting idempotency reuse, concurrent stale contenders, and restart replay
-fail closed. The dashboard remains read-only. Slice 2 controls are not
-implemented and remain the next bounded Phase 7 step.
+fail closed. Slice 2 adds contextual incident transition and resolution
+controls to the dashboard. They require fresh preview and direct confirmation,
+render immutable receipts, refresh projections, and remain absent when the
+projection cannot prove the complete action target.
