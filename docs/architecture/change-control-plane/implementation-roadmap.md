@@ -78,6 +78,8 @@ kinds while delegating every mutation to its existing Phase 2-4 authority
 gate. Slice 2 adds explicit-confirmation controls to the operator dashboard.
 Neither slice adds autonomous action or a new authority type.
 
-No sequential queue plan exists for Phase 7. Create an ordinary queue only
-after Slice 1 task boundaries, allowed paths, verification, and stop guards are
-fully specified from the accepted contract.
+Slice 1 is implemented with Draft 2020-12 contracts, deterministic no-write
+preview, fresh explicit-confirmation execution, atomic
+`OperatorActionReceiptV1` publication, exact idempotency, serialized conflict
+handling, bounded private diagnostics, restart replay, and HTTP integration
+coverage for all five actions. Slice 2 dashboard controls are not implemented.

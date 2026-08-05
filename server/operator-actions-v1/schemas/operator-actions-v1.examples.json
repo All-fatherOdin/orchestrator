@@ -1,0 +1,554 @@
+{
+  "valid": {
+    "OperatorActionRequestV1": [
+      {
+        "contractType": "OperatorActionRequestV1",
+        "contractVersion": "1.0",
+        "requestId": "request-dispatch-1",
+        "actionKind": "dispatch-wave",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "waveId": "wave-one",
+          "plan": {
+            "planId": "plan-one",
+            "revision": 2,
+            "planBaseSha": "1111111111111111111111111111111111111111"
+          },
+          "authorizationId": "authorization-plan-one"
+        },
+        "actor": "human:operator-one",
+        "reason": "Dispatch the authorized and freshly assessed wave.",
+        "input": {},
+        "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expectedProjectSequence": 7,
+        "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "idempotencyKey": "project-one:dispatch-wave:request-dispatch-1"
+      },
+      {
+        "contractType": "OperatorActionRequestV1",
+        "contractVersion": "1.0",
+        "requestId": "request-retry-1",
+        "actionKind": "authorize-task-retry",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "waveId": "wave-one",
+          "taskId": "task-one",
+          "haltId": "halt-one",
+          "incidentId": "incident-one"
+        },
+        "actor": "human:operator-one",
+        "reason": "Authorize one bounded retry after independent review.",
+        "input": {
+          "authorizationId": "retry-authorization-one",
+          "priorTerminalEventId": "event-task-failed-one",
+          "newAttemptId": "attempt-two",
+          "attemptAllocationNonce": "nonce-two",
+          "budgetOrdinal": 2,
+          "authority": {
+            "kind": "audited_human",
+            "actor": "human:operator-one",
+            "decisionId": "decision-retry-one",
+            "evidenceRefs": ["halt:halt-one", "incident:incident-one"]
+          }
+        },
+        "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expectedProjectSequence": 7,
+        "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "idempotencyKey": "project-one:authorize-task-retry:request-retry-1"
+      },
+      {
+        "contractType": "OperatorActionRequestV1",
+        "contractVersion": "1.0",
+        "requestId": "request-resume-1",
+        "actionKind": "authorize-wave-resume",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "waveId": "wave-one",
+          "haltId": "halt-one",
+          "incidentId": "incident-one"
+        },
+        "actor": "human:operator-one",
+        "reason": "Authorize resume after all blocking evidence was handled.",
+        "input": {
+          "authorizationId": "resume-authorization-one",
+          "priorTerminalEventId": "event-wave-halted-one",
+          "budgetOrdinal": 2,
+          "authority": {
+            "kind": "warden",
+            "actor": "policy:warden-v1",
+            "verdictId": "verdict-one"
+          }
+        },
+        "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expectedProjectSequence": 7,
+        "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "idempotencyKey": "project-one:authorize-wave-resume:request-resume-1"
+      },
+      {
+        "contractType": "OperatorActionRequestV1",
+        "contractVersion": "1.0",
+        "requestId": "request-transition-1",
+        "actionKind": "transition-incident",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "incidentId": "incident-one"
+        },
+        "actor": "human:operator-one",
+        "reason": "Escalate the incident for explicit human handling.",
+        "input": {
+          "to": "escalated",
+          "reasonCode": "HUMAN_AUTHORITY_REQUIRED",
+          "evidenceRefs": ["incident:incident-one"]
+        },
+        "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expectedProjectSequence": 7,
+        "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "idempotencyKey": "project-one:transition-incident:request-transition-1"
+      },
+      {
+        "contractType": "OperatorActionRequestV1",
+        "contractVersion": "1.0",
+        "requestId": "request-resolve-1",
+        "actionKind": "resolve-incident",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "incidentId": "incident-one"
+        },
+        "actor": "human:operator-one",
+        "reason": "Resolve after the declared oracle passed and healing stopped.",
+        "input": {
+          "receipt": {
+            "contractType": "IncidentResolutionReceiptV1",
+            "contractVersion": "1.0",
+            "receiptId": "incident-resolution-one",
+            "incidentId": "incident-one",
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "resolutionKind": "resolved",
+            "oracle": {
+              "kind": "human",
+              "outcome": "passed",
+              "observationResult": "The bounded resolution checklist passed."
+            },
+            "noActiveHealing": true,
+            "evidenceRefs": ["incident:incident-one", "oracle:resolution-one"],
+            "resolvedBy": "human:operator-one",
+            "taxonomyPolicyVersion": "halt-taxonomy-v1",
+            "correlationWindowSeconds": 3600
+          }
+        },
+        "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expectedProjectSequence": 7,
+        "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "idempotencyKey": "project-one:resolve-incident:request-resolve-1"
+      },
+      {
+        "contractType": "OperatorActionRequestV1",
+        "contractVersion": "1.0",
+        "requestId": "request-dispatch-override-1",
+        "actionKind": "dispatch-wave",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "waveId": "wave-two",
+          "plan": {
+            "planId": "plan-two",
+            "revision": 1,
+            "planBaseSha": "1111111111111111111111111111111111111111"
+          },
+          "authorizationId": "authorization-plan-two"
+        },
+        "actor": "human:operator-one",
+        "reason": "Use the audited Phase 2 dependency-readiness override.",
+        "input": { "sendAnyway": true },
+        "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "expectedProjectSequence": 7,
+        "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "idempotencyKey": "project-one:dispatch-wave:request-dispatch-override-1"
+      }
+    ],
+    "OperatorActionPreviewV1": [
+      {
+        "contractType": "OperatorActionPreviewV1",
+        "contractVersion": "1.0",
+        "request": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "request-dispatch-1",
+          "actionKind": "dispatch-wave",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "waveId": "wave-one",
+            "plan": {
+              "planId": "plan-one",
+              "revision": 2,
+              "planBaseSha": "1111111111111111111111111111111111111111"
+            },
+            "authorizationId": "authorization-plan-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Dispatch the authorized and freshly assessed wave.",
+          "input": {},
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:dispatch-wave:request-dispatch-1"
+        },
+        "requestHash": "58bf5a3569d57a478c009e7844766dd937dd1aa4932e6b06bfc9e54ca21b790e",
+        "currentProjectSequence": 7,
+        "currentProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "currentSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "currentTargetState": "ready",
+        "owningGate": "phase-2-dispatch-gate",
+        "allowed": true,
+        "reasonCodes": [],
+        "expectedCanonicalEventType": "wave.dispatched",
+        "warnings": [],
+        "evidenceRefs": ["authorization:authorization-plan-one", "plan:plan-one"],
+        "previewHash": "c9036b6e511b6df76d1e73e9847c0e025ab4d4d452104877896c1d044f52513a"
+      },
+      {
+        "contractType": "OperatorActionPreviewV1",
+        "contractVersion": "1.0",
+        "request": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "request-retry-1",
+          "actionKind": "authorize-task-retry",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "waveId": "wave-one",
+            "taskId": "task-one",
+            "haltId": "halt-one",
+            "incidentId": "incident-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Authorize one bounded retry after independent review.",
+          "input": {
+            "authorizationId": "retry-authorization-one",
+            "priorTerminalEventId": "event-task-failed-one",
+            "newAttemptId": "attempt-two",
+            "attemptAllocationNonce": "nonce-two",
+            "budgetOrdinal": 2,
+            "authority": {
+              "kind": "audited_human",
+              "actor": "human:operator-one",
+              "decisionId": "decision-retry-one",
+              "evidenceRefs": ["halt:halt-one", "incident:incident-one"]
+            }
+          },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:authorize-task-retry:request-retry-1"
+        },
+        "requestHash": "d94ca024df211ffb03a30404e64817338a4a5f083bd048cc807372a68cd5558a",
+        "currentProjectSequence": 7,
+        "currentProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "currentSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "currentTargetState": "failed",
+        "owningGate": "phase-4-task-retry-authorization",
+        "allowed": false,
+        "reasonCodes": ["GATE_REJECTED", "HUMAN_AUTHORITY_REQUIRED"],
+        "expectedCanonicalEventType": null,
+        "warnings": [],
+        "evidenceRefs": ["gate-denial:HUMAN_AUTHORITY_REQUIRED"],
+        "previewHash": "414ad0ea0544f3c8f91ca4bb80613180fc5b66d4575951a7a7df0d914facbc52"
+      },
+      {
+        "contractType": "OperatorActionPreviewV1",
+        "contractVersion": "1.0",
+        "request": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "request-resume-1",
+          "actionKind": "authorize-wave-resume",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "waveId": "wave-one",
+            "haltId": "halt-one",
+            "incidentId": "incident-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Authorize resume after all blocking evidence was handled.",
+          "input": {
+            "authorizationId": "resume-authorization-one",
+            "priorTerminalEventId": "event-wave-halted-one",
+            "budgetOrdinal": 2,
+            "authority": {
+              "kind": "warden",
+              "actor": "policy:warden-v1",
+              "verdictId": "verdict-one"
+            }
+          },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:authorize-wave-resume:request-resume-1"
+        },
+        "requestHash": "0f434189002a812ca71ef2c0e4fd5f629fbe5fe09b712b1086934eb6f920df9f",
+        "currentProjectSequence": 7,
+        "currentProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "currentSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "currentTargetState": "halted",
+        "owningGate": "phase-4-wave-resume-authorization",
+        "allowed": false,
+        "reasonCodes": ["EVIDENCE_STALE", "GATE_REJECTED"],
+        "expectedCanonicalEventType": null,
+        "warnings": [],
+        "evidenceRefs": ["gate-denial:EVIDENCE_STALE"],
+        "previewHash": "face80f5400a5d3645cf882932c77db24ea38406f69587d384fb734a0c8edc89"
+      },
+      {
+        "contractType": "OperatorActionPreviewV1",
+        "contractVersion": "1.0",
+        "request": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "request-transition-1",
+          "actionKind": "transition-incident",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "incidentId": "incident-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Escalate the incident for explicit human handling.",
+          "input": {
+            "to": "escalated",
+            "reasonCode": "HUMAN_AUTHORITY_REQUIRED",
+            "evidenceRefs": ["incident:incident-one"]
+          },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:transition-incident:request-transition-1"
+        },
+        "requestHash": "f37df90a66ef99619549f7b8169ffebe56f27400cb18b588385ced3cefa30600",
+        "currentProjectSequence": 7,
+        "currentProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "currentSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "currentTargetState": "open",
+        "owningGate": "phase-4-incident-lifecycle",
+        "allowed": false,
+        "reasonCodes": ["GATE_REJECTED", "REPAIR_BUDGET_EXHAUSTED"],
+        "expectedCanonicalEventType": null,
+        "warnings": [],
+        "evidenceRefs": ["gate-denial:REPAIR_BUDGET_EXHAUSTED"],
+        "previewHash": "d7ddfb8fb582ba95ad43caa21e24e810bc36392568ffe6f9e667661d8bfe22e8"
+      }
+    ],
+    "OperatorActionReceiptV1": [
+      {
+        "contractType": "OperatorActionReceiptV1",
+        "contractVersion": "1.0",
+        "receiptId": "operator-receipt-one",
+        "request": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "request-dispatch-1",
+          "actionKind": "dispatch-wave",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "waveId": "wave-one",
+            "plan": {
+              "planId": "plan-one",
+              "revision": 2,
+              "planBaseSha": "1111111111111111111111111111111111111111"
+            },
+            "authorizationId": "authorization-plan-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Dispatch the authorized and freshly assessed wave.",
+          "input": {},
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:dispatch-wave:request-dispatch-1"
+        },
+        "requestHash": "58bf5a3569d57a478c009e7844766dd937dd1aa4932e6b06bfc9e54ca21b790e",
+        "previewHash": "c9036b6e511b6df76d1e73e9847c0e025ab4d4d452104877896c1d044f52513a",
+        "actor": "human:operator-one",
+        "reason": "Dispatch the authorized and freshly assessed wave.",
+        "idempotencyKey": "project-one:dispatch-wave:request-dispatch-1",
+        "actionKind": "dispatch-wave",
+        "target": {
+          "projectId": "project-one",
+          "changeId": "change-one",
+          "waveId": "wave-one",
+          "plan": {
+            "planId": "plan-one",
+            "revision": 2,
+            "planBaseSha": "1111111111111111111111111111111111111111"
+          },
+          "authorizationId": "authorization-plan-one"
+        },
+        "observedProjectSequence": 8,
+        "observedProjectHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "observedSourceWatermark": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "outcome": "rejected",
+        "reasonCodes": ["SOURCE_WATERMARK_CHANGED"],
+        "evidenceRefs": ["project:project-one"],
+        "canonicalEvent": null,
+        "resultingProjectSequence": null,
+        "resultingProjectHash": null,
+        "receiptHash": "674a4477527ecce35e723bca32c70ccbfd31c1044075244f01b843c54914112e"
+      }
+    ]
+  },
+  "invalid": {
+    "OperatorActionRequestV1": [
+      {
+        "reasonCode": "UNKNOWN_ACTION",
+        "value": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "unknown-action",
+          "actionKind": "run-doctor",
+          "target": { "projectId": "project-one" },
+          "actor": "human:operator-one",
+          "reason": "This action is outside the closed set.",
+          "input": {},
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "unknown-action"
+        }
+      },
+      {
+        "reasonCode": "INVALID_REQUEST",
+        "value": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "unknown-field",
+          "actionKind": "transition-incident",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "incidentId": "incident-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Unknown fields fail closed.",
+          "input": {
+            "to": "escalated",
+            "reasonCode": "HUMAN_AUTHORITY_REQUIRED",
+            "evidenceRefs": ["incident:incident-one"]
+          },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:transition-incident:unknown-field",
+          "force": true
+        }
+      },
+      {
+        "reasonCode": "INVALID_REQUEST",
+        "value": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "dispatch-override-malformed",
+          "actionKind": "dispatch-wave",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "waveId": "wave-one",
+            "plan": {
+              "planId": "plan-one",
+              "revision": 3,
+              "planBaseSha": "1111111111111111111111111111111111111111"
+            },
+            "authorizationId": "authorization-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Only the exact audited dispatch override input is accepted.",
+          "input": { "sendAnyway": false },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:dispatch-wave:dispatch-override-malformed"
+        }
+      },
+      {
+        "reasonCode": "PRIVACY_VIOLATION",
+        "value": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "privacy-field",
+          "actionKind": "transition-incident",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "incidentId": "incident-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Privacy fields fail closed.",
+          "input": {
+            "to": "escalated",
+            "reasonCode": "HUMAN_AUTHORITY_REQUIRED",
+            "evidenceRefs": ["incident:incident-one"],
+            "rawProviderPayload": "prohibited"
+          },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "project-one:transition-incident:privacy-field"
+        }
+      },
+      {
+        "reasonCode": "INVALID_REQUEST",
+        "value": {
+          "contractType": "OperatorActionRequestV1",
+          "contractVersion": "1.0",
+          "requestId": "unscoped-idempotency",
+          "actionKind": "transition-incident",
+          "target": {
+            "projectId": "project-one",
+            "changeId": "change-one",
+            "incidentId": "incident-one"
+          },
+          "actor": "human:operator-one",
+          "reason": "Unscoped idempotency identity fails closed.",
+          "input": {
+            "to": "escalated",
+            "reasonCode": "HUMAN_AUTHORITY_REQUIRED",
+            "evidenceRefs": ["incident:incident-one"]
+          },
+          "expectedSourceWatermark": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "expectedProjectSequence": 7,
+          "expectedProjectHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "idempotencyKey": "unrelated-key"
+        }
+      }
+    ],
+    "OperatorActionPreviewV1": [
+      {
+        "reasonCode": "INVALID_REQUEST",
+        "value": {
+          "contractType": "OperatorActionPreviewV1",
+          "contractVersion": "1.0",
+          "requestHash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "previewHash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    ],
+    "OperatorActionReceiptV1": [
+      {
+        "reasonCode": "INVALID_REQUEST",
+        "value": {
+          "contractType": "OperatorActionReceiptV1",
+          "contractVersion": "1.0",
+          "receiptId": "incomplete-receipt"
+        }
+      }
+    ]
+  }
+}

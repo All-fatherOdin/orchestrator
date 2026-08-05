@@ -358,6 +358,24 @@ The UI is intentionally read-only: it provides refresh, evidence summaries,
 explicit loading/empty/unavailable states, and cursor pagination, but no
 dispatch, incident, prompt, eval, or other canonical mutation controls.
 
+### Operator Actions v1
+
+Phase 7 Slice 1 implements the backend command boundary for exactly five
+actions: wave dispatch, task retry authorization, wave resume authorization,
+incident transition, and incident resolution. The routes are:
+
+- `POST /api/operator-actions/v1/preview`
+- `POST /api/operator-actions/v1/execute`
+- `GET /api/operator-actions/v1/receipts/:receiptId`
+
+Preview is deterministic and performs no canonical write. Execute requires the
+exact request, its fresh preview hash, and explicit `confirmed: true`; it
+serializes through the project writer and delegates to the existing Phase 2-4
+domain handler. The owning mutation and immutable `OperatorActionReceiptV1`
+event are published in one atomic ledger replacement. Exact idempotent retries
+return the original receipt, while stale evidence and conflicting key reuse
+fail closed. Phase 7 Slice 2 dashboard controls are not implemented.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

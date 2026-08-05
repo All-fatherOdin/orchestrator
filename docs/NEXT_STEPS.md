@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-03
+Last updated: 2026-08-05
 
 ## Current Priority
 
@@ -27,11 +27,12 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat Phase 6 as implemented, with its feature-specific checks verified. Phase
-7 now has an accepted Operator Actions Contract v1. The next safe implementation
-slice is its backend schema and command service: preview, execute, receipt,
-freshness, idempotency, and replay for the five closed action kinds. Do not add
-dashboard command controls until that slice is verified.
+Treat Phase 6 and Phase 7 Slice 1 as implemented, with their feature-specific
+checks verified. The backend now provides deterministic no-mutation preview,
+fresh explicit-confirmation execution, atomic immutable receipts, exact
+idempotency, serialized conflict handling, and replay for the five closed
+action kinds. The next safe Phase 7 boundary is Slice 2 dashboard controls;
+they must consume only these APIs and may not add actions or authority.
 
 ## Source Boundaries
 
@@ -52,9 +53,9 @@ dashboard command controls until that slice is verified.
   `docs/architecture/change-control-plane/prompt-model-eval-lineage-contract-v1.md`.
 - Accepted Phase 6 contract:
   `docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
-- Accepted Phase 7 contract:
+- Phase 7 Slice 1 implemented contract:
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
-- Phase 2-6 product evidence: current code and `server/index.test.ts`.
+- Phase 2-7 Slice 1 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 

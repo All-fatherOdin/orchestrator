@@ -1,7 +1,7 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-6 implemented and Phase 7 accepted
-Last reviewed: 2026-08-02
+Status: evidence-backed target, Phase 1-6 and Phase 7 Slice 1 implemented
+Last reviewed: 2026-08-05
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -28,7 +28,7 @@ were observed.
 10. [operator-projections-contract-v1.md](operator-projections-contract-v1.md)
     defines the accepted Phase 6 read-only projection and dashboard boundary.
 11. [operator-actions-contract-v1.md](operator-actions-contract-v1.md) defines
-    the accepted Phase 7 preview, confirmation, execution, and receipt boundary.
+    the accepted Phase 7 boundary and implemented Slice 1 backend contracts.
 
 ## Current Boundary
 
@@ -48,8 +48,9 @@ the event spine has implementation evidence.
 Phase 1-6 implementation evidence is available. The completed local queues
 remain ignored execution history. Phase 6 includes the projection API and its
 read-only five-view dashboard; neither surface adds mutation authority.
-Phase 7 is accepted but not implemented. Its closed operator action set must
-reuse existing authority gates and produce atomic, idempotent receipts.
+Phase 7 Slice 1 is implemented. Its five closed operator actions reuse existing
+authority gates and produce atomic, idempotent receipts. Slice 2 dashboard
+controls are not implemented, so the existing dashboard remains read-only.
 
 ## Authority
 
