@@ -93,13 +93,16 @@ completion remains an explicit runtime-environment risk rather than passing
 evidence. The completion review itself authorized no Phase 8 implementation;
 the separately accepted boundary is recorded below.
 
-Phase 8 Audit Bundles Contract v1 is accepted and Slice 1 is implemented.
+Phase 8 Audit Bundles Contract v1 is implemented through Slice 2.
 Exactly two strict GET routes produce bounded deterministic privacy-safe
 in-memory responses for one project sequence range or one exact change. Closed
 schemas, canonical hashes, exact optional watermark preconditions, fixed count
 and byte limits, Phase 6 projection summaries, Phase 7 receipt lineage,
 legacy/restart replay, stable private errors, and no-mutation evidence are
-covered by focused tests. Slice 2 remains pending: no audit dashboard or
-browser download control exists. Phase 8 still does not authorize persistent
+covered by focused tests. The dashboard selects existing projects/changes only
+through Phase 6 evidence, consumes only Phase 8 GET responses, exposes bounded
+watermark, sequence, completeness, warning, privacy, event, and receipt state,
+and downloads the already-returned JSON only after a direct user action. Phase
+8 still does not authorize persistent
 archives, notifications, external publication, background capture, search
 infrastructure, a database, new actions, or new authority types.

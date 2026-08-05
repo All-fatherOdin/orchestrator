@@ -185,6 +185,9 @@ const {
 const { OperatorDashboard, operatorViews, operatorActionSourceWatermark } = await import(
   "../src/OperatorDashboard.tsx"
 );
+const { AuditBundlesDashboard, auditBundleRequestPath } = await import(
+  "../src/AuditBundlesDashboard.tsx"
+);
 const {
   ChangeControlError,
   ChangeControlStore,
@@ -12000,6 +12003,42 @@ test("Phase 7 Slice 2 dashboard keeps five projections and gates contextual acti
     await operatorActionSourceWatermark(mark),
     operatorActionSourceWatermarkV1(mark.projectId, mark.sequence, mark.hash),
   );
+});
+
+test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and user-initiated JSON download", async () => {
+  const dashboardMarkup = renderToStaticMarkup(createElement(OperatorDashboard));
+  const auditMarkup = renderToStaticMarkup(createElement(AuditBundlesDashboard));
+  assert.match(dashboardMarkup, />Audit bundles</);
+  assert.match(auditMarkup, /Reading Phase 6 evidence sources/);
+  assert.equal(
+    auditBundleRequestPath({
+      selectorType: "project-sequence-range",
+      projectId: "project one",
+      fromSequence: 2,
+      toSequence: 7,
+    }),
+    "/api/audit-bundles/v1/projects/project%20one?fromSequence=2&toSequence=7",
+  );
+  assert.equal(
+    auditBundleRequestPath({
+      selectorType: "exact-change",
+      projectId: "project-one",
+      changeId: "change/one",
+    }, "a".repeat(64)),
+    `/api/audit-bundles/v1/projects/project-one/changes/change%2Fone?sourceWatermark=${"a".repeat(64)}`,
+  );
+  const source = await readFile(join("src", "AuditBundlesDashboard.tsx"), "utf8");
+  assert.match(source, /Promise\.all\(\[/);
+  assert.match(source, /\/api\/operator-projections\/v1\/overview/);
+  assert.match(source, /\/api\/operator-projections\/v1\/execution-bucket/);
+  assert.equal(/method:\s*"POST"/.test(source), false);
+  assert.match(source, /URL\.createObjectURL\(new Blob/);
+  assert.match(source, /link\.click\(\)/);
+  assert.match(source, /URL\.revokeObjectURL\(url\)/);
+  assert.match(source, /Download bounded JSON/);
+  assert.match(source, /Nothing is downloaded automatically/);
+  for (const prohibited of ["upload", "share", "notify", "schedule", "change-control-v1"])
+    assert.equal(source.toLowerCase().includes(prohibited), false, prohibited);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {

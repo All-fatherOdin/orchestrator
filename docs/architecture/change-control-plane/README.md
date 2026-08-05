@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-7 and Phase 8 Slice 1 implemented; Slice 2 pending
+Status: evidence-backed target, Phase 1-8 implemented
 Last reviewed: 2026-08-05
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -30,7 +30,7 @@ were observed.
 11. [operator-actions-contract-v1.md](operator-actions-contract-v1.md) defines
     the accepted and implemented Phase 7 boundary.
 12. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
-    accepted Phase 8 boundary and implemented Slice 1 read-only APIs.
+    accepted and implemented Phase 8 boundary.
 
 ## Current Boundary
 
@@ -55,13 +55,14 @@ existing authority gates and produce atomic, idempotent receipts. The dashboard
 adds contextual incident controls only where projections prove a complete
 target, requires fresh preview and direct confirmation, and never infers
 missing authority evidence.
-Phase 8 Slice 1 is implemented. Exactly two strict GET routes create bounded,
+Phase 8 is implemented. Exactly two strict GET routes create bounded,
 deterministic, privacy-safe audit bundles in memory from canonical Phase 1-7
 evidence. Tests cover stable hashes, limits, legacy and restart replay, Phase 6
 projection summaries, Phase 7 receipt lineage, safe errors, and no canonical
-or filesystem mutation for both selectors. Slice 2 remains pending: there is
-no audit dashboard or browser download control, and no publication or new
-authority is implied.
+or filesystem mutation for both selectors. The dashboard consumes only Phase 6
+selection evidence and Phase 8 GET responses, renders explicit bounded evidence
+and failure states, and downloads returned JSON only on direct user action. No
+publication or new authority is implied.
 
 ## Authority
 

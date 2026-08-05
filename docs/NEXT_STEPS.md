@@ -34,11 +34,12 @@ receipts, exact idempotency, serialized conflict handling, and replay for the
 five closed action kinds. The dashboard exposes contextual controls only when
 the projection proves a complete target; it never invents missing plan,
 authorization, terminal-event, or recovery evidence. The bounded Phase 8 Audit
-Bundles contract is accepted, and Slice 1 is implemented and verified with
+Bundles contract is implemented through Slice 2. Slice 1 is verified with
 strict deterministic in-memory GET APIs, privacy and size limits, legacy
-replay, restart, and explicit no-mutation evidence. Phase 8 Slice 2 remains
-pending: no dashboard or browser download work is implemented. Every external
-publication capability remains deferred.
+replay, restart, and explicit no-mutation evidence. Slice 2 consumes only
+bounded Phase 6 selection evidence and Phase 8 GET responses, renders explicit
+evidence/error states, and permits only a direct user-initiated JSON download.
+Every external publication capability remains deferred.
 
 ## Source Boundaries
 
@@ -61,9 +62,9 @@ publication capability remains deferred.
   `docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
 - Implemented and completion-reviewed Phase 7 contract:
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
-- Accepted Phase 8 contract with Slice 1 implementation evidence:
+- Implemented Phase 8 contract:
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
-- Phase 2-8 Slice 1 product evidence: current code and `server/index.test.ts`.
+- Phase 2-8 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 
