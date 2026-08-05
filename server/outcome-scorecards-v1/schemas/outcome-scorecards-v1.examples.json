@@ -1,0 +1,291 @@
+{
+  "validRequests": [
+    {
+      "contractType": "OutcomeScorecardRequestV1",
+      "contractVersion": "1.0",
+      "policyVersion": "outcome-scorecard-policy-v1",
+      "selector": {
+        "projectId": "project-1",
+        "fromSequence": 1,
+        "toSequence": 1,
+        "runIds": ["run-1"]
+      },
+      "sourceWatermark": {
+        "sequence": 1,
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "runRecordIdentities": [
+        {
+          "runId": "run-1",
+          "algorithm": "sha256",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byteLength": 128
+        }
+      ]
+    }
+  ],
+  "invalidRequests": [
+    {
+      "reasonCode": "COHORT_INVALID",
+      "value": {
+        "contractType": "OutcomeScorecardRequestV1",
+        "contractVersion": "1.0",
+        "policyVersion": "outcome-scorecard-policy-v2",
+        "selector": {
+          "projectId": "project-1",
+          "fromSequence": 1,
+          "toSequence": 1
+        },
+        "sourceWatermark": {
+          "sequence": 1,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "runRecordIdentities": []
+      }
+    },
+    {
+      "reasonCode": "COHORT_INVALID",
+      "value": {
+        "contractType": "OutcomeScorecardRequestV1",
+        "contractVersion": "1.0",
+        "policyVersion": "outcome-scorecard-policy-v1",
+        "selector": {
+          "projectId": "project-1",
+          "fromSequence": 1,
+          "toSequence": 1,
+          "unexpected": true
+        },
+        "sourceWatermark": {
+          "sequence": 1,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "runRecordIdentities": []
+      }
+    }
+  ],
+  "validDiscoveries": [
+    {
+      "contractType": "OutcomeScorecardDiscoveryV1",
+      "contractVersion": "1.0",
+      "policyVersion": "outcome-scorecard-policy-v1",
+      "selector": {
+        "projectId": "project-1",
+        "fromSequence": 1,
+        "toSequence": 1
+      },
+      "sourceWatermark": {
+        "sequence": 1,
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "candidates": [],
+      "findings": [],
+      "privacy": {
+        "policyVersion": "outcome-scorecard-privacy-v1",
+        "prohibitedFieldsExcluded": true,
+        "diagnosticsBounded": true
+      },
+      "discoveryHash": "b1ac39ad72b13756d8087f24d369fbf94cece81df45adc59cc4b845693984cd7"
+    }
+  ],
+  "invalidDiscoveries": [
+    {
+      "reasonCode": "PRIVACY_VIOLATION",
+      "value": {
+        "contractType": "OutcomeScorecardDiscoveryV1",
+        "contractVersion": "1.0",
+        "policyVersion": "outcome-scorecard-policy-v1",
+        "selector": {
+          "projectId": "project-1",
+          "fromSequence": 1,
+          "toSequence": 1
+        },
+        "sourceWatermark": {
+          "sequence": 1,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "candidates": [],
+        "findings": [],
+        "privacy": {
+          "policyVersion": "outcome-scorecard-privacy-v1",
+          "prohibitedFieldsExcluded": true,
+          "diagnosticsBounded": true
+        },
+        "prompt": "prohibited",
+        "discoveryHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  ],
+  "validScorecards": [
+    {
+      "contractType": "OutcomeScorecardV1",
+      "contractVersion": "1.0",
+      "policyVersion": "outcome-scorecard-policy-v1",
+      "selector": {
+        "projectId": "project-1",
+        "fromSequence": 1,
+        "toSequence": 1
+      },
+      "cohortId": "efb839c0c18de09a341ca5b98a45c83dc690f3af12daa9a5622f258ae1ff5011",
+      "sourceWatermarks": {
+        "project": {
+          "sequence": 1,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "runs": []
+      },
+      "cohort": {
+        "includedRuns": [],
+        "excludedRuns": [],
+        "includedTasks": [],
+        "excludedTasks": [],
+        "includedAttempts": [],
+        "excludedAttempts": []
+      },
+      "metrics": {
+        "delivery": {
+          "firstPassAcceptanceRate": {
+            "metricId": "firstPassAcceptanceRate",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": []
+          },
+          "reviewCorrectionCycles": {
+            "metricId": "reviewCorrectionCycles",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": [],
+            "distribution": { "count": 0, "sum": 0, "min": null, "max": null }
+          },
+          "dispatchToAcceptedMs": {
+            "metricId": "dispatchToAcceptedMs",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": [],
+            "distribution": { "count": 0, "sum": 0, "min": null, "max": null }
+          },
+          "tokensPerAcceptedTask": {
+            "metricId": "tokensPerAcceptedTask",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": [],
+            "distribution": { "count": 0, "sum": 0, "min": null, "max": null }
+          },
+          "overrideRate": {
+            "metricId": "overrideRate",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": []
+          }
+        },
+        "qualitySafety": {
+          "humanEscalationRate": {
+            "metricId": "humanEscalationRate",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": []
+          },
+          "haltRecurrenceRate": {
+            "metricId": "haltRecurrenceRate",
+            "status": "insufficient-evidence",
+            "numerator": 0,
+            "denominator": 0,
+            "excludedCount": 0,
+            "coverage": 0,
+            "policyVersion": "outcome-scorecard-policy-v1",
+            "value": null,
+            "evidence": []
+          }
+        },
+        "unsupported": [
+          { "outcomeClass": "escapedDefects7Day", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "post-delivery-defect-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "escapedDefects30Day", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "post-delivery-defect-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "escapedDefects90Day", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "post-delivery-defect-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "deploymentFailureRate", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "deployment-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "rollbackRate", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "deployment-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "hotfixRate", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "deployment-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "productionReworkRate", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "deployment-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "providerMonetaryCost", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "provider-billing-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "businessImpact", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "business-outcome-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "customerImpact", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "customer-outcome-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "productivitySavings", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "productivity-baseline-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "bugFreeDelivery", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "post-delivery-defect-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] },
+          { "outcomeClass": "manualBaselineComparison", "status": "unsupported", "reasonCode": "METRIC_UNSUPPORTED", "missingAuthority": "versioned-cohort-authority", "evidenceRefs": ["contract:outcome-scorecards-v1:unsupported"] }
+        ]
+      },
+      "findings": [],
+      "privacy": {
+        "policyVersion": "outcome-scorecard-privacy-v1",
+        "prohibitedFieldsExcluded": true,
+        "diagnosticsBounded": true
+      },
+      "completeness": {
+        "complete": false,
+        "checks": [
+          { "checkId": "metric:firstPassAcceptanceRate", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] },
+          { "checkId": "metric:reviewCorrectionCycles", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] },
+          { "checkId": "metric:dispatchToAcceptedMs", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] },
+          { "checkId": "metric:tokensPerAcceptedTask", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] },
+          { "checkId": "metric:overrideRate", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] },
+          { "checkId": "metric:humanEscalationRate", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] },
+          { "checkId": "metric:haltRecurrenceRate", "status": "insufficient-evidence", "reasonCodes": ["DENOMINATOR_EMPTY"] }
+        ]
+      },
+      "scorecardHash": "a490b8bb8e8068f3e397cac14dc666f45276c0562317b8c52face26ee8cad1db"
+    }
+  ],
+  "invalidScorecards": [
+    {
+      "reasonCode": "METRIC_UNSUPPORTED",
+      "value": {
+        "contractType": "OutcomeScorecardV1",
+        "contractVersion": "1.0",
+        "policyVersion": "outcome-scorecard-policy-v1",
+        "selector": { "projectId": "project-1", "fromSequence": 1, "toSequence": 1 },
+        "cohortId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "sourceWatermarks": {
+          "project": { "sequence": 1, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+          "runs": []
+        },
+        "cohort": {
+          "includedRuns": [], "excludedRuns": [], "includedTasks": [],
+          "excludedTasks": [], "includedAttempts": [], "excludedAttempts": []
+        },
+        "metrics": { "delivery": {}, "qualitySafety": {}, "unsupported": [] },
+        "findings": [],
+        "privacy": { "policyVersion": "outcome-scorecard-privacy-v1", "prohibitedFieldsExcluded": true, "diagnosticsBounded": true },
+        "completeness": { "complete": true, "checks": [] },
+        "scorecardHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    }
+  ]
+}

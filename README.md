@@ -407,6 +407,32 @@ user-initiated download of that already-returned bounded JSON. It performs no
 automatic download and adds no sharing, uploads, notifications, search/indexing,
 background capture, database storage, or external publication.
 
+### Outcome Scorecards v1
+
+Phase 9 Slice 1 provides a bounded, deterministic, privacy-safe read-only
+scorecard service over exact canonical ledger and immutable run-record
+identities. The two routes are:
+
+- `GET /api/outcome-scorecards/v1/projects/:projectId/discovery?fromSequence=&toSequence=`
+- `POST /api/outcome-scorecards/v1/compute`
+
+Discovery requires canonical positive inclusive sequence bounds and returns
+candidate run identities plus the exact project watermark. Compute accepts one
+closed `OutcomeScorecardRequestV1` manifest fenced by that watermark and the
+SHA-256 identity and byte length of every present requested `run.json` record.
+It calculates only the seven closed v1 delivery and safety metrics. Every metric
+retains its numerator, denominator, exclusions, coverage, policy identity, and
+evidence references; empty denominators remain `insufficient-evidence`, and
+unsupported outcome classes remain explicit rather than becoming zero.
+
+Both operations delegate to the request-scoped in-memory domain service and
+read the existing ledger and run records without recovery or writes. Missing or
+unlinked runs are bounded exclusions; changed identities, conflicting joins,
+stale watermarks, privacy failures, and count or byte-limit breaches fail
+closed with stable non-echoing errors. Slice 2 remains pending: this slice adds
+no dashboard, download, persistence, cache, telemetry, notification,
+publication, external call, operator action, or authority.
+
 ## Sequential queue plans
 
 To run several YAML queues one after another, upload or paste a plan instead of a task queue. Each `file` is a path to a queue YAML file; relative paths are resolved from the directory where the orchestrator is started, and absolute paths are supported.

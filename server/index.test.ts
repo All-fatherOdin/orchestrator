@@ -54,6 +54,8 @@ import operatorActionsV1Schema from "./operator-actions-v1/schemas/operator-acti
 import operatorActionsV1Examples from "./operator-actions-v1/schemas/operator-actions-v1.examples.json";
 import auditBundlesV1Schema from "./audit-bundles-v1/schemas/audit-bundles-v1.schema.json";
 import auditBundlesV1Examples from "./audit-bundles-v1/schemas/audit-bundles-v1.examples.json";
+import outcomeScorecardsV1Schema from "./outcome-scorecards-v1/schemas/outcome-scorecards-v1.schema.json";
+import outcomeScorecardsV1Examples from "./outcome-scorecards-v1/schemas/outcome-scorecards-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -164,7 +166,9 @@ const {
   repositoryIdentityV1,
   sealWorkspaceAttemptV1,
   workspacePathContainedV1,
+  createOutcomeScorecardServiceV1,
   installAuditBundleRoutesV1,
+  installOutcomeScorecardRoutesV1,
   installOperatorActionRoutesV1,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
@@ -222,6 +226,22 @@ const {
   parseOperatorActionReceiptV1,
   parseOperatorActionRequestV1,
 } = await import("./operator-actions-v1/index.ts");
+const outcomeScorecardModuleV1 = await import("./outcome-scorecards-v1/index.ts");
+const {
+  OUTCOME_SCORECARD_LIMITS_V1,
+  OUTCOME_SCORECARD_METRICS_V1,
+  OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1,
+  OutcomeScorecardErrorV1,
+  OutcomeScorecardServiceV1,
+  outcomeRunRecordIdentityV1,
+  parseOutcomeScorecardRequestV1,
+  scorecardHashV1,
+  validateOutcomeScorecardPrivacyV1,
+} = outcomeScorecardModuleV1;
+const assertOutcomeScorecardDiscoveryV1: typeof outcomeScorecardModuleV1.assertOutcomeScorecardDiscoveryV1 =
+  outcomeScorecardModuleV1.assertOutcomeScorecardDiscoveryV1;
+const assertOutcomeScorecardV1: typeof outcomeScorecardModuleV1.assertOutcomeScorecardV1 =
+  outcomeScorecardModuleV1.assertOutcomeScorecardV1;
 const {
   AuditBundleErrorV1,
   AuditBundleServiceV1,
@@ -1118,6 +1138,851 @@ test("change-control ledger serializes project writes and rebuilds immutable pro
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function outcomeScorecardFixtureV1() {
+  const root = await mkdtemp(join(tmpdir(), "outcome-scorecard-v1-"));
+  let clock = 0;
+  let ordinal = 0;
+  const store = new ChangeControlStore(root, {
+    now: () => new Date(Date.UTC(2026, 7, 5, 10, 0, clock++)).toISOString(),
+    createId: () => `scorecard-id-${++ordinal}`,
+  });
+  const projectId = "scorecard-project";
+  const changeId = "scorecard-change";
+  const waveId = "scorecard-wave";
+  const taskId = "scorecard-task";
+  await store.create(projectId, { changeId, actor: "human:owner", payload: {} });
+  await store.createWave(projectId, changeId, {
+    waveId,
+    actor: "human:owner",
+    tasks: [{ taskId, payload: {} }],
+    payload: {},
+  });
+  await store.dispatchWave(projectId, changeId, waveId, {
+    actor: "human:owner",
+    payload: {},
+  });
+  await store.transitionWave(projectId, changeId, waveId, {
+    actor: "system:runner",
+    to: "running",
+    payload: {},
+  });
+  await store.transitionTask(projectId, changeId, waveId, taskId, {
+    actor: "system:runner",
+    to: "running",
+    payload: {},
+  });
+  await store.transitionTask(projectId, changeId, waveId, taskId, {
+    actor: "system:runner",
+    to: "accepted",
+    payload: {},
+  });
+  const source = await store.readAuditEvidenceV1(projectId);
+  const runId = "scorecard-run";
+  const runTaskId = "scorecard-attempt";
+  const workspaceAttemptId = "workspace-scorecard-run-scorecard-attempt";
+  const runRecord = JSON.stringify({
+    id: runId,
+    prompt: "PRIVATE_PROMPT_MUST_NOT_ESCAPE",
+    tasks: [{
+      id: runTaskId,
+      status: "completed",
+      executionAttempts: 1,
+      attempts: 1,
+      reviewStatus: "approved",
+      log: ["PRIVATE_TASK_LOG_MUST_NOT_ESCAPE"],
+      usage: [
+        { phase: "executor", attempt: 1, inputTokens: 100, outputTokens: 20, cachedInputTokens: 0 },
+        { phase: "reviewer", attempt: 1, inputTokens: 30, outputTokens: 10, cachedInputTokens: 0 },
+      ],
+      workspace: {
+        contractType: "ManagedWorkspaceBindingV1",
+        contractVersion: "1.0",
+        projectId,
+        changeId,
+        waveId,
+        taskId,
+      },
+      workspaceAttemptId,
+    }],
+    workspaceAttempts: [{
+      contractType: "WorkspaceAttemptV1",
+      contractVersion: "1.0",
+      workspaceAttemptId,
+      projectId,
+      changeId,
+      waveId,
+      taskId,
+      runId,
+      attemptId: runTaskId,
+    }],
+  });
+  const records = new Map([[runId, runRecord]]);
+  const runRecordsRoot = join(root, "runs");
+  await mkdir(join(runRecordsRoot, runId), { recursive: true });
+  await writeFile(join(runRecordsRoot, runId, "run.json"), runRecord, "utf8");
+  const service = new OutcomeScorecardServiceV1({
+    readProjectEvidence: (selectedProjectId) => store.readAuditEvidenceV1(selectedProjectId),
+    readRunRecord: async (selectedRunId) => records.get(selectedRunId),
+  });
+  const selector = {
+    projectId,
+    fromSequence: 1,
+    toSequence: source.watermark.sequence,
+    runIds: [runId],
+  };
+  const request = {
+    contractType: "OutcomeScorecardRequestV1",
+    contractVersion: "1.0",
+    policyVersion: "outcome-scorecard-policy-v1",
+    selector,
+    sourceWatermark: source.watermark,
+    runRecordIdentities: [outcomeRunRecordIdentityV1(runId, runRecord)],
+  };
+  return {
+    root,
+    store,
+    service,
+    source,
+    records,
+    request,
+    runId,
+    runRecord,
+    runRecordsRoot,
+    projectId,
+  };
+}
+
+async function filesystemSnapshotV1(root: string) {
+  const snapshot: Record<string, string> = {};
+  const visit = async (directory: string, relative = "") => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const child = join(directory, entry.name);
+      if (entry.isDirectory()) await visit(child, childRelative);
+      else snapshot[childRelative] = await readFile(child, "utf8");
+    }
+  };
+  await visit(root);
+  return snapshot;
+}
+
+test("OutcomeScorecardV1 closed schemas accept valid request, discovery, and scorecard fixtures", () => {
+  const schemaValidator = new Ajv2020({ allErrors: true, strict: true }).compile(outcomeScorecardsV1Schema);
+  for (const request of outcomeScorecardsV1Examples.validRequests)
+    assert.equal(schemaValidator(request), true, JSON.stringify(schemaValidator.errors));
+  for (const example of outcomeScorecardsV1Examples.invalidRequests)
+    assert.equal(schemaValidator(example.value), false, example.reasonCode);
+  for (const discovery of outcomeScorecardsV1Examples.validDiscoveries) {
+    assert.equal(schemaValidator(discovery), true, JSON.stringify(schemaValidator.errors));
+    assertOutcomeScorecardDiscoveryV1(discovery);
+  }
+  for (const example of outcomeScorecardsV1Examples.invalidDiscoveries)
+    assert.equal(schemaValidator(example.value), false, example.reasonCode);
+  for (const scorecard of outcomeScorecardsV1Examples.validScorecards) {
+    assert.equal(schemaValidator(scorecard), true, JSON.stringify(schemaValidator.errors));
+    assertOutcomeScorecardV1(scorecard);
+  }
+  for (const example of outcomeScorecardsV1Examples.invalidScorecards)
+    assert.equal(schemaValidator(example.value), false, example.reasonCode);
+});
+
+test("outcome scorecard parsing is strict, normalized, bounded, and privacy-fail-closed", () => {
+  const normalized = parseOutcomeScorecardRequestV1({
+    ...outcomeScorecardsV1Examples.validRequests[0],
+    selector: { ...outcomeScorecardsV1Examples.validRequests[0].selector, runIds: ["run-z", "run-a"] },
+    runRecordIdentities: [
+      { runId: "run-z", algorithm: "sha256", sha256: "a".repeat(64), byteLength: 1 },
+      { runId: "run-a", algorithm: "sha256", sha256: "b".repeat(64), byteLength: 1 },
+    ],
+  });
+  assert.deepEqual(normalized.selector.runIds, ["run-a", "run-z"]);
+  assert.deepEqual(normalized.runRecordIdentities.map((item) => item.runId), ["run-a", "run-z"]);
+  assert.throws(
+    () => parseOutcomeScorecardRequestV1({
+      ...outcomeScorecardsV1Examples.validRequests[0],
+      selector: { projectId: "project-1", fromSequence: 2, toSequence: 1 },
+    }),
+    (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "COHORT_INVALID",
+  );
+  assert.throws(
+    () => parseOutcomeScorecardRequestV1({
+      ...outcomeScorecardsV1Examples.validRequests[0],
+      prompt: "must not enter diagnostics",
+    }),
+    (error: unknown) => error instanceof OutcomeScorecardErrorV1 &&
+      error.reasonCode === "PRIVACY_VIOLATION" &&
+      !error.message.includes("must not enter diagnostics"),
+  );
+  assert.throws(
+    () => parseOutcomeScorecardRequestV1({
+      ...outcomeScorecardsV1Examples.validRequests[0],
+      selector: { projectId: "project-1", fromSequence: 1, toSequence: OUTCOME_SCORECARD_LIMITS_V1.maxEvents + 1 },
+    }),
+    (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "COHORT_LIMIT_EXCEEDED",
+  );
+  assert.throws(
+    () => parseOutcomeScorecardRequestV1({
+      ...outcomeScorecardsV1Examples.validRequests[0],
+      selector: {
+        projectId: "project-1",
+        fromSequence: 1,
+        toSequence: 1,
+        runIds: Array.from({ length: OUTCOME_SCORECARD_LIMITS_V1.maxRuns + 1 }, (_, index) => `run-${index}`),
+      },
+      runRecordIdentities: [],
+    }),
+    (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "COHORT_LIMIT_EXCEEDED",
+  );
+  assert.deepEqual(OUTCOME_SCORECARD_LIMITS_V1, {
+    maxRuns: 50,
+    maxTasks: 500,
+    maxAttempts: 1000,
+    maxEvents: 5000,
+    maxResponseBytes: 4000000,
+    maxRunRecordBytes: 16000000,
+    maxDiagnostics: 100,
+    maxEvidenceRefsPerMetric: 2000,
+  });
+  validateOutcomeScorecardPrivacyV1({ safe: true });
+});
+
+test("outcome scorecard discovery binds exact identities and stale watermarks fail closed", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  try {
+    const discovery = await fixture.service.discover({
+      contractType: "OutcomeScorecardDiscoveryRequestV1",
+      contractVersion: "1.0",
+      policyVersion: "outcome-scorecard-policy-v1",
+      selector: fixture.request.selector,
+    });
+    assertOutcomeScorecardDiscoveryV1(discovery);
+    assert.equal(discovery.candidates.length, 1);
+    assert.deepEqual(discovery.candidates[0].identity, fixture.request.runRecordIdentities[0]);
+    await assert.rejects(
+      fixture.service.compute({
+        ...fixture.request,
+        sourceWatermark: {
+          ...fixture.request.sourceWatermark,
+          hash: "f".repeat(64),
+        },
+      }),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 &&
+        error.reasonCode === "SOURCE_WATERMARK_CHANGED",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("outcome scorecard exact joins, seven metrics, exclusions, and unsupported classes are reconstructible", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  try {
+    const missingRunId = "missing-run";
+    const legacyRunId = "legacy-run";
+    const legacy = JSON.stringify({
+      id: legacyRunId,
+      tasks: [{ id: "legacy-task", status: "completed", executionAttempts: 1 }],
+    });
+    fixture.records.set(legacyRunId, legacy);
+    const scorecard = await fixture.service.compute({
+      ...fixture.request,
+      selector: { ...fixture.request.selector, runIds: [missingRunId, fixture.runId, legacyRunId] },
+      runRecordIdentities: [
+        outcomeRunRecordIdentityV1(fixture.runId, fixture.runRecord),
+        outcomeRunRecordIdentityV1(legacyRunId, legacy),
+      ],
+    });
+    assertOutcomeScorecardV1(scorecard);
+    assert.equal(scorecard.cohort.includedRuns.length, 1);
+    assert.deepEqual(
+      scorecard.cohort.excludedRuns.map((item) => item.code).sort(),
+      ["RUN_NOT_FOUND", "RUN_UNLINKED"],
+    );
+    assert.deepEqual(scorecard.cohort.excludedTasks, [
+      {
+        code: "RUN_UNLINKED",
+        subjectType: "task",
+        subjectRef: `task:run:${legacyRunId}:legacy-task`,
+        evidenceRefs: [
+          `run:${legacyRunId}:${outcomeRunRecordIdentityV1(legacyRunId, legacy).sha256}`,
+        ],
+      },
+    ]);
+    assert.equal(
+      scorecard.findings.some(
+        (item) =>
+          item.subjectRef === `task:run:${legacyRunId}:legacy-task` &&
+          item.code === "RUN_UNLINKED",
+      ),
+      true,
+    );
+    assert.deepEqual(
+      [...Object.keys(scorecard.metrics.delivery), ...Object.keys(scorecard.metrics.qualitySafety)].sort(),
+      [...OUTCOME_SCORECARD_METRICS_V1].sort(),
+    );
+    assert.equal(scorecard.metrics.delivery.firstPassAcceptanceRate.value, 1);
+    assert.equal(scorecard.metrics.delivery.reviewCorrectionCycles.value, 0);
+    assert.equal(scorecard.metrics.delivery.tokensPerAcceptedTask.value, 160);
+    assert.equal(scorecard.metrics.delivery.overrideRate.value, 0);
+    assert.equal(scorecard.metrics.qualitySafety.humanEscalationRate.status, "insufficient-evidence");
+    assert.equal(scorecard.metrics.qualitySafety.humanEscalationRate.value, null);
+    for (const item of [
+      ...Object.values(scorecard.metrics.delivery),
+      ...Object.values(scorecard.metrics.qualitySafety),
+    ]) {
+      assert.equal(
+        item.numerator,
+        item.evidence.reduce((sum, evidence) => sum + evidence.numeratorContribution, 0),
+      );
+      assert.equal(
+        item.denominator,
+        item.evidence.reduce((sum, evidence) => sum + evidence.denominatorContribution, 0),
+      );
+    }
+    assert.deepEqual(
+      scorecard.metrics.unsupported.map((item) => [item.outcomeClass, item.missingAuthority]),
+      OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1,
+    );
+    assert.ok(!JSON.stringify(scorecard).includes("PRIVATE_PROMPT_MUST_NOT_ESCAPE"));
+    assert.ok(!JSON.stringify(scorecard).includes("PRIVATE_TASK_LOG_MUST_NOT_ESCAPE"));
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OutcomeScorecardV1 changed identities and conflicting exact joins fail closed", async () => {
+  const changed = await outcomeScorecardFixtureV1();
+  try {
+    changed.records.set(changed.runId, `${changed.runRecord}\n`);
+    await assert.rejects(
+      changed.service.compute(changed.request),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "RUN_IDENTITY_CHANGED",
+    );
+  } finally {
+    await rm(changed.root, { recursive: true, force: true });
+  }
+
+  const conflict = await outcomeScorecardFixtureV1();
+  try {
+    const parsed = JSON.parse(conflict.runRecord) as { tasks: Array<{ workspaceAttemptId: string }> };
+    parsed.tasks[0].workspaceAttemptId = "workspace-conflict";
+    const serialized = JSON.stringify(parsed);
+    conflict.records.set(conflict.runId, serialized);
+    await assert.rejects(
+      conflict.service.compute({
+        ...conflict.request,
+        runRecordIdentities: [outcomeRunRecordIdentityV1(conflict.runId, serialized)],
+      }),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "EVIDENCE_CONFLICT",
+    );
+  } finally {
+    await rm(conflict.root, { recursive: true, force: true });
+  }
+});
+
+test("OutcomeScorecardV1 semantic replay and attempt limits fail closed", async () => {
+  const tampered = structuredClone(outcomeScorecardsV1Examples.validScorecards[0]);
+  tampered.metrics.delivery.firstPassAcceptanceRate.numerator = 1;
+  tampered.scorecardHash = scorecardHashV1(tampered as Parameters<typeof scorecardHashV1>[0]);
+  assert.throws(
+    () => assertOutcomeScorecardV1(tampered),
+    (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "EVIDENCE_CONFLICT",
+  );
+
+  for (const mutate of [
+    (scorecard: any) => {
+      scorecard.completeness.checks[0].checkId =
+        scorecard.completeness.checks[1].checkId;
+    },
+    (scorecard: any) => {
+      scorecard.completeness.checks[0].status = "pass";
+    },
+    (scorecard: any) => {
+      scorecard.completeness.checks[0].reasonCodes = ["EVIDENCE_INCOMPLETE"];
+    },
+  ]) {
+    const completenessTampered: any = structuredClone(
+      outcomeScorecardsV1Examples.validScorecards[0],
+    );
+    mutate(completenessTampered);
+    completenessTampered.scorecardHash = scorecardHashV1(completenessTampered);
+    assert.throws(
+      () => assertOutcomeScorecardV1(completenessTampered),
+      (error: unknown) =>
+        error instanceof OutcomeScorecardErrorV1 &&
+        error.reasonCode === "EVIDENCE_CONFLICT",
+    );
+  }
+
+  const percentileTampered: any = structuredClone(outcomeScorecardsV1Examples.validScorecards[0]);
+  percentileTampered.metrics.delivery.reviewCorrectionCycles = {
+    metricId: "reviewCorrectionCycles",
+    status: "complete",
+    numerator: 15,
+    denominator: 5,
+    excludedCount: 0,
+    coverage: 1,
+    policyVersion: "outcome-scorecard-policy-v1",
+    value: 3,
+    evidence: [1, 2, 3, 4, 5].map((value) => ({
+      subjectRef: `task:distribution-${value}`,
+      numeratorContribution: value,
+      denominatorContribution: 1 as const,
+      excluded: false,
+      value,
+      evidenceRefs: [`event:${value}:distribution-evidence`],
+    })),
+    distribution: {
+      count: 5,
+      sum: 15,
+      min: 1,
+      max: 5,
+      percentiles: { p50: 4, p90: 5, p95: 5 },
+    },
+  };
+  percentileTampered.scorecardHash = scorecardHashV1(
+    percentileTampered as Parameters<typeof scorecardHashV1>[0],
+  );
+  assert.throws(
+    () => assertOutcomeScorecardV1(percentileTampered),
+    (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "EVIDENCE_CONFLICT",
+  );
+
+  const fixtureForCanonicalSemantics = await outcomeScorecardFixtureV1();
+  try {
+    const legacyRunId = "legacy-run-for-ordering";
+    const legacy = JSON.stringify({
+      id: legacyRunId,
+      tasks: [{ id: "legacy-task", status: "completed", executionAttempts: 1 }],
+    });
+    fixtureForCanonicalSemantics.records.set(legacyRunId, legacy);
+    const scorecard = await fixtureForCanonicalSemantics.service.compute({
+      ...fixtureForCanonicalSemantics.request,
+      selector: {
+        ...fixtureForCanonicalSemantics.request.selector,
+        runIds: ["missing-run-for-ordering", fixtureForCanonicalSemantics.runId, legacyRunId],
+      },
+      runRecordIdentities: [
+        outcomeRunRecordIdentityV1(
+          fixtureForCanonicalSemantics.runId,
+          fixtureForCanonicalSemantics.runRecord,
+        ),
+        outcomeRunRecordIdentityV1(legacyRunId, legacy),
+      ],
+    });
+    const reordered: any = structuredClone(scorecard);
+    reordered.findings.reverse();
+    reordered.scorecardHash = scorecardHashV1(reordered);
+    assert.throws(
+      () => assertOutcomeScorecardV1(reordered),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "EVIDENCE_CONFLICT",
+    );
+
+    const inconsistent: any = structuredClone(scorecard);
+    inconsistent.findings = inconsistent.findings.slice(0, -1);
+    inconsistent.scorecardHash = scorecardHashV1(inconsistent);
+    assert.throws(
+      () => assertOutcomeScorecardV1(inconsistent),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "EVIDENCE_CONFLICT",
+    );
+
+    const rawValuesTampered: any = structuredClone(scorecard);
+    rawValuesTampered.metrics.delivery.reviewCorrectionCycles.distribution!.rawValues = [1];
+    rawValuesTampered.scorecardHash = scorecardHashV1(rawValuesTampered);
+    assert.throws(
+      () => assertOutcomeScorecardV1(rawValuesTampered),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 && error.reasonCode === "EVIDENCE_CONFLICT",
+    );
+  } finally {
+    await rm(fixtureForCanonicalSemantics.root, { recursive: true, force: true });
+  }
+
+  const fixture = await outcomeScorecardFixtureV1();
+  try {
+    const parsed = JSON.parse(fixture.runRecord) as { tasks: Array<{ executionAttempts: number }> };
+    parsed.tasks[0].executionAttempts = OUTCOME_SCORECARD_LIMITS_V1.maxAttempts + 1;
+    const serialized = JSON.stringify(parsed);
+    fixture.records.set(fixture.runId, serialized);
+    await assert.rejects(
+      fixture.service.compute({
+        ...fixture.request,
+        runRecordIdentities: [outcomeRunRecordIdentityV1(fixture.runId, serialized)],
+      }),
+      (error: unknown) => error instanceof OutcomeScorecardErrorV1 &&
+        error.reasonCode === "COHORT_LIMIT_EXCEEDED",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("outcome scorecard incident and halt metrics ignore canonical events after toSequence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "outcome-scorecard-range-v1-"));
+  let ordinal = 0;
+  try {
+    const store = new ChangeControlStore(root, {
+      now: () => "2026-08-05T12:00:00.000Z",
+      createId: () => `scorecard-range-${++ordinal}`,
+    });
+    await seedPhase4Scope(store);
+    const aggregate = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: "halt-scorecard-range",
+        detectorEventId: "detector-scorecard-range",
+      }),
+    );
+    const selectedSource = await store.readAuditEvidenceV1("planning-project");
+    const selector = {
+      projectId: "planning-project",
+      fromSequence: 1,
+      toSequence: selectedSource.watermark.sequence,
+    };
+    const compute = async () => {
+      const source = await store.readAuditEvidenceV1("planning-project");
+      const service = new OutcomeScorecardServiceV1({
+        readProjectEvidence: async () => source,
+        readRunRecord: async () => undefined,
+      });
+      return service.compute({
+        contractType: "OutcomeScorecardRequestV1",
+        contractVersion: "1.0",
+        policyVersion: "outcome-scorecard-policy-v1",
+        selector,
+        sourceWatermark: source.watermark,
+        runRecordIdentities: [],
+      });
+    };
+
+    const before = await compute();
+    assert.equal(
+      before.metrics.qualitySafety.humanEscalationRate.denominator,
+      1,
+    );
+    assert.equal(before.metrics.qualitySafety.humanEscalationRate.value, 0);
+
+    await store.transitionHalt("planning-project", aggregate.halt.haltId, {
+      to: "escalated",
+      actor: "human:operator",
+      reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+      evidenceRefs: ["human:scorecard-range:later-escalation"],
+    });
+    const after = await compute();
+    assert.deepEqual(after.metrics.qualitySafety, before.metrics.qualitySafety);
+    for (const metric of Object.values(after.metrics.qualitySafety)) {
+      for (const evidence of metric.evidence) {
+        assert.equal(
+          evidence.evidenceRefs.some((reference) => {
+            const match = /^event:(\d+):/.exec(reference);
+            return match !== null && Number(match[1]) > selector.toSequence;
+          }),
+          false,
+        );
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("outcome scorecard restart source is deterministic and performs no filesystem mutation", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  try {
+    const before = await filesystemSnapshotV1(fixture.root);
+    const first = await fixture.service.compute(fixture.request);
+    const restartedStore = new ChangeControlStore(fixture.root);
+    const restartedService = new OutcomeScorecardServiceV1({
+      readProjectEvidence: (projectId) => restartedStore.readAuditEvidenceV1(projectId),
+      readRunRecord: async (runId) => fixture.records.get(runId),
+    });
+    const second = await restartedService.compute(fixture.request);
+    const after = await filesystemSnapshotV1(fixture.root);
+    assert.deepEqual(second, first);
+    assert.equal(second.scorecardHash, first.scorecardHash);
+    assert.equal(scorecardHashV1(second), second.scorecardHash);
+    assert.deepEqual(after, before);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+async function startOutcomeScorecardHttpV1(
+  service: Pick<InstanceType<typeof OutcomeScorecardServiceV1>, "discover" | "compute">,
+) {
+  const httpApp = express();
+  httpApp.use(express.json({ limit: "64kb" }));
+  installOutcomeScorecardRoutesV1(httpApp, service);
+  const server = httpApp.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    base: `http://127.0.0.1:${address.port}/api/outcome-scorecards/v1`,
+    close: () => new Promise<void>((resolveClose) => server.close(() => resolveClose())),
+  };
+}
+
+test("outcome-scorecards/v1 discovery and compute are deterministic across restart and leave sources unchanged", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  let firstHttp: Awaited<ReturnType<typeof startOutcomeScorecardHttpV1>> | undefined;
+  let restartedHttp: Awaited<ReturnType<typeof startOutcomeScorecardHttpV1>> | undefined;
+  try {
+    const before = await filesystemSnapshotV1(fixture.root);
+    firstHttp = await startOutcomeScorecardHttpV1(
+      createOutcomeScorecardServiceV1(fixture.store, fixture.runRecordsRoot),
+    );
+    const discoveryUrl = `${firstHttp.base}/projects/${fixture.projectId}/discovery` +
+      `?fromSequence=1&toSequence=${fixture.source.watermark.sequence}`;
+    const firstDiscoveryResponse = await fetch(discoveryUrl);
+    assert.equal(firstDiscoveryResponse.status, 200);
+    const firstDiscoveryText = await firstDiscoveryResponse.text();
+    const discovery = JSON.parse(firstDiscoveryText) as any;
+    assert.equal(discovery.contractType, "OutcomeScorecardDiscoveryV1");
+    assert.deepEqual(discovery.sourceWatermark, fixture.source.watermark);
+    assert.deepEqual(discovery.selector, {
+      projectId: fixture.projectId,
+      fromSequence: 1,
+      toSequence: fixture.source.watermark.sequence,
+    });
+    assert.equal((await fetch(discoveryUrl).then((response) => response.text())), firstDiscoveryText);
+
+    const firstComputeResponse = await fetch(`${firstHttp.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(fixture.request),
+    });
+    assert.equal(firstComputeResponse.status, 200);
+    const firstComputeText = await firstComputeResponse.text();
+    const scorecard = JSON.parse(firstComputeText) as any;
+    assert.equal(scorecard.contractType, "OutcomeScorecardV1");
+    assert.equal(scorecard.scorecardHash, scorecardHashV1(scorecard));
+    assert.deepEqual(scorecard.sourceWatermarks.project, fixture.source.watermark);
+    assert.deepEqual(scorecard.sourceWatermarks.runs, fixture.request.runRecordIdentities);
+    const repeatedCompute = await fetch(`${firstHttp.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(fixture.request),
+    });
+    assert.equal(await repeatedCompute.text(), firstComputeText);
+
+    const emptyRequest = {
+      ...fixture.request,
+      selector: { ...fixture.request.selector, runIds: [] },
+      runRecordIdentities: [],
+    };
+    const emptyResponse = await fetch(`${firstHttp.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(emptyRequest),
+    });
+    assert.equal(emptyResponse.status, 200);
+    const empty = await emptyResponse.json() as any;
+    assert.equal(empty.metrics.delivery.firstPassAcceptanceRate.denominator, 0);
+    assert.equal(empty.metrics.delivery.firstPassAcceptanceRate.status, "insufficient-evidence");
+    assert.equal(empty.metrics.delivery.firstPassAcceptanceRate.value, null);
+    assert.ok(empty.metrics.unsupported.every((item: any) =>
+      item.status === "unsupported" && item.reasonCode === "METRIC_UNSUPPORTED"));
+
+    await firstHttp.close();
+    firstHttp = undefined;
+    restartedHttp = await startOutcomeScorecardHttpV1(
+      createOutcomeScorecardServiceV1(
+        new ChangeControlStore(fixture.root),
+        fixture.runRecordsRoot,
+      ),
+    );
+    const restartedResponse = await fetch(`${restartedHttp.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(fixture.request),
+    });
+    assert.equal(restartedResponse.status, 200);
+    assert.equal(await restartedResponse.text(), firstComputeText);
+    assert.deepEqual(await filesystemSnapshotV1(fixture.root), before);
+  } finally {
+    await firstHttp?.close();
+    await restartedHttp?.close();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("outcome-scorecards/v1 preserves missing, unlinked, changed, and conflicting run fencing without mutation", async () => {
+  const excluded = await outcomeScorecardFixtureV1();
+  let excludedHttp: Awaited<ReturnType<typeof startOutcomeScorecardHttpV1>> | undefined;
+  try {
+    const legacyRunId = "legacy-http-run";
+    const legacy = JSON.stringify({
+      id: legacyRunId,
+      tasks: [{ id: "legacy-http-task", status: "completed", executionAttempts: 1 }],
+    });
+    await mkdir(join(excluded.runRecordsRoot, legacyRunId), { recursive: true });
+    await writeFile(join(excluded.runRecordsRoot, legacyRunId, "run.json"), legacy, "utf8");
+    const before = await filesystemSnapshotV1(excluded.root);
+    excludedHttp = await startOutcomeScorecardHttpV1(
+      createOutcomeScorecardServiceV1(excluded.store, excluded.runRecordsRoot),
+    );
+    const response = await fetch(`${excludedHttp.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...excluded.request,
+        selector: {
+          ...excluded.request.selector,
+          runIds: ["missing-http-run", excluded.runId, legacyRunId],
+        },
+        runRecordIdentities: [
+          excluded.request.runRecordIdentities[0],
+          outcomeRunRecordIdentityV1(legacyRunId, legacy),
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const scorecard = await response.json() as any;
+    assert.deepEqual(
+      scorecard.cohort.excludedRuns.map((item: any) => item.code).sort(),
+      ["RUN_NOT_FOUND", "RUN_UNLINKED"],
+    );
+    assert.equal(scorecard.cohort.excludedTasks[0].code, "RUN_UNLINKED");
+    assert.deepEqual(await filesystemSnapshotV1(excluded.root), before);
+  } finally {
+    await excludedHttp?.close();
+    await rm(excluded.root, { recursive: true, force: true });
+  }
+
+  for (const reasonCode of ["RUN_IDENTITY_CHANGED", "EVIDENCE_CONFLICT"] as const) {
+    const fixture = await outcomeScorecardFixtureV1();
+    let http: Awaited<ReturnType<typeof startOutcomeScorecardHttpV1>> | undefined;
+    try {
+      let request: any = fixture.request;
+      if (reasonCode === "RUN_IDENTITY_CHANGED") {
+        await writeFile(
+          join(fixture.runRecordsRoot, fixture.runId, "run.json"),
+          `${fixture.runRecord}\n`,
+          "utf8",
+        );
+      } else {
+        const parsed = JSON.parse(fixture.runRecord) as {
+          tasks: Array<{ workspaceAttemptId: string }>;
+        };
+        parsed.tasks[0]!.workspaceAttemptId = "workspace-http-conflict";
+        const conflicting = JSON.stringify(parsed);
+        await writeFile(
+          join(fixture.runRecordsRoot, fixture.runId, "run.json"),
+          conflicting,
+          "utf8",
+        );
+        request = {
+          ...fixture.request,
+          runRecordIdentities: [outcomeRunRecordIdentityV1(fixture.runId, conflicting)],
+        };
+      }
+      const before = await filesystemSnapshotV1(fixture.root);
+      http = await startOutcomeScorecardHttpV1(
+        createOutcomeScorecardServiceV1(fixture.store, fixture.runRecordsRoot),
+      );
+      const response = await fetch(`${http.base}/compute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      assert.equal(response.status, 409);
+      assert.deepEqual(await response.json(), {
+        error: "Outcome scorecard request rejected.",
+        code: reasonCode,
+      });
+      assert.deepEqual(await filesystemSnapshotV1(fixture.root), before);
+    } finally {
+      await http?.close();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("outcome-scorecards/v1 strictly bounds queries, manifests, methods, and privacy-safe errors", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  let http: Awaited<ReturnType<typeof startOutcomeScorecardHttpV1>> | undefined;
+  try {
+    const before = await filesystemSnapshotV1(fixture.root);
+    http = await startOutcomeScorecardHttpV1(
+      createOutcomeScorecardServiceV1(fixture.store, fixture.runRecordsRoot),
+    );
+    const invalidQueries = [
+      `?toSequence=${fixture.source.watermark.sequence}`,
+      `?fromSequence=01&toSequence=${fixture.source.watermark.sequence}`,
+      `?fromSequence=1&toSequence=${fixture.source.watermark.sequence}&extra=private`,
+      `?fromSequence=1&fromSequence=1&toSequence=${fixture.source.watermark.sequence}`,
+      `?fromSequence=2&toSequence=1`,
+      `?fromSequence=1&toSequence=${OUTCOME_SCORECARD_LIMITS_V1.maxEvents + 1}`,
+    ];
+    for (const query of invalidQueries) {
+      const response: globalThis.Response = await fetch(
+        `${http.base}/projects/${fixture.projectId}/discovery${query}`,
+      );
+      assert.ok([400, 413].includes(response.status), query);
+      const text: string = await response.text();
+      assert.ok(Buffer.byteLength(text, "utf8") < 160, query);
+      assert.equal(text.includes("private"), false, query);
+    }
+    const invalidPath = await fetch(
+      `${http.base}/projects/not%20valid/discovery?fromSequence=1&toSequence=1`,
+    );
+    assert.equal(invalidPath.status, 400);
+
+    const privateBody = await fetch(`${http.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...fixture.request, prompt: "PRIVATE_BODY_MUST_NOT_ESCAPE" }),
+    });
+    assert.equal(privateBody.status, 400);
+    const privateText = await privateBody.text();
+    assert.match(privateText, /PRIVACY_VIOLATION/);
+    assert.equal(privateText.includes("PRIVATE_BODY_MUST_NOT_ESCAPE"), false);
+    assert.ok(Buffer.byteLength(privateText, "utf8") < 160);
+
+    const stale = await fetch(`${http.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...fixture.request,
+        sourceWatermark: { ...fixture.request.sourceWatermark, hash: "f".repeat(64) },
+      }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json() as any).code, "SOURCE_WATERMARK_CHANGED");
+
+    const malformed = await fetch(`${http.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"private":"PRIVATE_MALFORMED_MUST_NOT_ESCAPE"',
+    });
+    assert.equal(malformed.status, 400);
+    const malformedText = await malformed.text();
+    assert.equal(malformedText.includes("PRIVATE_MALFORMED_MUST_NOT_ESCAPE"), false);
+    assert.ok(Buffer.byteLength(malformedText, "utf8") < 160);
+
+    const oversized = await fetch(`${http.base}/compute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(70_000) }),
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal((await oversized.json() as any).code, "COHORT_LIMIT_EXCEEDED");
+
+    for (const method of ["PUT", "PATCH", "DELETE"]) {
+      const response: globalThis.Response = await fetch(`${http.base}/compute`, { method });
+      assert.equal(response.status, 404, method);
+    }
+    assert.deepEqual(await filesystemSnapshotV1(fixture.root), before);
+  } finally {
+    await http?.close();
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 

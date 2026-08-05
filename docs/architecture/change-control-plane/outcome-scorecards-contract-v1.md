@@ -1,7 +1,8 @@
 # Outcome Scorecards Contract v1
 
-Status: accepted contract; implementation pending
+Status: accepted contract; Slice 1 implemented, Slice 2 pending
 Accepted: 2026-08-05
+Slice 1 implemented: 2026-08-05
 
 ## Outcome
 
@@ -165,12 +166,22 @@ Add closed schemas, exact run-record identity hashing, canonical joins, metric
 registry calculation, privacy/limit checks, discovery/compute routes, restart
 tests, and explicit no-mutation evidence. Do not change the dashboard.
 
+Implemented with exactly the accepted discovery GET and closed-manifest compute
+POST. The HTTP layer performs strict bounded parsing and privacy-safe error
+mapping, then delegates to the request-scoped in-memory domain service. Focused
+tests cover deterministic responses and hashes, exact watermarks and run
+identities, missing/unlinked/changed/conflicting runs, all seven metrics, empty
+denominators, unsupported outcomes, privacy and limits, legacy/restart behavior,
+and before/after filesystem no-mutation evidence.
+
 ### Slice 2: read-only scorecard view
 
 Consume only Phase 6 selection evidence and Phase 9 read APIs. Render explicit
 loading, empty, stale, unavailable, incomplete, unsupported, and privacy-
 rejected states plus direct bounded JSON download. Do not add alerts,
 notifications, scheduled reports, cohort persistence, or mutation controls.
+
+Pending. Slice 1 adds no frontend or download behavior.
 
 ## Acceptance
 

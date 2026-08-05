@@ -117,14 +117,23 @@ page-level overflow. The combined server/Electron regression command exceeded
 369 seconds without emitting a failure diagnostic, so it remains an explicit
 runtime-environment risk and is not recorded as passing evidence.
 
-Phase 9 Outcome Scorecards Contract v1 is accepted and implementation has not
-started. The contract authorizes a bounded read-only scorecard for one explicit
-project cohort, using only exact canonical ledger evidence and immutable run-
-record identities. Its closed v1 registry covers first-pass acceptance, review
-cycles, dispatch-to-accepted duration, tokens per accepted task, override rate,
-human escalation rate, and halt recurrence only when each denominator is
-complete. Deployment outcomes, escaped defects, provider monetary cost,
-business impact, and unversioned baselines remain explicitly unsupported.
-The next safe boundary is Slice 1 service/schema/API/no-mutation work only;
-dashboard, persistence, notifications, publication, background aggregation,
-search, and external telemetry remain unauthorized.
+Phase 9 Outcome Scorecards Slice 1 is implemented. Exactly one strict discovery
+GET and one closed-manifest compute POST provide bounded deterministic
+privacy-safe scorecards for one explicit project cohort. Compute remains a
+request-scoped in-memory read-only calculation delegated to the domain service;
+it reads existing canonical project evidence and exact `run.json` bytes without
+recovery, persistence, or external calls. Exact project watermarks and immutable
+run-record hashes/byte lengths fence every included run. Missing and unlinked
+runs remain explicit exclusions; changed or conflicting identities fail closed.
+
+The closed registry covers first-pass acceptance, review cycles,
+dispatch-to-accepted duration, tokens per accepted task, override rate, human
+escalation rate, and halt recurrence with reconstructible evidence,
+denominators, coverage, and exclusions. Zero denominators are
+`insufficient-evidence`; deployment outcomes, escaped defects, provider
+monetary cost, business impact, and unversioned baselines remain explicitly
+unsupported. All 11 focused schema/domain/API/restart/no-mutation tests,
+TypeScript, production Vite build, and diff checks pass. Slice 2 dashboard and
+direct-download work remain pending; persistence, notifications, publication,
+background aggregation, search, external telemetry, operator actions, and new
+authority remain unauthorized.

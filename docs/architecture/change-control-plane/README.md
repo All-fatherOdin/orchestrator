@@ -32,8 +32,8 @@ were observed.
 12. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
     accepted, implemented, and completion-reviewed Phase 8 boundary.
 13. [outcome-scorecards-contract-v1.md](outcome-scorecards-contract-v1.md)
-    defines the accepted Phase 9 read-only metrics boundary; implementation is
-    pending.
+    defines the accepted Phase 9 read-only metrics boundary; Slice 1 is
+    implemented and Slice 2 is pending.
 
 ## Current Boundary
 
@@ -74,12 +74,14 @@ mobile rendered smoke passed. The combined server/Electron regression command
 again exceeded the six-minute environment cap without diagnostic output and is
 recorded as an environment risk, not passing evidence.
 
-Phase 9 Outcome Scorecards Contract v1 is accepted but not implemented. Its
-first authorized boundary is Slice 1 only: closed scorecard schemas, exact
-ledger/run identity joins, a bounded metric registry, discovery plus read-only
-compute APIs, and no-mutation evidence. Dashboard work remains a later Slice 2;
-notifications, publication, persistence, external telemetry, deployment/
-defect inference, and product-impact claims remain deferred.
+Phase 9 Outcome Scorecards Slice 1 is implemented. Closed schemas, exact
+ledger/run identity joins, a bounded seven-metric registry, deterministic
+hashes, strict discovery and read-only compute APIs, privacy/limit fencing,
+restart coverage, and explicit before/after no-mutation evidence are present.
+The focused domain/API suite has 11 passing tests; TypeScript, production Vite
+build, and diff checks pass. Dashboard and direct-download work remain pending
+Slice 2; notifications, publication, persistence, external telemetry,
+deployment/defect inference, and product-impact claims remain deferred.
 
 ## Authority
 
