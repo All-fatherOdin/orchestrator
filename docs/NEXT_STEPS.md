@@ -46,8 +46,11 @@ tests, TypeScript, the production Vite build, diff checks, and desktop/mobile
 rendered smoke with a clean console and no page-level overflow. The combined
 server/Electron command exceeded its six-minute environment cap without a
 failure diagnostic; keep that as explicit runtime-environment risk rather than
-claiming a full-suite pass. The next implementation phase requires a separately
-accepted contract before code changes begin.
+claiming a full-suite pass. Phase 9 Outcome Scorecards Contract v1 is now
+accepted. The next safe implementation boundary is Phase 9 Slice 1 only:
+deterministic schemas, exact ledger/run identity joins, bounded metric
+calculation, discovery/read-only compute APIs, and no-mutation evidence. Do not
+start the dashboard slice until Slice 1 is independently verified.
 
 ## Source Boundaries
 
@@ -72,6 +75,8 @@ accepted contract before code changes begin.
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
 - Implemented and completion-reviewed Phase 8 contract:
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
+- Accepted Phase 9 contract; implementation pending:
+  `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
 - Phase 2-8 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
@@ -91,6 +96,9 @@ accepted contract before code changes begin.
   authority from dashboard visibility, preview, or receipt state.
 - Do not treat Phase 8 bundles as a second ledger, persistent archive,
   publication channel, approval, operator action, or execution authority.
+- Do not treat Phase 9 scorecards as telemetry, a baseline authority, product-
+  impact proof, an SLA, a budget, or an action gate. Unsupported metrics remain
+  explicit and cannot enter denominators.
 
 ## Verification
 

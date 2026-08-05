@@ -116,3 +116,15 @@ explicit no-source state, keyboard-semantic controls, a clean console, and no
 page-level overflow. The combined server/Electron regression command exceeded
 369 seconds without emitting a failure diagnostic, so it remains an explicit
 runtime-environment risk and is not recorded as passing evidence.
+
+Phase 9 Outcome Scorecards Contract v1 is accepted and implementation has not
+started. The contract authorizes a bounded read-only scorecard for one explicit
+project cohort, using only exact canonical ledger evidence and immutable run-
+record identities. Its closed v1 registry covers first-pass acceptance, review
+cycles, dispatch-to-accepted duration, tokens per accepted task, override rate,
+human escalation rate, and halt recurrence only when each denominator is
+complete. Deployment outcomes, escaped defects, provider monetary cost,
+business impact, and unversioned baselines remain explicitly unsupported.
+The next safe boundary is Slice 1 service/schema/API/no-mutation work only;
+dashboard, persistence, notifications, publication, background aggregation,
+search, and external telemetry remain unauthorized.
