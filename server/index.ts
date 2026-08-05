@@ -127,6 +127,13 @@ import {
   ChangeControlAuditEvidenceAdapterV1,
   parseAuditBundleRequestV1,
 } from "./audit-bundles-v1/index.ts";
+import {
+  OUTCOME_SCORECARD_POLICY_VERSION_V1,
+  OutcomeScorecardErrorV1,
+  OutcomeScorecardServiceV1,
+  parseOutcomeScorecardDiscoveryRequestV1,
+  type OutcomeScorecardSourcesV1,
+} from "./outcome-scorecards-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -6465,6 +6472,30 @@ export const operatorActionServiceV1 = new OperatorActionServiceV1(
 export const auditBundleServiceV1 = new AuditBundleServiceV1(
   new ChangeControlAuditEvidenceAdapterV1(changeControlStore),
 );
+export function createOutcomeScorecardServiceV1(
+  store: Pick<ChangeControlStore, "readAuditEvidenceV1">,
+  runRecordsDirectory = runsDirectory,
+) {
+  const sources: OutcomeScorecardSourcesV1 = {
+    readProjectEvidence: (projectId) => store.readAuditEvidenceV1(projectId),
+    readRunRecord: async (runId) => {
+      try {
+        return await readFile(join(runRecordsDirectory, runId, "run.json"), "utf8");
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) return undefined;
+        throw error;
+      }
+    },
+  };
+  return new OutcomeScorecardServiceV1(sources);
+}
+export const outcomeScorecardServiceV1 = createOutcomeScorecardServiceV1(
+  changeControlStore,
+);
 app.get(
   "/api/change-control/projects/:projectId/eval-lineage",
   async (request, response) => {
@@ -6949,6 +6980,115 @@ export function installAuditBundleRoutesV1(
   );
 }
 installAuditBundleRoutesV1(app, auditBundleServiceV1);
+function outcomeScorecardQuerySequenceV1(
+  query: Record<string, unknown>,
+  name: "fromSequence" | "toSequence",
+): number {
+  const value = query[name];
+  if (
+    typeof value !== "string" ||
+    !/^[1-9][0-9]*$/.test(value) ||
+    !Number.isSafeInteger(Number(value))
+  )
+    throw new OutcomeScorecardErrorV1(
+      "COHORT_INVALID",
+      "The discovery sequence bounds are invalid.",
+    );
+  return Number(value);
+}
+
+function outcomeScorecardErrorStatusV1(error: OutcomeScorecardErrorV1) {
+  if (
+    error.reasonCode === "SOURCE_WATERMARK_CHANGED" ||
+    error.reasonCode === "RUN_IDENTITY_CHANGED" ||
+    error.reasonCode === "EVIDENCE_CONFLICT"
+  ) return 409;
+  if (
+    error.reasonCode === "COHORT_LIMIT_EXCEEDED" ||
+    error.reasonCode === "SCORECARD_TOO_LARGE"
+  ) return 413;
+  if (error.reasonCode === "SOURCE_UNAVAILABLE") return 503;
+  return 400;
+}
+
+function sendOutcomeScorecardErrorV1(
+  response: express.Response,
+  error: unknown,
+) {
+  if (error instanceof OutcomeScorecardErrorV1)
+    return response.status(outcomeScorecardErrorStatusV1(error)).json({
+      error: "Outcome scorecard request rejected.",
+      code: error.reasonCode,
+    });
+  return response.status(503).json({
+    error: "Outcome scorecard service unavailable.",
+    code: "SOURCE_UNAVAILABLE",
+  });
+}
+
+export function installOutcomeScorecardRoutesV1(
+  targetApp: express.Express,
+  service: Pick<OutcomeScorecardServiceV1, "discover" | "compute">,
+) {
+  targetApp.get(
+    "/api/outcome-scorecards/v1/projects/:projectId/discovery",
+    async (request, response) => {
+      try {
+        const query = request.query as Record<string, unknown>;
+        if (
+          Object.keys(query).some(
+            (key) => key !== "fromSequence" && key !== "toSequence",
+          )
+        )
+          throw new OutcomeScorecardErrorV1(
+            "COHORT_INVALID",
+            "The discovery query is invalid.",
+          );
+        const discoveryRequest = parseOutcomeScorecardDiscoveryRequestV1({
+          contractType: "OutcomeScorecardDiscoveryRequestV1",
+          contractVersion: "1.0",
+          policyVersion: OUTCOME_SCORECARD_POLICY_VERSION_V1,
+          selector: {
+            projectId: request.params.projectId,
+            fromSequence: outcomeScorecardQuerySequenceV1(query, "fromSequence"),
+            toSequence: outcomeScorecardQuerySequenceV1(query, "toSequence"),
+          },
+        });
+        return response.json(await service.discover(discoveryRequest));
+      } catch (error) {
+        return sendOutcomeScorecardErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.post(
+    "/api/outcome-scorecards/v1/compute",
+    async (request, response) => {
+      try {
+        return response.json(await service.compute(request.body));
+      } catch (error) {
+        return sendOutcomeScorecardErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.use(
+    "/api/outcome-scorecards/v1",
+    (
+      error: unknown,
+      _request: express.Request,
+      response: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      const bodyError = error as { type?: unknown; status?: unknown };
+      const tooLarge =
+        bodyError?.type === "entity.too.large" || bodyError?.status === 413;
+      return response.status(tooLarge ? 413 : 400).json({
+        error: "Outcome scorecard request rejected.",
+        code: tooLarge ? "COHORT_LIMIT_EXCEEDED" : "COHORT_INVALID",
+      });
+    },
+  );
+}
+installOutcomeScorecardRoutesV1(app, outcomeScorecardServiceV1);
 function sendOperatorActionErrorV1(
   response: express.Response,
   error: unknown,

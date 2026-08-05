@@ -1,0 +1,489 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/outcome-scorecards-v1.schema.json",
+  "title": "Outcome Scorecards Contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/OutcomeScorecardDiscoveryRequestV1" },
+    { "$ref": "#/$defs/OutcomeScorecardRequestV1" },
+    { "$ref": "#/$defs/OutcomeScorecardDiscoveryV1" },
+    { "$ref": "#/$defs/OutcomeScorecardV1" }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "EvidenceRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "EvidenceRefs": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "ReasonCode": {
+      "enum": [
+        "SOURCE_UNAVAILABLE",
+        "SOURCE_WATERMARK_CHANGED",
+        "COHORT_INVALID",
+        "COHORT_LIMIT_EXCEEDED",
+        "RUN_NOT_FOUND",
+        "RUN_IDENTITY_CHANGED",
+        "RUN_UNLINKED",
+        "EVIDENCE_INCOMPLETE",
+        "EVIDENCE_CONFLICT",
+        "METRIC_UNSUPPORTED",
+        "DENOMINATOR_EMPTY",
+        "PRIVACY_VIOLATION",
+        "SCORECARD_TOO_LARGE"
+      ]
+    },
+    "MetricId": {
+      "enum": [
+        "firstPassAcceptanceRate",
+        "reviewCorrectionCycles",
+        "dispatchToAcceptedMs",
+        "tokensPerAcceptedTask",
+        "overrideRate",
+        "humanEscalationRate",
+        "haltRecurrenceRate"
+      ]
+    },
+    "Watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "hash"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/Hash" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "Selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "fromSequence", "toSequence"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "fromSequence": { "type": "integer", "minimum": 1 },
+        "toSequence": { "type": "integer", "minimum": 1 },
+        "runIds": {
+          "type": "array",
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        }
+      }
+    },
+    "RunIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "algorithm", "sha256", "byteLength"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/Identifier" },
+        "algorithm": { "const": "sha256" },
+        "sha256": { "$ref": "#/$defs/Hash" },
+        "byteLength": { "type": "integer", "minimum": 1, "maximum": 16000000 }
+      }
+    },
+    "Privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyVersion", "prohibitedFieldsExcluded", "diagnosticsBounded"],
+      "properties": {
+        "policyVersion": { "const": "outcome-scorecard-privacy-v1" },
+        "prohibitedFieldsExcluded": { "const": true },
+        "diagnosticsBounded": { "const": true }
+      }
+    },
+    "Finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "subjectType", "subjectRef", "evidenceRefs"],
+      "properties": {
+        "code": { "$ref": "#/$defs/ReasonCode" },
+        "subjectType": { "enum": ["cohort", "run", "task", "attempt", "metric", "source"] },
+        "subjectRef": { "$ref": "#/$defs/EvidenceRef" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "OutcomeScorecardDiscoveryRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "policyVersion", "selector"],
+      "properties": {
+        "contractType": { "const": "OutcomeScorecardDiscoveryRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "policyVersion": { "const": "outcome-scorecard-policy-v1" },
+        "selector": { "$ref": "#/$defs/Selector" },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" }
+      }
+    },
+    "OutcomeScorecardRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "policyVersion",
+        "selector",
+        "sourceWatermark",
+        "runRecordIdentities"
+      ],
+      "properties": {
+        "contractType": { "const": "OutcomeScorecardRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "policyVersion": { "const": "outcome-scorecard-policy-v1" },
+        "selector": { "$ref": "#/$defs/Selector" },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" },
+        "runRecordIdentities": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/RunIdentity" }
+        }
+      }
+    },
+    "Candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "joinRefs"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/RunIdentity" },
+        "joinRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "OutcomeScorecardDiscoveryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "policyVersion",
+        "selector",
+        "sourceWatermark",
+        "candidates",
+        "findings",
+        "privacy",
+        "discoveryHash"
+      ],
+      "properties": {
+        "contractType": { "const": "OutcomeScorecardDiscoveryV1" },
+        "contractVersion": { "const": "1.0" },
+        "policyVersion": { "const": "outcome-scorecard-policy-v1" },
+        "selector": { "$ref": "#/$defs/Selector" },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" },
+        "candidates": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "$ref": "#/$defs/Candidate" }
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/Finding" }
+        },
+        "privacy": { "$ref": "#/$defs/Privacy" },
+        "discoveryHash": { "$ref": "#/$defs/Hash" }
+      }
+    },
+    "MetricEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subjectRef",
+        "numeratorContribution",
+        "denominatorContribution",
+        "excluded",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "subjectRef": { "$ref": "#/$defs/EvidenceRef" },
+        "numeratorContribution": { "type": "number", "minimum": 0 },
+        "denominatorContribution": { "enum": [0, 1] },
+        "excluded": { "type": "boolean" },
+        "value": { "type": "number", "minimum": 0 },
+        "reasonCode": { "enum": ["EVIDENCE_INCOMPLETE", "EVIDENCE_CONFLICT", "DENOMINATOR_EMPTY"] },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "Distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "sum", "min", "max"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0, "maximum": 500 },
+        "sum": { "type": "number", "minimum": 0 },
+        "min": { "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "max": { "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "rawValues": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": { "type": "number", "minimum": 0 }
+        },
+        "percentiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["p50", "p90", "p95"],
+          "properties": {
+            "p50": { "type": "number", "minimum": 0 },
+            "p90": { "type": "number", "minimum": 0 },
+            "p95": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "Metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metricId",
+        "status",
+        "numerator",
+        "denominator",
+        "excludedCount",
+        "coverage",
+        "policyVersion",
+        "value",
+        "evidence"
+      ],
+      "properties": {
+        "metricId": { "$ref": "#/$defs/MetricId" },
+        "status": { "enum": ["complete", "insufficient-evidence"] },
+        "numerator": { "type": "number", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 0, "maximum": 500 },
+        "excludedCount": { "type": "integer", "minimum": 0, "maximum": 500 },
+        "coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+        "policyVersion": { "const": "outcome-scorecard-policy-v1" },
+        "value": { "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "evidence": {
+          "type": "array",
+          "maxItems": 500,
+          "items": { "$ref": "#/$defs/MetricEvidence" }
+        },
+        "distribution": { "$ref": "#/$defs/Distribution" }
+      }
+    },
+    "IncludedRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "evidenceRefs"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/RunIdentity" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "IncludedTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskRef",
+        "projectId",
+        "changeId",
+        "waveId",
+        "taskId",
+        "runId",
+        "runTaskId",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "taskRef": { "$ref": "#/$defs/EvidenceRef" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "runId": { "$ref": "#/$defs/Identifier" },
+        "runTaskId": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "IncludedAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptRef", "taskRef", "ordinal", "evidenceRefs"],
+      "properties": {
+        "attemptRef": { "$ref": "#/$defs/EvidenceRef" },
+        "taskRef": { "$ref": "#/$defs/EvidenceRef" },
+        "ordinal": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "Cohort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "includedRuns",
+        "excludedRuns",
+        "includedTasks",
+        "excludedTasks",
+        "includedAttempts",
+        "excludedAttempts"
+      ],
+      "properties": {
+        "includedRuns": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/IncludedRun" } },
+        "excludedRuns": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/Finding" } },
+        "includedTasks": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/IncludedTask" } },
+        "excludedTasks": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/Finding" } },
+        "includedAttempts": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/IncludedAttempt" } },
+        "excludedAttempts": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/Finding" } }
+      }
+    },
+    "UnsupportedOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcomeClass", "status", "reasonCode", "missingAuthority", "evidenceRefs"],
+      "properties": {
+        "outcomeClass": {
+          "enum": [
+            "escapedDefects7Day",
+            "escapedDefects30Day",
+            "escapedDefects90Day",
+            "deploymentFailureRate",
+            "rollbackRate",
+            "hotfixRate",
+            "productionReworkRate",
+            "providerMonetaryCost",
+            "businessImpact",
+            "customerImpact",
+            "productivitySavings",
+            "bugFreeDelivery",
+            "manualBaselineComparison"
+          ]
+        },
+        "status": { "const": "unsupported" },
+        "reasonCode": { "const": "METRIC_UNSUPPORTED" },
+        "missingAuthority": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" }
+      }
+    },
+    "DeliveryMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "firstPassAcceptanceRate",
+        "reviewCorrectionCycles",
+        "dispatchToAcceptedMs",
+        "tokensPerAcceptedTask",
+        "overrideRate"
+      ],
+      "properties": {
+        "firstPassAcceptanceRate": { "$ref": "#/$defs/Metric" },
+        "reviewCorrectionCycles": { "$ref": "#/$defs/Metric" },
+        "dispatchToAcceptedMs": { "$ref": "#/$defs/Metric" },
+        "tokensPerAcceptedTask": { "$ref": "#/$defs/Metric" },
+        "overrideRate": { "$ref": "#/$defs/Metric" }
+      }
+    },
+    "QualitySafetyMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["humanEscalationRate", "haltRecurrenceRate"],
+      "properties": {
+        "humanEscalationRate": { "$ref": "#/$defs/Metric" },
+        "haltRecurrenceRate": { "$ref": "#/$defs/Metric" }
+      }
+    },
+    "CompletenessCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkId", "status", "reasonCodes"],
+      "properties": {
+          "checkId": {
+            "enum": [
+              "metric:firstPassAcceptanceRate",
+              "metric:reviewCorrectionCycles",
+              "metric:dispatchToAcceptedMs",
+              "metric:tokensPerAcceptedTask",
+              "metric:overrideRate",
+              "metric:humanEscalationRate",
+              "metric:haltRecurrenceRate"
+            ]
+          },
+        "status": { "enum": ["pass", "insufficient-evidence"] },
+        "reasonCodes": {
+          "type": "array",
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/ReasonCode" }
+        }
+      }
+    },
+    "Completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "checks"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "checks": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/CompletenessCheck" }
+        }
+      }
+    },
+    "OutcomeScorecardV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "policyVersion",
+        "selector",
+        "cohortId",
+        "sourceWatermarks",
+        "cohort",
+        "metrics",
+        "findings",
+        "privacy",
+        "completeness",
+        "scorecardHash"
+      ],
+      "properties": {
+        "contractType": { "const": "OutcomeScorecardV1" },
+        "contractVersion": { "const": "1.0" },
+        "policyVersion": { "const": "outcome-scorecard-policy-v1" },
+        "selector": { "$ref": "#/$defs/Selector" },
+        "cohortId": { "$ref": "#/$defs/Hash" },
+        "sourceWatermarks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["project", "runs"],
+          "properties": {
+            "project": { "$ref": "#/$defs/Watermark" },
+            "runs": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/RunIdentity" } }
+          }
+        },
+        "cohort": { "$ref": "#/$defs/Cohort" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["delivery", "qualitySafety", "unsupported"],
+          "properties": {
+            "delivery": { "$ref": "#/$defs/DeliveryMetrics" },
+            "qualitySafety": { "$ref": "#/$defs/QualitySafetyMetrics" },
+            "unsupported": {
+              "type": "array",
+              "minItems": 13,
+              "maxItems": 13,
+              "items": { "$ref": "#/$defs/UnsupportedOutcome" }
+            }
+          }
+        },
+        "findings": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/Finding" } },
+        "privacy": { "$ref": "#/$defs/Privacy" },
+        "completeness": { "$ref": "#/$defs/Completeness" },
+        "scorecardHash": { "$ref": "#/$defs/Hash" }
+      }
+    }
+  }
+}

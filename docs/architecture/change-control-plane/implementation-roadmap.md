@@ -117,7 +117,11 @@ metrics with explicit denominators, coverage, exclusions, and unsupported
 outcomes. It does not add telemetry, a database, background aggregation,
 notifications, publication, baseline authority, or product-impact claims.
 
-Slice 1 will add schemas, discovery, exact run identity binding, deterministic
-metric calculation, privacy/limit enforcement, one read-only compute endpoint,
-and no-mutation/restart tests. Slice 2 may then add a read-only dashboard and
-direct bounded JSON download. Neither slice is implemented yet.
+Slice 1 is implemented with closed Draft 2020-12 schemas, strict discovery and
+closed-manifest parsing, exact watermark and run-record identity fencing,
+deterministic calculation of the seven metrics, explicit zero-denominator and
+unsupported states, privacy/count/byte limits, restart coverage, and
+before/after no-mutation HTTP evidence. Compute remains request-scoped, in
+memory, read-only, and delegated to the domain service. Slice 2 remains pending
+and may add only the accepted read-only dashboard and direct bounded JSON
+download boundary.

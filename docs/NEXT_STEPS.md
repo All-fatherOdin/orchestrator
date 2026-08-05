@@ -46,11 +46,18 @@ tests, TypeScript, the production Vite build, diff checks, and desktop/mobile
 rendered smoke with a clean console and no page-level overflow. The combined
 server/Electron command exceeded its six-minute environment cap without a
 failure diagnostic; keep that as explicit runtime-environment risk rather than
-claiming a full-suite pass. Phase 9 Outcome Scorecards Contract v1 is now
-accepted. The next safe implementation boundary is Phase 9 Slice 1 only:
-deterministic schemas, exact ledger/run identity joins, bounded metric
-calculation, discovery/read-only compute APIs, and no-mutation evidence. Do not
-start the dashboard slice until Slice 1 is independently verified.
+claiming a full-suite pass.
+
+Phase 9 Outcome Scorecards Slice 1 is implemented. Closed schemas and a
+request-scoped domain service provide exact ledger/run joins, the seven bounded
+metrics, explicit denominators and unsupported outcomes, deterministic hashes,
+privacy/limit enforcement, restart behavior, and no-mutation evidence. Exactly
+one discovery GET and one read-only compute POST are exposed under
+`/api/outcome-scorecards/v1`; compute is fenced by the exact project watermark
+and immutable run-record identities and does not persist its cohort. The 11
+focused domain/API tests, TypeScript, production Vite build, and diff checks
+pass. Slice 2 remains pending; do not treat this handoff as dashboard, download,
+publication, telemetry, notification, persistence, or action authority.
 
 ## Source Boundaries
 
@@ -75,9 +82,9 @@ start the dashboard slice until Slice 1 is independently verified.
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
 - Implemented and completion-reviewed Phase 8 contract:
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
-- Accepted Phase 9 contract; implementation pending:
+- Accepted Phase 9 contract; Slice 1 implemented, Slice 2 pending:
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
-- Phase 2-8 product evidence: current code and `server/index.test.ts`.
+- Phase 2-9 Slice 1 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 
