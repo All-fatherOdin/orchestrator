@@ -105,3 +105,19 @@ both selectors. Slice 2 is implemented as a read-only Control plane view that
 selects existing Phase 6 project/change evidence, renders the bounded Phase 8
 response and explicit failure states, and downloads the already-returned JSON
 only after a direct user action.
+
+## Phase 9: Outcome Scorecards
+
+Accepted contract:
+`docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
+Phase 9 defines deterministic privacy-safe read-only scorecards for one bounded
+project cohort, joining only exact canonical ledger evidence and immutable run-
+record identities. It calculates a closed registry of delivery and safety
+metrics with explicit denominators, coverage, exclusions, and unsupported
+outcomes. It does not add telemetry, a database, background aggregation,
+notifications, publication, baseline authority, or product-impact claims.
+
+Slice 1 will add schemas, discovery, exact run identity binding, deterministic
+metric calculation, privacy/limit enforcement, one read-only compute endpoint,
+and no-mutation/restart tests. Slice 2 may then add a read-only dashboard and
+direct bounded JSON download. Neither slice is implemented yet.
