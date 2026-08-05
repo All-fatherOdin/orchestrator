@@ -1,0 +1,711 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orchestrator:operator-actions:v1",
+  "title": "Operator Actions Contract v1",
+  "oneOf": [
+    { "$ref": "#/$defs/OperatorActionRequestV1" },
+    { "$ref": "#/$defs/OperatorActionExecuteRequestV1" },
+    { "$ref": "#/$defs/OperatorActionPreviewV1" },
+    { "$ref": "#/$defs/OperatorActionReceiptV1" }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "HumanIdentity": {
+      "type": "string",
+      "pattern": "^human:[A-Za-z0-9][A-Za-z0-9._:@/-]{0,121}$",
+      "maxLength": 128
+    },
+    "IdempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^\\s*[A-Za-z0-9][A-Za-z0-9._:-]{0,127}:(dispatch-wave|authorize-task-retry|authorize-wave-resume|transition-incident|resolve-incident):[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\\s*$"
+    },
+    "Reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "\\S"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "NullableHash": {
+      "oneOf": [
+        { "$ref": "#/$defs/Hash" },
+        { "type": "null" }
+      ]
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "EvidenceRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "\\S"
+    },
+    "EvidenceRefs": {
+      "type": "array",
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "NonEmptyEvidenceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "ActionKind": {
+      "enum": [
+        "dispatch-wave",
+        "authorize-task-retry",
+        "authorize-wave-resume",
+        "transition-incident",
+        "resolve-incident"
+      ]
+    },
+    "OwningGate": {
+      "enum": [
+        "phase-2-dispatch-gate",
+        "phase-4-task-retry-authorization",
+        "phase-4-wave-resume-authorization",
+        "phase-4-incident-lifecycle",
+        "phase-4-incident-resolution"
+      ]
+    },
+    "ActionServiceReasonCode": {
+      "enum": [
+        "UNKNOWN_ACTION",
+        "INVALID_REQUEST",
+        "CONFIRMATION_REQUIRED",
+        "SOURCE_WATERMARK_CHANGED",
+        "PROJECT_STATE_CHANGED",
+        "TARGET_STATE_CHANGED",
+        "AUTHORITY_REQUIRED",
+        "GATE_REJECTED",
+        "IDEMPOTENCY_CONFLICT",
+        "STORAGE_FAILURE",
+        "PRIVACY_VIOLATION",
+        "EVIDENCE_INCOMPLETE",
+        "TARGET_IDENTITY_MISMATCH"
+      ]
+    },
+    "OwningGateReasonCode": {
+      "enum": [
+        "AUTHORITY_REQUIRED",
+        "EVIDENCE_INCOMPLETE",
+        "PLAN_REQUIRED",
+        "PLAN_CONTRACT_INVALID",
+        "PLAN_NOT_AUTHORIZED",
+        "CURRENT_BASE_UNREADABLE",
+        "CURRENT_WORKTREE_DIRTY",
+        "PLAN_BASE_MISMATCH",
+        "PLAN_STALE",
+        "ACCEPTANCE_ORACLE_UNEXECUTABLE",
+        "BLAST_RADIUS_UNEVIDENCED",
+        "REPLAN_RECEIPT_REQUIRED",
+        "WAVE_NOT_READY",
+        "TASK_NOT_RETRYABLE",
+        "WAVE_NOT_RESUMABLE",
+        "INCIDENT_TRANSITION_ILLEGAL",
+        "INCIDENT_RESOLUTION_INVALID",
+        "HALT_EVIDENCE_INVALID",
+        "HALT_CLASS_UNKNOWN",
+        "ATTRIBUTION_NOT_EXACT",
+        "INCIDENT_CORRELATION_AMBIGUOUS",
+        "INCIDENT_NEW",
+        "INCIDENT_MATCHED_OPEN",
+        "INCIDENT_REOPENED",
+        "INCIDENT_REOPEN_WINDOW_EXPIRED",
+        "INCIDENT_POLICY_VERSION_MISMATCH",
+        "WARDEN_POLICY_UNKNOWN",
+        "EVIDENCE_STALE",
+        "SIDE_EFFECT_AMBIGUOUS",
+        "RECIPE_NOT_ALLOWLISTED",
+        "RECIPE_PRECONDITION_FAILED",
+        "REPAIR_BUDGET_EXHAUSTED",
+        "REPAIR_LEASE_LOST",
+        "REPAIR_RESULT_AMBIGUOUS",
+        "REPLAN_REQUIRED",
+        "HUMAN_AUTHORITY_REQUIRED",
+        "BLOCKING_INCIDENT_OPEN",
+        "WARDEN_AUTO_ACTION_ALLOWED"
+      ]
+    },
+    "ReasonCode": {
+      "anyOf": [
+        { "$ref": "#/$defs/ActionServiceReasonCode" },
+        { "$ref": "#/$defs/OwningGateReasonCode" }
+      ]
+    },
+    "ReasonCodes": {
+      "type": "array",
+      "maxItems": 30,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/ReasonCode" }
+    },
+    "OwningGateReasonCodes": {
+      "type": "array",
+      "maxItems": 30,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/OwningGateReasonCode" }
+    },
+    "IncidentReasonCode": {
+      "enum": [
+        "HALT_EVIDENCE_INVALID",
+        "HALT_CLASS_UNKNOWN",
+        "ATTRIBUTION_NOT_EXACT",
+        "INCIDENT_CORRELATION_AMBIGUOUS",
+        "INCIDENT_NEW",
+        "INCIDENT_MATCHED_OPEN",
+        "INCIDENT_REOPENED",
+        "INCIDENT_REOPEN_WINDOW_EXPIRED",
+        "INCIDENT_POLICY_VERSION_MISMATCH",
+        "WARDEN_POLICY_UNKNOWN",
+        "EVIDENCE_STALE",
+        "SIDE_EFFECT_AMBIGUOUS",
+        "RECIPE_NOT_ALLOWLISTED",
+        "RECIPE_PRECONDITION_FAILED",
+        "REPAIR_BUDGET_EXHAUSTED",
+        "REPAIR_LEASE_LOST",
+        "REPAIR_RESULT_AMBIGUOUS",
+        "REPLAN_REQUIRED",
+        "HUMAN_AUTHORITY_REQUIRED",
+        "BLOCKING_INCIDENT_OPEN",
+        "WARDEN_AUTO_ACTION_ALLOWED"
+      ]
+    },
+    "EventType": {
+      "enum": [
+        "wave.dispatched",
+        "wave.dispatch-overridden",
+        "task.retry-authorized",
+        "wave.resume-authorized",
+        "incident.investigating",
+        "incident.mitigated",
+        "incident.escalated",
+        "incident.resolved"
+      ]
+    },
+    "PlanReferenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planId", "revision", "planBaseSha"],
+      "properties": {
+        "planId": { "$ref": "#/$defs/Identifier" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "planBaseSha": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        }
+      }
+    },
+    "DispatchWaveTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "changeId", "waveId", "plan", "authorizationId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "plan": { "$ref": "#/$defs/PlanReferenceV1" },
+        "authorizationId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "TaskRetryTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "changeId", "waveId", "taskId", "haltId", "incidentId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "WaveResumeTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "changeId", "waveId", "haltId", "incidentId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "IncidentTargetV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectId", "changeId", "incidentId"],
+      "properties": {
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "OperatorActionTargetV1": {
+      "oneOf": [
+        { "$ref": "#/$defs/DispatchWaveTargetV1" },
+        { "$ref": "#/$defs/TaskRetryTargetV1" },
+        { "$ref": "#/$defs/WaveResumeTargetV1" },
+        { "$ref": "#/$defs/IncidentTargetV1" }
+      ]
+    },
+    "RecoveryAuthorityV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actor", "verdictId"],
+          "properties": {
+            "kind": { "const": "warden" },
+            "actor": { "const": "policy:warden-v1" },
+            "verdictId": { "$ref": "#/$defs/Identifier" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actor", "decisionId", "evidenceRefs"],
+          "properties": {
+            "kind": { "const": "audited_human" },
+            "actor": { "$ref": "#/$defs/HumanIdentity" },
+            "decisionId": { "$ref": "#/$defs/Identifier" },
+            "evidenceRefs": { "$ref": "#/$defs/NonEmptyEvidenceRefs" }
+          }
+        }
+      ]
+    },
+    "IncidentResolutionReceiptInputV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "receiptId",
+        "incidentId",
+        "projectId",
+        "changeId",
+        "resolutionKind",
+        "oracle",
+        "noActiveHealing",
+        "evidenceRefs",
+        "resolvedBy",
+        "taxonomyPolicyVersion",
+        "correlationWindowSeconds"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentResolutionReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "resolutionKind": { "enum": ["mitigated", "resolved"] },
+        "oracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "outcome", "observationResult"],
+          "properties": {
+            "kind": { "enum": ["executable", "human"] },
+            "outcome": { "const": "passed" },
+            "observationResult": { "$ref": "#/$defs/Reason" }
+          }
+        },
+        "noActiveHealing": { "const": true },
+        "evidenceRefs": { "$ref": "#/$defs/NonEmptyEvidenceRefs" },
+        "resolvedAt": { "$ref": "#/$defs/Timestamp" },
+        "resolvedBy": { "$ref": "#/$defs/HumanIdentity" },
+        "taxonomyPolicyVersion": { "const": "halt-taxonomy-v1" },
+        "correlationWindowSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2592000
+        }
+      }
+    },
+    "DispatchWaveInputV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sendAnyway": { "const": true }
+      }
+    },
+    "AuthorizeTaskRetryInputV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizationId",
+        "priorTerminalEventId",
+        "newAttemptId",
+        "attemptAllocationNonce",
+        "budgetOrdinal",
+        "authority"
+      ],
+      "properties": {
+        "authorizationId": { "$ref": "#/$defs/Identifier" },
+        "priorTerminalEventId": { "$ref": "#/$defs/Identifier" },
+        "newAttemptId": { "$ref": "#/$defs/Identifier" },
+        "attemptAllocationNonce": { "$ref": "#/$defs/Identifier" },
+        "budgetOrdinal": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "authority": { "$ref": "#/$defs/RecoveryAuthorityV1" }
+      }
+    },
+    "AuthorizeWaveResumeInputV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorizationId", "priorTerminalEventId", "budgetOrdinal", "authority"],
+      "properties": {
+        "authorizationId": { "$ref": "#/$defs/Identifier" },
+        "priorTerminalEventId": { "$ref": "#/$defs/Identifier" },
+        "budgetOrdinal": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "authority": { "$ref": "#/$defs/RecoveryAuthorityV1" }
+      }
+    },
+    "TransitionIncidentInputV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["to", "reasonCode", "evidenceRefs"],
+      "properties": {
+        "to": { "enum": ["investigating", "mitigated", "escalated"] },
+        "reasonCode": { "$ref": "#/$defs/IncidentReasonCode" },
+        "evidenceRefs": { "$ref": "#/$defs/NonEmptyEvidenceRefs" },
+        "receipt": { "$ref": "#/$defs/IncidentResolutionReceiptInputV1" }
+      }
+    },
+    "ResolveIncidentInputV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt"],
+      "properties": {
+        "receipt": { "$ref": "#/$defs/IncidentResolutionReceiptInputV1" }
+      }
+    },
+    "RequestBaseV1": {
+      "type": "object",
+      "required": [
+        "contractType",
+        "contractVersion",
+        "requestId",
+        "actionKind",
+        "target",
+        "actor",
+        "reason",
+        "input",
+        "expectedSourceWatermark",
+        "expectedProjectSequence",
+        "expectedProjectHash",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "contractType": { "const": "OperatorActionRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "actionKind": { "$ref": "#/$defs/ActionKind" },
+        "target": { "$ref": "#/$defs/OperatorActionTargetV1" },
+        "actor": { "$ref": "#/$defs/HumanIdentity" },
+        "reason": { "$ref": "#/$defs/Reason" },
+        "input": { "type": "object" },
+        "expectedSourceWatermark": { "$ref": "#/$defs/Hash" },
+        "expectedProjectSequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "expectedProjectHash": { "$ref": "#/$defs/NullableHash" },
+        "idempotencyKey": { "$ref": "#/$defs/IdempotencyKey" }
+      }
+    },
+    "DispatchWaveRequestV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/RequestBaseV1" },
+        {
+          "type": "object",
+          "properties": {
+            "actionKind": { "const": "dispatch-wave" },
+            "target": { "$ref": "#/$defs/DispatchWaveTargetV1" },
+            "input": { "$ref": "#/$defs/DispatchWaveInputV1" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "AuthorizeTaskRetryRequestV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/RequestBaseV1" },
+        {
+          "type": "object",
+          "properties": {
+            "actionKind": { "const": "authorize-task-retry" },
+            "target": { "$ref": "#/$defs/TaskRetryTargetV1" },
+            "input": { "$ref": "#/$defs/AuthorizeTaskRetryInputV1" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "AuthorizeWaveResumeRequestV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/RequestBaseV1" },
+        {
+          "type": "object",
+          "properties": {
+            "actionKind": { "const": "authorize-wave-resume" },
+            "target": { "$ref": "#/$defs/WaveResumeTargetV1" },
+            "input": { "$ref": "#/$defs/AuthorizeWaveResumeInputV1" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "TransitionIncidentRequestV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/RequestBaseV1" },
+        {
+          "type": "object",
+          "properties": {
+            "actionKind": { "const": "transition-incident" },
+            "target": { "$ref": "#/$defs/IncidentTargetV1" },
+            "input": { "$ref": "#/$defs/TransitionIncidentInputV1" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ResolveIncidentRequestV1": {
+      "type": "object",
+      "allOf": [
+        { "$ref": "#/$defs/RequestBaseV1" },
+        {
+          "type": "object",
+          "properties": {
+            "actionKind": { "const": "resolve-incident" },
+            "target": { "$ref": "#/$defs/IncidentTargetV1" },
+            "input": { "$ref": "#/$defs/ResolveIncidentInputV1" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "OperatorActionRequestV1": {
+      "oneOf": [
+        { "$ref": "#/$defs/DispatchWaveRequestV1" },
+        { "$ref": "#/$defs/AuthorizeTaskRetryRequestV1" },
+        { "$ref": "#/$defs/AuthorizeWaveResumeRequestV1" },
+        { "$ref": "#/$defs/TransitionIncidentRequestV1" },
+        { "$ref": "#/$defs/ResolveIncidentRequestV1" }
+      ]
+    },
+    "OperatorActionExecuteRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request", "previewHash", "confirmed"],
+      "properties": {
+        "request": { "$ref": "#/$defs/OperatorActionRequestV1" },
+        "previewHash": { "$ref": "#/$defs/Hash" },
+        "confirmed": { "const": true }
+      }
+    },
+    "OperatorActionEvidenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "projectId",
+        "target",
+        "projectSequence",
+        "projectHash",
+        "sourceWatermark",
+        "currentTargetState",
+        "owningGate",
+        "gateDecision",
+        "warningCodes"
+      ],
+      "properties": {
+        "contractType": { "const": "OperatorActionEvidenceV1" },
+        "contractVersion": { "const": "1.0" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "target": { "$ref": "#/$defs/OperatorActionTargetV1" },
+        "projectSequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "projectHash": { "$ref": "#/$defs/NullableHash" },
+        "sourceWatermark": { "$ref": "#/$defs/Hash" },
+        "currentTargetState": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "owningGate": { "$ref": "#/$defs/OwningGate" },
+        "gateDecision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["allowed", "reasonCodes", "evidenceRefs", "expectedCanonicalEventType"],
+          "properties": {
+            "allowed": { "type": "boolean" },
+            "reasonCodes": { "$ref": "#/$defs/OwningGateReasonCodes" },
+            "evidenceRefs": { "$ref": "#/$defs/NonEmptyEvidenceRefs" },
+            "expectedCanonicalEventType": {
+              "oneOf": [
+                { "$ref": "#/$defs/EventType" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "warningCodes": { "$ref": "#/$defs/ReasonCodes" }
+      }
+    },
+    "OperatorActionPreviewV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "request",
+        "requestHash",
+        "currentProjectSequence",
+        "currentProjectHash",
+        "currentSourceWatermark",
+        "currentTargetState",
+        "owningGate",
+        "allowed",
+        "reasonCodes",
+        "expectedCanonicalEventType",
+        "warnings",
+        "evidenceRefs",
+        "previewHash"
+      ],
+      "properties": {
+        "contractType": { "const": "OperatorActionPreviewV1" },
+        "contractVersion": { "const": "1.0" },
+        "request": { "$ref": "#/$defs/OperatorActionRequestV1" },
+        "requestHash": { "$ref": "#/$defs/Hash" },
+        "currentProjectSequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "currentProjectHash": { "$ref": "#/$defs/NullableHash" },
+        "currentSourceWatermark": { "$ref": "#/$defs/Hash" },
+        "currentTargetState": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "owningGate": { "$ref": "#/$defs/OwningGate" },
+        "allowed": { "type": "boolean" },
+        "reasonCodes": { "$ref": "#/$defs/ReasonCodes" },
+        "expectedCanonicalEventType": {
+          "oneOf": [
+            { "$ref": "#/$defs/EventType" },
+            { "type": "null" }
+          ]
+        },
+        "warnings": { "$ref": "#/$defs/ReasonCodes" },
+        "evidenceRefs": { "$ref": "#/$defs/NonEmptyEvidenceRefs" },
+        "previewHash": { "$ref": "#/$defs/Hash" },
+        "responseTimestamp": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "CanonicalEventReferenceV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventId", "eventType", "eventHash"],
+      "properties": {
+        "eventId": { "$ref": "#/$defs/Identifier" },
+        "eventType": { "$ref": "#/$defs/EventType" },
+        "eventHash": { "$ref": "#/$defs/Hash" }
+      }
+    },
+    "OperatorActionReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "receiptId",
+        "request",
+        "requestHash",
+        "previewHash",
+        "actor",
+        "reason",
+        "idempotencyKey",
+        "actionKind",
+        "target",
+        "observedProjectSequence",
+        "observedProjectHash",
+        "observedSourceWatermark",
+        "outcome",
+        "reasonCodes",
+        "evidenceRefs",
+        "canonicalEvent",
+        "resultingProjectSequence",
+        "resultingProjectHash",
+        "receiptHash"
+      ],
+      "properties": {
+        "contractType": { "const": "OperatorActionReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "request": { "$ref": "#/$defs/OperatorActionRequestV1" },
+        "requestHash": { "$ref": "#/$defs/Hash" },
+        "previewHash": { "$ref": "#/$defs/Hash" },
+        "actor": { "$ref": "#/$defs/HumanIdentity" },
+        "reason": { "$ref": "#/$defs/Reason" },
+        "idempotencyKey": { "$ref": "#/$defs/IdempotencyKey" },
+        "actionKind": { "$ref": "#/$defs/ActionKind" },
+        "target": { "$ref": "#/$defs/OperatorActionTargetV1" },
+        "observedProjectSequence": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "observedProjectHash": { "$ref": "#/$defs/NullableHash" },
+        "observedSourceWatermark": { "$ref": "#/$defs/Hash" },
+        "outcome": { "enum": ["executed", "rejected", "already-executed"] },
+        "reasonCodes": { "$ref": "#/$defs/ReasonCodes" },
+        "evidenceRefs": { "$ref": "#/$defs/NonEmptyEvidenceRefs" },
+        "canonicalEvent": {
+          "oneOf": [
+            { "$ref": "#/$defs/CanonicalEventReferenceV1" },
+            { "type": "null" }
+          ]
+        },
+        "resultingProjectSequence": {
+          "oneOf": [
+            { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+            { "type": "null" }
+          ]
+        },
+        "resultingProjectHash": { "$ref": "#/$defs/NullableHash" },
+        "receiptHash": { "$ref": "#/$defs/Hash" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "executed" } }, "required": ["outcome"] },
+          "then": {
+            "properties": {
+              "canonicalEvent": { "$ref": "#/$defs/CanonicalEventReferenceV1" },
+              "resultingProjectSequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+              "resultingProjectHash": { "$ref": "#/$defs/Hash" },
+              "reasonCodes": { "type": "array", "maxItems": 0 }
+            }
+          },
+          "else": {
+            "properties": {
+              "canonicalEvent": { "type": "null" },
+              "resultingProjectSequence": { "type": "null" },
+              "resultingProjectHash": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "rejected" } }, "required": ["outcome"] },
+          "then": { "properties": { "reasonCodes": { "type": "array", "minItems": 1 } } }
+        }
+      ]
+    }
+  }
+}

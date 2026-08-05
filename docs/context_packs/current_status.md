@@ -1,7 +1,7 @@
 # Current Status
 
 Status: active compact context pack
-Last updated: 2026-08-03
+Last updated: 2026-08-05
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run
@@ -73,9 +73,10 @@ eval-lineage APIs with explicit partial-source and privacy semantics. The
 dashboard consumes only those APIs and exposes loading, empty, unavailable,
 unsupported, and pagination states without command controls.
 
-Phase 7 Operator Actions Contract v1 is now accepted but not implemented. It
-defines five closed, explicit-confirmation operator actions with deterministic
-preview, fresh-evidence execution, idempotency, and atomic receipts. Every
-mutation must delegate to its existing Phase 2-4 authority gate; preview and UI
-state grant no authority. Slice 1 backend contracts and service are the next
-safe implementation boundary.
+Phase 7 Slice 1 Operator Actions is implemented. Exactly five actions have
+deterministic no-mutation preview plus explicit-confirmation execution through
+their existing Phase 2-4 handlers. The project writer publishes each owning
+mutation and immutable `OperatorActionReceiptV1` atomically; exact retries,
+conflicting idempotency reuse, concurrent stale contenders, and restart replay
+fail closed. The dashboard remains read-only. Slice 2 controls are not
+implemented and remain the next bounded Phase 7 step.

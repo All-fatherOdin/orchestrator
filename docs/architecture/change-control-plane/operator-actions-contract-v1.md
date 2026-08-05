@@ -1,7 +1,8 @@
 # Operator Actions Contract v1
 
-Status: accepted Phase 7 implementation boundary
+Status: accepted contract; Phase 7 Slice 1 implemented
 Accepted: 2026-08-03
+Slice 1 implemented: 2026-08-05
 
 ## Purpose
 
@@ -176,11 +177,18 @@ Add schemas, preview/execute/receipt services, atomic receipt publication,
 idempotency, HTTP routes, replay, and integration tests for the five action
 kinds. Do not add UI controls in this slice.
 
+Implementation status: implemented and verified. The command service stages
+the existing owning handler under the serialized project writer, appends the
+receipt, validates deterministic replay, and performs one atomic publication.
+It does not write a second ledger or duplicate transition logic.
+
 ### Slice 2: operator controls
 
 Add contextual controls, confirmation, reason capture, denial/stale states,
 receipt rendering, and projection refresh to the existing dashboard. Consume
 only the Phase 7 APIs; do not import the command store into the browser.
+
+Implementation status: not implemented.
 
 ## Acceptance
 

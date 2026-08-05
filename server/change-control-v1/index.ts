@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   mkdir,
   open,
@@ -109,6 +110,26 @@ import {
   type EvalSuiteV1,
   type MutableEvalLineageProjectionV1,
 } from "../prompt-model-eval-v1/eval-lineage-v1.ts";
+import {
+  OPERATOR_ACTION_OWNING_GATE_REASON_CODES_V1,
+  OPERATOR_ACTION_OWNING_GATES_V1,
+  OperatorActionContractErrorV1,
+  OperatorActionPreviewEngineV1,
+  operatorActionExpectedEventTypesV1,
+  operatorActionHashV1,
+  operatorActionReceiptHashV1,
+  operatorActionSourceWatermarkV1,
+  operatorActionTargetStateSupportsRequestV1,
+  parseOperatorActionExecuteRequestV1,
+  parseOperatorActionRequestV1,
+  parseOperatorActionReceiptV1,
+  type OperatorActionEvidenceV1,
+  type OperatorActionOwningGateReasonCodeV1,
+  type OperatorActionPreviewV1,
+  type OperatorActionRequestV1,
+  type OperatorActionReceiptV1,
+  type OperatorActionReasonCodeV1,
+} from "../operator-actions-v1/index.ts";
 
 export {
   type CorrectIncidentCorrelationInputV1,
@@ -197,6 +218,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   ...RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
   ...PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
   ...EVAL_LINEAGE_EVENT_TYPES_V1,
+  "operator.action-receipt-published",
 ] as const;
 
 export type ChangeControlEventType =
@@ -957,6 +979,10 @@ export type ChangeControlStoreOptions = {
     boundary: "started_persisted" | "effect_completed" | "finished_persisted",
     invocation: DoctorRepairInvocationV1,
   ) => void | Promise<void>;
+  onOperatorActionBoundary?: (
+    boundary: "before_atomic_publish" | "after_atomic_publish",
+    receipt: OperatorActionReceiptV1,
+  ) => void | Promise<void>;
 };
 
 export type PublishPromptArtifactInputV1 = Readonly<{
@@ -1099,6 +1125,9 @@ const promptModelLineageEventTypes = new Set<ChangeControlEventType>(
 const evalLineageEventTypes = new Set<ChangeControlEventType>(
   EVAL_LINEAGE_EVENT_TYPES_V1,
 );
+const operatorActionEventTypes = new Set<ChangeControlEventType>([
+  "operator.action-receipt-published",
+]);
 const changeTargetForType = {
   "change.created": "draft",
   "change.planned": "planned",
@@ -1388,7 +1417,17 @@ type ProjectedLedger = {
   recoveryAttemptIds: Set<string>;
   promptModelLineage: MutablePromptModelLineageProjectionV1;
   evalLineage: MutableEvalLineageProjectionV1;
+  operatorActionReceipts: Map<string, OperatorActionReceiptV1>;
+  operatorActionReceiptByIdempotencyKey: Map<string, OperatorActionReceiptV1>;
 };
+
+type OperatorActionTransactionV1 = {
+  file: string;
+  ledger: Ledger;
+};
+
+const operatorActionTransactionV1 =
+  new AsyncLocalStorage<OperatorActionTransactionV1>();
 
 function waveKey(changeId: string, waveId: string) {
   return `${changeId}\u0000${waveId}`;
@@ -3978,7 +4017,11 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     ledger.projectId,
   );
   const evalLineage = createEvalLineageProjectionV1(ledger.projectId);
+  const operatorActionReceipts = new Map<string, OperatorActionReceiptV1>();
+  const operatorActionReceiptByIdempotencyKey =
+    new Map<string, OperatorActionReceiptV1>();
   const eventIds = new Set<string>();
+  const eventsById = new Map<string, ChangeControlEvent>();
   let previousHash: string | null = null;
 
   ledger.events.forEach((candidate, index) => {
@@ -4000,6 +4043,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
       corrupt(`Event ${event.id} belongs to a different project.`);
     if (eventIds.has(event.id)) corrupt(`Duplicate event ID: ${event.id}.`);
     eventIds.add(event.id);
+    eventsById.set(event.id, event);
     if (event.previousHash !== previousHash)
       corrupt(`Broken previousHash chain at event ${event.id}.`);
     const { hash, ...hashInput } = event;
@@ -4857,6 +4901,129 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(`${error.reasonCode}: ${error.message}`);
         throw error;
       }
+    } else if (operatorActionEventTypes.has(event.type)) {
+      if (event.waveId !== undefined && typeof event.waveId !== "string")
+        corrupt(`Operator action receipt event ${event.id} has an invalid waveId.`);
+      if (event.taskId !== undefined && typeof event.taskId !== "string")
+        corrupt(`Operator action receipt event ${event.id} has an invalid taskId.`);
+      assertPayloadKeys(event, ["receipt"]);
+      let receipt: OperatorActionReceiptV1;
+      try {
+        receipt = parseOperatorActionReceiptV1(event.payload.receipt);
+      } catch (error) {
+        if (error instanceof OperatorActionContractErrorV1)
+          corrupt(`Invalid operator action receipt: ${error.code}.`);
+        throw error;
+      }
+      if (receipt.outcome !== "executed" || receipt.canonicalEvent === null)
+        corrupt(`Canonical operator action receipt ${receipt.receiptId} is not executed.`);
+      if (
+        receipt.target.projectId !== event.projectId ||
+        receipt.target.changeId !== event.changeId ||
+        receipt.actor !== event.actor ||
+        event.correlationId !== receipt.request.requestId ||
+        event.causationId !== receipt.canonicalEvent.eventId
+      )
+        corrupt(`Operator action receipt ${receipt.receiptId} has mismatched event identity.`);
+      const expectedWaveId = "waveId" in receipt.target ? receipt.target.waveId : undefined;
+      const expectedTaskId = "taskId" in receipt.target ? receipt.target.taskId : undefined;
+      if (event.waveId !== expectedWaveId || event.taskId !== expectedTaskId)
+        corrupt(`Operator action receipt ${receipt.receiptId} has mismatched target scope.`);
+      const canonicalEvent = eventsById.get(receipt.canonicalEvent.eventId);
+      if (
+        !canonicalEvent ||
+        canonicalEvent.sequence !== event.sequence - 1 ||
+        canonicalEvent.type !== receipt.canonicalEvent.eventType ||
+        canonicalEvent.hash !== receipt.canonicalEvent.eventHash ||
+        canonicalEvent.sequence !== receipt.resultingProjectSequence ||
+        canonicalEvent.hash !== receipt.resultingProjectHash ||
+        canonicalEvent.projectId !== event.projectId ||
+        canonicalEvent.changeId !== event.changeId ||
+        canonicalEvent.waveId !== expectedWaveId ||
+        canonicalEvent.taskId !== expectedTaskId
+      )
+        corrupt(`Operator action receipt ${receipt.receiptId} lacks its adjacent owning mutation.`);
+      const observedEvent = receipt.observedProjectSequence === 0
+        ? undefined
+        : ledger.events[receipt.observedProjectSequence - 1];
+      if (
+        (observedEvent?.hash ?? null) !== receipt.observedProjectHash ||
+        receipt.observedSourceWatermark !== operatorActionSourceWatermarkV1(
+          event.projectId,
+          receipt.observedProjectSequence,
+          receipt.observedProjectHash,
+        )
+      )
+        corrupt(`Operator action receipt ${receipt.receiptId} has invalid pre-execution evidence.`);
+      const expectedTypes = operatorActionExpectedEventTypesV1(receipt.request);
+      if (!expectedTypes.includes(canonicalEvent.type))
+        corrupt(`Operator action receipt ${receipt.receiptId} names an event outside its owning gate.`);
+      if (receipt.request.actionKind === "dispatch-wave") {
+        const plan = plans.get(planKey(
+          event.changeId,
+          expectedWaveId!,
+          receipt.request.target.plan.planId,
+          receipt.request.target.plan.revision,
+        ));
+        if (
+          !plan ||
+          !samePlanReference(receipt.request.target.plan, plan.contract) ||
+          plan.authorization?.authorizationId !== receipt.request.target.authorizationId
+        )
+          corrupt(`Operator action receipt ${receipt.receiptId} has stale plan authority identity.`);
+      } else if (receipt.request.actionKind === "authorize-task-retry") {
+        const expectedPayload = {
+          authorizationId: receipt.request.input.authorizationId,
+          priorTerminalEventId: receipt.request.input.priorTerminalEventId,
+          incidentId: receipt.request.target.incidentId,
+          haltId: receipt.request.target.haltId,
+          newAttemptId: receipt.request.input.newAttemptId,
+          attemptAllocationNonce: receipt.request.input.attemptAllocationNonce,
+          budgetOrdinal: receipt.request.input.budgetOrdinal,
+          reason: receipt.reason,
+          authority: receipt.request.input.authority,
+        };
+        if (canonicalJson(canonicalEvent.payload as JsonValue) !== canonicalJson(expectedPayload as unknown as JsonValue))
+          corrupt(`Operator action receipt ${receipt.receiptId} does not bind retry authority evidence.`);
+      } else if (receipt.request.actionKind === "authorize-wave-resume") {
+        const expectedPayload = {
+          authorizationId: receipt.request.input.authorizationId,
+          priorTerminalEventId: receipt.request.input.priorTerminalEventId,
+          incidentId: receipt.request.target.incidentId,
+          haltId: receipt.request.target.haltId,
+          budgetOrdinal: receipt.request.input.budgetOrdinal,
+          reason: receipt.reason,
+          authority: receipt.request.input.authority,
+        };
+        if (canonicalJson(canonicalEvent.payload as JsonValue) !== canonicalJson(expectedPayload as unknown as JsonValue))
+          corrupt(`Operator action receipt ${receipt.receiptId} does not bind resume authority evidence.`);
+      } else if (receipt.request.actionKind === "transition-incident") {
+        if (
+          canonicalEvent.payload.state !== receipt.request.input.to ||
+          canonicalEvent.payload.reasonCode !== receipt.request.input.reasonCode ||
+          canonicalJson(canonicalEvent.payload.evidenceRefs as JsonValue) !==
+            canonicalJson(receipt.request.input.evidenceRefs as unknown as JsonValue) ||
+          (receipt.request.input.to === "mitigated" &&
+            canonicalJson(canonicalEvent.payload.receipt as JsonValue) !==
+              canonicalJson({
+                ...receipt.request.input.receipt,
+                resolvedAt:
+                  receipt.request.input.receipt?.resolvedAt ?? canonicalEvent.occurredAt,
+              } as unknown as JsonValue))
+        )
+          corrupt(`Operator action receipt ${receipt.receiptId} does not bind incident transition evidence.`);
+      } else if (
+        canonicalJson(canonicalEvent.payload.receipt as JsonValue) !==
+          canonicalJson({ ...receipt.request.input.receipt, resolvedAt: canonicalEvent.occurredAt } as unknown as JsonValue)
+      ) {
+        corrupt(`Operator action receipt ${receipt.receiptId} does not bind incident resolution evidence.`);
+      }
+      if (operatorActionReceipts.has(receipt.receiptId))
+        corrupt(`Duplicate operator action receipt ID: ${receipt.receiptId}.`);
+      if (operatorActionReceiptByIdempotencyKey.has(receipt.idempotencyKey))
+        corrupt(`Duplicate operator action idempotency key: ${receipt.idempotencyKey}.`);
+      operatorActionReceipts.set(receipt.receiptId, receipt);
+      operatorActionReceiptByIdempotencyKey.set(receipt.idempotencyKey, receipt);
     } else {
       const waveId = requireStoredIdentifier(event.waveId, "waveId");
       const taskId = requireStoredIdentifier(event.taskId, "taskId");
@@ -4984,6 +5151,8 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     recoveryAttemptIds,
     promptModelLineage,
     evalLineage,
+    operatorActionReceipts,
+    operatorActionReceiptByIdempotencyKey,
   };
 }
 
@@ -5098,6 +5267,12 @@ function immutablePlanningProjection(
 }
 
 async function readLedger(file: string, projectId: string): Promise<Ledger> {
+  const transaction = operatorActionTransactionV1.getStore();
+  if (transaction?.file === file) {
+    if (transaction.ledger.projectId !== projectId)
+      corrupt("The operator action transaction has mismatched project identity.");
+    return transaction.ledger;
+  }
   try {
     const parsed = JSON.parse(await readFile(file, "utf8")) as Ledger;
     if (!parsed || typeof parsed !== "object")
@@ -5122,7 +5297,7 @@ async function readLedger(file: string, projectId: string): Promise<Ledger> {
   }
 }
 
-async function writeAtomically(file: string, ledger: Ledger) {
+async function writeLedgerAtomically(file: string, ledger: Ledger) {
   const directory = dirname(file);
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   await mkdir(directory, { recursive: true });
@@ -5786,6 +5961,7 @@ export class ChangeControlStore {
   ) => Promise<TrustedRepositorySnapshotV1>;
   private readonly doctorAdapters?: DoctorAdapterRegistryV1;
   private readonly onDoctorBoundary?: ChangeControlStoreOptions["onDoctorBoundary"];
+  private readonly onOperatorActionBoundary?: ChangeControlStoreOptions["onOperatorActionBoundary"];
   private readonly activeDoctorRepairKeys = new Set<string>();
 
   constructor(
@@ -5797,6 +5973,7 @@ export class ChangeControlStore {
     this.resolveRepositorySnapshot = options.resolveRepositorySnapshot;
     this.doctorAdapters = options.doctorAdapters;
     this.onDoctorBoundary = options.onDoctorBoundary;
+    this.onOperatorActionBoundary = options.onOperatorActionBoundary;
   }
 
   private file(projectId: string) {
@@ -5806,6 +5983,8 @@ export class ChangeControlStore {
 
   private serialize<T>(projectId: string, operation: () => Promise<T>) {
     const key = this.file(projectId);
+    const transaction = operatorActionTransactionV1.getStore();
+    if (transaction?.file === key) return operation();
     const previous = processLedgerWriteChains.get(key) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
       // A project transaction is deliberately stronger than a fingerprint lock:
@@ -8466,13 +8645,6 @@ export class ChangeControlStore {
     const evidenceRefs = normalizeEvidenceRefs(input?.evidenceRefs);
     if (input?.to === "mitigated" && input?.receipt === undefined)
       invalid("A mitigated incident transition requires a resolution receipt.");
-    const mitigationReceipt =
-      input?.to === "mitigated"
-        ? normalizeHaltContract(
-            input.receipt,
-            "IncidentResolutionReceiptV1",
-          )
-        : undefined;
     if (input?.to !== "mitigated" && input?.receipt !== undefined)
       invalid("Only a mitigated incident transition accepts a resolution receipt.");
     return this.serialize(projectId, async () => {
@@ -8502,6 +8674,17 @@ export class ChangeControlStore {
       const publicationTime = this.now();
       if (canonicalTimestampMillis(publicationTime) === undefined)
         invalid("The publication clock did not return a canonical UTC instant.");
+      const receiptInput = input?.to === "mitigated"
+        ? normalizeJson(input.receipt, "IncidentResolutionReceiptV1")
+        : undefined;
+      const mitigationReceipt = receiptInput &&
+        typeof receiptInput === "object" &&
+        !Array.isArray(receiptInput)
+        ? normalizeHaltContract(
+            { ...receiptInput, resolvedAt: receiptInput.resolvedAt ?? publicationTime },
+            "IncidentResolutionReceiptV1",
+          )
+        : undefined;
       if (mitigationReceipt) {
         if (
           mitigationReceipt.projectId !== projectId ||
@@ -9726,6 +9909,410 @@ export class ChangeControlStore {
     return deepFreeze(structuredClone(items));
   }
 
+  private operatorActionTargetStateV1(
+    request: OperatorActionRequestV1,
+    projected: ProjectedLedger,
+  ): string {
+    switch (request.actionKind) {
+      case "dispatch-wave":
+      case "authorize-wave-resume":
+        return projected.waves.get(
+          waveKey(request.target.changeId, request.target.waveId),
+        )?.status ?? "missing";
+      case "authorize-task-retry":
+        return projected.tasks.get(
+          taskKey(
+            request.target.changeId,
+            request.target.waveId,
+            request.target.taskId,
+          ),
+        )?.status ?? "missing";
+      case "transition-incident":
+      case "resolve-incident":
+        return projected.incidents.get(request.target.incidentId)?.state ?? "missing";
+    }
+  }
+
+  private operatorActionEvidenceRefsV1(
+    request: OperatorActionRequestV1,
+  ): string[] {
+    const refs = [
+      `project:${request.target.projectId}`,
+      `change:${request.target.changeId}`,
+      `request:${request.requestId}`,
+    ];
+    if ("waveId" in request.target) refs.push(`wave:${request.target.waveId}`);
+    if ("taskId" in request.target) refs.push(`task:${request.target.taskId}`);
+    if ("haltId" in request.target) refs.push(`halt:${request.target.haltId}`);
+    if ("incidentId" in request.target) refs.push(`incident:${request.target.incidentId}`);
+    if (request.actionKind === "dispatch-wave") {
+      refs.push(`plan:${request.target.plan.planId}:${request.target.plan.revision}`);
+      refs.push(`authorization:${request.target.authorizationId}`);
+    }
+    return [...new Set(refs)].sort();
+  }
+
+  private async invokeOwningOperatorActionHandlerV1(
+    request: OperatorActionRequestV1,
+  ): Promise<void> {
+    switch (request.actionKind) {
+      case "dispatch-wave":
+        await this.dispatchWave(
+          request.target.projectId,
+          request.target.changeId,
+          request.target.waveId,
+          {
+            actor: request.actor,
+            ...(request.input.sendAnyway === true ? { sendAnyway: true, reason: request.reason } : {}),
+            causationId: request.requestId,
+            correlationId: request.requestId,
+          },
+        );
+        return;
+      case "authorize-task-retry":
+        await this.authorizeTaskRetry(
+          request.target.projectId,
+          request.target.changeId,
+          request.target.waveId,
+          request.target.taskId,
+          {
+            ...request.input,
+            incidentId: request.target.incidentId,
+            haltId: request.target.haltId,
+            reason: request.reason,
+            causationId: request.requestId,
+            correlationId: request.requestId,
+          },
+        );
+        return;
+      case "authorize-wave-resume":
+        await this.authorizeWaveResume(
+          request.target.projectId,
+          request.target.changeId,
+          request.target.waveId,
+          {
+            ...request.input,
+            incidentId: request.target.incidentId,
+            haltId: request.target.haltId,
+            reason: request.reason,
+            causationId: request.requestId,
+            correlationId: request.requestId,
+          },
+        );
+        return;
+      case "transition-incident":
+        await this.transitionIncident(
+          request.target.projectId,
+          request.target.incidentId,
+          {
+            actor: request.actor,
+            ...request.input,
+            causationId: request.requestId,
+            correlationId: request.requestId,
+          } as TransitionIncidentInputV1,
+        );
+        return;
+      case "resolve-incident":
+        await this.resolveIncident(
+          request.target.projectId,
+          request.target.incidentId,
+          {
+            receipt: request.input.receipt as IncidentResolutionReceiptV1,
+            causationId: request.requestId,
+            correlationId: request.requestId,
+          },
+        );
+    }
+  }
+
+  private operatorActionIdentityReasonV1(
+    request: OperatorActionRequestV1,
+    projected: ProjectedLedger,
+  ): OperatorActionOwningGateReasonCodeV1 | undefined {
+    if (request.actionKind === "dispatch-wave") {
+      const latest = wavePlans(
+        projected,
+        request.target.changeId,
+        request.target.waveId,
+      ).at(-1);
+      if (!latest) return "PLAN_REQUIRED";
+      if (
+        !samePlanReference(request.target.plan, latest.contract) ||
+        latest.authorization?.authorizationId !== request.target.authorizationId
+      ) return "PLAN_NOT_AUTHORIZED";
+    }
+    if (
+      (request.actionKind === "transition-incident" ||
+        request.actionKind === "resolve-incident") &&
+      projected.incidents.get(request.target.incidentId)?.changeId !==
+        request.target.changeId
+    ) return request.actionKind === "resolve-incident"
+      ? "INCIDENT_RESOLUTION_INVALID"
+      : "INCIDENT_TRANSITION_ILLEGAL";
+    return undefined;
+  }
+
+  private async previewOperatorActionAgainstLedgerV1(
+    request: OperatorActionRequestV1,
+    ledger: Ledger,
+  ): Promise<OperatorActionPreviewV1> {
+    const projected = validateAndProject(ledger);
+    const currentTargetState = this.operatorActionTargetStateV1(request, projected);
+    const reasonCodes = new Set<OperatorActionOwningGateReasonCodeV1>();
+    const identityReason = this.operatorActionIdentityReasonV1(request, projected);
+    if (identityReason) reasonCodes.add(identityReason);
+    const staged = structuredClone(ledger);
+    const start = staged.events.length;
+    let expectedCanonicalEventType: string | null = null;
+    if (!identityReason) {
+      try {
+        await operatorActionTransactionV1.run(
+          { file: this.file(request.target.projectId), ledger: staged },
+          () => this.invokeOwningOperatorActionHandlerV1(request),
+        );
+        const expectedTypes = operatorActionExpectedEventTypesV1(request);
+        expectedCanonicalEventType = [...staged.events.slice(start)]
+          .reverse()
+          .find((event) => expectedTypes.includes(event.type))?.type ?? null;
+        if (expectedCanonicalEventType === null)
+          reasonCodes.add("EVIDENCE_INCOMPLETE");
+      } catch (error) {
+        if (error instanceof ChangeControlError) {
+          for (const reason of error.reasons ?? [])
+            if (OPERATOR_ACTION_OWNING_GATE_REASON_CODES_V1.includes(
+              reason as OperatorActionOwningGateReasonCodeV1,
+            )) reasonCodes.add(reason as OperatorActionOwningGateReasonCodeV1);
+          if (reasonCodes.size === 0) {
+            if (
+              request.actionKind === "authorize-task-retry" ||
+              request.actionKind === "authorize-wave-resume"
+            ) reasonCodes.add(
+              operatorActionTargetStateSupportsRequestV1(request, currentTargetState)
+                ? "AUTHORITY_REQUIRED"
+                : request.actionKind === "authorize-task-retry"
+                  ? "TASK_NOT_RETRYABLE"
+                  : "WAVE_NOT_RESUMABLE",
+            );
+            else if (request.actionKind === "transition-incident")
+              reasonCodes.add("INCIDENT_TRANSITION_ILLEGAL");
+            else if (request.actionKind === "resolve-incident")
+              reasonCodes.add("INCIDENT_RESOLUTION_INVALID");
+            else reasonCodes.add("WAVE_NOT_READY");
+          }
+        } else {
+          throw error;
+        }
+      }
+    }
+    const last = ledger.events.at(-1);
+    const evidence: OperatorActionEvidenceV1 = {
+      contractType: "OperatorActionEvidenceV1",
+      contractVersion: "1.0",
+      projectId: request.target.projectId,
+      target: request.target,
+      projectSequence: last?.sequence ?? 0,
+      projectHash: last?.hash ?? null,
+      sourceWatermark: operatorActionSourceWatermarkV1(
+        request.target.projectId,
+        last?.sequence ?? 0,
+        last?.hash ?? null,
+      ),
+      currentTargetState,
+      owningGate: OPERATOR_ACTION_OWNING_GATES_V1[request.actionKind],
+      gateDecision: reasonCodes.size === 0 && expectedCanonicalEventType !== null
+        ? {
+            allowed: true,
+            reasonCodes: [],
+            evidenceRefs: this.operatorActionEvidenceRefsV1(request),
+            expectedCanonicalEventType,
+          }
+        : {
+            allowed: false,
+            reasonCodes: [...reasonCodes].sort(),
+            evidenceRefs: this.operatorActionEvidenceRefsV1(request),
+            expectedCanonicalEventType: null,
+          },
+      warningCodes: [],
+    };
+    return new OperatorActionPreviewEngineV1().preview(request, evidence);
+  }
+
+  async previewOperatorActionV1(value: unknown): Promise<OperatorActionPreviewV1> {
+    const request = parseOperatorActionRequestV1(value);
+    const ledger = await readLedger(
+      this.file(request.target.projectId),
+      request.target.projectId,
+    );
+    return this.previewOperatorActionAgainstLedgerV1(request, ledger);
+  }
+
+  async executeOperatorActionV1(value: unknown): Promise<OperatorActionReceiptV1> {
+    const execution = parseOperatorActionExecuteRequestV1(value);
+    const request = execution.request;
+    const projectId = request.target.projectId;
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const existing = projected.operatorActionReceiptByIdempotencyKey.get(
+        request.idempotencyKey,
+      );
+      const requestHash = operatorActionHashV1(request);
+      if (existing) {
+        if (existing.requestHash !== requestHash)
+          throw new OperatorActionContractErrorV1(
+            "IDEMPOTENCY_CONFLICT",
+            "The operator action idempotency key is already bound to another request.",
+          );
+        return deepFreeze(structuredClone(existing));
+      }
+
+      const preview = await this.previewOperatorActionAgainstLedgerV1(request, ledger);
+      if (!preview.allowed || preview.previewHash !== execution.previewHash) {
+        const code: OperatorActionReasonCodeV1 =
+          preview.reasonCodes.includes("SOURCE_WATERMARK_CHANGED")
+            ? "SOURCE_WATERMARK_CHANGED"
+            : preview.reasonCodes.includes("PROJECT_STATE_CHANGED")
+              ? "PROJECT_STATE_CHANGED"
+              : preview.reasonCodes.includes("TARGET_STATE_CHANGED")
+                ? "TARGET_STATE_CHANGED"
+                : preview.reasonCodes.includes("AUTHORITY_REQUIRED")
+                  ? "AUTHORITY_REQUIRED"
+                  : preview.allowed
+                    ? "PROJECT_STATE_CHANGED"
+                    : "GATE_REJECTED";
+        throw new OperatorActionContractErrorV1(
+          code,
+          "The operator action preview is stale or its owning gate rejected execution.",
+        );
+      }
+
+      const staged = structuredClone(ledger);
+      const observed = staged.events.at(-1);
+      const observedSequence = observed?.sequence ?? 0;
+      const observedHash = observed?.hash ?? null;
+      return operatorActionTransactionV1.run({ file, ledger: staged }, async () => {
+        const start = staged.events.length;
+        try {
+          await this.invokeOwningOperatorActionHandlerV1(request);
+        } catch (error) {
+          if (error instanceof ChangeControlError)
+            throw new OperatorActionContractErrorV1(
+              request.actionKind === "authorize-task-retry" ||
+                request.actionKind === "authorize-wave-resume"
+                ? "AUTHORITY_REQUIRED"
+                : "GATE_REJECTED",
+              "The owning action gate changed before atomic execution.",
+            );
+          throw error;
+        }
+        const expectedTypes = operatorActionExpectedEventTypesV1(request);
+        const canonicalEvent = [...staged.events.slice(start)]
+          .reverse()
+          .find((event) => expectedTypes.includes(event.type));
+        if (!canonicalEvent)
+          throw new OperatorActionContractErrorV1(
+            "STORAGE_FAILURE",
+            "The owning action handler did not stage its canonical event.",
+          );
+        const receiptWithoutHash: Omit<OperatorActionReceiptV1, "receiptHash"> = {
+          contractType: "OperatorActionReceiptV1",
+          contractVersion: "1.0",
+          receiptId: requireIdentifier(this.createId(), "receiptId"),
+          request,
+          requestHash: preview.requestHash,
+          previewHash: preview.previewHash,
+          actor: request.actor,
+          reason: request.reason,
+          idempotencyKey: request.idempotencyKey,
+          actionKind: request.actionKind,
+          target: request.target,
+          observedProjectSequence: observedSequence,
+          observedProjectHash: observedHash,
+          observedSourceWatermark: operatorActionSourceWatermarkV1(
+            projectId,
+            observedSequence,
+            observedHash,
+          ),
+          outcome: "executed",
+          reasonCodes: [],
+          evidenceRefs: preview.evidenceRefs,
+          canonicalEvent: {
+            eventId: canonicalEvent.id,
+            eventType: canonicalEvent.type,
+            eventHash: canonicalEvent.hash,
+          },
+          resultingProjectSequence: canonicalEvent.sequence,
+          resultingProjectHash: canonicalEvent.hash,
+        };
+        const receipt = parseOperatorActionReceiptV1({
+          ...receiptWithoutHash,
+          receiptHash: operatorActionReceiptHashV1(receiptWithoutHash),
+        });
+        this.append(staged, {
+          id: requireIdentifier(this.createId(), "id"),
+          type: "operator.action-receipt-published",
+          occurredAt: this.now(),
+          projectId,
+          changeId: request.target.changeId,
+          ...("waveId" in request.target ? { waveId: request.target.waveId } : {}),
+          ...("taskId" in request.target ? { taskId: request.target.taskId } : {}),
+          actor: request.actor,
+          causationId: canonicalEvent.id,
+          correlationId: request.requestId,
+          payload: { receipt: structuredClone(receipt) as unknown as JsonValue },
+        });
+        validateCandidateLedger(staged);
+        await this.onOperatorActionBoundary?.("before_atomic_publish", receipt);
+        await writeLedgerAtomically(file, staged);
+        await this.onOperatorActionBoundary?.("after_atomic_publish", receipt);
+        return deepFreeze(structuredClone(receipt));
+      });
+    });
+  }
+
+  async getOperatorActionReceiptV1(
+    receiptIdValue: string,
+  ): Promise<OperatorActionReceiptV1> {
+    const receiptId = requireIdentifier(receiptIdValue, "receiptId");
+    const projectsDirectory = join(this.rootDirectory, "projects");
+    const entries = await readdir(projectsDirectory, { withFileTypes: true }).catch(
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error),
+    );
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    if (files.length > 1000)
+      throw new ChangeControlError(
+        "Operator action receipt lookup exceeds the bounded project scope.",
+        "CONFLICT",
+        409,
+      );
+    const matches: OperatorActionReceiptV1[] = [];
+    for (const entry of files) {
+      const parsed = JSON.parse(
+        await readFile(join(projectsDirectory, entry.name), "utf8"),
+      ) as Ledger;
+      const projected = validateAndProject(parsed);
+      const receipt = projected.operatorActionReceipts.get(receiptId);
+      if (receipt) matches.push(receipt);
+    }
+    if (matches.length !== 1) {
+      if (matches.length > 1)
+        throw new ChangeControlError(
+          "Operator action receipt identity is ambiguous.",
+          "CORRUPT_LEDGER",
+          500,
+        );
+      throw new ChangeControlError(
+        "Operator action receipt was not found.",
+        "NOT_FOUND",
+        404,
+      );
+    }
+    return deepFreeze(structuredClone(matches[0]));
+  }
+
   async readOperatorSourcesV1(
     projectIdValues?: readonly string[],
   ): Promise<OperatorSourceReadResultV1> {
@@ -9821,4 +10408,14 @@ export class ChangeControlStore {
     unavailable.sort((left, right) => left.sourceRef.localeCompare(right.sourceRef));
     return deepFreeze(structuredClone({ totalSourceCount: candidates.length, sources, unavailable }));
   }
+}
+
+async function writeAtomically(file: string, ledger: Ledger) {
+  const transaction = operatorActionTransactionV1.getStore();
+  if (transaction?.file === file) {
+    if (transaction.ledger !== ledger)
+      corrupt("The operator action transaction attempted to replace its staged ledger.");
+    return;
+  }
+  await writeLedgerAtomically(file, ledger);
 }

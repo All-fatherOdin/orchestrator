@@ -117,6 +117,10 @@ import {
   parseOperatorProjectionQueryV1,
   type OperatorProjectionViewV1,
 } from "./operator-projections-v1/index.ts";
+import {
+  OperatorActionContractErrorV1,
+  OperatorActionServiceV1,
+} from "./operator-actions-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -6449,6 +6453,9 @@ app.post(
 export const operatorProjectionServiceV1 = new OperatorProjectionServiceV1(
   changeControlStore,
 );
+export const operatorActionServiceV1 = new OperatorActionServiceV1(
+  changeControlStore,
+);
 app.get(
   "/api/change-control/projects/:projectId/eval-lineage",
   async (request, response) => {
@@ -6805,6 +6812,56 @@ for (const view of OPERATOR_PROJECTION_VIEWS_V1) {
     }
   });
 }
+function sendOperatorActionErrorV1(
+  response: express.Response,
+  error: unknown,
+) {
+  if (error instanceof OperatorActionContractErrorV1) {
+    const conflictCodes = new Set([
+      "SOURCE_WATERMARK_CHANGED",
+      "PROJECT_STATE_CHANGED",
+      "TARGET_STATE_CHANGED",
+      "AUTHORITY_REQUIRED",
+      "GATE_REJECTED",
+      "IDEMPOTENCY_CONFLICT",
+    ]);
+    return response.status(conflictCodes.has(error.code) ? 409 : 400).json({
+      error: "Operator action rejected.",
+      code: error.code,
+    });
+  }
+  return sendChangeControlError(response, error);
+}
+export function installOperatorActionRoutesV1(
+  targetApp: express.Express,
+  service: OperatorActionServiceV1,
+) {
+  targetApp.post("/api/operator-actions/v1/preview", async (request, response) => {
+    try {
+      return response.json(await service.preview(request.body));
+    } catch (error) {
+      return sendOperatorActionErrorV1(response, error);
+    }
+  });
+  targetApp.post("/api/operator-actions/v1/execute", async (request, response) => {
+    try {
+      return response.json(await service.execute(request.body));
+    } catch (error) {
+      return sendOperatorActionErrorV1(response, error);
+    }
+  });
+  targetApp.get(
+    "/api/operator-actions/v1/receipts/:receiptId",
+    async (request, response) => {
+      try {
+        return response.json(await service.receipt(request.params.receiptId));
+      } catch (error) {
+        return sendOperatorActionErrorV1(response, error);
+      }
+    },
+  );
+}
+installOperatorActionRoutesV1(app, operatorActionServiceV1);
 app.get("/api/run", (_, response) => response.json(activeRun ?? null));
 app.get("/api/run/scheduler", (_, response) =>
   response.json(activeRun ? schedulerSnapshot(activeRun) : null),

@@ -9,6 +9,7 @@ import { parse, stringify } from "yaml";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import Ajv2020 from "ajv8/dist/2020.js";
+import express from "express";
 import type {
   ArchitectReplanReceiptV1,
   PlanAuthorizationV1,
@@ -49,6 +50,8 @@ import evalLineageV1Schema from "./prompt-model-eval-v1/schemas/eval-lineage-v1.
 import evalLineageV1Examples from "./prompt-model-eval-v1/schemas/eval-lineage-v1.examples.json";
 import operatorProjectionV1Schema from "./operator-projections-v1/schemas/operator-projection-v1.schema.json";
 import operatorProjectionV1Examples from "./operator-projections-v1/schemas/operator-projection-v1.examples.json";
+import operatorActionsV1Schema from "./operator-actions-v1/schemas/operator-actions-v1.schema.json";
+import operatorActionsV1Examples from "./operator-actions-v1/schemas/operator-actions-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -159,6 +162,7 @@ const {
   repositoryIdentityV1,
   sealWorkspaceAttemptV1,
   workspacePathContainedV1,
+  installOperatorActionRoutesV1,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
@@ -197,6 +201,21 @@ const {
   OperatorProjectionServiceV1,
   parseOperatorProjectionQueryV1,
 } = await import("./operator-projections-v1/index.ts");
+const {
+  OPERATOR_ACTION_KINDS_V1,
+  OPERATOR_ACTION_OWNING_GATE_REASON_CODES_V1,
+  OPERATOR_ACTION_OWNING_GATES_V1,
+  OPERATOR_ACTION_REASON_CODES_V1,
+  OperatorActionPreviewEngineV1,
+  OperatorActionServiceV1,
+  operatorActionPreviewHashV1,
+  operatorActionReceiptHashV1,
+  operatorActionSourceWatermarkV1,
+  parseOperatorActionEvidenceV1,
+  parseOperatorActionPreviewV1,
+  parseOperatorActionReceiptV1,
+  parseOperatorActionRequestV1,
+} = await import("./operator-actions-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 const planningShaOne = "1".repeat(40);
@@ -4789,6 +4808,1091 @@ test("OperatorProjectionV1 Draft 2020-12 examples validate and invalid envelopes
     assert.equal(validate!(example), true, ajvErrors(validate!.errors));
   for (const example of operatorProjectionV1Examples.invalid)
     assert.equal(validate!(example.value), false, example.reasonCode);
+});
+
+test("OperatorActionRequestV1, OperatorActionPreviewV1, and OperatorActionReceiptV1 Draft 2020-12 examples validate", () => {
+  const contractAjv = new Ajv2020({ allErrors: true, strict: true });
+  contractAjv.addFormat("date-time", true);
+  contractAjv.addSchema(operatorActionsV1Schema);
+  for (const contractType of [
+    "OperatorActionRequestV1",
+    "OperatorActionPreviewV1",
+    "OperatorActionReceiptV1",
+  ] as const) {
+    const validate = contractAjv.getSchema(
+      `${operatorActionsV1Schema.$id}#/$defs/${contractType}`,
+    );
+    assert.ok(validate);
+    for (const example of operatorActionsV1Examples.valid[contractType])
+      assert.equal(validate!(example), true, ajvErrors(validate!.errors));
+    for (const example of operatorActionsV1Examples.invalid[contractType])
+      assert.equal(validate!(example.value), false, example.reasonCode);
+  }
+  for (const request of operatorActionsV1Examples.valid.OperatorActionRequestV1)
+    assert.deepEqual(parseOperatorActionRequestV1(request), request);
+  for (const preview of operatorActionsV1Examples.valid.OperatorActionPreviewV1)
+    assert.deepEqual(parseOperatorActionPreviewV1(preview), preview);
+  assert.deepEqual(
+    parseOperatorActionReceiptV1(operatorActionsV1Examples.valid.OperatorActionReceiptV1[0]),
+    operatorActionsV1Examples.valid.OperatorActionReceiptV1[0],
+  );
+});
+
+test("OperatorActionRequestV1 parsing rejects unknown actions, identities, fields, and incomplete evidence with stable codes", () => {
+  const valid = structuredClone(operatorActionsV1Examples.valid.OperatorActionRequestV1[3]) as any;
+  const expectedCodes = [
+    "UNKNOWN_ACTION",
+    "SOURCE_WATERMARK_CHANGED",
+    "IDEMPOTENCY_CONFLICT",
+  ];
+  for (const code of expectedCodes) assert.ok(OPERATOR_ACTION_REASON_CODES_V1.includes(code as any));
+  const unknownAction = { ...valid, actionKind: "execute-doctor" };
+  assert.throws(
+    () => parseOperatorActionRequestV1(unknownAction),
+    (error: any) => error.code === "UNKNOWN_ACTION",
+  );
+  assert.throws(
+    () => parseOperatorActionRequestV1({ ...valid, force: true }),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+  const dispatchOverride = structuredClone(
+    operatorActionsV1Examples.valid.OperatorActionRequestV1[0],
+  ) as any;
+  dispatchOverride.input.sendAnyway = true;
+  assert.deepEqual(
+    parseOperatorActionRequestV1(dispatchOverride).input,
+    { sendAnyway: true },
+  );
+  dispatchOverride.input.sendAnyway = false;
+  assert.throws(
+    () => parseOperatorActionRequestV1(dispatchOverride),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+  for (const field of ["actor", "reason", "idempotencyKey"] as const) {
+    const incomplete = structuredClone(valid);
+    delete incomplete[field];
+    assert.throws(
+      () => parseOperatorActionRequestV1(incomplete),
+      (error: any) => error.code === "INVALID_REQUEST",
+      field,
+    );
+  }
+  assert.throws(
+    () => parseOperatorActionRequestV1({ ...valid, expectedProjectHash: null }),
+    (error: any) => error.code === "EVIDENCE_INCOMPLETE",
+  );
+  assert.throws(
+    () => parseOperatorActionRequestV1({
+      ...valid,
+      expectedProjectSequence: Number.MAX_SAFE_INTEGER + 1,
+    }),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+  assert.throws(
+    () => parseOperatorActionRequestV1({ ...valid, idempotencyKey: "unrelated-key" }),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+  for (const idempotencyKey of [
+    "another-project:transition-incident:request-transition-1",
+    "project-one:resolve-incident:request-transition-1",
+  ]) {
+    assert.throws(
+      () => parseOperatorActionRequestV1({ ...valid, idempotencyKey }),
+      (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+      idempotencyKey,
+    );
+  }
+  const resolution = structuredClone(operatorActionsV1Examples.valid.OperatorActionRequestV1[4]) as any;
+  resolution.input.receipt.changeId = "another-change";
+  assert.throws(
+    () => parseOperatorActionRequestV1(resolution),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+  const invalidResolutionTime = structuredClone(
+    operatorActionsV1Examples.valid.OperatorActionRequestV1[4],
+  ) as any;
+  invalidResolutionTime.input.receipt.resolvedAt = "2026-02-30T12:00:00.000Z";
+  assert.throws(
+    () => parseOperatorActionRequestV1(invalidResolutionTime),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+  const mitigation = structuredClone(valid) as any;
+  mitigation.input.to = "mitigated";
+  mitigation.input.receipt = structuredClone(
+    operatorActionsV1Examples.valid.OperatorActionRequestV1[4].input.receipt,
+  );
+  mitigation.input.receipt.receiptId = "incident-mitigation-one";
+  mitigation.input.receipt.resolutionKind = "mitigated";
+  mitigation.input.receipt.evidenceRefs = ["oracle:different-evidence"];
+  assert.throws(
+    () => parseOperatorActionRequestV1(mitigation),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+  const retry = structuredClone(operatorActionsV1Examples.valid.OperatorActionRequestV1[1]) as any;
+  retry.input.authority.actor = "human:another-operator";
+  assert.throws(
+    () => parseOperatorActionRequestV1(retry),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+});
+
+test("operator action preview identifies all five owning gates and is deterministic for equal normalized requests and evidence", () => {
+  const engine = new OperatorActionPreviewEngineV1();
+  const expectedEvents: Record<string, string> = {
+    "dispatch-wave": "wave.dispatched",
+    "authorize-task-retry": "task.retry-authorized",
+    "authorize-wave-resume": "wave.resume-authorized",
+    "transition-incident": "incident.escalated",
+    "resolve-incident": "incident.resolved",
+  };
+  const targetStates: Record<string, string> = {
+    "dispatch-wave": "ready",
+    "authorize-task-retry": "failed",
+    "authorize-wave-resume": "halted",
+    "transition-incident": "investigating",
+    "resolve-incident": "mitigated",
+  };
+  assert.deepEqual(OPERATOR_ACTION_KINDS_V1, [
+    "dispatch-wave",
+    "authorize-task-retry",
+    "authorize-wave-resume",
+    "transition-incident",
+    "resolve-incident",
+  ]);
+  for (const rawRequest of operatorActionsV1Examples.valid.OperatorActionRequestV1) {
+    const request = parseOperatorActionRequestV1(rawRequest);
+    const actionKind = request.actionKind;
+    const isDispatchOverride =
+      request.actionKind === "dispatch-wave" && request.input.sendAnyway === true;
+    const expectedEvent = isDispatchOverride
+      ? "wave.dispatch-overridden"
+      : expectedEvents[actionKind];
+    const evidence = {
+      contractType: "OperatorActionEvidenceV1",
+      contractVersion: "1.0",
+      projectId: request.target.projectId,
+      target: structuredClone(request.target),
+      projectSequence: request.expectedProjectSequence,
+      projectHash: request.expectedProjectHash,
+      sourceWatermark: request.expectedSourceWatermark,
+      currentTargetState: isDispatchOverride ? "draft" : targetStates[actionKind],
+      owningGate: OPERATOR_ACTION_OWNING_GATES_V1[actionKind],
+      gateDecision: {
+        allowed: true,
+        reasonCodes: [],
+        evidenceRefs: ["target:canonical", "gate:decision"],
+        expectedCanonicalEventType: expectedEvent,
+      },
+      warningCodes: [],
+    };
+    const beforeRequest = structuredClone(rawRequest);
+    const beforeEvidence = structuredClone(evidence);
+    const first = engine.preview(rawRequest, evidence);
+    const second = engine.preview(structuredClone(rawRequest), structuredClone(evidence));
+    assert.deepEqual(first, second, actionKind);
+    assert.equal(first.allowed, true, actionKind);
+    assert.equal(first.owningGate, OPERATOR_ACTION_OWNING_GATES_V1[actionKind]);
+    assert.equal(first.expectedCanonicalEventType, expectedEvent);
+    assert.equal(first.requestHash.length, 64);
+    assert.equal(first.previewHash.length, 64);
+    assert.equal(Object.isFrozen(first), true);
+    assert.deepEqual(rawRequest, beforeRequest);
+    assert.deepEqual(evidence, beforeEvidence);
+  }
+
+  const normalized = structuredClone(operatorActionsV1Examples.valid.OperatorActionRequestV1[1]) as any;
+  normalized.reason = `  ${normalized.reason}  `;
+  normalized.idempotencyKey = ` ${normalized.idempotencyKey} `;
+  normalized.input.authority.evidenceRefs.reverse();
+  const canonical = parseOperatorActionRequestV1(operatorActionsV1Examples.valid.OperatorActionRequestV1[1]);
+  assert.deepEqual(parseOperatorActionRequestV1(normalized), canonical);
+});
+
+test("operator action preview and receipt dispatch override requires wave.dispatch-overridden evidence", () => {
+  const engine = new OperatorActionPreviewEngineV1();
+  const request = parseOperatorActionRequestV1(
+    operatorActionsV1Examples.valid.OperatorActionRequestV1[5],
+  );
+  assert.equal(request.actionKind, "dispatch-wave");
+  assert.equal(request.input.sendAnyway, true);
+  const evidence = {
+    contractType: "OperatorActionEvidenceV1",
+    contractVersion: "1.0",
+    projectId: request.target.projectId,
+    target: request.target,
+    projectSequence: request.expectedProjectSequence,
+    projectHash: request.expectedProjectHash,
+    sourceWatermark: request.expectedSourceWatermark,
+    currentTargetState: "draft",
+    owningGate: "phase-2-dispatch-gate",
+    gateDecision: {
+      allowed: true,
+      reasonCodes: [],
+      evidenceRefs: ["gate:dispatch-override"],
+      expectedCanonicalEventType: "wave.dispatched",
+    },
+    warningCodes: [],
+  };
+  const denied = engine.preview(request, evidence);
+  assert.equal(denied.allowed, false);
+  assert.deepEqual(denied.reasonCodes, ["GATE_REJECTED"]);
+  assert.equal(denied.expectedCanonicalEventType, null);
+
+  const correctPreview = engine.preview(request, {
+    ...evidence,
+    gateDecision: {
+      ...evidence.gateDecision,
+      expectedCanonicalEventType: "wave.dispatch-overridden",
+    },
+  });
+  assert.equal(correctPreview.allowed, true);
+  const invalidPreview = {
+    ...structuredClone(correctPreview),
+    expectedCanonicalEventType: "wave.dispatched",
+  } as any;
+  const {
+    previewHash: _invalidPreviewHash,
+    responseTimestamp: _invalidResponseTimestamp,
+    ...invalidPreviewContent
+  } = invalidPreview;
+  invalidPreview.previewHash = operatorActionPreviewHashV1(invalidPreviewContent);
+  assert.throws(
+    () => parseOperatorActionPreviewV1(invalidPreview),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+
+  const invalidReceipt = structuredClone(
+    operatorActionsV1Examples.valid.OperatorActionReceiptV1[0],
+  ) as any;
+  Object.assign(invalidReceipt, {
+    receiptId: "operator-receipt-dispatch-override-invalid-event",
+    request,
+    requestHash: correctPreview.requestHash,
+    previewHash: correctPreview.previewHash,
+    actor: request.actor,
+    reason: request.reason,
+    idempotencyKey: request.idempotencyKey,
+    actionKind: request.actionKind,
+    target: request.target,
+    observedProjectSequence: request.expectedProjectSequence,
+    observedProjectHash: request.expectedProjectHash,
+    observedSourceWatermark: request.expectedSourceWatermark,
+    outcome: "executed",
+    reasonCodes: [],
+    evidenceRefs: ["gate:dispatch-override"],
+    canonicalEvent: {
+      eventId: "wave-dispatched-override-invalid",
+      eventType: "wave.dispatched",
+      eventHash: "e".repeat(64),
+    },
+    resultingProjectSequence: request.expectedProjectSequence + 1,
+    resultingProjectHash: "c".repeat(64),
+  });
+  const { receiptHash: _invalidReceiptHash, ...invalidReceiptContent } = invalidReceipt;
+  invalidReceipt.receiptHash = operatorActionReceiptHashV1(invalidReceiptContent);
+  assert.throws(
+    () => parseOperatorActionReceiptV1(invalidReceipt),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+});
+
+test("operator action preview fails closed on stale, denied, mismatched, and incomplete canonical evidence", () => {
+  const engine = new OperatorActionPreviewEngineV1();
+  const request = parseOperatorActionRequestV1(operatorActionsV1Examples.valid.OperatorActionRequestV1[0]);
+  const evidence = {
+    contractType: "OperatorActionEvidenceV1",
+    contractVersion: "1.0",
+    projectId: request.target.projectId,
+    target: request.target,
+    projectSequence: request.expectedProjectSequence + 1,
+    projectHash: "c".repeat(64),
+    sourceWatermark: "d".repeat(64),
+    currentTargetState: "draft",
+    owningGate: "phase-2-dispatch-gate",
+    gateDecision: {
+      allowed: false,
+      reasonCodes: ["PLAN_NOT_AUTHORIZED"],
+      evidenceRefs: ["plan:plan-one"],
+      expectedCanonicalEventType: null,
+    },
+    warningCodes: [],
+  };
+  const denied = engine.preview(request, evidence);
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.expectedCanonicalEventType, null);
+  assert.deepEqual(denied.reasonCodes, [
+    "GATE_REJECTED",
+    "PLAN_NOT_AUTHORIZED",
+    "PROJECT_STATE_CHANGED",
+    "SOURCE_WATERMARK_CHANGED",
+    "TARGET_STATE_CHANGED",
+  ]);
+  assert.throws(
+    () => parseOperatorActionEvidenceV1({ ...evidence, sourceWatermark: undefined }),
+    (error: any) => error.code === "INVALID_REQUEST" || error.code === "EVIDENCE_INCOMPLETE",
+  );
+  assert.throws(
+    () => parseOperatorActionEvidenceV1({
+      ...evidence,
+      gateDecision: { ...evidence.gateDecision, reasonCodes: [] },
+    }),
+    (error: any) => error.code === "EVIDENCE_INCOMPLETE",
+  );
+  assert.throws(
+    () => parseOperatorActionEvidenceV1({
+      ...evidence,
+      projectId: "another-project",
+    }),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+  assert.throws(
+    () => parseOperatorActionEvidenceV1({
+      ...evidence,
+      owningGate: "phase-4-task-retry-authorization",
+    }),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+  assert.throws(
+    () => parseOperatorActionEvidenceV1({
+      ...evidence,
+      projectSequence: request.expectedProjectSequence,
+      projectHash: request.expectedProjectHash,
+      sourceWatermark: request.expectedSourceWatermark,
+      currentTargetState: "ready",
+      gateDecision: {
+        allowed: true,
+        reasonCodes: [],
+        evidenceRefs: ["gate:malformed-event"],
+        expectedCanonicalEventType: "incident.resolved",
+      },
+    }),
+    (error: any) => error.code === "EVIDENCE_INCOMPLETE",
+  );
+  const impossibleAllowed = structuredClone(
+    operatorActionsV1Examples.valid.OperatorActionPreviewV1[0],
+  ) as any;
+  impossibleAllowed.currentTargetState = "draft";
+  const {
+    previewHash: _previewHash,
+    responseTimestamp: _responseTimestamp,
+    ...impossibleAllowedContent
+  } = impossibleAllowed;
+  impossibleAllowed.previewHash = operatorActionPreviewHashV1(
+    impossibleAllowedContent,
+  );
+  assert.throws(
+    () => parseOperatorActionPreviewV1(impossibleAllowed),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+  const invalidTimestamp = structuredClone(
+    operatorActionsV1Examples.valid.OperatorActionPreviewV1[0],
+  ) as any;
+  invalidTimestamp.responseTimestamp = "2026-02-30T12:00:00.000Z";
+  assert.throws(
+    () => parseOperatorActionPreviewV1(invalidTimestamp),
+    (error: any) => error.code === "INVALID_REQUEST",
+  );
+});
+
+test("operator action preview accepts canonical Phase 4 owning-gate denial reasons", () => {
+  const engine = new OperatorActionPreviewEngineV1();
+  const deniedExamples = operatorActionsV1Examples.valid.OperatorActionPreviewV1
+    .filter((preview) => !preview.allowed);
+  assert.deepEqual(
+    deniedExamples.map((preview) =>
+      preview.reasonCodes.find((reasonCode) => reasonCode !== "GATE_REJECTED")),
+    [
+      "HUMAN_AUTHORITY_REQUIRED",
+      "EVIDENCE_STALE",
+      "REPAIR_BUDGET_EXHAUSTED",
+    ],
+  );
+
+  for (const example of deniedExamples) {
+    const request = parseOperatorActionRequestV1(example.request);
+    const gateReasonCodes = example.reasonCodes.filter(
+      (reasonCode) => reasonCode !== "GATE_REJECTED",
+    );
+    assert.ok(
+      gateReasonCodes.every((reasonCode) =>
+        OPERATOR_ACTION_OWNING_GATE_REASON_CODES_V1.includes(reasonCode as any)),
+    );
+    const evidence = parseOperatorActionEvidenceV1({
+      contractType: "OperatorActionEvidenceV1",
+      contractVersion: "1.0",
+      projectId: request.target.projectId,
+      target: request.target,
+      projectSequence: example.currentProjectSequence,
+      projectHash: example.currentProjectHash,
+      sourceWatermark: example.currentSourceWatermark,
+      currentTargetState: example.currentTargetState,
+      owningGate: example.owningGate,
+      gateDecision: {
+        allowed: false,
+        reasonCodes: gateReasonCodes,
+        evidenceRefs: example.evidenceRefs,
+        expectedCanonicalEventType: null,
+      },
+      warningCodes: example.warnings,
+    });
+    const preview = engine.preview(request, evidence);
+    assert.deepEqual(preview, example);
+  }
+});
+
+test("OperatorActionRequestV1 privacy validation rejects prohibited fields at every depth", () => {
+  const request = structuredClone(operatorActionsV1Examples.valid.OperatorActionRequestV1[3]) as any;
+  for (const prohibited of [
+    ["promptBody", "do not retain"],
+    ["environmentValues", { TOKEN: "value" }],
+    ["rawProviderPayload", { response: "value" }],
+    ["fileContents", "bounded-looking content is still prohibited"],
+    ["logs", ["line"]],
+    ["credentials", { password: "value" }],
+  ] as const) {
+    const candidate = structuredClone(request);
+    candidate.input[prohibited[0]] = prohibited[1];
+    assert.throws(
+      () => parseOperatorActionRequestV1(candidate),
+      (error: any) => error.code === "PRIVACY_VIOLATION",
+      prohibited[0],
+    );
+  }
+  const sensitiveReason = structuredClone(request);
+  sensitiveReason.reason = "Use password=do-not-store-this-value";
+  assert.throws(
+    () => parseOperatorActionRequestV1(sensitiveReason),
+    (error: any) => error.code === "PRIVACY_VIOLATION",
+  );
+  const serialized = JSON.stringify([
+    operatorActionsV1Examples.valid.OperatorActionPreviewV1[0],
+    operatorActionsV1Examples.valid.OperatorActionReceiptV1[0],
+  ]);
+  for (const field of ["promptBody", "environmentValues", "rawProviderPayload", "fileContents", "logs", "credentials"])
+    assert.equal(serialized.includes(field), false, field);
+});
+
+test("operator action preview preserves legacy Phase 1-6 ledgers and performs no file mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-action-preview-"));
+  try {
+    const store = new ChangeControlStore(root);
+    await store.create("legacy-project", {
+      changeId: "legacy-change",
+      actor: "user:legacy",
+    });
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("legacy-project").digest("hex")}.json`,
+    );
+    const before = await readFile(projectFile);
+    const request = parseOperatorActionRequestV1(operatorActionsV1Examples.valid.OperatorActionRequestV1[3]);
+    const evidence = {
+      contractType: "OperatorActionEvidenceV1",
+      contractVersion: "1.0",
+      projectId: request.target.projectId,
+      target: request.target,
+      projectSequence: request.expectedProjectSequence,
+      projectHash: request.expectedProjectHash,
+      sourceWatermark: request.expectedSourceWatermark,
+      currentTargetState: "open",
+      owningGate: "phase-4-incident-lifecycle",
+      gateDecision: {
+        allowed: true,
+        reasonCodes: [],
+        evidenceRefs: ["incident:incident-one"],
+        expectedCanonicalEventType: "incident.escalated",
+      },
+      warningCodes: [],
+    };
+    const preview = new OperatorActionPreviewEngineV1().preview(request, evidence);
+    assert.equal(preview.allowed, true);
+    assert.deepEqual(await readFile(projectFile), before);
+    assert.equal((await store.list("legacy-project")).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("OperatorActionReceiptV1 binds request identity and receipt hash without executing an action", () => {
+  const receipt = structuredClone(operatorActionsV1Examples.valid.OperatorActionReceiptV1[0]) as any;
+  const { receiptHash: _receiptHash, ...content } = receipt;
+  assert.equal(operatorActionReceiptHashV1(content), receipt.receiptHash);
+  assert.deepEqual(parseOperatorActionReceiptV1(receipt), receipt);
+  const conflict = structuredClone(receipt);
+  conflict.idempotencyKey = "project-one:dispatch-wave:conflict";
+  const { receiptHash: _oldHash, ...conflictContent } = conflict;
+  conflict.receiptHash = operatorActionReceiptHashV1(conflictContent);
+  assert.throws(
+    () => parseOperatorActionReceiptV1(conflict),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+  const stale = {
+    ...structuredClone(receipt),
+    observedProjectSequence: receipt.request.expectedProjectSequence,
+    observedProjectHash: receipt.request.expectedProjectHash,
+    observedSourceWatermark: receipt.request.expectedSourceWatermark,
+    outcome: "executed",
+    reasonCodes: [],
+    canonicalEvent: {
+      eventId: "wave-dispatched-one",
+      eventType: "wave.dispatched",
+      eventHash: "e".repeat(64),
+    },
+    resultingProjectSequence: receipt.request.expectedProjectSequence + 1,
+    resultingProjectHash: "c".repeat(64),
+  };
+  stale.observedSourceWatermark = "f".repeat(64);
+  const { receiptHash: _staleHash, ...staleContent } = stale;
+  stale.receiptHash = operatorActionReceiptHashV1(staleContent);
+  assert.throws(
+    () => parseOperatorActionReceiptV1(stale),
+    (error: any) => error.code === "TARGET_IDENTITY_MISMATCH",
+  );
+});
+
+async function operatorActionFreshnessV1(
+  store: InstanceType<typeof ChangeControlStore>,
+  projectId = "planning-project",
+) {
+  const read = await store.readOperatorSourcesV1([projectId]);
+  const source = read.sources[0];
+  assert.ok(source);
+  return {
+    expectedProjectSequence: source.watermark.sequence,
+    expectedProjectHash: source.watermark.hash,
+    expectedSourceWatermark: operatorActionSourceWatermarkV1(
+      projectId,
+      source.watermark.sequence,
+      source.watermark.hash,
+    ),
+  };
+}
+
+async function operatorActionFixtureV1(
+  root: string,
+  actionKind: (typeof OPERATOR_ACTION_KINDS_V1)[number],
+  options: ConstructorParameters<typeof ChangeControlStore>[1] = {},
+) {
+  const publicationTime = "2026-07-31T10:00:00.000Z";
+  const store = new ChangeControlStore(root, {
+    now: () => publicationTime,
+    resolveRepositorySnapshot: async () => planningSnapshot(),
+    ...options,
+  });
+  const actor = "human:operator";
+  let request: any;
+  if (actionKind === "dispatch-wave") {
+    await authorizePlanningWave(store);
+    request = {
+      contractType: "OperatorActionRequestV1",
+      contractVersion: "1.0",
+      requestId: "operator-request-dispatch",
+      actionKind,
+      target: {
+        projectId: "planning-project",
+        changeId: "planning-change",
+        waveId: "planning-wave",
+        plan: {
+          planId: "plan-one",
+          revision: 1,
+          planBaseSha: planningShaOne,
+        },
+        authorizationId: "authorization-one",
+      },
+      actor,
+      reason: "Dispatch the exact authorized and fresh wave.",
+      input: {},
+      ...(await operatorActionFreshnessV1(store)),
+      idempotencyKey: "planning-project:dispatch-wave:operator-request-dispatch",
+    };
+  } else if (
+    actionKind === "authorize-task-retry" ||
+    actionKind === "authorize-wave-resume"
+  ) {
+    await authorizePlanningWave(store);
+    await store.dispatchWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { actor: "human:dispatcher" },
+    );
+    await store.transitionWave(
+      "planning-project",
+      "planning-change",
+      "planning-wave",
+      { to: "running", actor: "system:runner" },
+    );
+    let terminalEventId: string;
+    if (actionKind === "authorize-task-retry") {
+      await store.transitionTask(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        "task-one",
+        { to: "running", actor: "system:runner" },
+      );
+      const failed = await store.transitionTask(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        "task-one",
+        { to: "failed", actor: "system:runner" },
+      );
+      terminalEventId = failed.events.find((event) => event.type === "task.failed")!.id;
+    } else {
+      const halted = await store.transitionWave(
+        "planning-project",
+        "planning-change",
+        "planning-wave",
+        { to: "halted", actor: "system:runner" },
+      );
+      terminalEventId = halted.events.find((event) => event.type === "wave.halted")!.id;
+    }
+    const halt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: `halt-operator-${actionKind}`,
+        detectorEventId: `detector-operator-${actionKind}`,
+      }),
+    );
+    const commonTarget = {
+      projectId: "planning-project",
+      changeId: "planning-change",
+      waveId: "planning-wave",
+      haltId: halt.halt.haltId,
+      incidentId: halt.incident.incidentId,
+    };
+    request = {
+      contractType: "OperatorActionRequestV1",
+      contractVersion: "1.0",
+      requestId: `operator-request-${actionKind}`,
+      actionKind,
+      target: actionKind === "authorize-task-retry"
+        ? { ...commonTarget, taskId: "task-one" }
+        : commonTarget,
+      actor,
+      reason: "An audited human independently authorizes one bounded recovery step.",
+      input: {
+        authorizationId: `authorization-${actionKind}`,
+        priorTerminalEventId: terminalEventId,
+        ...(actionKind === "authorize-task-retry"
+          ? {
+              newAttemptId: "operator-attempt-two",
+              attemptAllocationNonce: "operator-attempt-nonce-two",
+            }
+          : {}),
+        budgetOrdinal: 1,
+        authority: {
+          kind: "audited_human",
+          actor,
+          decisionId: `decision-${actionKind}`,
+          evidenceRefs: [`audit:${actionKind}`],
+        },
+      },
+      ...(await operatorActionFreshnessV1(store)),
+      idempotencyKey: `planning-project:${actionKind}:operator-request`,
+    };
+  } else {
+    await seedPhase4Scope(store);
+    const halt = await store.detectAndClassifyHalt(
+      "planning-project",
+      fingerprintedHaltContractsV1({
+        haltId: `halt-operator-${actionKind}`,
+        detectorEventId: `detector-operator-${actionKind}`,
+      }),
+    );
+    if (actionKind === "resolve-incident") {
+      await store.transitionHalt("planning-project", halt.halt.haltId, {
+        to: "escalated",
+        actor,
+        reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+        evidenceRefs: ["human:operator-resolution-triage"],
+      });
+      await store.transitionIncident(
+        "planning-project",
+        halt.incident.incidentId,
+        {
+          actor,
+          to: "mitigated",
+          reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+          evidenceRefs: ["human:operator-resolution-mitigation"],
+          receipt: {
+            ...mitigationReceiptV1(
+              "operator-resolution-mitigation",
+              halt.incident.incidentId,
+              publicationTime,
+            ),
+            evidenceRefs: ["human:operator-resolution-mitigation"],
+            correlationWindowSeconds:
+              halt.incident.correlationWindowPolicy.durationSeconds,
+          },
+        },
+      );
+    }
+    const receipt = {
+      contractType: "IncidentResolutionReceiptV1",
+      contractVersion: "1.0",
+      receiptId: "operator-final-resolution",
+      incidentId: halt.incident.incidentId,
+      projectId: "planning-project",
+      changeId: "planning-change",
+      resolutionKind: "resolved",
+      oracle: {
+        kind: "human",
+        outcome: "passed",
+        observationResult: "The incident resolution evidence was reviewed.",
+      },
+      noActiveHealing: true,
+      evidenceRefs: ["human:operator-resolution"],
+      resolvedBy: actor,
+      taxonomyPolicyVersion: "halt-taxonomy-v1",
+      correlationWindowSeconds:
+        halt.incident.correlationWindowPolicy.durationSeconds,
+    };
+    request = {
+      contractType: "OperatorActionRequestV1",
+      contractVersion: "1.0",
+      requestId: `operator-request-${actionKind}`,
+      actionKind,
+      target: {
+        projectId: "planning-project",
+        changeId: "planning-change",
+        incidentId: halt.incident.incidentId,
+      },
+      actor,
+      reason: "Apply the exact reviewed incident lifecycle decision.",
+      input: actionKind === "transition-incident"
+        ? {
+            to: "investigating",
+            reasonCode: "HUMAN_AUTHORITY_REQUIRED",
+            evidenceRefs: ["human:operator-investigation"],
+          }
+        : { receipt },
+      ...(await operatorActionFreshnessV1(store)),
+      idempotencyKey: `planning-project:${actionKind}:operator-request`,
+    };
+  }
+  return { store, request: parseOperatorActionRequestV1(request) };
+}
+
+test("Phase 7 Slice 1 previews and atomically executes all five closed actions through their owning handlers", async () => {
+  for (const actionKind of OPERATOR_ACTION_KINDS_V1) {
+    const root = await mkdtemp(join(tmpdir(), `orchestrator-operator-${actionKind}-`));
+    try {
+      const { store, request } = await operatorActionFixtureV1(root, actionKind);
+      const projectFile = join(
+        root,
+        "projects",
+        `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+      );
+      const beforePreview = await readFile(projectFile);
+      const preview = await store.previewOperatorActionV1(request);
+      assert.equal(preview.allowed, true, `${actionKind}: ${preview.reasonCodes}`);
+      assert.deepEqual(await readFile(projectFile), beforePreview, actionKind);
+      const receipt = await store.executeOperatorActionV1({
+        request,
+        previewHash: preview.previewHash,
+        confirmed: true,
+      });
+      assert.equal(receipt.outcome, "executed", actionKind);
+      assert.equal(receipt.canonicalEvent?.eventType, preview.expectedCanonicalEventType);
+      assert.deepEqual(
+        await new ChangeControlStore(root, {
+          now: () => "2026-07-31T10:00:00.000Z",
+          resolveRepositorySnapshot: async () => planningSnapshot(),
+        }).getOperatorActionReceiptV1(receipt.receiptId),
+        receipt,
+        actionKind,
+      );
+      const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+        events: Array<{ type: string }>;
+      };
+      assert.equal(
+        ledger.events.filter((event) => event.type === "operator.action-receipt-published").length,
+        1,
+        actionKind,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("operator action HTTP preview, execute, and receipt routes integrate all five action kinds with bounded private errors", async () => {
+  for (const actionKind of OPERATOR_ACTION_KINDS_V1) {
+    const root = await mkdtemp(join(tmpdir(), `orchestrator-operator-http-${actionKind}-`));
+    let server: ReturnType<express.Express["listen"]> | undefined;
+    try {
+      const { store, request } = await operatorActionFixtureV1(root, actionKind);
+      const httpApp = express();
+      httpApp.use(express.json({ limit: "64kb" }));
+      installOperatorActionRoutesV1(httpApp, new OperatorActionServiceV1(store));
+      server = httpApp.listen(0, "127.0.0.1");
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server!.once("listening", resolveListen);
+        server!.once("error", rejectListen);
+      });
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}/api/operator-actions/v1`;
+      const previewResponse = await fetch(`${base}/preview`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      assert.equal(previewResponse.status, 200, actionKind);
+      const preview = await previewResponse.json() as any;
+      assert.equal(preview.allowed, true, `${actionKind}: ${preview.reasonCodes}`);
+      const executeResponse = await fetch(`${base}/execute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          request,
+          previewHash: preview.previewHash,
+          confirmed: true,
+        }),
+      });
+      assert.equal(executeResponse.status, 200, actionKind);
+      const receipt = await executeResponse.json() as any;
+      assert.equal(receipt.actionKind, actionKind);
+      const getResponse = await fetch(`${base}/receipts/${receipt.receiptId}`);
+      assert.equal(getResponse.status, 200, actionKind);
+      assert.deepEqual(await getResponse.json(), receipt, actionKind);
+
+      if (actionKind === "transition-incident") {
+        const secret = "password=operator-secret-value";
+        const privateResponse = await fetch(`${base}/preview`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...request, reason: secret }),
+        });
+        assert.equal(privateResponse.status, 400);
+        const body = JSON.stringify(await privateResponse.json());
+        assert.equal(body.includes("operator-secret-value"), false);
+        assert.equal(body.length < 256, true);
+        const unknownResponse = await fetch(`${base}/preview`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...request, actionKind: "execute-doctor" }),
+        });
+        assert.equal(unknownResponse.status, 400);
+        assert.equal((await unknownResponse.json() as any).code, "UNKNOWN_ACTION");
+      }
+    } finally {
+      if (server)
+        await new Promise<void>((resolveClose) => server!.close(() => resolveClose()));
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("operator action execution rejects missing confirmation and stale evidence without mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-stale-"));
+  try {
+    const { store, request } = await operatorActionFixtureV1(root, "transition-incident");
+    const preview = await store.previewOperatorActionV1(request);
+    await assert.rejects(
+      store.executeOperatorActionV1({ request, previewHash: preview.previewHash }),
+      (error: any) => error.code === "CONFIRMATION_REQUIRED",
+    );
+    for (const changed of [
+      { ...request, actor: "human:another-operator" },
+      { ...request, reason: "A changed reason must receive its own fresh preview." },
+      { ...request, requestId: "operator-request-changed-request-hash" },
+      { ...request, target: { ...request.target, incidentId: "incident-mismatch" } },
+    ])
+      await assert.rejects(
+        store.executeOperatorActionV1({
+          request: changed,
+          previewHash: preview.previewHash,
+          confirmed: true,
+        }),
+        (error: any) =>
+          ["PROJECT_STATE_CHANGED", "TARGET_STATE_CHANGED"].includes(error.code),
+      );
+    await assert.rejects(
+      store.executeOperatorActionV1({
+        request,
+        previewHash: "f".repeat(64),
+        confirmed: true,
+      }),
+      (error: any) => error.code === "PROJECT_STATE_CHANGED",
+    );
+    await store.create("planning-project", {
+      changeId: "operator-concurrent-change",
+      actor: "human:other-writer",
+    });
+    await assert.rejects(
+      store.executeOperatorActionV1({
+        request,
+        previewHash: preview.previewHash,
+        confirmed: true,
+      }),
+      (error: any) => error.code === "SOURCE_WATERMARK_CHANGED",
+    );
+    const projection = await store.getHaltIncidentProjection("planning-project");
+    assert.equal(
+      projection.events.some((event) => event.type === "incident.investigating"),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator action idempotency and concurrent stale conflicts serialize to one mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-idempotency-"));
+  try {
+    const { store, request } = await operatorActionFixtureV1(root, "transition-incident");
+    const preview = await store.previewOperatorActionV1(request);
+    const execution = { request, previewHash: preview.previewHash, confirmed: true };
+    const [first, second] = await Promise.all([
+      store.executeOperatorActionV1(execution),
+      store.executeOperatorActionV1(execution),
+    ]);
+    assert.deepEqual(second, first);
+    const conflictingRequest = parseOperatorActionRequestV1({
+      ...request,
+      requestId: "operator-request-conflicting-reuse",
+      reason: "A conflicting reuse must not inherit the original mutation.",
+    });
+    await assert.rejects(
+      store.executeOperatorActionV1({
+        request: conflictingRequest,
+        previewHash: preview.previewHash,
+        confirmed: true,
+      }),
+      (error: any) => error.code === "IDEMPOTENCY_CONFLICT",
+    );
+    const ledger = JSON.parse(await readFile(join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    ), "utf8")) as { events: Array<{ type: string }> };
+    assert.equal(ledger.events.filter((event) => event.type === "incident.investigating").length, 1);
+    assert.equal(ledger.events.filter((event) => event.type === "operator.action-receipt-published").length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent distinct operator actions have one serialized winner and deterministic stale losers", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-concurrent-stale-"));
+  try {
+    const { store, request } = await operatorActionFixtureV1(root, "transition-incident");
+    const firstPreview = await store.previewOperatorActionV1(request);
+    const secondRequest = parseOperatorActionRequestV1({
+      ...request,
+      requestId: "operator-request-second-contender",
+      idempotencyKey: "planning-project:transition-incident:second-contender",
+      reason: "A second explicit operator decision contends on the same state.",
+    });
+    const secondPreview = await store.previewOperatorActionV1(secondRequest);
+    const results = await Promise.allSettled([
+      store.executeOperatorActionV1({
+        request,
+        previewHash: firstPreview.previewHash,
+        confirmed: true,
+      }),
+      store.executeOperatorActionV1({
+        request: secondRequest,
+        previewHash: secondPreview.previewHash,
+        confirmed: true,
+      }),
+    ]);
+    assert.equal(results[0].status, "fulfilled");
+    assert.equal(results[1].status, "rejected");
+    assert.equal((results[1] as PromiseRejectedResult).reason.code, "SOURCE_WATERMARK_CHANGED");
+    const projection = await store.getHaltIncidentProjection("planning-project");
+    assert.equal(projection.events.filter((event) => event.type === "incident.investigating").length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator action replay rejects a receipt without its adjacent owning mutation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operator-replay-split-"));
+  try {
+    const { store, request } = await operatorActionFixtureV1(root, "transition-incident");
+    const preview = await store.previewOperatorActionV1(request);
+    await store.executeOperatorActionV1({
+      request,
+      previewHash: preview.previewHash,
+      confirmed: true,
+    });
+    const projectFile = join(
+      root,
+      "projects",
+      `${createHash("sha256").update("planning-project").digest("hex")}.json`,
+    );
+    const ledger = JSON.parse(await readFile(projectFile, "utf8")) as {
+      events: Array<Record<string, unknown>>;
+    };
+    const mutationIndex = ledger.events.findIndex(
+      (event) => event.type === "incident.investigating",
+    );
+    assert.notEqual(mutationIndex, -1);
+    ledger.events.splice(mutationIndex, 1);
+    ledger.events.forEach((event, index) => {
+      event.sequence = index + 1;
+    });
+    rehashTestLedger(ledger);
+    await writeFile(projectFile, JSON.stringify(ledger, null, 2), "utf8");
+    await assert.rejects(
+      new ChangeControlStore(root).getHaltIncidentProjection("planning-project"),
+      (error: any) =>
+        error instanceof ChangeControlError &&
+        error.code === "CORRUPT_LEDGER" &&
+        /adjacent owning mutation/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("operator action crash boundaries publish neither side or both sides and replay exact retry", async () => {
+  for (const boundary of ["before_atomic_publish", "after_atomic_publish"] as const) {
+    const root = await mkdtemp(join(tmpdir(), `orchestrator-operator-crash-${boundary}-`));
+    let crash = true;
+    try {
+      const { store, request } = await operatorActionFixtureV1(
+        root,
+        "transition-incident",
+        {
+          onOperatorActionBoundary: async (observed) => {
+            if (crash && observed === boundary) throw new Error(`crash:${boundary}`);
+          },
+        },
+      );
+      const preview = await store.previewOperatorActionV1(request);
+      await assert.rejects(
+        store.executeOperatorActionV1({ request, previewHash: preview.previewHash, confirmed: true }),
+        new RegExp(`crash:${boundary}`),
+      );
+      crash = false;
+      const restarted = new ChangeControlStore(root, {
+        now: () => "2026-07-31T10:00:00.000Z",
+      });
+      if (boundary === "before_atomic_publish") {
+        const unchanged = await restarted.getHaltIncidentProjection("planning-project");
+        assert.equal(unchanged.events.some((event) => event.type === "incident.investigating"), false);
+        const freshPreview = await restarted.previewOperatorActionV1(request);
+        assert.equal(freshPreview.allowed, true);
+      } else {
+        const receipt = await restarted.executeOperatorActionV1({
+          request,
+          previewHash: preview.previewHash,
+          confirmed: true,
+        });
+        assert.equal(receipt.outcome, "executed");
+        const projection = await restarted.getHaltIncidentProjection("planning-project");
+        assert.equal(projection.events.filter((event) => event.type === "incident.investigating").length, 1);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test("operator projections are deterministic, privacy-bounded, paginated, and watermark-fenced", async () => {
