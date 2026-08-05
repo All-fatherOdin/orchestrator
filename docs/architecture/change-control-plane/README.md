@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-8 implemented
+Status: evidence-backed target, Phase 1-8 implemented; Phase 7-8 completion-reviewed
 Last reviewed: 2026-08-05
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -30,7 +30,7 @@ were observed.
 11. [operator-actions-contract-v1.md](operator-actions-contract-v1.md) defines
     the accepted and implemented Phase 7 boundary.
 12. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
-    accepted and implemented Phase 8 boundary.
+    accepted, implemented, and completion-reviewed Phase 8 boundary.
 
 ## Current Boundary
 
@@ -63,6 +63,13 @@ or filesystem mutation for both selectors. The dashboard consumes only Phase 6
 selection evidence and Phase 8 GET responses, renders explicit bounded evidence
 and failure states, and downloads returned JSON only on direct user action. No
 publication or new authority is implied.
+
+The Phase 8 completion review passed its focused acceptance boundary on
+2026-08-05: 13 contract, replay, privacy, limit, HTTP, no-mutation, and dashboard
+tests passed; TypeScript, the production Vite build, diff checks, and desktop/
+mobile rendered smoke passed. The combined server/Electron regression command
+again exceeded the six-minute environment cap without diagnostic output and is
+recorded as an environment risk, not passing evidence.
 
 ## Authority
 

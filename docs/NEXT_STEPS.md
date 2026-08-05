@@ -27,7 +27,7 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat Phase 6 and Phase 7 as implemented and completion-reviewed. The backend
+Treat Phase 6, Phase 7, and Phase 8 as implemented and completion-reviewed. The backend
 provides deterministic
 no-mutation preview, fresh explicit-confirmation execution, atomic immutable
 receipts, exact idempotency, serialized conflict handling, and replay for the
@@ -40,6 +40,14 @@ replay, restart, and explicit no-mutation evidence. Slice 2 consumes only
 bounded Phase 6 selection evidence and Phase 8 GET responses, renders explicit
 evidence/error states, and permits only a direct user-initiated JSON download.
 Every external publication capability remains deferred.
+
+The Phase 8 completion review passed all 13 focused contract/service/API/UI
+tests, TypeScript, the production Vite build, diff checks, and desktop/mobile
+rendered smoke with a clean console and no page-level overflow. The combined
+server/Electron command exceeded its six-minute environment cap without a
+failure diagnostic; keep that as explicit runtime-environment risk rather than
+claiming a full-suite pass. The next implementation phase requires a separately
+accepted contract before code changes begin.
 
 ## Source Boundaries
 
@@ -62,7 +70,7 @@ Every external publication capability remains deferred.
   `docs/architecture/change-control-plane/operator-projections-contract-v1.md`.
 - Implemented and completion-reviewed Phase 7 contract:
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
-- Implemented Phase 8 contract:
+- Implemented and completion-reviewed Phase 8 contract:
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
 - Phase 2-8 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:

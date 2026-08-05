@@ -103,6 +103,16 @@ covered by focused tests. The dashboard selects existing projects/changes only
 through Phase 6 evidence, consumes only Phase 8 GET responses, exposes bounded
 watermark, sequence, completeness, warning, privacy, event, and receipt state,
 and downloads the already-returned JSON only after a direct user action. Phase
-8 still does not authorize persistent
-archives, notifications, external publication, background capture, search
+8 still does not authorize persistent archives, notifications, external
+publication, background capture, search
 infrastructure, a database, new actions, or new authority types.
+
+The Phase 8 completion review passed on 2026-08-05. All 13 focused schema,
+selector, determinism, watermark, privacy, limit, replay, receipt-lineage,
+HTTP, no-mutation, and dashboard tests passed. TypeScript, the production Vite
+build with the read-only-safe config loader, and diff checks passed. Desktop and
+390 px mobile rendered smoke verified `Control plane -> Audit bundles`, the
+explicit no-source state, keyboard-semantic controls, a clean console, and no
+page-level overflow. The combined server/Electron regression command exceeded
+369 seconds without emitting a failure diagnostic, so it remains an explicit
+runtime-environment risk and is not recorded as passing evidence.
