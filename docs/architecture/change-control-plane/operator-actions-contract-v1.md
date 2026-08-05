@@ -1,8 +1,9 @@
 # Operator Actions Contract v1
 
-Status: accepted contract; Phase 7 Slice 1 implemented
+Status: accepted contract; Phase 7 Slices 1-2 implemented
 Accepted: 2026-08-03
 Slice 1 implemented: 2026-08-05
+Slice 2 implemented: 2026-08-05
 
 ## Purpose
 
@@ -188,7 +189,13 @@ Add contextual controls, confirmation, reason capture, denial/stale states,
 receipt rendering, and projection refresh to the existing dashboard. Consume
 only the Phase 7 APIs; do not import the command store into the browser.
 
-Implementation status: not implemented.
+Implementation status: implemented. The dashboard exposes incident transition
+and resolution controls only on projection records with an unambiguous complete
+target. It obtains a fresh preview, invalidates that preview whenever operator
+input changes, enables execution only for an allowed preview after a direct
+confirmation, renders the immutable receipt, and refreshes the affected
+projection. Actions whose complete target evidence is absent from the Phase 6
+projection remain hidden rather than inferred.
 
 ## Acceptance
 

@@ -179,7 +179,7 @@ const {
   emptyQueue,
   optionalNumberValue,
 } = await import("../src/App.tsx");
-const { OperatorDashboard, operatorViews } = await import(
+const { OperatorDashboard, operatorViews, operatorActionSourceWatermark } = await import(
   "../src/OperatorDashboard.tsx"
 );
 const {
@@ -11420,7 +11420,7 @@ test("startup preserves sealed legacy records without live Phase 2 merge authori
   }
 });
 
-test("Phase 6 dashboard exposes five read-only operator views without command controls", async () => {
+test("Phase 7 Slice 2 dashboard keeps five projections and gates contextual actions through preview and confirmation", async () => {
   const markup = renderToStaticMarkup(createElement(OperatorDashboard));
   assert.equal(operatorViews.length, 5);
   for (const label of [
@@ -11430,18 +11430,26 @@ test("Phase 6 dashboard exposes five read-only operator views without command co
     "Prompt registry",
     "Eval lineage",
   ]) assert.match(markup, new RegExp(`>${label}<`));
-  assert.match(markup, /Read-only operational evidence/);
+  assert.match(markup, /explicitly confirmed actions/);
   assert.match(markup, /Reading canonical projections/);
-  assert.match(await readFile(join("src", "OperatorDashboard.tsx"), "utf8"), /requestId === requestIdRef\.current/);
+  const source = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
+  assert.match(source, /requestId === requestIdRef\.current/);
+  assert.match(source, /\/api\/operator-actions\/v1\/preview/);
+  assert.match(source, /\/api\/operator-actions\/v1\/execute/);
+  assert.match(source, /confirmed: true/);
+  assert.match(source, /disabled=\{busy \|\| !preview\?\.allowed\}/);
+  assert.match(source, /await onExecuted\(\)/);
+  assert.match(source, /role="dialog"/);
+  assert.match(source, /event\.key === "Escape"/);
+  assert.equal(source.includes("change-control-v1"), false);
   assert.match(await readFile(join("src", "styles.css"), "utf8"), /\.operatorShell \.sidebar nav\{display:flex/);
-  for (const prohibited of [
-    "Dispatch",
-    "Retry task",
-    "Resume wave",
-    "Run Doctor",
-    "Close incident",
-    "Promote champion",
-  ]) assert.equal(markup.includes(prohibited), false, prohibited);
+  for (const prohibited of ["Run Doctor", "Promote champion", "sendAnyway", "force", "ignore"])
+    assert.equal(markup.includes(prohibited), false, prohibited);
+  const mark = { projectId: "project-one", sourceRef: "ignored-client-value", sequence: 7, hash: "a".repeat(64) };
+  assert.equal(
+    await operatorActionSourceWatermark(mark),
+    operatorActionSourceWatermarkV1(mark.projectId, mark.sequence, mark.hash),
+  );
 });
 
 test("visual task editor exposes accessible optional context controls", () => {

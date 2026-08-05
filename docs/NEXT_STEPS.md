@@ -27,12 +27,14 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Treat Phase 6 and Phase 7 Slice 1 as implemented, with their feature-specific
-checks verified. The backend now provides deterministic no-mutation preview,
-fresh explicit-confirmation execution, atomic immutable receipts, exact
-idempotency, serialized conflict handling, and replay for the five closed
-action kinds. The next safe Phase 7 boundary is Slice 2 dashboard controls;
-they must consume only these APIs and may not add actions or authority.
+Treat Phase 6 and both Phase 7 slices as implemented, with their
+feature-specific checks verified. The backend provides deterministic
+no-mutation preview, fresh explicit-confirmation execution, atomic immutable
+receipts, exact idempotency, serialized conflict handling, and replay for the
+five closed action kinds. The dashboard exposes contextual controls only when
+the projection proves a complete target; it never invents missing plan,
+authorization, terminal-event, or recovery evidence. The next safe step is a
+bounded Phase 7 completion review before defining any Phase 8 contract.
 
 ## Source Boundaries
 
