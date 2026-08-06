@@ -40,15 +40,15 @@ export function auditBundleRequestPath(selector: AuditSelector, sourceWatermark?
 }
 
 function errorTitle(code: string): string {
-  if (code === "SOURCE_WATERMARK_CHANGED") return "Evidence is stale";
-  if (code === "PRIVACY_VIOLATION") return "Bundle rejected by privacy policy";
-  if (code === "SOURCE_UNAVAILABLE" || code === "CHANGE_NOT_FOUND") return "Evidence is unavailable";
-  if (code === "UNSUPPORTED_EVIDENCE") return "Evidence is unsupported";
-  return "Audit bundle unavailable";
+  if (code === "SOURCE_WATERMARK_CHANGED") return "Доказательства устарели";
+  if (code === "PRIVACY_VIOLATION") return "Пакет отклонён политикой конфиденциальности";
+  if (code === "SOURCE_UNAVAILABLE" || code === "CHANGE_NOT_FOUND") return "Доказательства недоступны";
+  if (code === "UNSUPPORTED_EVIDENCE") return "Доказательства не поддерживаются";
+  return "Пакет аудита недоступен";
 }
 
 function short(value: string | null | undefined, length = 16): string {
-  return value ? value.slice(0, length) : "genesis";
+  return value ? value.slice(0, length) : "начало";
 }
 
 function tone(value: string): string {
@@ -78,7 +78,7 @@ export function AuditBundlesDashboard() {
       fetch("/api/operator-projections/v1/overview?limit=25", { cache: "no-store" }),
       fetch("/api/operator-projections/v1/execution-bucket?limit=25", { cache: "no-store" }),
     ]).then(async ([overviewResponse, changesResponse]) => {
-      if (!overviewResponse.ok || !changesResponse.ok) throw new Error("Phase 6 evidence sources are unavailable.");
+      if (!overviewResponse.ok || !changesResponse.ok) throw new Error("Источники доказательств фазы 6 недоступны.");
       const [overview, changeProjection] = await Promise.all([
         overviewResponse.json() as Promise<ProjectionResponse>,
         changesResponse.json() as Promise<ProjectionResponse>,
@@ -102,7 +102,7 @@ export function AuditBundlesDashboard() {
       if (nextChanges.length) setChangeKey((current) => current || `${nextChanges[0].projectId}\0${nextChanges[0].changeId}`);
       setError(null);
     }).catch((reason) => {
-      if (requestId === requestRef.current) setError({ code: "SOURCE_UNAVAILABLE", message: reason instanceof Error ? reason.message : "Evidence sources are unavailable." });
+      if (requestId === requestRef.current) setError({ code: "SOURCE_UNAVAILABLE", message: reason instanceof Error ? reason.message : "Источники доказательств недоступны." });
     }).finally(() => {
       if (requestId === requestRef.current) setSourcesLoading(false);
     });
@@ -131,7 +131,7 @@ export function AuditBundlesDashboard() {
       const body = await response.json() as AuditBundle | { code?: string; error?: string };
       if (!response.ok) {
         const code = "code" in body && body.code ? body.code : "SOURCE_UNAVAILABLE";
-        throw Object.assign(new Error("error" in body && body.error ? body.error : "Audit bundle request failed."), { code });
+        throw Object.assign(new Error("error" in body && body.error ? body.error : "Не удалось запросить пакет аудита."), { code });
       }
       setBundle(body as AuditBundle);
     } catch (reason) {
@@ -159,34 +159,34 @@ export function AuditBundlesDashboard() {
     setFromSequence(1); setToSequence(Math.max(mark?.sequence ?? 1, 1));
   }
 
-  if (sourcesLoading) return <div className="operatorLoading"><i /><span>Reading Phase 6 evidence sources…</span></div>;
-  if (!projects.length) return <div className="operatorEmpty"><span aria-hidden="true">○</span><h3>No audit sources</h3><p>No validated project ledgers are available for a bounded audit bundle.</p></div>;
+  if (sourcesLoading) return <div className="operatorLoading"><i /><span>Чтение источников доказательств фазы 6…</span></div>;
+  if (!projects.length) return <div className="operatorEmpty"><span aria-hidden="true">○</span><h3>Нет источников аудита</h3><p>Для ограниченного пакета аудита нет проверенных журналов проектов.</p></div>;
 
   return <div className="auditWorkspace">
-    <section className="auditBuilder" aria-label="Audit bundle selector">
-      <header><div><small>READ-ONLY EXPORT</small><h2>Build a bounded audit bundle</h2></div><span>No canonical writes</span></header>
-      <div className="auditMode" role="group" aria-label="Audit selector type">
-        <button className={mode === "range" ? "active" : ""} onClick={() => { setMode("range"); setBundle(null); setError(null); }}>Project range</button>
-        <button className={mode === "change" ? "active" : ""} onClick={() => { setMode("change"); setBundle(null); setError(null); }}>Exact change</button>
+    <section className="auditBuilder" aria-label="Выбор пакета аудита">
+      <header><div><small>ЭКСПОРТ ТОЛЬКО ДЛЯ ЧТЕНИЯ</small><h2>Собрать ограниченный пакет аудита</h2></div><span>Без канонических записей</span></header>
+      <div className="auditMode" role="group" aria-label="Тип выбора для аудита">
+        <button className={mode === "range" ? "active" : ""} onClick={() => { setMode("range"); setBundle(null); setError(null); }}>Диапазон проекта</button>
+        <button className={mode === "change" ? "active" : ""} onClick={() => { setMode("change"); setBundle(null); setError(null); }}>Точное изменение</button>
       </div>
       {mode === "range" ? <div className="auditFields">
-        <label>Project<select aria-label="Audit project" value={projectId} onChange={(event) => chooseProject(event.target.value)}>{projects.map((item) => <option key={item.projectId} value={item.projectId}>{item.projectId} · seq {item.sequence}</option>)}</select></label>
-        <label>From sequence<input aria-label="From sequence" type="number" min="1" max={selectedProject?.sequence || 1} value={fromSequence} onChange={(event) => { setFromSequence(Number(event.target.value)); setBundle(null); }} /></label>
-        <label>To sequence<input aria-label="To sequence" type="number" min={fromSequence} max={selectedProject?.sequence || 1} value={toSequence} onChange={(event) => { setToSequence(Number(event.target.value)); setBundle(null); }} /></label>
+        <label>Проект<select aria-label="Проект аудита" value={projectId} onChange={(event) => chooseProject(event.target.value)}>{projects.map((item) => <option key={item.projectId} value={item.projectId}>{item.projectId} · посл. {item.sequence}</option>)}</select></label>
+        <label>Начальная последовательность<input aria-label="Начальная последовательность" type="number" min="1" max={selectedProject?.sequence || 1} value={fromSequence} onChange={(event) => { setFromSequence(Number(event.target.value)); setBundle(null); }} /></label>
+        <label>Конечная последовательность<input aria-label="Конечная последовательность" type="number" min={fromSequence} max={selectedProject?.sequence || 1} value={toSequence} onChange={(event) => { setToSequence(Number(event.target.value)); setBundle(null); }} /></label>
       </div> : <div className="auditFields exact">
-        <label>Existing change<select aria-label="Audit change" value={changeKey} onChange={(event) => { setChangeKey(event.target.value); setBundle(null); setError(null); }}>{changes.map((item) => <option key={`${item.projectId}:${item.changeId}`} value={`${item.projectId}\0${item.changeId}`}>{item.projectId} / {item.changeId}</option>)}</select></label>
-        {!changes.length ? <p className="auditInlineNotice">No exact changes are visible in the current bounded Phase 6 page.</p> : null}
+        <label>Существующее изменение<select aria-label="Изменение для аудита" value={changeKey} onChange={(event) => { setChangeKey(event.target.value); setBundle(null); setError(null); }}>{changes.map((item) => <option key={`${item.projectId}:${item.changeId}`} value={`${item.projectId}\0${item.changeId}`}>{item.projectId} / {item.changeId}</option>)}</select></label>
+        {!changes.length ? <p className="auditInlineNotice">На текущей ограниченной странице фазы 6 нет точных изменений.</p> : null}
       </div>}
-      <footer><span>{mode === "range" ? `Canonical range · ${fromSequence}–${toSequence}` : "Exact change identity"}</span><button onClick={() => void loadBundle(false)} disabled={loading || !selector}>{loading ? "Generating…" : "Generate bundle"}</button></footer>
+      <footer><span>{mode === "range" ? `Канонический диапазон · ${fromSequence}–${toSequence}` : "Точная идентичность изменения"}</span><button onClick={() => void loadBundle(false)} disabled={loading || !selector}>{loading ? "Создаём…" : "Создать пакет"}</button></footer>
     </section>
-    {error ? <section className="auditState error" role="alert"><small>{error.code}</small><h3>{errorTitle(error.code)}</h3><p>{error.message}</p><button onClick={() => void loadBundle(error.code === "SOURCE_WATERMARK_CHANGED")}>Retry from current evidence</button></section> : null}
-    {bundle ? <section className="auditResult" aria-label="Audit bundle result">
+    {error ? <section className="auditState error" role="alert"><small>{error.code}</small><h3>{errorTitle(error.code)}</h3><p>{error.message}</p><button onClick={() => void loadBundle(error.code === "SOURCE_WATERMARK_CHANGED")}>Повторить с текущими доказательствами</button></section> : null}
+    {bundle ? <section className="auditResult" aria-label="Результат пакета аудита">
       <header><div><small>{bundle.contractType} · {bundle.contractVersion}</small><h2>{bundle.selector.projectId}</h2></div><div className={`auditCompleteness ${bundle.completeness.status}`}><span>{bundle.completeness.status.replaceAll("-", " ")}</span><code>{short(bundle.bundleHash)}</code></div></header>
-      <div className="auditSummary"><div><span>Source sequence</span><strong>{bundle.source.projectSequence}</strong></div><div><span>Events</span><strong>{bundle.canonicalEvents.length}</strong></div><div><span>Receipts</span><strong>{bundle.receiptReferences.length}</strong></div><div><span>Projections</span><strong>{bundle.projectionSnapshots.length}</strong></div><div><span>Watermark</span><code>{short(bundle.source.sourceWatermark)}</code></div></div>
-      {bundle.warnings.length ? <div className="operatorWarnings">{bundle.warnings.map((warning) => <p key={`${warning.code}:${warning.message}`}><b>{warning.code.replaceAll("_", " ")}</b><span>bounded warning</span><small>{warning.message}</small></p>)}</div> : <div className="auditSafeState" role="status">Completeness checks passed with no warnings.</div>}
-      <div className="auditEvidenceGrid"><article><h3>Sequence coverage</h3>{Object.entries(bundle.sequenceBoundaries).map(([key, value]) => <p key={key}><span>{key.replaceAll(/([A-Z])/g, " $1")}</span><strong>{value ?? "—"}</strong></p>)}</article><article><h3>Completeness</h3>{bundle.completeness.checks.map((check) => <p key={check.code}><span>{check.code.replaceAll("_", " ")}</span><strong className={tone(check.status)}>{check.status}</strong></p>)}</article><article><h3>Privacy</h3><p><span>Scan</span><strong className={tone(bundle.privacy.scanStatus)}>{bundle.privacy.scanStatus}</strong></p><p><span>Excluded classes</span><strong>{bundle.privacy.excludedFieldClasses.length}</strong></p><p><span>Policy</span><code>{bundle.privacy.policyVersion}</code></p></article></div>
-      <div className="auditReferences"><header><h3>Event and receipt references</h3><span>Bounded response only</span></header>{bundle.canonicalEvents.slice(0, 25).map((event) => <p key={event.eventId}><code>#{event.sequence}</code><span>{event.eventType}</span><code>{short(event.eventHash, 12)}</code></p>)}{bundle.receiptReferences.slice(0, 25).map((receipt) => <p key={`${receipt.receiptType}:${receipt.receiptId}`}><code>receipt</code><span>{receipt.receiptType} · {receipt.receiptId}</span><code>{short(receipt.eventHash, 12)}</code></p>)}</div>
-      <footer><button className="secondary" onClick={() => void loadBundle(true)} disabled={loading}>Verify current watermark</button><button onClick={downloadBundle}>Download bounded JSON</button></footer>
-    </section> : !error ? <div className="operatorEmpty auditWaiting"><span aria-hidden="true">↓</span><h3>Bundle not generated</h3><p>Select bounded evidence above. Nothing is downloaded automatically.</p></div> : null}
+      <div className="auditSummary"><div><span>Последовательность источника</span><strong>{bundle.source.projectSequence}</strong></div><div><span>События</span><strong>{bundle.canonicalEvents.length}</strong></div><div><span>Квитанции</span><strong>{bundle.receiptReferences.length}</strong></div><div><span>Проекции</span><strong>{bundle.projectionSnapshots.length}</strong></div><div><span>Отметка данных</span><code>{short(bundle.source.sourceWatermark)}</code></div></div>
+      {bundle.warnings.length ? <div className="operatorWarnings">{bundle.warnings.map((warning) => <p key={`${warning.code}:${warning.message}`}><b>{warning.code.replaceAll("_", " ")}</b><span>ограниченное предупреждение</span><small>{warning.message}</small></p>)}</div> : <div className="auditSafeState" role="status">Проверки полноты пройдены без предупреждений.</div>}
+      <div className="auditEvidenceGrid"><article><h3>Покрытие последовательности</h3>{Object.entries(bundle.sequenceBoundaries).map(([key, value]) => <p key={key}><span>{key.replaceAll(/([A-Z])/g, " $1")}</span><strong>{value ?? "—"}</strong></p>)}</article><article><h3>Полнота</h3>{bundle.completeness.checks.map((check) => <p key={check.code}><span>{check.code.replaceAll("_", " ")}</span><strong className={tone(check.status)}>{check.status}</strong></p>)}</article><article><h3>Конфиденциальность</h3><p><span>Сканирование</span><strong className={tone(bundle.privacy.scanStatus)}>{bundle.privacy.scanStatus}</strong></p><p><span>Исключённые классы</span><strong>{bundle.privacy.excludedFieldClasses.length}</strong></p><p><span>Политика</span><code>{bundle.privacy.policyVersion}</code></p></article></div>
+      <div className="auditReferences"><header><h3>Ссылки на события и квитанции</h3><span>Только ограниченный ответ</span></header>{bundle.canonicalEvents.slice(0, 25).map((event) => <p key={event.eventId}><code>#{event.sequence}</code><span>{event.eventType}</span><code>{short(event.eventHash, 12)}</code></p>)}{bundle.receiptReferences.slice(0, 25).map((receipt) => <p key={`${receipt.receiptType}:${receipt.receiptId}`}><code>квитанция</code><span>{receipt.receiptType} · {receipt.receiptId}</span><code>{short(receipt.eventHash, 12)}</code></p>)}</div>
+      <footer><button className="secondary" onClick={() => void loadBundle(true)} disabled={loading}>Проверить текущую отметку</button><button onClick={downloadBundle}>Скачать ограниченный JSON</button></footer>
+    </section> : !error ? <div className="operatorEmpty auditWaiting"><span aria-hidden="true">↓</span><h3>Пакет не создан</h3><p>Выберите ограниченные доказательства выше. Ничего не скачивается автоматически.</p></div> : null}
   </div>;
 }

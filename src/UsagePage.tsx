@@ -56,7 +56,7 @@ function TaskBar({ task, maximum }: { task: ViewTask; maximum: number }) {
   const uncachedInput = Math.max(0, value.input - value.cacheRead);
   const width = maximum ? Math.max(2, total / maximum * 100) : 0;
   return <div className="usageBarRow" title={`${task.title}: ${format.format(total)} токенов; кэш-чтение: ${format.format(value.cacheRead)}; кэш-запись: ${format.format(value.cacheWrite)}`}>
-    <span className="usageBarLabel">{task.queueIndex ? `Q${task.queueIndex} · ` : ""}{task.key ?? task.id}</span>
+    <span className="usageBarLabel">{task.queueIndex ? `Оч. ${task.queueIndex} · ` : ""}{task.key ?? task.id}</span>
     <div className="usageBarTrack"><div className="usageBar" style={{ width: `${width}%` }}>
       {uncachedInput ? <i className="input" style={{ flex: uncachedInput }} /> : null}
       {value.output ? <i className="output" style={{ flex: value.output }} /> : null}
@@ -119,7 +119,7 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
       const value = run.pipeline ? `pipeline:${run.pipeline.id}` : `run:${run.id}`;
       if (seen.has(value)) return [];
       seen.add(value);
-      return [{ value, label: run.pipeline ? `Pipeline · ${run.project.name} · ${run.pipeline.total} очереди` : `${run.project.name} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : run.id}` }];
+      return [{ value, label: run.pipeline ? `Цепочка · ${run.project.name} · ${run.pipeline.total} очереди` : `${run.project.name} · ${run.startedAt ? new Date(run.startedAt).toLocaleString() : run.id}` }];
     });
   }, [runs]);
   useEffect(() => {
@@ -153,25 +153,25 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
   return <section className="usagePage">
     <div className="sectionHeading usageHeading"><div><h2>Расход</h2><span>Токены по запуску, очереди и отдельной задаче</span></div></div>
     <div className="usageFilters">
-      <label>Запуск или pipeline<select value={source} onChange={(event) => setSource(event.target.value)}>
+      <label>Запуск или цепочка<select value={source} onChange={(event) => setSource(event.target.value)}>
         {!sources.length ? <option value="">Нет запусков</option> : null}
         {sources.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
       </select></label>
       <label>Очередь<select value={queueId} onChange={(event) => setQueueId(event.target.value)} disabled={!sourceRuns.length || !isPipeline}>
-        <option value="all">{isPipeline ? "Все очереди pipeline" : "Текущая очередь"}</option>
+        <option value="all">{isPipeline ? "Все очереди цепочки" : "Текущая очередь"}</option>
         {isPipeline ? sourceRuns.map((run) => <option key={run.id} value={run.id}>Очередь {run.pipeline?.index} из {run.pipeline?.total} · {run.project.name}</option>) : null}
       </select></label>
       <label>Задача<select value={taskId} onChange={(event) => setTaskId(event.target.value)} disabled={!allTasks.length}>
         <option value="all">Все задачи</option>
-        {allTasks.map((task) => <option key={`${task.runId}:${task.id}`} value={`${task.runId}:${task.id}`}>{task.queueIndex ? `Q${task.queueIndex} · ` : ""}{task.key ?? task.id} · {task.title}</option>)}
+        {allTasks.map((task) => <option key={`${task.runId}:${task.id}`} value={`${task.runId}:${task.id}`}>{task.queueIndex ? `Оч. ${task.queueIndex} · ` : ""}{task.key ?? task.id} · {task.title}</option>)}
       </select></label>
     </div>
     <div className="usagePagination"><span>Запуски: {runsTotal ? `${runsOffset + 1}–${Math.min(runsOffset + pageSize, runsTotal)} из ${runsTotal}` : "нет"}</span><button onClick={() => setRunsOffset((value) => Math.max(0, value - pageSize))} disabled={runsOffset === 0}>Назад</button><button onClick={() => setRunsOffset((value) => value + pageSize)} disabled={runsOffset + pageSize >= runsTotal}>Далее</button></div>
     {loading ? <p className="empty">Загружаем данные запуска…</p> : !sourceRuns.length ? <p className="empty">Выберите запуск, чтобы посмотреть расход.</p> : <>
-      <div className="usageMetrics"><UsageMetric label="Всего токенов" value={usage.input + usage.output} /><UsageMetric label="Входящие токены" value={usage.input} /><UsageMetric label="Исходящие токены" value={usage.output} /><UsageMetric label="Кэш-чтение" value={usage.cacheRead} title={`Метрики endpoint: ${format.format(endpointCacheTotals.read)}`} /><UsageMetric label="Кэш-запись" value={usage.cacheWrite} title={`Метрики endpoint: ${format.format(endpointCacheTotals.write)}`} /><ProcessMetric label="Время задач" value={formatDuration(processTotals.durationMs)} /><ProcessMetric label="Запуски исполнителя" value={processTotals.attempts === null ? "—" : format.format(processTotals.attempts)} /><ProcessMetric label="Циклы проверки" value={processTotals.cycles === null ? "—" : format.format(processTotals.cycles)} /><article className="usageMetric"><span>Стоимость</span><strong>Не предоставлена CLI</strong><small>Без тарифов провайдера оценка была бы неточной</small></article></div>
-      {!hasUsage && !hasProcessMetrics ? <p className="usageEmpty">Для выбранных данных пока нет telemetry-событий. Метрики появятся у новых запусков; старые записи продолжат открываться без миграции.</p> : <>
+      <div className="usageMetrics"><UsageMetric label="Всего токенов" value={usage.input + usage.output} /><UsageMetric label="Входящие токены" value={usage.input} /><UsageMetric label="Исходящие токены" value={usage.output} /><UsageMetric label="Кэш-чтение" value={usage.cacheRead} title={`Метрики точки доступа: ${format.format(endpointCacheTotals.read)}`} /><UsageMetric label="Кэш-запись" value={usage.cacheWrite} title={`Метрики точки доступа: ${format.format(endpointCacheTotals.write)}`} /><ProcessMetric label="Время задач" value={formatDuration(processTotals.durationMs)} /><ProcessMetric label="Запуски исполнителя" value={processTotals.attempts === null ? "—" : format.format(processTotals.attempts)} /><ProcessMetric label="Циклы проверки" value={processTotals.cycles === null ? "—" : format.format(processTotals.cycles)} /><article className="usageMetric"><span>Стоимость</span><strong>Не предоставлена CLI</strong><small>Без тарифов провайдера оценка была бы неточной</small></article></div>
+      {!hasUsage && !hasProcessMetrics ? <p className="usageEmpty">Для выбранных данных пока нет событий телеметрии. Метрики появятся у новых запусков; старые записи продолжат открываться без миграции.</p> : <>
         {hasUsage && taskId === "all" ? <section className="usageChart"><div className="usageChartHead"><h3>{isPipeline && queueId === "all" ? "Токены по всем очередям" : "Токены по задачам"}</h3><span><i className="input" /> входящие без кэша <i className="output" /> исходящие <i className="cached" /> кэш-чтение</span></div>{allTasks.map((task) => <TaskBar key={`${task.runId}:${task.id}`} task={task} maximum={maximum} />)}</section> : null}
-        {!hasUsage ? <p className="usageEmpty">Токены для этих задач не записаны; процессные метрики показаны по доступным lifecycle-полям.</p> : null}
+        {!hasUsage ? <p className="usageEmpty">Токены для этих задач не записаны; процессные метрики показаны по доступным полям жизненного цикла.</p> : null}
         <section className="usageTable"><h3>Детализация задач</h3><div className="usageTableHead"><span>Задача</span><span>Модель</span><span>Входящие</span><span>Исходящие</span><span>Кэш-чтение</span><span>Кэш-запись</span><span>Вызовы</span><span>Исход</span></div>{visibleTasks.map((task) => { const value = totals([task]); const process = metricsByTask.get(`${task.runId}:${task.id}`); const cacheRead = process ? metricTokenCount(process.tokens, "cachedInputTokens") : value.cacheRead; const cacheWrite = process ? metricTokenCount(process.tokens, "cacheWriteTokens") : value.cacheWrite; return <div className="usageTableRow" key={`${task.runId}:${task.id}`}><b>{task.key ?? task.id}<small>{task.queueIndex ? `Очередь ${task.queueIndex} · ` : ""}{task.title}</small><small className="usageProcessLine">{process ? `${formatDuration(process.durationMs)} · запусков: ${process.executionAttempts ?? "—"} · циклов: ${process.reviewCorrectionCycles ?? "—"} · всего: ${format.format(process.tokens.totalTokens)} токенов · кэш-чтение: ${format.format(cacheRead)} · кэш-запись: ${format.format(cacheWrite)}` : "Метрики недоступны"}</small></b><span>{task.model}</span><span>{format.format(value.input)}</span><span>{format.format(value.output)}</span><span>{format.format(cacheRead)}</span><span>{format.format(cacheWrite)}</span><span>{value.calls}</span><span className={`usageOutcome ${process?.outcome ?? "pending"}`}>{process ? outcomeLabels[process.outcome] : "—"}</span></div>; })}</section>
       </>}
     </>}

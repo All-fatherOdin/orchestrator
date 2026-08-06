@@ -1,6 +1,6 @@
 {
   "name": "codex-orchestrator",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -37,12 +37,27 @@
   "build": {
     "appId": "com.codex.orchestrator",
     "productName": "Orchestrator",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "electron/**/*", "package.json"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
     "extraResources": [
-      { "from": "dist", "to": "dist" },
-      { "from": "build/server.cjs", "to": "server.cjs" },
-      { "from": "build/icon.ico", "to": "icon.ico" }
+      {
+        "from": "dist",
+        "to": "dist"
+      },
+      {
+        "from": "build/server.cjs",
+        "to": "server.cjs"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
     ],
     "win": {
       "target": "nsis",

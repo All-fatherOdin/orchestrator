@@ -46,7 +46,7 @@ nav button{font:inherit;text-align:left;color:#b7beb8;border:0;background:transp
 body,.shell{background:#141416}
 .shell{background:#18181b}
 .sidebar{background:linear-gradient(180deg,#111113,#18181b);color:#f4f4f5;border-right:1px solid #2b2b30}
-.brandMark{color:#a3e635}.navTitle,.sidebarFoot{color:#8b8b95}.projectName{border-color:#3a3a40;background:#1d1d21}.projectName small{color:#9b9ba5}.sidebarFoot{border-color:#303036}.sidebarFoot span{color:#a3e635}
+.brandMark{color:#a3e635}.navTitle,.sidebarFoot{color:#8b8b95}.projectName{border-color:#3a3a40;background:#1d1d21}.projectName small{color:#9b9ba5}.sidebarFoot{border-color:#303036}.sidebarFoot span{color:#a3e635}.sidebarFoot b,.sidebarFoot small{display:block}.sidebarFoot b{color:#b8b8c0;font-weight:600}.sidebarFoot small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 nav a,nav button{color:#b8b8c0}nav .active,nav button.active{background:#2a2a2f;color:#f4f4f5;box-shadow:inset 2px 0 #a3e635}nav button em{background:#3a3a40;color:#d6d6dc}
 .workspace{background:#18181b;color:#f4f4f5}header{border-color:#323238}header p,.sectionHeading span{color:#a1a1aa}.projectFolder{stroke:#a1a1aa}.localChip{border-color:#4d7c0f;background:#202a18;color:#bef264}
 button,.upload{border-color:#44444c;background:#232326;color:#e4e4e7}button:hover,.upload:hover{background:#2c2c31;border-color:#60606a}.primary{background:#a3e635;border-color:#a3e635;color:#18210c}.primary:hover{background:#bef264;border-color:#bef264}

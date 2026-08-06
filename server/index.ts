@@ -1082,6 +1082,31 @@ const dataDirectory = resolve(
 const runsDirectory = join(dataDirectory, "runs");
 const pipelinesDirectory = join(dataDirectory, "plans");
 const projectsFile = join(dataDirectory, "projects.json");
+
+export function desktopRuntimeDiagnostics(input: {
+  desktopToken?: string;
+  version?: string;
+  port?: string;
+  dataDirectory: string;
+  savedRuns: number;
+}) {
+  if (!input.desktopToken) return undefined;
+  return {
+    version: input.version || "unknown",
+    port: Number(input.port) || null,
+    serverMode: "owned-desktop" as const,
+    dataDirectory: input.dataDirectory,
+    savedRuns: input.savedRuns,
+  };
+}
+
+async function savedDesktopRunCount() {
+  if (!existsSync(runsDirectory)) return 0;
+  const entries = await readdir(runsDirectory, { withFileTypes: true });
+  return entries.filter((entry) =>
+    entry.isDirectory() && existsSync(join(runsDirectory, entry.name, "run.json")),
+  ).length;
+}
 const doctorReadSuccesses = new Set<string>();
 export const DOCTOR_REGISTERED_GIT_HEAD_COMMAND_HASH_V1 = createHash("sha256")
   .update("git\0rev-parse\0--verify\0HEAD^{commit}")
@@ -6131,6 +6156,18 @@ app.get("/api/health", (_, response) =>
     cliModelIds: MODEL_IDS,
   }),
 );
+app.get("/api/desktop-runtime", async (_, response) => {
+  const diagnostics = desktopRuntimeDiagnostics({
+    desktopToken: process.env.ORCHESTRATOR_DESKTOP_TOKEN,
+    version: process.env.ORCHESTRATOR_DESKTOP_VERSION,
+    port: process.env.PORT,
+    dataDirectory,
+    savedRuns: await savedDesktopRunCount(),
+  });
+  if (!diagnostics)
+    return response.status(404).json({ error: "Desktop runtime diagnostics are unavailable." });
+  return response.json(diagnostics);
+});
 function sendChangeControlError(
   response: express.Response,
   error: unknown,

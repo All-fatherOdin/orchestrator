@@ -19,6 +19,13 @@ type Limits = {
   maxParallelTasks: number;
 };
 type GitSettings = { checkpointCommits: boolean };
+type DesktopRuntime = {
+  version: string;
+  port: number | null;
+  serverMode: "owned-desktop";
+  dataDirectory: string;
+  savedRuns: number;
+};
 type ProjectProfile = {
   id: string;
   name: string;
@@ -172,23 +179,23 @@ export function TaskContextControls({
   return (
     <>
       <label>
-        Context profile
+        Профиль контекста
         <input
-          aria-label="Context profile"
+          aria-label="Профиль контекста"
           value={task.contextProfile ?? ""}
-          placeholder="Optional, e.g. review"
+          placeholder="Необязательно, например review"
           onChange={(event) => onChange(contextProfileTaskPatch(event.target.value))}
         />
       </label>
       <label>
-        Maximum context sources
+        Максимум источников контекста
         <input
-          aria-label="Maximum context sources"
+          aria-label="Максимум источников контекста"
           type="number"
           min="1"
           max="50"
           step="1"
-          placeholder="Default: 12"
+          placeholder="По умолчанию: 12"
           disabled={!task.contextProfile}
           value={task.maxSources ?? ""}
           onChange={(event) => onChange({
@@ -198,14 +205,14 @@ export function TaskContextControls({
       </label>
       <label>
         <input
-          aria-label="Require repository context"
+          aria-label="Требовать контекст репозитория"
           type="checkbox"
           disabled={!task.contextProfile}
           checked={task.requireRepositoryContext ?? false}
           onChange={(event) =>
             onChange({ requireRepositoryContext: event.target.checked })}
         />
-        Require repository helper
+        Требовать помощника репозитория
       </label>
     </>
   );
@@ -240,7 +247,19 @@ const runStatusLabel: Record<Run["status"], string> = {
   timed_out: "Время истекло",
   cancelled: "Отменено",
 };
-export const emptyQueue = `project:\n  name: My project\n  path: D:\\\\work\\\\my-project\nlimits:\n  taskTimeoutMinutes: 30\n  reviewerTimeoutMinutes: 10\n  maxTaskRetries: 1\n  maxParallelTasks: 1\ntasks:\n  - key: notifications-types\n    title: Fix TypeScript errors\n    prompt: Fix TypeScript errors in the notifications module and run checks.\n    model: terra\n    effort: medium\n    allowedPaths: [src/notifications]\n  - key: reconnect-logic\n    title: Add reconnect logic\n    prompt: Add WebSocket reconnection with exponential backoff and tests.\n    model: terra\n    effort: medium\n    allowedPaths: [src/websocket]`;
+const effortLabel: Record<Task["effort"], string> = {
+  light: "Лёгкое",
+  medium: "Среднее",
+  high: "Высокое",
+};
+const reviewStatusLabel: Record<NonNullable<Task["reviewStatus"]>, string> = {
+  pending: "Ожидается",
+  approved: "Одобрено",
+  changes_requested: "Нужны изменения",
+  unavailable: "Недоступно",
+  timed_out: "Время истекло",
+};
+export const emptyQueue = `project:\n  name: Мой проект\n  path: D:\\\\work\\\\my-project\nlimits:\n  taskTimeoutMinutes: 30\n  reviewerTimeoutMinutes: 10\n  maxTaskRetries: 1\n  maxParallelTasks: 1\ntasks:\n  - key: notifications-types\n    title: Исправить ошибки TypeScript\n    prompt: Исправьте ошибки TypeScript в модуле уведомлений и запустите проверки.\n    model: terra\n    effort: medium\n    allowedPaths: [src/notifications]\n  - key: reconnect-logic\n    title: Добавить логику переподключения\n    prompt: Добавьте переподключение WebSocket с экспоненциальной задержкой и тестами.\n    model: terra\n    effort: medium\n    allowedPaths: [src/websocket]`;
 
 function runSummary(run: Run): RunSummary {
   return {
@@ -329,6 +348,7 @@ export function App() {
   const [showProjects, setShowProjects] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [showOperator, setShowOperator] = useState(false);
+  const [desktopRuntime, setDesktopRuntime] = useState<DesktopRuntime | null | undefined>(undefined);
   const [projects, setProjects] = useState<ProjectProfile[]>([]);
   const [projectForm, setProjectForm] = useState({
     name: "",
@@ -393,10 +413,14 @@ export function App() {
       );
       return unmet.length ? `Ожидает: ${unmet.join(", ")}` : "Готова к запуску";
     }
-    return `${task.model} · ${task.effort} effort`;
+    return `${task.model} · ${effortLabel[task.effort]}`;
   }
 
   useEffect(() => {
+    void fetch("/api/desktop-runtime", { cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() as Promise<DesktopRuntime> : null)
+      .then(setDesktopRuntime)
+      .catch(() => setDesktopRuntime(null));
     void fetch("/api/run")
       .then((response) => response.json())
       .then((active) => {
@@ -482,7 +506,7 @@ export function App() {
     setIsHistoryLoading(true);
     try {
       const response = await fetch(`/api/runs?offset=${offset}&limit=5`);
-      if (!response.ok) throw new Error("Could not load run history.");
+      if (!response.ok) throw new Error("Не удалось загрузить историю запусков.");
       const value = (await response.json()) as {
         total: number;
         runs: RunSummary[];
@@ -492,7 +516,7 @@ export function App() {
       setHistoryOffset(offset);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Could not load run history.",
+        reason instanceof Error ? reason.message : "Не удалось загрузить историю запусков.",
       );
     } finally {
       setIsHistoryLoading(false);
@@ -504,10 +528,10 @@ export function App() {
       const response = await fetch(
         pipelineId ? `/api/pipeline/${pipelineId}` : "/api/pipeline",
       );
-      if (!response.ok) throw new Error("Could not load pipeline.");
+      if (!response.ok) throw new Error("Не удалось загрузить цепочку очередей.");
       setPipeline((await response.json()) as PipelineView | null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not load pipeline.");
+      setError(reason instanceof Error ? reason.message : "Не удалось загрузить цепочку очередей.");
     } finally {
       setIsPipelineLoading(false);
     }
@@ -515,14 +539,14 @@ export function App() {
   async function openHistoryRun(id: string) {
     try {
       const response = await fetch(`/api/runs/${id}`);
-      if (!response.ok) throw new Error("Could not load run details.");
+      if (!response.ok) throw new Error("Не удалось загрузить сведения о запуске.");
       const details = (await response.json()) as Run;
       setRun(details);
       if (details.pipeline) await refreshPipeline(details.pipeline.id);
       setShowHistory(false);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Could not load run details.",
+        reason instanceof Error ? reason.message : "Не удалось загрузить сведения о запуске.",
       );
     }
   }
@@ -532,14 +556,14 @@ export function App() {
       const response = await fetch(`/api/runs/${id}`, { method: "DELETE" });
       if (!response.ok) {
         const value = (await response.json()) as { error?: string };
-        throw new Error(value.error ?? "Could not delete run.");
+        throw new Error(value.error ?? "Не удалось удалить запуск.");
       }
       const nextOffset =
         history.length === 1 && historyOffset > 0 ? historyOffset - 5 : historyOffset;
       await refreshHistory(nextOffset);
       setRunToDelete(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not delete run.");
+      setError(reason instanceof Error ? reason.message : "Не удалось удалить запуск.");
     } finally {
       setIsDeletingRun(false);
     }
@@ -590,7 +614,7 @@ export function App() {
       void refreshPipeline();
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Could not start run.",
+        reason instanceof Error ? reason.message : "Не удалось запустить очередь.",
       );
     } finally {
       setIsStarting(false);
@@ -608,7 +632,7 @@ export function App() {
     if (!response.ok)
       setError(
         ((await response.json()) as { error?: string }).error ??
-          "Could not skip task.",
+          "Не удалось пропустить задачу.",
       );
   }
   async function pause() {
@@ -616,7 +640,7 @@ export function App() {
     if (!response.ok)
       setError(
         ((await response.json()) as { error?: string }).error ??
-          "Could not pause queue.",
+          "Не удалось приостановить очередь.",
       );
   }
   async function continueRun() {
@@ -624,7 +648,7 @@ export function App() {
     if (!response.ok)
       setError(
         ((await response.json()) as { error?: string }).error ??
-          "Could not continue queue.",
+          "Не удалось продолжить очередь.",
       );
   }
   async function retry(task: Task) {
@@ -659,7 +683,7 @@ export function App() {
     if (!run) return;
     const response = await fetch(`/api/runs/${run.id}/report`);
     if (!response.ok) {
-      setError("Could not download report.");
+      setError("Не удалось скачать отчёт.");
       return;
     }
     const url = URL.createObjectURL(await response.blob());
@@ -688,7 +712,7 @@ export function App() {
     if (!response.ok) {
       setError(
         ((await response.json()) as { error?: string }).error ??
-          "Rollback failed.",
+          "Откат не выполнен.",
       );
       return;
     }
@@ -733,7 +757,7 @@ export function App() {
           position?: number;
           pipeline?: PipelineView;
         };
-        if (!response.ok) throw new Error(value.error ?? "Could not append queue.");
+        if (!response.ok) throw new Error(value.error ?? "Не удалось добавить очередь.");
         setNotice(`Очередь добавлена после текущей (позиция ${value.position}).`);
         if (value.pipeline) setPipeline(value.pipeline);
         else await refreshPipeline(run?.pipeline?.id);
@@ -750,12 +774,12 @@ export function App() {
       const value = (await response.json()) as PipelineView | { error?: string };
       if (!response.ok)
         throw new Error(
-          "error" in value ? value.error : "Could not remove queued file.",
+          "error" in value ? value.error : "Не удалось удалить файл из очереди.",
         );
       setPipeline(value as PipelineView);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Could not remove queued file.",
+        reason instanceof Error ? reason.message : "Не удалось удалить файл из очереди.",
       );
     }
   }
@@ -929,9 +953,13 @@ export function App() {
           </button>
         </nav>
         <div className="sidebarFoot">
-          v{__APP_VERSION__} · local
-          <br />
-          <span>●</span> Codex CLI pipeline
+          <b>v{desktopRuntime?.version ?? __APP_VERSION__} · локально</b>
+          {desktopRuntime === undefined ? <small>Загрузка сведений…</small> : desktopRuntime ? <>
+            <small>Сервер программы · порт {desktopRuntime.port ?? "—"}</small>
+            <small title={desktopRuntime.dataDirectory}>Хранилище: {desktopRuntime.dataDirectory}</small>
+            <small>Сохранённых запусков: {desktopRuntime.savedRuns}</small>
+          </> : <small>Сведения настольной версии недоступны</small>}
+          <small><span>●</span> цепочка Codex CLI</small>
         </div>
       </aside>
       <section className="workspace">
@@ -1060,9 +1088,9 @@ export function App() {
                     })
                   }
                 >
-                  <option value="light">Light</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
+                  <option value="light">Лёгкое</option>
+                  <option value="medium">Среднее</option>
+                  <option value="high">Высокое</option>
                 </select>
               </label>
               <button className="primary" onClick={() => void saveProject()}>
@@ -1172,7 +1200,7 @@ export function App() {
                   <b>Ограничения</b>
                   <span>Модели: Luna, Terra, Sol</span>
                   <span>Усилие: лёгкое, среднее, высокое</span>
-                  <span>Sol × high is blocked</span>
+                  <span>Sol × высокое недоступен</span>
                 </div>
                 {draft?.tasks ? (
                   <section className="limitsEditor">
@@ -1192,7 +1220,7 @@ export function App() {
                       />
                     </label>
                     <label>
-                      Таймаут reviewer, мин
+                      Таймаут проверяющего, мин
                       <input
                         type="number"
                         min="1"
@@ -1241,7 +1269,7 @@ export function App() {
                           updateGit({ checkpointCommits: event.target.checked })
                         }
                       />
-                      Checkpoint-коммиты
+                      Контрольные коммиты
                     </label>
                   </section>
                 ) : null}
@@ -1263,7 +1291,7 @@ export function App() {
                           ])
                         }
                       >
-                        + Add task
+                        + Добавить задачу
                       </button>
                     </div>
                     {draft.tasks.map((task, index) => (
@@ -1294,7 +1322,7 @@ export function App() {
                             }
                           />
                           <label>
-                            Model
+                            Модель
                             <select
                               value={task.model ?? "auto"}
                               onChange={(event) =>
@@ -1304,14 +1332,14 @@ export function App() {
                                 })
                               }
                             >
-                              <option value="auto">Auto</option>
+                              <option value="auto">Авто</option>
                               <option value="luna">Luna</option>
                               <option value="terra">Terra</option>
                               <option value="sol">Sol</option>
                             </select>
                           </label>
                           <label>
-                            Effort
+                            Усилие
                             <select
                               value={task.effort ?? "medium"}
                               onChange={(event) =>
@@ -1321,13 +1349,13 @@ export function App() {
                                 })
                               }
                             >
-                              <option value="light">Light</option>
-                              <option value="medium">Medium</option>
-                              <option value="high">High</option>
+                              <option value="light">Лёгкое</option>
+                              <option value="medium">Среднее</option>
+                              <option value="high">Высокое</option>
                             </select>
                           </label>
                           <label>
-                            Timeout, min
+                            Таймаут, мин
                             <input
                               type="number"
                               min="1"
@@ -1344,7 +1372,7 @@ export function App() {
                             />
                           </label>
                           <label>
-                            Retries
+                            Повторные попытки
                             <input
                               type="number"
                               min="0"
@@ -1431,15 +1459,15 @@ export function App() {
               </section>
             )}
             {contextPreviews.length > 0 && (
-              <section className="contextPreview" aria-label="Context preflight preview">
+              <section className="contextPreview" aria-label="Предпросмотр проверки контекста">
                 <div className="sectionHeading">
-                  <h2>Context preflight</h2>
-                  <span>{contextPreviews.reduce((total, item) => total + item.sources.length, 0)} sources</span>
+                  <h2>Предварительная проверка контекста</h2>
+                  <span>{contextPreviews.reduce((total, item) => total + item.sources.length, 0)} источников</span>
                 </div>
                 {contextPreviews.map((preview) => (
                   <article key={`${preview.task}-${preview.profile}`}>
-                    <b>Task {preview.task} · {preview.profile}</b>
-                    <small>{preview.provider}{preview.fallbackReason ? ` · fallback: ${preview.fallbackReason}` : ""}</small>
+                    <b>Задача {preview.task} · {preview.profile}</b>
+                    <small>{preview.provider}{preview.fallbackReason ? ` · резерв: ${preview.fallbackReason}` : ""}</small>
                     <ul>
                       {preview.sources.map((source) => (
                         <li key={source.path}>
@@ -1498,12 +1526,12 @@ export function App() {
                   </div>
                 )}
                 {isPipelineLoading && run.pipeline && (
-                  <LoadingState label="Загружаем очереди pipeline…" />
+                  <LoadingState label="Загружаем очереди цепочки…" />
                 )}
                 {pipeline && (
                   <section className="pipelinePanel">
                     <div className="sectionHeading">
-                      <h2>Очереди pipeline</h2>
+                      <h2>Очереди цепочки</h2>
                       <span>{pipeline.queues.length} файлов</span>
                     </div>
                     <ol>
@@ -1612,7 +1640,7 @@ export function App() {
               <dt>Модель</dt>
               <dd>{current.model}</dd>
               <dt>Усилие</dt>
-              <dd>{current.effort}</dd>
+              <dd>{effortLabel[current.effort]}</dd>
               <dt>Запущено</dt>
               <dd>{time(current.startedAt)}</dd>
               <dt>Прошло времени</dt>
@@ -1622,7 +1650,7 @@ export function App() {
               <dt>Таймаут</dt>
               <dd>
                 {current.timeoutMinutes ?? run?.limits?.taskTimeoutMinutes ?? 30}{" "}
-                min
+                мин
               </dd>
               <dt>Запуски исполнителя</dt>
               <dd>
@@ -1632,7 +1660,7 @@ export function App() {
               <dt>Файлы</dt>
               <dd>{current.changedFiles?.length ?? "—"}</dd>
               <dt>Проверка</dt>
-              <dd>{current.reviewStatus ?? "—"}</dd>
+              <dd>{current.reviewStatus ? reviewStatusLabel[current.reviewStatus] : "—"}</dd>
               <dt>Итерации проверки</dt>
               <dd>{current.attempts ?? 0} / 2</dd>
               {current.checkpoint ? (
@@ -1679,7 +1707,7 @@ export function App() {
             ) : null}
             {current.changedFiles?.length ? (
               <details className="result" open>
-                <summary>Diff задачи</summary>
+                <summary>Изменения задачи</summary>
                 <select
                   className="diffSelect"
                   value={selectedDiffFile || current.changedFiles[0]}
@@ -1691,7 +1719,7 @@ export function App() {
                     </option>
                   ))}
                 </select>
-                <pre>{taskDiff || "No tracked diff for this file."}</pre>
+                <pre>{taskDiff || "Для этого файла нет отслеживаемых изменений."}</pre>
               </details>
             ) : null}
             {current.finalOutput ? (
@@ -1702,7 +1730,7 @@ export function App() {
             ) : null}
             {current.reviewOutput ? (
               <details className="result" open>
-                <summary>Отчёт reviewer · {current.reviewStatus}</summary>
+                <summary>Отчёт проверяющего · {current.reviewStatus ? reviewStatusLabel[current.reviewStatus] : "—"}</summary>
                 <pre>{current.reviewOutput}</pre>
               </details>
             ) : null}
@@ -1745,7 +1773,7 @@ export function App() {
               run.status !== "running" &&
               run.status !== "paused" &&
               run.status !== "completed" && (
-                <button onClick={() => void resume()}>Возобновить pipeline</button>
+                <button onClick={() => void resume()}>Возобновить цепочку</button>
               )}
             {(current.status === "failed" ||
               current.status === "timed_out" ||
@@ -1756,7 +1784,7 @@ export function App() {
           </>
         ) : (
           <div className="empty inspectorBody">
-            The selected task will show its live details and event output here.
+            Здесь появятся текущие сведения и события выбранной задачи.
           </div>
         )}
       </aside>}

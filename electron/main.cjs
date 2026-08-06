@@ -128,6 +128,7 @@ function startServer() {
         ORCHESTRATOR_WEB_ROOT: webRoot,
         ORCHESTRATOR_DATA_DIR: dataDirectory,
         ORCHESTRATOR_DESKTOP_TOKEN: desktopInstanceToken,
+        ORCHESTRATOR_DESKTOP_VERSION: app.getVersion(),
         PORT: String(port),
       },
       stdio: logs.stdio,

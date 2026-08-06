@@ -360,8 +360,8 @@ export function OutcomeScorecardErrorState({ code, onReset }: { code: string; on
     stale: ["Данные устарели", "Изменился водяной знак проекта или неизменяемый идентификатор запуска."],
     incomplete: ["Данные неполны", "Для выбранной когорты нельзя построить полную сводку."],
     "privacy-rejected": ["Отклонено политикой конфиденциальности", "Ответ отклонён до показа запрещённых данных."],
-    "limit-rejected": ["Ограниченная когорта отклонена", "Когорта или ответ превышает принятые ограничения Phase 9."],
-    unavailable: ["Данные о результатах недоступны", "Версионированный источник Phase 6 или Phase 9 недоступен."],
+    "limit-rejected": ["Ограниченная когорта отклонена", "Когорта или ответ превышает принятые ограничения фазы 9."],
+    unavailable: ["Данные о результатах недоступны", "Версионированный источник фазы 6 или 9 недоступен."],
   };
   return <section className={`scorecardState ${state}`} role="alert"><small>{code}</small><h3>{content[state][0]}</h3><p>{content[state][1]}</p><button type="button" onClick={onReset}>Выбрать актуальные данные</button></section>;
 }
@@ -488,9 +488,9 @@ export function OutcomeScorecardsDashboard() {
     setErrorCode(null);
   }
 
-  if (sourcesLoading) return <div className="operatorLoading"><i /><span>Чтение данных проектов Phase 6…</span></div>;
+  if (sourcesLoading) return <div className="operatorLoading"><i /><span>Чтение данных проектов фазы 6…</span></div>;
   if (errorCode && !projects.length) return <OutcomeScorecardErrorState code={errorCode} onReset={() => window.location.reload()} />;
-  if (!projects.length) return <div className="operatorEmpty"><span aria-hidden="true">○</span><h3>Нет источников результатов</h3><p>В ограниченном обзоре Phase 6 нет проектов.</p></div>;
+  if (!projects.length) return <div className="operatorEmpty"><span aria-hidden="true">○</span><h3>Нет источников результатов</h3><p>В ограниченном обзоре фазы 6 нет проектов.</p></div>;
 
   return <div className="scorecardWorkspace">
     <section className="scorecardBuilder" aria-label="Выбор когорты для сводки результатов">
@@ -503,7 +503,7 @@ export function OutcomeScorecardsDashboard() {
       <footer><span>Включительный канонический диапазон · {fromSequence}–{toSequence}</span><button type="button" onClick={() => void discover(false)} disabled={!rangeValid || loading !== null}>{loading === "discovery" ? "Поиск…" : "Найти точные запуски"}</button></footer>
     </section>
 
-    {loading ? <section className="scorecardLoading" role="status"><i /><div><b>{loading === "compute" ? "Расчёт сводки" : loading === "refresh" ? "Проверка привязанных данных" : "Поиск точных запусков"}</b><span>Читаются только версионированные данные Phase 6 и Phase 9.</span></div></section> : null}
+    {loading ? <section className="scorecardLoading" role="status"><i /><div><b>{loading === "compute" ? "Расчёт сводки" : loading === "refresh" ? "Проверка привязанных данных" : "Поиск точных запусков"}</b><span>Читаются только версионированные данные фаз 6 и 9.</span></div></section> : null}
     {errorCode ? <OutcomeScorecardErrorState code={errorCode} onReset={() => { clearBoundEvidence(); }} /> : null}
 
     {discovery && !errorCode ? <section className="scorecardDiscovery" aria-label="Найденные точные идентификаторы запусков">

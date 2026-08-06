@@ -171,9 +171,32 @@ const {
   installAuditBundleRoutesV1,
   installOutcomeScorecardRoutesV1,
   installOperatorActionRoutesV1,
+  desktopRuntimeDiagnostics,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
 const { buildPromptCacheLayoutV1, explicitCacheBreakpointV1 } = await import("./prompt-cache-v1/prompt-cache-v1.mjs");
+
+test("desktop runtime diagnostics are bounded and unavailable outside desktop", () => {
+  assert.equal(desktopRuntimeDiagnostics({
+    dataDirectory: "C:\\data",
+    savedRuns: 0,
+  }), undefined);
+  const diagnostics = desktopRuntimeDiagnostics({
+    desktopToken: "private-token",
+    version: "0.1.6",
+    port: "4319",
+    dataDirectory: "C:\\data",
+    savedRuns: 3,
+  });
+  assert.deepEqual(diagnostics, {
+    version: "0.1.6",
+    port: 4319,
+    serverMode: "owned-desktop",
+    dataDirectory: "C:\\data",
+    savedRuns: 3,
+  });
+  assert.equal(JSON.stringify(diagnostics).includes("private-token"), false);
+});
 const { renderProductionLegacyPromptV1 } = await import(
   "./prompt-compiler-v1/legacy-prompt-renderer.mjs"
 );

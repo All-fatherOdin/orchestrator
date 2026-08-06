@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
@@ -23,6 +24,62 @@ const {
   shouldStopServerOnQuit,
   startOwnedServer,
 } = require("./lifecycle.cjs");
+
+test("main interface keeps known user-facing labels in Russian", () => {
+  const sources = [
+    "src/App.tsx",
+    "src/UsagePage.tsx",
+    "src/OperatorDashboard.tsx",
+    "src/AuditBundlesDashboard.tsx",
+    "src/OutcomeScorecardsDashboard.tsx",
+  ].map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"));
+  const forbiddenLabels = [
+    "Context profile",
+    "Maximum context sources",
+    "Require repository helper",
+    "Context preflight",
+    "Add task",
+    "No tracked diff for this file.",
+    "Reading Phase 6 evidence sources",
+    "Build a bounded audit bundle",
+    "Audit bundle result",
+    "Project range",
+    "Exact change",
+    "Generate bundle",
+    "Download bounded JSON",
+    "Bundle not generated",
+    "<code>receipt</code>",
+    "Загружаем очереди pipeline",
+    "Отчёт reviewer",
+    "Чтение данных проектов Phase 6",
+    "Checkpoint-коммиты",
+    "Model\n",
+    "Effort\n",
+    "Timeout, min",
+    "Retries\n",
+    "Task {preview.task}",
+    "fallback: ${preview.fallbackReason}",
+    "Очереди pipeline",
+    "Diff задачи",
+    "Возобновить pipeline",
+    "Phase 6 evidence sources are unavailable.",
+  ];
+
+  for (const label of forbiddenLabels) {
+    assert.equal(sources.some((source) => source.includes(label)), false, `visible English label returned: ${label}`);
+  }
+});
+
+test("main interface exposes bounded Russian desktop diagnostics states", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "App.tsx"), "utf8");
+  for (const label of [
+    "Сервер программы",
+    "Хранилище:",
+    "Сохранённых запусков:",
+    "Загрузка сведений…",
+    "Сведения настольной версии недоступны",
+  ]) assert.equal(source.includes(label), true, `missing desktop diagnostics label: ${label}`);
+});
 
 test("Windows desktop registers the Orchestrator notification identity", () => {
   const calls = [];
