@@ -14927,6 +14927,20 @@ test("read-only reviewer receives the Russian executor result and does not requi
   assert.match(prompt, /actual U\+FFFD/);
 });
 
+test("legacy reviewer task without explicit scope is not treated as read-only", () => {
+  const prompt = buildReviewerPrompt(
+    {
+      ...task("legacy-review", "completed"),
+      title: "Legacy writable task",
+      prompt: "Implement the requested change.",
+      finalOutput: "Implementation completed.",
+    },
+    {},
+  );
+  assert.doesNotMatch(prompt, /empty task change set is expected/);
+  assert.doesNotMatch(prompt, /do not require a task-owned diff/);
+});
+
 test("replacement-character-only reviewer false positives are distinguishable from real findings", () => {
   assert.equal(
     reviewerReplacementCharacterFalsePositive(
@@ -14943,6 +14957,18 @@ test("replacement-character-only reviewer false positives are distinguishable fr
   assert.equal(
     reviewerReplacementCharacterFalsePositive(
       "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD, and the required test failed.",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Direct UTF-8 inspection found an actual U+FFFD in server/source.ts.",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD.",
     ),
     false,
   );

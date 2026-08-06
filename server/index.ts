@@ -3737,24 +3737,33 @@ export function boundedReviewerDiagnostics(value: string) {
 }
 
 export function reviewerReplacementCharacterFalsePositive(report: string) {
-  const mentionsReplacementCharacter =
-    /\uFFFD|U\+FFFD|replacement character|replacement symbol/i.test(report);
-  if (!mentionsReplacementCharacter) return false;
-  const otherBlockingFinding = report
+  const replacementFinding =
+    /\uFFFD|U\+FFFD|replacement character|replacement symbol/i;
+  const findingLines = report
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith("VERDICT:"))
-    .some(
-      (line) => {
-        const withoutReplacementFinding = line.replace(
-          /\uFFFD|U\+FFFD|replacement character|replacement symbol/gi,
-          "",
-        );
-        return /(?:fail(?:ed|ure)?|cannot|can't|issue|reject|corrupt|missing|invalid|block(?:ed|ing)?|must fix|changes? required)/i.test(
-          withoutReplacementFinding,
-        );
-      },
+    .filter((line) => line && !line.startsWith("VERDICT:"));
+  const replacementLines = findingLines.filter((line) =>
+    replacementFinding.test(line)
+  );
+  if (!replacementLines.length) return false;
+  const renderingOnly = replacementLines.every(
+    (line) =>
+      /(?:terminal|console|log|json|prompt|command|output|render(?:ing|ed)?|display)/i.test(
+        line,
+      ) &&
+      !/(?:direct|inspect|source|file|path|diff|byte|utf-?8|actual)/i.test(line),
+  );
+  if (!renderingOnly) return false;
+  const otherBlockingFinding = findingLines.some((line) => {
+    const withoutReplacementFinding = line.replace(
+      /\uFFFD|U\+FFFD|replacement character|replacement symbol/gi,
+      "",
     );
+    return /(?:fail(?:ed|ure)?|cannot|can't|issue|reject|corrupt|missing|invalid|block(?:ed|ing)?|must fix|changes? required)/i.test(
+      withoutReplacementFinding,
+    );
+  });
   return !otherBlockingFinding;
 }
 
@@ -5380,9 +5389,13 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
     : "- (no task-owned file changes detected)";
   const taskDiff = task.diff?.trim() ||
     "(No tracked diff is available. Inspect only the exact task-change paths listed above; a listed path may be newly untracked.)";
+  const authorizedIntent = task.authorizationEvidence?.intent;
+  const effectiveAllowedPaths =
+    task.authorizationEvidence?.allowedPaths ?? task.allowedPaths;
   const readOnlyTask =
-    task.authorizationEvidence?.intent !== "apply" ||
-    task.authorizationEvidence?.allowedPaths.length === 0;
+    task.authorizationEvidence?.technicalPermission === "read_only" ||
+    (authorizedIntent !== undefined && authorizedIntent !== "apply") ||
+    (effectiveAllowedPaths !== undefined && effectiveAllowedPaths.length === 0);
   const executorResult = task.finalOutput?.trim() ||
     "(The executor did not return a textual result.)";
   const verification = verificationCommands.length
