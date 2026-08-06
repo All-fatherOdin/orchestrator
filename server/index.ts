@@ -1541,7 +1541,7 @@ export function writeTextAtomically(file: string, content: string) {
 }
 
 const TRANSIENT_WINDOWS_RENAME_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
-const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320, 640] as const;
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400, 800, 1_600, 2_000] as const;
 
 export async function renameWithTransientWindowsRetry(
   source: string,
