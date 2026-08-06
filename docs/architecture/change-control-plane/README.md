@@ -1,7 +1,7 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-8 implemented; Phase 7-8 completion-reviewed
-Last reviewed: 2026-08-05
+Status: evidence-backed target, Phase 1-9 implemented; Phase 7-8 completion-reviewed
+Last reviewed: 2026-08-06
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -32,8 +32,8 @@ were observed.
 12. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
     accepted, implemented, and completion-reviewed Phase 8 boundary.
 13. [outcome-scorecards-contract-v1.md](outcome-scorecards-contract-v1.md)
-    defines the accepted Phase 9 read-only metrics boundary; Slice 1 is
-    implemented and Slice 2 is pending.
+    defines the accepted Phase 9 read-only metrics boundary; Slices 1-2 are
+    implemented and formal automated completion review is pending.
 
 ## Current Boundary
 
@@ -74,14 +74,20 @@ mobile rendered smoke passed. The combined server/Electron regression command
 again exceeded the six-minute environment cap without diagnostic output and is
 recorded as an environment risk, not passing evidence.
 
-Phase 9 Outcome Scorecards Slice 1 is implemented. Closed schemas, exact
+Phase 9 Outcome Scorecards is implemented through Slice 2. Closed schemas, exact
 ledger/run identity joins, a bounded seven-metric registry, deterministic
 hashes, strict discovery and read-only compute APIs, privacy/limit fencing,
 restart coverage, and explicit before/after no-mutation evidence are present.
-The focused domain/API suite has 11 passing tests; TypeScript, production Vite
-build, and diff checks pass. Dashboard and direct-download work remain pending
-Slice 2; notifications, publication, persistence, external telemetry,
-deployment/defect inference, and product-impact claims remain deferred.
+The Russian read-only dashboard consumes only bounded Phase 6 selection evidence
+and Phase 9 responses, renders explicit non-numeric insufficient/unsupported
+states and technical identities, and downloads returned JSON only after direct
+user action. The 16 focused Phase 9/API/UI tests, TypeScript, production Vite
+build, and diff checks pass. Owner-provided manual Windows desktop rendered
+verification confirmed that the tab opened without errors, clipping, or
+horizontal overflow; this is not automated browser QA. Formal automated
+completion review remains pending. Notifications, publication, persistence,
+external telemetry, deployment/defect inference, and product-impact claims
+remain deferred.
 
 ## Authority
 

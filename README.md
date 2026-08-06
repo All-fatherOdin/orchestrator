@@ -18,6 +18,8 @@ npm start
 
 The desktop app is single-instance. A second launch focuses the existing window instead of starting another server. If a compatible standalone Orchestrator is already healthy on the configured port, desktop attaches without taking ownership and leaves it running when the window closes. Otherwise desktop owns the server it starts and stops it during shutdown. Server recovery starts only after the HTTP port has been acquired, and a run with a live matching lock owner is never marked interrupted by another process.
 
+While the Windows desktop app is open, it follows the existing `/api/events` run stream and shows one native notification when a queue observed in this desktop session as running or paused becomes completed, failed, or cancelled. The concise Russian message includes the project name when safely available and only a generic outcome summary. Terminal runs replayed at startup remain silent; repeated snapshots and reconnect replay are deduplicated. Unsupported native notifications fail silently, and clicking a notification only restores and focuses the existing window.
+
 The target repository's `AGENTS.md` and `.codex/config.toml` remain the source of truth: each CLI process is launched with that repository as its working directory.
 
 ## Change-control API

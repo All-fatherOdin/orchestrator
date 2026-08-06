@@ -1,8 +1,9 @@
 # Outcome Scorecards Contract v1
 
-Status: accepted contract; Slice 1 implemented, Slice 2 pending
+Status: accepted contract; Slices 1-2 implemented; formal automated completion review pending
 Accepted: 2026-08-05
 Slice 1 implemented: 2026-08-05
+Slice 2 implemented: 2026-08-06
 
 ## Outcome
 
@@ -181,7 +182,20 @@ loading, empty, stale, unavailable, incomplete, unsupported, and privacy-
 rejected states plus direct bounded JSON download. Do not add alerts,
 notifications, scheduled reports, cohort persistence, or mutation controls.
 
-Pending. Slice 1 adds no frontend or download behavior.
+Implemented as the Russian `Сводки результатов` Control Plane view. It consumes
+only bounded Phase 6 project selection evidence and the versioned Phase 9
+discovery/compute APIs; renders loading, empty, stale, unavailable, incomplete,
+privacy, limit, metric, coverage, exclusion, warning, unsupported, watermark,
+hash, and evidence-reference states; and preserves canonical identifiers in
+their machine form. Unsupported and zero-denominator metrics remain explicitly
+non-numeric. Download is a direct user action over the already-returned bounded
+JSON and never recomputes.
+
+The 16 focused Phase 9/API/UI tests, TypeScript, production Vite build, and diff
+checks pass. Owner-provided manual Windows desktop rendered verification
+confirmed that the tab opened without errors, clipping, or horizontal overflow;
+this is not automated browser QA. Formal automated completion review remains
+pending.
 
 ## Acceptance
 
