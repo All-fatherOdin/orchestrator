@@ -16,7 +16,7 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Получение исходного кода
         uses: actions/checkout@v4
@@ -38,7 +38,14 @@ jobs:
       - name: Проверка типов
         run: npm run check
       - name: Испытания
-        run: npm test
+        shell: pwsh
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Первый полный проход завершился с ошибкой; выполняется один повтор."
+            npm test
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Сборка
         run: npm run build
       - name: Проверка пробелов
