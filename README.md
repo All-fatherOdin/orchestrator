@@ -486,6 +486,11 @@ preflight. Writable tasks cannot use `git diff --quiet` or
 changes necessarily create a diff; put clean-start requirements in
 `executionGuards`. A task with an explicit `allowedPaths: []` is read-only:
 reviewer changes fail the task directly and do not enter the correction loop.
+On Windows, bare `npm` commands are normalized to `npm.cmd` before they reach
+the executor, verification runner, or reviewer, so PowerShell execution policy
+cannot select a blocked `npm.ps1`. Process output and reviewer evidence are
+decoded as streaming UTF-8; a rendered `�` is not a blocking finding unless
+direct UTF-8 inspection proves an actual U+FFFD in task-owned source evidence.
 
 Machine-testable baseline conditions belong in task-level `preconditions`,
 not in post-change `verificationCommands` or prose-only `executionGuards`.

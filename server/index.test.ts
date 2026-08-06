@@ -79,9 +79,13 @@ const {
   inlineCommandViolations,
   powershellVerificationSyntaxPreflight,
   verificationCommandInvocation,
+  normalizeWindowsNpmCommand,
   checkpointRequirementViolation,
   taskAllowsCorrection,
   boundedReviewerDiagnostics,
+  reviewerReplacementCharacterFalsePositive,
+  createUtf8StreamDecoder,
+  createUtf8LineDecoder,
   resolveReviewedTaskStatus,
   resolveTaskStatus,
   schedulerSnapshot,
@@ -13217,7 +13221,7 @@ tasks:
   assert.equal(queue.tasks[1].dependsOn?.[0], "parse");
   assert.doesNotMatch(serialized.toLowerCase(), new RegExp(removedRuntimeName));
   const prompt = buildPrompt(createRun(queue).tasks[0], queue.project);
-  assert.match(prompt, /npm test/);
+  assert.match(prompt, process.platform === "win32" ? /npm\.cmd test/ : /npm test/);
   assert.match(prompt, /Stop on scope violation/);
   assert.match(
     prompt,
@@ -14721,7 +14725,7 @@ test("retry and resume preserve completed work and reset graph descendants", () 
 });
 
 test("Codex prompts use stdin instead of the process command line", () => {
-  const prompt = "review this change\n".repeat(8_000);
+  const prompt = "Проверь русскую строку без повреждений\n".repeat(8_000);
   const invocation = codexPromptInvocation(
     ["exec", "--ephemeral", "--json"],
     prompt,
@@ -14736,6 +14740,29 @@ test("Codex prompts use stdin instead of the process command line", () => {
   assert.equal(invocation.stdin, prompt);
   assert.equal(invocation.args.includes(prompt), false);
   assert.ok(invocation.stdin.length > 100_000);
+  assert.ok(invocation.stdin.includes("Проверь русскую строку"));
+});
+
+test("UTF-8 stream decoders preserve Russian text and JSON lines across chunk boundaries", () => {
+  const source = 'Результат: очередь завершена\n{"message":"Проверка пройдена"}\n';
+  const bytes = Buffer.from(source, "utf8");
+  const decoded: string[] = [];
+  const stream = createUtf8StreamDecoder((text) => decoded.push(text));
+  for (let index = 0; index < bytes.length; index += 1)
+    stream.write(bytes.subarray(index, index + 1));
+  stream.end();
+  assert.equal(decoded.join(""), source);
+  assert.doesNotMatch(decoded.join(""), /\uFFFD/);
+
+  const lines: string[] = [];
+  const lineStream = createUtf8LineDecoder((line) => lines.push(line));
+  for (let index = 0; index < bytes.length; index += 2)
+    lineStream.write(bytes.subarray(index, index + 2));
+  lineStream.end();
+  assert.deepEqual(lines, [
+    "Результат: очередь завершена",
+    '{"message":"Проверка пройдена"}',
+  ]);
 });
 
 test("review-enabled completion fails closed unless a strict reviewer verdict approves it", () => {
@@ -14811,6 +14838,59 @@ test("reviewer prompt requires the exact configured verification commands", () =
   assert.ok(prompt.includes(`1. ${python}`));
   assert.ok(prompt.includes("2. git diff --check"));
   assert.doesNotMatch(prompt, /ignored fallback/);
+});
+
+test("read-only reviewer receives the Russian executor result and does not require a diff", () => {
+  const prompt = buildReviewerPrompt(
+    {
+      ...task("read-only-russian", "completed"),
+      title: "Проверка русской строки",
+      prompt: "Проверь существующий результат без изменений.",
+      finalOutput: "Все проверки пройдены. Русская строка сохранена.",
+      authorizationEvidence: {
+        contractType: "TaskAuthorizationEvidenceV1",
+        enabled: false,
+        decision: "disabled",
+        reason: "NON_MUTATING_CONTRACT",
+        intent: "review",
+        technicalPermission: "read_only",
+        sideEffectRisk: "none",
+        allowedPaths: [],
+        verificationCommands: ["npm test"],
+        scopeFingerprint: "scope",
+        goalFingerprint: "goal",
+        branch: "main",
+        authorityFingerprint: "authority",
+      },
+    },
+    {},
+  );
+  assert.match(prompt, /Русская строка сохранена/);
+  assert.match(prompt, /empty task change set is expected/);
+  assert.match(prompt, /do not require a task-owned diff/);
+  assert.match(prompt, /npm\.cmd test/);
+  assert.match(prompt, /actual U\+FFFD/);
+});
+
+test("replacement-character-only reviewer false positives are distinguishable from real findings", () => {
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Terminal rendering appears to contain U+FFFD replacement character.",
+    ),
+    true,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD.\n- Required test failed and must be fixed.",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD, and the required test failed.",
+    ),
+    false,
+  );
 });
 
 test("reviewer prompt isolates the task change set from pre-existing workspace changes", () => {
@@ -15146,8 +15226,24 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
   }
 
   const ordinary = verificationCommandInvocation("npm test");
-  assert.equal(ordinary.executable, "npm test");
+  assert.equal(ordinary.executable, "npm.cmd test");
   assert.equal(ordinary.shell, true);
+});
+
+test("Windows verification normalizes bare npm without changing npm.cmd or non-Windows commands", () => {
+  assert.equal(normalizeWindowsNpmCommand("npm test", "win32"), "npm.cmd test");
+  assert.equal(
+    normalizeWindowsNpmCommand(
+      '$out = Join-Path $env:TEMP "build"; npm run build; npm.cmd test',
+      "win32",
+    ),
+    '$out = Join-Path $env:TEMP "build"; npm.cmd run build; npm.cmd test',
+  );
+  assert.equal(
+    normalizeWindowsNpmCommand("Write-Output ready\nnpm test", "win32"),
+    "Write-Output ready\nnpm.cmd test",
+  );
+  assert.equal(normalizeWindowsNpmCommand("npm test", "linux"), "npm test");
 });
 
 test("correction loop is disabled only for an explicitly empty allowedPaths scope", () => {

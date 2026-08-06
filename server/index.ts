@@ -14,6 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { parse } from "yaml";
 import { renderProductionLegacyPromptV1 } from "./prompt-compiler-v1/legacy-prompt-renderer.mjs";
 // The static imports keep exact schema snapshots embedded in the desktop server bundle.
@@ -633,10 +634,18 @@ export class RepositoryContextHelperProvider implements ContextProvider {
       const child = spawn(executable, args, { cwd: request.projectPath, windowsHide: true });
       let stdout = "";
       let stderr = "";
+      const stdoutDecoder = createUtf8StreamDecoder((text) => {
+        stdout = (stdout + text).slice(0, 1_000_000);
+      });
+      const stderrDecoder = createUtf8StreamDecoder((text) => {
+        stderr = (stderr + text).slice(0, 20_000);
+      });
       let settled = false;
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
+        stdoutDecoder.end();
+        stderrDecoder.end();
         clearTimeout(timer);
         if (error) reject(error);
         else resolveOutput(stdout);
@@ -645,8 +654,8 @@ export class RepositoryContextHelperProvider implements ContextProvider {
         child.kill();
         finish(new ContextProviderFailure("HELPER_TIMEOUT", "Repository context helper timed out."));
       }, this.options.timeoutMs ?? 5_000);
-      child.stdout?.on("data", (chunk: Buffer) => { stdout = (stdout + chunk.toString()).slice(0, 1_000_000); });
-      child.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(0, 20_000); });
+      child.stdout?.on("data", stdoutDecoder.write);
+      child.stderr?.on("data", stderrDecoder.write);
       child.on("error", () => finish(new ContextProviderFailure("HELPER_UNAVAILABLE", "Repository context helper could not start.")));
       child.on("close", (code) => code === 0 ? finish() : finish(new ContextProviderFailure("HELPER_FAILED", stderr.trim() || `Repository context helper exited with code ${code}.`)));
     });
@@ -2181,10 +2190,10 @@ function readGitStatus(cwd: string) {
       stdio: ["ignore", "pipe", "ignore"],
     });
     let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
+    const decoder = createUtf8StreamDecoder((text) => { output += text; });
+    child.stdout?.on("data", decoder.write);
     child.on("close", () => {
+      decoder.end();
       const paths = output
         .split(/\r?\n/)
         .filter(Boolean)
@@ -2528,11 +2537,15 @@ async function powershellSyntaxViolation(command: string) {
       { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
     );
     let diagnostics = "";
+    const decoder = createUtf8StreamDecoder((text) => {
+      diagnostics = `${diagnostics}${text}`.slice(-2_000);
+    });
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     const settle = (value: string | undefined) => {
       if (settled) return;
       settled = true;
+      decoder.end();
       if (timeout) clearTimeout(timeout);
       resolveResult(value);
     };
@@ -2542,19 +2555,17 @@ async function powershellSyntaxViolation(command: string) {
         `PowerShell syntax parser timed out after ${syntaxParserTimeoutMs} ms.`,
       );
     }, syntaxParserTimeoutMs);
-    child.stderr?.on("data", (chunk: Buffer) => {
-      diagnostics = `${diagnostics}${chunk.toString()}`.slice(-2_000);
-    });
+    child.stderr?.on("data", decoder.write);
     child.once("error", (error) =>
       settle(`PowerShell syntax parser could not start: ${error.message}`),
     );
-    child.once("close", (code) =>
+    child.once("close", (code) => {
       settle(
         code === 0
           ? undefined
           : `PowerShell syntax error: ${diagnostics.trim() || `parser exited ${code}`}`,
-      ),
-    );
+      );
+    });
   });
 }
 
@@ -2581,13 +2592,31 @@ export async function powershellVerificationSyntaxPreflight(
 }
 
 export function verificationCommandInvocation(command: string) {
-  if (isLikelyPowerShellCommand(command))
+  const normalizedCommand = normalizeWindowsNpmCommand(command);
+  if (isLikelyPowerShellCommand(normalizedCommand))
     return {
       executable: process.platform === "win32" ? "powershell.exe" : "pwsh",
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+      args: [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        normalizedCommand,
+      ],
       shell: false,
     };
-  return { executable: command, args: [] as string[], shell: true };
+  return { executable: normalizedCommand, args: [] as string[], shell: true };
+}
+
+export function normalizeWindowsNpmCommand(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+) {
+  if (platform !== "win32") return command;
+  return command.replace(
+    /(^|[\r\n;&|]\s*)npm(?=\s|$)/gi,
+    (_match, prefix: string) => `${prefix}npm.cmd`,
+  );
 }
 
 export function taskAllowsCorrection(
@@ -3355,8 +3384,12 @@ export function validateQueue(value: unknown): {
       minModel: task.minModel,
       effort,
       allowedPaths: task.allowedPaths,
-      preconditions: task.preconditions,
-      verificationCommands: task.verificationCommands,
+      preconditions: task.preconditions?.map((command) =>
+        normalizeWindowsNpmCommand(command)
+      ),
+      verificationCommands: task.verificationCommands?.map((command) =>
+        normalizeWindowsNpmCommand(command)
+      ),
       executionGuards: task.executionGuards,
       requiresCheckpointsFrom: task.requiresCheckpointsFrom,
       timeoutMinutes: task.timeoutMinutes,
@@ -3441,7 +3474,9 @@ export function validateQueue(value: unknown): {
   };
   taskKeys.forEach(visit);
   const verificationCommands =
-    project.verificationCommands?.filter(Boolean) ?? [];
+    project.verificationCommands
+      ?.filter(Boolean)
+      .map((command) => normalizeWindowsNpmCommand(command)) ?? [];
   return {
     project: {
       name: project.name || projectPath.split(/[\\/]/).pop() || "Project",
@@ -3672,6 +3707,43 @@ export function assessReviewerResult({
 
 export function boundedReviewerDiagnostics(value: string) {
   return value.trim().slice(-8_000);
+}
+
+export function reviewerReplacementCharacterFalsePositive(report: string) {
+  const mentionsReplacementCharacter =
+    /\uFFFD|U\+FFFD|replacement character|replacement symbol/i.test(report);
+  if (!mentionsReplacementCharacter) return false;
+  const otherBlockingFinding = report
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("VERDICT:"))
+    .some(
+      (line) => {
+        const withoutReplacementFinding = line.replace(
+          /\uFFFD|U\+FFFD|replacement character|replacement symbol/gi,
+          "",
+        );
+        return /(?:fail(?:ed|ure)?|cannot|can't|issue|reject|corrupt|missing|invalid|block(?:ed|ing)?|must fix|changes? required)/i.test(
+          withoutReplacementFinding,
+        );
+      },
+    );
+  return !otherBlockingFinding;
+}
+
+async function taskOwnedFilesContainReplacementCharacter(
+  cwd: string,
+  paths: readonly string[],
+) {
+  for (const path of paths) {
+    try {
+      if ((await readFile(join(cwd, path), "utf8")).includes("\uFFFD"))
+        return true;
+    } catch {
+      // Deleted, binary, or unreadable paths have no readable UTF-8 evidence.
+    }
+  }
+  return false;
 }
 
 function pathsOverlap(left: string, right: string) {
@@ -4172,14 +4244,16 @@ async function runGit(cwd: string, args: string[]) {
       return;
     }
     let output = "";
-    const consume = (chunk: Buffer) => {
-      output += chunk.toString();
-    };
-    child.stdout?.on("data", consume);
-    child.stderr?.on("data", consume);
-    child.on("close", (code) =>
-      done({ code: code ?? 1, output: output.trim() }),
-    );
+    const consume = (text: string) => { output += text; };
+    const stdoutDecoder = createUtf8StreamDecoder(consume);
+    const stderrDecoder = createUtf8StreamDecoder(consume);
+    child.stdout?.on("data", stdoutDecoder.write);
+    child.stderr?.on("data", stderrDecoder.write);
+    child.on("close", (code) => {
+      stdoutDecoder.end();
+      stderrDecoder.end();
+      done({ code: code ?? 1, output: output.trim() });
+    });
     child.on("error", (error) => done({ code: 1, output: error.message }));
   });
 }
@@ -5028,10 +5102,12 @@ async function readGitDiff(cwd: string, paths: string[]) {
       return;
     }
     let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
+    const decoder = createUtf8StreamDecoder((text) => { output += text; });
+    child.stdout?.on("data", decoder.write);
+    child.on("close", () => {
+      decoder.end();
+      done(output.slice(0, 100_000));
     });
-    child.on("close", () => done(output.slice(0, 100_000)));
     child.on("error", () => done(""));
   });
 }
@@ -5210,6 +5286,38 @@ export function codexPromptInvocation(args: string[], prompt: string) {
   };
 }
 
+export function createUtf8StreamDecoder(consume: (text: string) => void) {
+  const decoder = new StringDecoder("utf8");
+  return {
+    write(chunk: Buffer) {
+      const text = decoder.write(chunk);
+      if (text) consume(text);
+    },
+    end() {
+      const text = decoder.end();
+      if (text) consume(text);
+    },
+  };
+}
+
+export function createUtf8LineDecoder(consume: (line: string) => void) {
+  let pending = "";
+  const stream = createUtf8StreamDecoder((text) => {
+    pending += text;
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    lines.forEach(consume);
+  });
+  return {
+    write: stream.write,
+    end() {
+      stream.end();
+      if (pending) consume(pending);
+      pending = "";
+    },
+  };
+}
+
 function spawnCodexWithPrompt(
   args: string[],
   prompt: string,
@@ -5230,20 +5338,26 @@ function spawnCodexWithPrompt(
     },
   );
   child.stdin?.on("error", () => undefined);
-  child.stdin?.end(invocation.stdin);
+  child.stdin?.end(invocation.stdin, "utf8");
   return child;
 }
 
 export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
-  const verificationCommands =
+  const verificationCommands = (
     task.authorizationEvidence?.verificationCommands ??
-    authorizationScope(task, project).verificationCommands;
+    authorizationScope(task, project).verificationCommands
+  ).map((command) => normalizeWindowsNpmCommand(command));
   const changedFiles = task.changedFiles ?? [];
   const taskChangeSet = changedFiles.length
     ? changedFiles.map((path) => `- ${path}`).join("\n")
     : "- (no task-owned file changes detected)";
   const taskDiff = task.diff?.trim() ||
     "(No tracked diff is available. Inspect only the exact task-change paths listed above; a listed path may be newly untracked.)";
+  const readOnlyTask =
+    task.authorizationEvidence?.intent !== "apply" ||
+    task.authorizationEvidence?.allowedPaths.length === 0;
+  const executorResult = task.finalOutput?.trim() ||
+    "(The executor did not return a textual result.)";
   const verification = verificationCommands.length
     ? [
         "Run only these exact verification commands verbatim:",
@@ -5264,12 +5378,24 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
     "Task-scoped tracked diff:",
     taskDiff,
     "",
+    "Executor result (authoritative task outcome):",
+    executorResult,
+    "",
+    ...(readOnlyTask
+      ? [
+          "This is a read-only verification task. An empty task change set is expected and is not a review finding.",
+          "Review the executor result, requested source inspection, and exact verification evidence; do not require a task-owned diff.",
+          "",
+        ]
+      : []),
     "Pre-existing modified, deleted, or untracked files outside this task change set are out of scope.",
     "Do not request their removal or modification and do not treat them as task scope violations.",
     "",
     verification,
     "",
     "Check correctness, scope, allowed paths, and the exact verification results.",
+    "A replacement-character finding is blocking only if direct UTF-8 inspection of a task-owned source file proves an actual U+FFFD character.",
+    "Never infer U+FFFD corruption from terminal, JSON-event, prompt, command, or log rendering.",
     "Include exactly one standalone line: VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED.",
     "List concise findings.",
   ].join("\n");
@@ -5337,23 +5463,20 @@ async function reviewTask(run: Run, task: Task) {
     return;
   }
   let diagnostics = "";
-  const consumeStdout = (chunk: Buffer) => {
-    for (const line of chunk.toString().split(/\r?\n/)) {
+  const stdoutDecoder = createUtf8LineDecoder((line) => {
       const trimmed = line.trim();
       recordUsage(task, trimmed, "reviewer", 1);
       const readable = trimmed && taskEvent(trimmed);
       if (readable)
         diagnostics = boundedReviewerDiagnostics(`${diagnostics}\n${readable}`);
-    }
-  };
-  const consumeStderr = (chunk: Buffer) => {
-    const text = chunk.toString();
+  });
+  const stderrDecoder = createUtf8StreamDecoder((text) => {
     diagnostics = boundedReviewerDiagnostics(`${diagnostics}${text}`);
     for (const line of text.split(/\r?\n/))
       recordUsage(task, line.trim(), "reviewer", 1);
-  };
-  child.stdout?.on("data", consumeStdout);
-  child.stderr?.on("data", consumeStderr);
+  });
+  child.stdout?.on("data", stdoutDecoder.write);
+  child.stderr?.on("data", stderrDecoder.write);
   activeProcesses.set(task.id, child);
   const { exitCode, timedOut } = await waitForProcess(
     child,
@@ -5363,11 +5486,33 @@ async function reviewTask(run: Run, task: Task) {
         `Reviewer превысил лимит ${run.limits.reviewerTimeoutMinutes} мин. и был остановлен.`,
       ),
   );
+  stdoutDecoder.end();
+  stderrDecoder.end();
   const report = existsSync(outputFile)
     ? (await readFile(outputFile, "utf8")).slice(0, 24_000)
     : undefined;
   task.reviewOutput = report ?? "Reviewer did not return a report.";
-  const assessment = assessReviewerResult({ exitCode, timedOut, report });
+  let assessment = assessReviewerResult({ exitCode, timedOut, report });
+  const taskEvidenceContainsReplacementCharacter =
+    task.diff?.includes("\uFFFD") ||
+    task.finalOutput?.includes("\uFFFD") ||
+    await taskOwnedFilesContainReplacementCharacter(
+      executionPath,
+      task.changedFiles ?? [],
+    );
+  if (
+    assessment.status === "changes_requested" &&
+    report &&
+    reviewerReplacementCharacterFalsePositive(report) &&
+    !taskEvidenceContainsReplacementCharacter
+  ) {
+    assessment = {
+      status: "approved",
+      reason:
+        "Ignored an unverified replacement-character-only reviewer rejection; authoritative UTF-8 task evidence contains no U+FFFD.",
+    };
+    task.log.push(assessment.reason);
+  }
   task.reviewStatus = assessment.status;
   if (task.reviewStatus !== "approved") task.log.push(assessment.reason);
   if (diagnostics) task.log.push(`Reviewer diagnostics:\n${diagnostics}`);
@@ -5471,12 +5616,14 @@ async function correctTask(run: Run, task: Task) {
     return { code: 1, timedOut: false };
   }
   activeProcesses.set(task.id, child);
-  const consume = (chunk: Buffer) => {
-    for (const line of chunk.toString().split(/\r?\n/))
-      recordUsage(task, line.trim(), "correction", task.attempts ?? 1);
-  };
-  child.stdout?.on("data", consume);
-  child.stderr?.on("data", consume);
+  const stdoutDecoder = createUtf8LineDecoder((line) =>
+    recordUsage(task, line.trim(), "correction", task.attempts ?? 1)
+  );
+  const stderrDecoder = createUtf8LineDecoder((line) =>
+    recordUsage(task, line.trim(), "correction", task.attempts ?? 1)
+  );
+  child.stdout?.on("data", stdoutDecoder.write);
+  child.stderr?.on("data", stderrDecoder.write);
   const { exitCode: code, timedOut } = await waitForProcess(
     child,
     task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
@@ -5485,6 +5632,8 @@ async function correctTask(run: Run, task: Task) {
         `Автоисправление превысило лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин. и было остановлено.`,
       ),
   );
+  stdoutDecoder.end();
+  stderrDecoder.end();
   activeProcesses.delete(task.id);
   task.executionPhase = undefined;
   if (existsSync(outputFile))
@@ -5539,16 +5688,20 @@ async function runConfiguredTaskCommands(
       return { code: 1, timedOut: false };
     }
     let output = "";
-    const consume = (chunk: Buffer) => {
-      output = `${output}${chunk.toString()}`.slice(-8_000);
+    const consume = (text: string) => {
+      output = `${output}${text}`.slice(-8_000);
     };
-    child.stdout?.on("data", consume);
-    child.stderr?.on("data", consume);
+    const stdoutDecoder = createUtf8StreamDecoder(consume);
+    const stderrDecoder = createUtf8StreamDecoder(consume);
+    child.stdout?.on("data", stdoutDecoder.write);
+    child.stderr?.on("data", stderrDecoder.write);
     const result = await waitForProcess(
       child,
       task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
       () => task.log.push(`Verification timed out: ${command}`),
     );
+    stdoutDecoder.end();
+    stderrDecoder.end();
     if (output.trim()) task.log.push(output.trim());
     if (result.exitCode !== 0 || result.timedOut) return {
       code: result.exitCode || 1,
@@ -5793,21 +5946,20 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
         break;
       }
       activeProcesses.set(task.id, child);
-      const consume = (chunk: Buffer) => {
-        const text = chunk.toString();
-        for (const line of text.split(/\r?\n/)) {
+      const consumeLine = (line: string) => {
           recordUsage(task, line.trim(), "executor", attempt);
           const readable = line.trim() && taskEvent(line.trim());
           if (readable) task.log.push(readable.slice(0, 1600));
-        }
         publish("log", {
           runId: run.id,
           taskId: task.id,
           lines: task.log.slice(-8),
         });
       };
-      child.stdout?.on("data", consume);
-      child.stderr?.on("data", consume);
+      const stdoutDecoder = createUtf8LineDecoder(consumeLine);
+      const stderrDecoder = createUtf8LineDecoder(consumeLine);
+      child.stdout?.on("data", stdoutDecoder.write);
+      child.stderr?.on("data", stderrDecoder.write);
       const result = await waitForProcess(
         child,
         task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
@@ -5816,6 +5968,8 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
             `Задача превысила лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин. и была остановлена.`,
           ),
       );
+      stdoutDecoder.end();
+      stderrDecoder.end();
       activeProcesses.delete(task.id);
       task.exitCode = result.exitCode;
       task.timedOut ||= result.timedOut;
