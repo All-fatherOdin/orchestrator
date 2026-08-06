@@ -15364,7 +15364,7 @@ test("atomic rename retries only bounded transient Windows sharing failures", as
     wait: async (delay) => { delays.push(delay); },
   });
   assert.equal(attempts.length, 4);
-  assert.deepEqual(delays, [10, 20, 40]);
+  assert.deepEqual(delays, [25, 50, 100]);
 
   let exhaustedCalls = 0;
   const exhaustedDelays: number[] = [];
@@ -15379,8 +15379,8 @@ test("atomic rename retries only bounded transient Windows sharing failures", as
     }),
     { code: "EBUSY" },
   );
-  assert.equal(exhaustedCalls, 8);
-  assert.deepEqual(exhaustedDelays, [10, 20, 40, 80, 160, 320, 640]);
+  assert.equal(exhaustedCalls, 9);
+  assert.deepEqual(exhaustedDelays, [25, 50, 100, 200, 400, 800, 1_600, 2_000]);
 
   for (const [platform, code] of [["linux", "EPERM"], ["win32", "ENOENT"]] as const) {
     let calls = 0;
