@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
@@ -10,14 +11,17 @@ const {
   createRunNotificationTracker,
   createServerLogHandles,
   deliverNativeNotification,
-  ensureServerAvailability,
   isCompatibleHealth,
+  isOwnedHealth,
   isNativeNotificationSupported,
   isNotifiableTerminalStatus,
+  resolveDesktopDataDirectory,
   selectRunTerminalTransition,
+  selectDesktopPort,
   shouldStartRunNotifications,
   shouldReportServerExit,
   shouldStopServerOnQuit,
+  startOwnedServer,
 } = require("./lifecycle.cjs");
 
 test("Windows desktop registers the Orchestrator notification identity", () => {
@@ -73,31 +77,20 @@ test("second-instance event restores and focuses the existing window", () => {
   assert.deepEqual(calls, ["restore", "show", "focus"]);
 });
 
-test("desktop attaches only to a compatible existing Orchestrator server", async () => {
-  let starts = 0;
-  const attached = await ensureServerAvailability({
-    probe: async () => true,
-    start: () => { starts += 1; },
-    wait: async () => undefined,
-  });
-  assert.deepEqual(attached, { mode: "attached", ownsServer: false });
-  assert.equal(starts, 0);
-
+test("desktop always starts and owns its server process", async () => {
   const child = { pid: 42 };
-  const spawned = await ensureServerAvailability({
-    probe: async () => false,
+  const spawned = await startOwnedServer({
     start: () => child,
     wait: async (value) => assert.equal(value, child),
   });
-  assert.deepEqual(spawned, { mode: "spawned", ownsServer: true, process: child });
+  assert.deepEqual(spawned, { ownsServer: true, process: child });
 });
 
 test("failed startup handshake stops the child process", async () => {
   const child = { pid: 77 };
   let stopped;
   await assert.rejects(
-    ensureServerAvailability({
-      probe: async () => false,
+    startOwnedServer({
       start: () => child,
       wait: async () => { throw new Error("startup failed"); },
       stop: async (value) => { stopped = value; },
@@ -107,10 +100,45 @@ test("failed startup handshake stops the child process", async () => {
   assert.equal(stopped, child);
 });
 
-test("health compatibility and exit reporting are ownership-aware", () => {
+test("desktop health handshake requires its exact process token", () => {
   assert.equal(isCompatibleHealth({ ok: true, service: "codex-orchestrator", apiVersion: 1 }), true);
   assert.equal(isCompatibleHealth({ ok: true }), false);
   assert.equal(isCompatibleHealth({ ok: true, service: "other", apiVersion: 1 }), false);
+  assert.equal(isOwnedHealth({ ok: true, service: "codex-orchestrator", apiVersion: 1, desktopInstanceToken: "owned" }, "owned"), true);
+  assert.equal(isOwnedHealth({ ok: true, service: "codex-orchestrator", apiVersion: 1, desktopInstanceToken: "other" }, "owned"), false);
+  assert.equal(isOwnedHealth({ ok: true, service: "codex-orchestrator", apiVersion: 1 }, "owned"), false);
+});
+
+test("desktop selects its preferred port or an operating-system fallback", async () => {
+  const preferredCalls = [];
+  assert.equal(await selectDesktopPort(4318, async (port) => {
+    preferredCalls.push(port);
+    return port;
+  }), 4318);
+  assert.deepEqual(preferredCalls, [4318]);
+
+  const fallbackCalls = [];
+  assert.equal(await selectDesktopPort(4318, async (port) => {
+    fallbackCalls.push(port);
+    return port === 0 ? 54812 : undefined;
+  }), 54812);
+  assert.deepEqual(fallbackCalls, [4318, 0]);
+  await assert.rejects(selectDesktopPort(0, async () => undefined), /between 1 and 65535/);
+  await assert.rejects(selectDesktopPort(4318, async () => undefined), /No local port/);
+});
+
+test("desktop data stays under userData unless explicitly overridden", () => {
+  assert.equal(
+    resolveDesktopDataDirectory({ userData: "C:\\Users\\Owner\\AppData\\Roaming\\Orchestrator" }),
+    path.join("C:\\Users\\Owner\\AppData\\Roaming\\Orchestrator", ".orchestrator"),
+  );
+  assert.equal(
+    resolveDesktopDataDirectory({ override: "C:\\test-data", userData: "ignored" }),
+    path.resolve("C:\\test-data"),
+  );
+});
+
+test("server exit reporting remains ownership-aware", () => {
   assert.equal(shouldReportServerExit({ isQuitting: false, ownsServer: true, serverReady: true }), true);
   assert.equal(shouldReportServerExit({ isQuitting: false, ownsServer: false, serverReady: true }), false);
   assert.equal(shouldReportServerExit({ isQuitting: true, ownsServer: true, serverReady: true }), false);

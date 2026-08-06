@@ -6126,6 +6126,7 @@ app.get("/api/health", (_, response) =>
     ok: true,
     service: "codex-orchestrator",
     apiVersion: 1,
+    desktopInstanceToken: process.env.ORCHESTRATOR_DESKTOP_TOKEN ?? null,
     codexBin: codexBin(),
     cliModelIds: MODEL_IDS,
   }),

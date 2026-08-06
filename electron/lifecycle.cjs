@@ -282,8 +282,31 @@ function isCompatibleHealth(payload) {
   );
 }
 
-async function ensureServerAvailability({ probe, start, wait, stop = async () => undefined }) {
-  if (await probe()) return { mode: "attached", ownsServer: false };
+function isOwnedHealth(payload, instanceToken) {
+  return Boolean(
+    isCompatibleHealth(payload) &&
+      typeof instanceToken === "string" &&
+      instanceToken.length > 0 &&
+      payload.desktopInstanceToken === instanceToken,
+  );
+}
+
+async function selectDesktopPort(preferredPort, reservePort) {
+  if (!Number.isInteger(preferredPort) || preferredPort < 1 || preferredPort > 65_535)
+    throw new Error("ORCHESTRATOR_PORT must be an integer between 1 and 65535.");
+  const preferred = await reservePort(preferredPort);
+  if (preferred === preferredPort) return preferred;
+  const fallback = await reservePort(0);
+  if (Number.isInteger(fallback) && fallback > 0 && fallback <= 65_535) return fallback;
+  throw new Error("No local port is available for the Orchestrator desktop server.");
+}
+
+function resolveDesktopDataDirectory({ override, userData }) {
+  if (typeof override === "string" && override.trim()) return path.resolve(override);
+  return path.join(userData, ".orchestrator");
+}
+
+async function startOwnedServer({ start, wait, stop = async () => undefined }) {
   const process = start();
   try {
     await wait(process);
@@ -291,7 +314,7 @@ async function ensureServerAvailability({ probe, start, wait, stop = async () =>
     await stop(process);
     throw error;
   }
-  return { mode: "spawned", ownsServer: true, process };
+  return { ownsServer: true, process };
 }
 
 function shouldReportServerExit({ isQuitting, ownsServer, serverReady }) {
@@ -344,13 +367,16 @@ module.exports = {
   createRunNotificationTracker,
   createServerLogHandles,
   deliverNativeNotification,
-  ensureServerAvailability,
   isCompatibleHealth,
+  isOwnedHealth,
   isNativeNotificationSupported,
   isNotifiableTerminalStatus,
   restoreAndFocusWindow,
+  resolveDesktopDataDirectory,
+  selectDesktopPort,
   selectRunTerminalTransition,
   shouldStartRunNotifications,
   shouldReportServerExit,
   shouldStopServerOnQuit,
+  startOwnedServer,
 };
