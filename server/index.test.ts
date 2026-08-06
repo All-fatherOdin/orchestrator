@@ -103,6 +103,7 @@ const {
   loadRun,
   loadRunSummary,
   writeTextAtomically,
+  renameWithTransientWindowsRetry,
   runInBackground,
   windowsPytestBasetempViolation,
   app,
@@ -15347,6 +15348,54 @@ test("atomic write cleanup does not create a secondary unhandled rejection", asy
     assert.equal(unhandled, undefined);
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("atomic rename retries only bounded transient Windows sharing failures", async () => {
+  const attempts: string[] = [];
+  const delays: number[] = [];
+  await renameWithTransientWindowsRetry("source.tmp", "run.json", {
+    platform: "win32",
+    renameFile: async () => {
+      attempts.push("rename");
+      if (attempts.length < 4)
+        throw Object.assign(new Error("temporarily locked"), { code: "EPERM" });
+    },
+    wait: async (delay) => { delays.push(delay); },
+  });
+  assert.equal(attempts.length, 4);
+  assert.deepEqual(delays, [10, 20, 40]);
+
+  let exhaustedCalls = 0;
+  const exhaustedDelays: number[] = [];
+  await assert.rejects(
+    renameWithTransientWindowsRetry("source.tmp", "run.json", {
+      platform: "win32",
+      renameFile: async () => {
+        exhaustedCalls += 1;
+        throw Object.assign(new Error("still locked"), { code: "EBUSY" });
+      },
+      wait: async (delay) => { exhaustedDelays.push(delay); },
+    }),
+    { code: "EBUSY" },
+  );
+  assert.equal(exhaustedCalls, 8);
+  assert.deepEqual(exhaustedDelays, [10, 20, 40, 80, 160, 320, 640]);
+
+  for (const [platform, code] of [["linux", "EPERM"], ["win32", "ENOENT"]] as const) {
+    let calls = 0;
+    await assert.rejects(
+      renameWithTransientWindowsRetry("source.tmp", "run.json", {
+        platform,
+        renameFile: async () => {
+          calls += 1;
+          throw Object.assign(new Error("permanent failure"), { code });
+        },
+        wait: async () => assert.fail("permanent failures must not wait"),
+      }),
+      { code },
+    );
+    assert.equal(calls, 1);
   }
 });
 

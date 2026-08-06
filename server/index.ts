@@ -1526,7 +1526,7 @@ export function writeTextAtomically(file: string, content: string) {
       const temporary = `${file}.${process.pid}.${identifier()}.tmp`;
       try {
         await writeFile(temporary, content);
-        await rename(temporary, file);
+        await renameWithTransientWindowsRetry(temporary, file);
       } catch (error) {
         await unlink(temporary).catch(() => undefined);
         throw error;
@@ -1538,6 +1538,39 @@ export function writeTextAtomically(file: string, content: string) {
   };
   void next.then(cleanup, cleanup);
   return next;
+}
+
+const TRANSIENT_WINDOWS_RENAME_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320, 640] as const;
+
+export async function renameWithTransientWindowsRetry(
+  source: string,
+  destination: string,
+  options: {
+    platform?: NodeJS.Platform;
+    renameFile?: (source: string, destination: string) => Promise<void>;
+    wait?: (delayMs: number) => Promise<void>;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const renameFile = options.renameFile ?? rename;
+  const wait = options.wait ?? ((delayMs: number) =>
+    new Promise<void>((resolveWait) => setTimeout(resolveWait, delayMs)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await renameFile(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (
+        platform !== "win32" ||
+        !code ||
+        !TRANSIENT_WINDOWS_RENAME_CODES.has(code) ||
+        attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length
+      ) throw error;
+      await wait(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
 }
 
 function writeJsonAtomically(file: string, value: unknown) {
