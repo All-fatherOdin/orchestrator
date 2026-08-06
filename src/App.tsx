@@ -929,7 +929,7 @@ export function App() {
           </button>
         </nav>
         <div className="sidebarFoot">
-          v0.1.1 · local
+          v{__APP_VERSION__} · local
           <br />
           <span>●</span> Codex CLI pipeline
         </div>
