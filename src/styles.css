@@ -62,6 +62,13 @@ pre{background:#111113;color:#d4d4d8;border:1px solid #2d2d32}.queueEditor p,.ru
 .usageTableHead,.usageTableRow{grid-template-columns:minmax(240px,1.9fr) 90px repeat(4,minmax(80px,1fr)) 100px}.usageTableRow .usageProcessLine{color:#c4c4cc}.usageOutcome{width:max-content;padding:5px 7px;border:1px solid;border-radius:999px;font:700 10px 'DM Mono';white-space:nowrap}.usageOutcome.success{color:#65d58a;border-color:#357a4c;background:#183522}.usageOutcome.failure{color:#ff918b;border-color:#8c4541;background:#3d211f}.usageOutcome.interrupted{color:#c1c7c2;border-color:#696f6a;background:#303331}.usageOutcome.pending{color:#f0c46b;border-color:#8c713a;background:#3b321f}@media(max-width:950px){.usageTableHead,.usageTableRow{min-width:940px}}
 .usageTableHead,.usageTableRow{grid-template-columns:minmax(240px,1.9fr) 90px repeat(5,minmax(80px,1fr)) 100px}@media(max-width:950px){.usageTableHead,.usageTableRow{min-width:1040px}}
 
+/* Usage is rendered inside a narrower workspace between two side panels, so
+   responsiveness must follow the component width instead of the window. */
+.usagePage{container-type:inline-size}.usageTable{max-width:100%;overflow-x:auto;scrollbar-gutter:stable}.usageTableHead,.usageTableRow{min-width:1040px}.usagePage :is(.usageFilters label,.usagePagination,.usageMetric small,.usageChartHead span,.usageBarLabel,.usageBarRow>b,.usageTableHead,.usageTableRow,.usageTableRow small,.usageOutcome){font-family:Manrope,Arial,sans-serif}
+@container (max-width:980px){.usageMetrics{grid-template-columns:repeat(3,minmax(0,1fr))}.usageMetric{border-right:1px solid #38383f;border-bottom:1px solid #38383f}.usageMetric:nth-child(3n){border-right:0}.usageMetric:nth-last-child(-n+3){border-bottom:0}.usageFilters{grid-template-columns:1fr 1fr}.usageFilters label:first-child{grid-column:1/-1}}
+@container (max-width:680px){.usageMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}.usageMetric:nth-child(3n){border-right:1px solid #38383f}.usageMetric:nth-child(2n){border-right:0}.usageMetric:nth-last-child(-n+3){border-bottom:1px solid #38383f}.usageMetric:last-child{border-right:0;border-bottom:0}.usageFilters{grid-template-columns:1fr}.usageFilters label:first-child{grid-column:auto}}
+@container (max-width:420px){.usageMetrics{grid-template-columns:1fr}.usageMetric,.usageMetric:nth-child(2n),.usageMetric:nth-child(3n){border-right:0;border-bottom:1px solid #38383f}.usageMetric:last-child{border-bottom:0}}
+
 /* Phase 6 operator projections: read-only rails and tables in the existing dark shell. */
 .shell.operatorShell{grid-template-columns:244px minmax(0,1fr)}
 .operatorPage{width:min(1440px,100%);margin:0 auto;padding:0 0 44px}
