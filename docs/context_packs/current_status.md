@@ -1,7 +1,7 @@
 # Current Status
 
 Status: active compact context pack
-Last updated: 2026-08-05
+Last updated: 2026-08-06
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run
@@ -117,7 +117,7 @@ page-level overflow. The combined server/Electron regression command exceeded
 369 seconds without emitting a failure diagnostic, so it remains an explicit
 runtime-environment risk and is not recorded as passing evidence.
 
-Phase 9 Outcome Scorecards Slice 1 is implemented. Exactly one strict discovery
+Phase 9 Outcome Scorecards is implemented through Slice 2. Exactly one strict discovery
 GET and one closed-manifest compute POST provide bounded deterministic
 privacy-safe scorecards for one explicit project cohort. Compute remains a
 request-scoped in-memory read-only calculation delegated to the domain service;
@@ -132,8 +132,14 @@ escalation rate, and halt recurrence with reconstructible evidence,
 denominators, coverage, and exclusions. Zero denominators are
 `insufficient-evidence`; deployment outcomes, escaped defects, provider
 monetary cost, business impact, and unversioned baselines remain explicitly
-unsupported. All 11 focused schema/domain/API/restart/no-mutation tests,
-TypeScript, production Vite build, and diff checks pass. Slice 2 dashboard and
-direct-download work remain pending; persistence, notifications, publication,
-background aggregation, search, external telemetry, operator actions, and new
-authority remain unauthorized.
+unsupported. Slice 2 adds consistent Russian Control Plane navigation and a
+Russian read-only scorecard view that consumes only bounded Phase 6 selection
+evidence and Phase 9 responses, renders explicit evidence and failure states,
+keeps unsupported and zero-denominator results non-numeric, and downloads the
+already-returned JSON only after direct user action. All 16 focused Phase
+9/API/UI tests, TypeScript, production Vite build, and diff checks pass.
+Owner-provided manual Windows desktop rendered verification confirmed that the
+tab opened without errors, clipping, or horizontal overflow; this is not
+automated browser QA. Formal automated completion review remains pending.
+Persistence, notifications, publication, background aggregation, search,
+external telemetry, operator actions, and new authority remain unauthorized.

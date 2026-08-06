@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-05
+Last updated: 2026-08-06
 
 ## Current Priority
 
@@ -48,16 +48,22 @@ server/Electron command exceeded its six-minute environment cap without a
 failure diagnostic; keep that as explicit runtime-environment risk rather than
 claiming a full-suite pass.
 
-Phase 9 Outcome Scorecards Slice 1 is implemented. Closed schemas and a
+Phase 9 Outcome Scorecards is implemented through Slice 2. Closed schemas and a
 request-scoped domain service provide exact ledger/run joins, the seven bounded
 metrics, explicit denominators and unsupported outcomes, deterministic hashes,
 privacy/limit enforcement, restart behavior, and no-mutation evidence. Exactly
 one discovery GET and one read-only compute POST are exposed under
 `/api/outcome-scorecards/v1`; compute is fenced by the exact project watermark
-and immutable run-record identities and does not persist its cohort. The 11
-focused domain/API tests, TypeScript, production Vite build, and diff checks
-pass. Slice 2 remains pending; do not treat this handoff as dashboard, download,
-publication, telemetry, notification, persistence, or action authority.
+and immutable run-record identities and does not persist its cohort. Slice 2
+adds the Russian read-only Control Plane view, explicit metric/evidence/failure
+states, consistent Russian navigation, and direct user-initiated download of
+the already-returned bounded JSON. The 16 focused Phase 9/API/UI tests,
+TypeScript, production Vite build, and diff checks pass. Owner-provided manual
+Windows desktop rendered verification confirmed that the tab opened without
+errors, clipping, or horizontal overflow; this is not automated browser QA.
+Formal automated completion review remains pending. Do not treat this handoff
+as publication, telemetry, notification, persistence, action authority, or
+automated browser completion evidence.
 
 ## Source Boundaries
 
@@ -82,9 +88,10 @@ publication, telemetry, notification, persistence, or action authority.
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
 - Implemented and completion-reviewed Phase 8 contract:
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
-- Accepted Phase 9 contract; Slice 1 implemented, Slice 2 pending:
+- Accepted Phase 9 contract; Slices 1-2 implemented, formal automated
+  completion review pending:
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
-- Phase 2-9 Slice 1 product evidence: current code and `server/index.test.ts`.
+- Phase 2-9 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
 

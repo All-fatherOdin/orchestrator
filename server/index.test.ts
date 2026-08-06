@@ -193,6 +193,17 @@ const { AuditBundlesDashboard, auditBundleRequestPath } = await import(
   "../src/AuditBundlesDashboard.tsx"
 );
 const {
+  OutcomeScorecardsDashboard,
+  OutcomeScorecardErrorState,
+  OutcomeScorecardResult,
+  outcomeScorecardComputeRequest,
+  outcomeScorecardDiscoveryUrl,
+  outcomeScorecardDownload,
+  outcomeScorecardEvidenceMatches,
+  outcomeScorecardMetricValue,
+  outcomeScorecardRejectedState,
+} = await import("../src/OutcomeScorecardsDashboard.tsx");
+const {
   ChangeControlError,
   ChangeControlStore,
   attemptEvidenceSnapshotHashV1,
@@ -12842,13 +12853,14 @@ test("Phase 7 Slice 2 dashboard keeps five projections and gates contextual acti
   const markup = renderToStaticMarkup(createElement(OperatorDashboard));
   assert.equal(operatorViews.length, 5);
   for (const label of [
-    "Overview",
-    "Execution bucket",
-    "Incidents",
-    "Prompt registry",
-    "Eval lineage",
+    "Обзор",
+    "Очередь выполнения",
+    "Инциденты",
+    "Реестр промптов",
+    "История оценок",
   ]) assert.match(markup, new RegExp(`>${label}<`));
-  assert.match(markup, /explicitly confirmed actions/);
+  assert.match(markup, /Панель управления/);
+  assert.match(markup, /явно подтверждённые действия/);
   assert.match(markup, /Reading canonical projections/);
   const source = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
   assert.match(source, /requestId === requestIdRef\.current/);
@@ -12873,7 +12885,7 @@ test("Phase 7 Slice 2 dashboard keeps five projections and gates contextual acti
 test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and user-initiated JSON download", async () => {
   const dashboardMarkup = renderToStaticMarkup(createElement(OperatorDashboard));
   const auditMarkup = renderToStaticMarkup(createElement(AuditBundlesDashboard));
-  assert.match(dashboardMarkup, />Audit bundles</);
+  assert.match(dashboardMarkup, />Пакеты аудита</);
   assert.match(auditMarkup, /Reading Phase 6 evidence sources/);
   assert.equal(
     auditBundleRequestPath({
@@ -12904,6 +12916,165 @@ test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and use
   assert.match(source, /Nothing is downloaded automatically/);
   for (const prohibited of ["upload", "share", "notify", "schedule", "change-control-v1"])
     assert.equal(source.toLowerCase().includes(prohibited), false, prohibited);
+});
+
+test("Russian Control Plane exposes OutcomeScorecardsDashboard through exactly one keyboard-semantic Phase 6 and Phase 9 entry", async () => {
+  const dashboardMarkup = renderToStaticMarkup(createElement(OperatorDashboard));
+  const markup = renderToStaticMarkup(createElement(OutcomeScorecardsDashboard));
+  assert.equal((dashboardMarkup.match(/>Сводки результатов</g) ?? []).length, 1);
+  assert.match(dashboardMarkup, />Пакеты аудита</);
+  for (const view of operatorViews) assert.match(dashboardMarkup, new RegExp(`>${view.label}<`));
+  assert.match(dashboardMarkup, /aria-label="Разделы панели управления"/);
+  assert.match(markup, /Чтение данных проектов Phase 6/);
+  const operatorSource = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
+  assert.match(operatorSource, /import \{ OutcomeScorecardsDashboard \} from "\.\/OutcomeScorecardsDashboard"/);
+  assert.match(operatorSource, /section === "outcomes" \? <OutcomeScorecardsDashboard \/>/);
+  assert.equal((operatorSource.match(/>Сводки результатов<\/button>/g) ?? []).length, 1);
+  const source = await readFile(join("src", "OutcomeScorecardsDashboard.tsx"), "utf8");
+  assert.match(source, /<label>Проект<select aria-label="Проект сводки результатов"/);
+  assert.match(source, /<fieldset className="scorecardRuns"><legend>/);
+  assert.match(source, /type="checkbox"/);
+  assert.match(source, /type="number" min="1"/);
+  assert.match(source, /\/api\/operator-projections\/v1\/overview\?limit=25/);
+  assert.match(source, /\/api\/outcome-scorecards\/v1\/projects\//);
+  assert.match(source, /\/api\/outcome-scorecards\/v1\/compute/);
+  for (const prohibitedPath of ["/api/change-control", "/api/runs", "/api/commands", "/api/audit-bundles", "/api/operator-actions"])
+    assert.equal(source.includes(prohibitedPath), false, prohibitedPath);
+  for (const prohibitedCapability of ["mutation", "upload", "share", "notification", "scheduling", "publication", "telemetry", "direct-store"])
+    assert.equal(source.toLowerCase().includes(prohibitedCapability), false, prohibitedCapability);
+  assert.equal(/fetch\([^)]*,\s*\{[^}]*method:\s*"(?:PUT|PATCH|DELETE)"/s.test(source), false);
+  for (const prohibitedEnglish of [
+    "Control plane", "Overview", "Execution bucket", "Incidents", "Prompt registry", "Eval lineage",
+    "Audit bundles", "Outcome scorecards",
+  ]) assert.equal(dashboardMarkup.includes(`>${prohibitedEnglish}<`), false, prohibitedEnglish);
+  for (const prohibitedEnglish of [
+    "Privacy boundary", "Not calculated", "No numeric outcome is shown", "Numerator", "Denominator",
+    "Coverage", "Bounded distribution", "Evidence references", "Incomplete scorecard",
+    "Warnings and exclusions", "Unsupported outcome classes", "Download bounded JSON",
+    "Evidence is stale", "Evidence is incomplete", "Rejected by privacy policy",
+  ]) assert.equal(source.includes(prohibitedEnglish), false, prohibitedEnglish);
+  for (const russianState of [
+    "Нет источников результатов", "Рассчитать ограниченную сводку", "Найти точные запуски",
+    "Расчёт сводки", "Связанные запуски не найдены", "Когорта ещё не найдена",
+    "Расчёт и скачивание не запускаются автоматически",
+  ]) assert.match(source, new RegExp(russianState));
+  const styles = await readFile(join("src", "styles.css"), "utf8");
+  assert.match(styles, /@media\(max-width:720px\).*\.scorecardFields\{grid-template-columns:1fr\}/s);
+});
+
+test("OutcomeScorecardsDashboard pure URL and request helpers bind inclusive ranges, watermark, and exact run identities", () => {
+  assert.equal(
+    outcomeScorecardDiscoveryUrl("project one/blue", 2, 9),
+    "/api/outcome-scorecards/v1/projects/project%20one%2Fblue/discovery?fromSequence=2&toSequence=9",
+  );
+  assert.throws(() => outcomeScorecardDiscoveryUrl("project", 9, 2), /включительный диапазон/);
+  const discovery: any = {
+    contractType: "OutcomeScorecardDiscoveryV1",
+    contractVersion: "1.0",
+    policyVersion: "outcome-scorecard-policy-v1",
+    selector: { projectId: "project-one", fromSequence: 2, toSequence: 9 },
+    sourceWatermark: { sequence: 12, hash: "a".repeat(64) },
+    candidates: [
+      { identity: { runId: "run-b", algorithm: "sha256", sha256: "b".repeat(64), byteLength: 20 }, joinRefs: ["task:b"] },
+      { identity: { runId: "run-a", algorithm: "sha256", sha256: "c".repeat(64), byteLength: 10 }, joinRefs: ["task:a"] },
+    ],
+    findings: [],
+    privacy: { policyVersion: "outcome-scorecard-privacy-v1", prohibitedFieldsExcluded: true, diagnosticsBounded: true },
+    discoveryHash: "d".repeat(64),
+  };
+  const request = outcomeScorecardComputeRequest(discovery, ["run-b", "run-a", "run-b"]);
+  assert.deepEqual(request, {
+    contractType: "OutcomeScorecardRequestV1",
+    contractVersion: "1.0",
+    policyVersion: "outcome-scorecard-policy-v1",
+    selector: { projectId: "project-one", fromSequence: 2, toSequence: 9, runIds: ["run-a", "run-b"] },
+    sourceWatermark: { sequence: 12, hash: "a".repeat(64) },
+    runRecordIdentities: [
+      { runId: "run-a", algorithm: "sha256", sha256: "c".repeat(64), byteLength: 10 },
+      { runId: "run-b", algorithm: "sha256", sha256: "b".repeat(64), byteLength: 20 },
+    ],
+  });
+  assert.throws(() => outcomeScorecardComputeRequest(discovery, ["run-unknown"]), /нет в привязанном результате поиска/);
+  assert.equal(outcomeScorecardEvidenceMatches(discovery, structuredClone(discovery), ["run-a", "run-b"]), true);
+  const staleWatermark = structuredClone(discovery);
+  staleWatermark.sourceWatermark.sequence += 1;
+  assert.equal(outcomeScorecardEvidenceMatches(discovery, staleWatermark, ["run-a"]), false);
+  const staleIdentity = structuredClone(discovery);
+  staleIdentity.candidates[1].identity.sha256 = "e".repeat(64);
+  assert.equal(outcomeScorecardEvidenceMatches(discovery, staleIdentity, ["run-a"]), false);
+});
+
+test("OutcomeScorecardsDashboard renders explicit stale, unavailable, incomplete, privacy-rejected, and limit-rejected states", () => {
+  assert.equal(outcomeScorecardRejectedState("SOURCE_WATERMARK_CHANGED"), "stale");
+  assert.equal(outcomeScorecardRejectedState("RUN_IDENTITY_CHANGED"), "stale");
+  assert.equal(outcomeScorecardRejectedState("SOURCE_UNAVAILABLE"), "unavailable");
+  assert.equal(outcomeScorecardRejectedState("EVIDENCE_INCOMPLETE"), "incomplete");
+  assert.equal(outcomeScorecardRejectedState("PRIVACY_VIOLATION"), "privacy-rejected");
+  assert.equal(outcomeScorecardRejectedState("COHORT_LIMIT_EXCEEDED"), "limit-rejected");
+  assert.equal(outcomeScorecardRejectedState("SCORECARD_TOO_LARGE"), "limit-rejected");
+  const reset = () => undefined;
+  assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "SOURCE_WATERMARK_CHANGED", onReset: reset })), /Данные устарели/);
+  assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "SOURCE_UNAVAILABLE", onReset: reset })), /Данные о результатах недоступны/);
+  assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "EVIDENCE_INCOMPLETE", onReset: reset })), /Данные неполны/);
+  assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "PRIVACY_VIOLATION", onReset: reset })), /Отклонено политикой конфиденциальности/);
+  assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "COHORT_LIMIT_EXCEEDED", onReset: reset })), /Ограниченная когорта отклонена/);
+  const source = renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "SCORECARD_TOO_LARGE", onReset: reset }));
+  assert.match(source, /превышает принятые ограничения Phase 9/);
+});
+
+test("OutcomeScorecardsDashboard privacy and metric rendering keeps unsupported and insufficient evidence non-numeric", () => {
+  const scorecard: any = structuredClone(outcomeScorecardsV1Examples.validScorecards[0]);
+  scorecard.findings = [{ code: "EVIDENCE_INCOMPLETE", subjectType: "task", subjectRef: "task:one", evidenceRefs: ["event:one"] }];
+  scorecard.cohort.excludedTasks = structuredClone(scorecard.findings);
+  const markup = renderToStaticMarkup(createElement(OutcomeScorecardResult, { scorecard }));
+  assert.match(markup, /Неполная сводка/);
+  assert.match(markup, /Граница конфиденциальности/);
+  assert.match(markup, /Запрещённые поля<\/span><strong>Исключены/);
+  assert.match(markup, /Диагностика<\/span><strong>Ограничена/);
+  assert.match(markup, /outcome-scorecard-privacy-v1/);
+  assert.match(markup, /scorecardHash/);
+  assert.match(markup, /Неизменяемые водяные знаки источников/);
+  assert.match(markup, /Предупреждения и исключения/);
+  assert.match(markup, /Ограниченное распределение/);
+  assert.match(markup, /Ссылки на доказательства/);
+  assert.equal((markup.match(/class="scorecardMetric insufficient"/g) ?? []).length, 7);
+  assert.equal((markup.match(/class="scorecardMetricValue">Не рассчитано/g) ?? []).length, 7);
+  assert.equal((markup.match(/Числовой результат не показан/g) ?? []).length, 7);
+  for (const metricLabel of [
+    "Принятие с первой попытки", "Циклы проверки и исправлений", "Время от запуска до принятия",
+    "Токены на принятую задачу", "Доля обходов диспетчеризации", "Доля эскалаций человеку",
+    "Доля повторных остановок",
+  ]) assert.match(markup, new RegExp(metricLabel));
+  for (const [unsupported, missingAuthority] of OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1) {
+    assert.match(markup, new RegExp(`>${unsupported}<`), unsupported);
+    assert.match(markup, new RegExp(`>${missingAuthority}<`), missingAuthority);
+  }
+  assert.match(markup, /firstPassAcceptanceRate/);
+  assert.match(markup, /EVIDENCE_INCOMPLETE/);
+  assert.match(markup, /event:one/);
+  assert.equal(outcomeScorecardMetricValue(scorecard.metrics.delivery.firstPassAcceptanceRate), "Не рассчитано");
+  assert.equal(markup.includes("numeric success"), false);
+});
+
+test("OutcomeScorecardsDashboard download is gated to a direct action over already-returned bounded JSON", async () => {
+  const scorecard: any = structuredClone(outcomeScorecardsV1Examples.validScorecards[0]);
+  assert.equal(outcomeScorecardDownload(null), null);
+  const artifact = outcomeScorecardDownload(scorecard);
+  assert.ok(artifact);
+  assert.equal(artifact.mediaType, "application/json");
+  assert.match(artifact.filename, /^outcome-scorecard-project-1-1-1-[a-f0-9]{12}\.json$/);
+  assert.deepEqual(JSON.parse(artifact.json), scorecard);
+  const gated = renderToStaticMarkup(createElement(OutcomeScorecardResult, { scorecard }));
+  assert.match(gated, /<button type="button" disabled="">Скачать ограниченный JSON<\/button>/);
+  const enabled = renderToStaticMarkup(createElement(OutcomeScorecardResult, { scorecard, onDownload: () => undefined }));
+  assert.match(enabled, /<button type="button">Скачать ограниченный JSON<\/button>/);
+  const source = await readFile(join("src", "OutcomeScorecardsDashboard.tsx"), "utf8");
+  const downloadBody = source.slice(source.indexOf("function downloadReturnedScorecard"), source.indexOf("function selectRun"));
+  assert.match(downloadBody, /outcomeScorecardDownload\(scorecard\)/);
+  assert.match(downloadBody, /link\.click\(\)/);
+  assert.match(downloadBody, /URL\.revokeObjectURL\(url\)/);
+  assert.equal(downloadBody.includes("fetch("), false);
+  assert.match(source, /Расчёт и скачивание не запускаются автоматически/);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {

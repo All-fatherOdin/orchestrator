@@ -122,6 +122,12 @@ closed-manifest parsing, exact watermark and run-record identity fencing,
 deterministic calculation of the seven metrics, explicit zero-denominator and
 unsupported states, privacy/count/byte limits, restart coverage, and
 before/after no-mutation HTTP evidence. Compute remains request-scoped, in
-memory, read-only, and delegated to the domain service. Slice 2 remains pending
-and may add only the accepted read-only dashboard and direct bounded JSON
-download boundary.
+memory, read-only, and delegated to the domain service. Slice 2 is implemented
+as a Russian read-only Control Plane view that consumes only bounded Phase 6
+selection evidence and Phase 9 responses, preserves exact machine identities,
+renders explicit non-numeric insufficient/unsupported states, and downloads the
+already-returned bounded JSON only after direct user action. The 16 focused
+Phase 9/API/UI tests, TypeScript, production Vite build, and diff checks pass.
+Owner-provided manual Windows desktop rendered verification confirmed that the
+tab opened without errors, clipping, or horizontal overflow; this is not
+automated browser QA. Formal automated completion review remains pending.

@@ -1,13 +1,18 @@
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, Notification } = require("electron");
 const { spawn } = require("node:child_process");
 const { existsSync } = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const {
   configureSingleInstance,
+  createRunEventStream,
+  createRunNotificationTracker,
   createServerLogHandles,
+  deliverNativeNotification,
   ensureServerAvailability,
   isCompatibleHealth,
+  restoreAndFocusWindow,
+  shouldStartRunNotifications,
   shouldReportServerExit,
   shouldStopServerOnQuit,
 } = require("./lifecycle.cjs");
@@ -20,6 +25,7 @@ let isQuitting = false;
 let ownsServer = false;
 let serverReady = false;
 let serverStderrPath;
+let runEventStream;
 
 function probeCompatibleServer() {
   return new Promise((resolve) => {
@@ -142,6 +148,33 @@ function createWindow() {
   mainWindow.loadURL(url);
 }
 
+function startRunNotifications() {
+  try {
+    if (isQuitting || !shouldStartRunNotifications(process.platform, Notification)) return;
+    const tracker = createRunNotificationTracker();
+    runEventStream = createRunEventStream({
+      http,
+      url: `${url}/api/events`,
+      onRun(run) {
+        const content = tracker.observe(run);
+        if (!content) return;
+        deliverNativeNotification(
+          Notification,
+          content,
+          () => restoreAndFocusWindow(mainWindow),
+        );
+      },
+    });
+  } catch {
+    runEventStream = undefined;
+  }
+}
+
+function stopRunNotifications() {
+  runEventStream?.stop();
+  runEventStream = undefined;
+}
+
 if (configureSingleInstance(app, () => mainWindow)) {
   app.whenReady().then(async () => {
     try {
@@ -164,6 +197,7 @@ if (configureSingleInstance(app, () => mainWindow)) {
         app.quit();
       });
       createWindow();
+      startRunNotifications();
     } catch (error) {
       isQuitting = true;
       stopServer();
@@ -175,6 +209,7 @@ if (configureSingleInstance(app, () => mainWindow)) {
   app.on("window-all-closed", () => app.quit());
   app.on("before-quit", () => {
     isQuitting = true;
+    stopRunNotifications();
     if (shouldStopServerOnQuit({ ownsServer })) stopServer();
   });
 }
