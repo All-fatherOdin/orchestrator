@@ -61,9 +61,11 @@ the already-returned bounded JSON. The 16 focused Phase 9/API/UI tests,
 TypeScript, production Vite build, and diff checks pass. Owner-provided manual
 Windows desktop rendered verification confirmed that the tab opened without
 errors, clipping, or horizontal overflow; this is not automated browser QA.
-Formal automated completion review remains pending. Do not treat this handoff
-as publication, telemetry, notification, persistence, action authority, or
-automated browser completion evidence.
+The formal completion review passed on 2026-08-06. Automated rendered checks
+in the in-app Chromium browser verified desktop and 390 px mobile navigation,
+meaningful Russian content, a clean console, and no page-level horizontal
+overflow. Do not treat this review as publication, telemetry, persistence, or
+new action authority.
 
 ## Source Boundaries
 
@@ -88,8 +90,7 @@ automated browser completion evidence.
   `docs/architecture/change-control-plane/operator-actions-contract-v1.md`.
 - Implemented and completion-reviewed Phase 8 contract:
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
-- Accepted Phase 9 contract; Slices 1-2 implemented, formal automated
-  completion review pending:
+- Accepted Phase 9 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:

@@ -431,9 +431,11 @@ Both operations delegate to the request-scoped in-memory domain service and
 read the existing ledger and run records without recovery or writes. Missing or
 unlinked runs are bounded exclusions; changed identities, conflicting joins,
 stale watermarks, privacy failures, and count or byte-limit breaches fail
-closed with stable non-echoing errors. Slice 2 remains pending: this slice adds
-no dashboard, download, persistence, cache, telemetry, notification,
-publication, external call, operator action, or authority.
+closed with stable non-echoing errors. Slice 2 adds the Russian read-only
+«Сводки результатов» view, explicit evidence and failure states, and direct
+user-initiated download of the already-returned bounded JSON. It adds no
+persistence, cache, telemetry, publication, external call, operator action,
+or authority.
 
 ## Sequential queue plans
 

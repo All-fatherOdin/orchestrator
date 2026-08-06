@@ -138,8 +138,10 @@ evidence and Phase 9 responses, renders explicit evidence and failure states,
 keeps unsupported and zero-denominator results non-numeric, and downloads the
 already-returned JSON only after direct user action. All 16 focused Phase
 9/API/UI tests, TypeScript, production Vite build, and diff checks pass.
-Owner-provided manual Windows desktop rendered verification confirmed that the
-tab opened without errors, clipping, or horizontal overflow; this is not
-automated browser QA. Formal automated completion review remains pending.
-Persistence, notifications, publication, background aggregation, search,
+Automated rendered checks in the in-app Chromium browser verified the Russian
+Control Plane at desktop and 390 px mobile widths with meaningful content, a
+clean console, and no page-level horizontal overflow. Owner-provided Windows
+desktop verification independently confirmed the installed application. The
+formal completion review passed on 2026-08-06. Persistence, publication,
+background aggregation, search,
 external telemetry, operator actions, and new authority remain unauthorized.
