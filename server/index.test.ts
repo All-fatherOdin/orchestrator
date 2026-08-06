@@ -79,9 +79,13 @@ const {
   inlineCommandViolations,
   powershellVerificationSyntaxPreflight,
   verificationCommandInvocation,
+  normalizeWindowsNpmCommand,
   checkpointRequirementViolation,
   taskAllowsCorrection,
   boundedReviewerDiagnostics,
+  reviewerReplacementCharacterFalsePositive,
+  createUtf8StreamDecoder,
+  createUtf8LineDecoder,
   resolveReviewedTaskStatus,
   resolveTaskStatus,
   schedulerSnapshot,
@@ -110,6 +114,7 @@ const {
   changeControlStore,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
+  repositoryPythonExecutable,
   resolveTaskContext,
   cachePreflightContexts,
   contextsForRun,
@@ -966,11 +971,17 @@ function ajvErrors(
 }
 
 function gitForWorkspaceContract(cwd: string, args: string[]): string {
-  return execFileSync("git", args, {
+  return execFileSync(
+    "git",
+    process.platform === "win32"
+      ? ["-c", "core.longpaths=true", ...args]
+      : args,
+    {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+    },
+  ).trim();
 }
 
 function windowsPathContained(root: string, candidate: string): boolean {
@@ -12919,7 +12930,7 @@ test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and use
   const dashboardMarkup = renderToStaticMarkup(createElement(OperatorDashboard));
   const auditMarkup = renderToStaticMarkup(createElement(AuditBundlesDashboard));
   assert.match(dashboardMarkup, />Пакеты аудита</);
-  assert.match(auditMarkup, /Reading Phase 6 evidence sources/);
+  assert.match(auditMarkup, /Чтение источников доказательств фазы 6/);
   assert.equal(
     auditBundleRequestPath({
       selectorType: "project-sequence-range",
@@ -12945,8 +12956,8 @@ test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and use
   assert.match(source, /URL\.createObjectURL\(new Blob/);
   assert.match(source, /link\.click\(\)/);
   assert.match(source, /URL\.revokeObjectURL\(url\)/);
-  assert.match(source, /Download bounded JSON/);
-  assert.match(source, /Nothing is downloaded automatically/);
+  assert.match(source, /Скачать ограниченный JSON/);
+  assert.match(source, /Ничего не скачивается автоматически/);
   for (const prohibited of ["upload", "share", "notify", "schedule", "change-control-v1"])
     assert.equal(source.toLowerCase().includes(prohibited), false, prohibited);
 });
@@ -12958,7 +12969,7 @@ test("Russian Control Plane exposes OutcomeScorecardsDashboard through exactly o
   assert.match(dashboardMarkup, />Пакеты аудита</);
   for (const view of operatorViews) assert.match(dashboardMarkup, new RegExp(`>${view.label}<`));
   assert.match(dashboardMarkup, /aria-label="Разделы панели управления"/);
-  assert.match(markup, /Чтение данных проектов Phase 6/);
+  assert.match(markup, /Чтение данных проектов фазы 6/);
   const operatorSource = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
   assert.match(operatorSource, /import \{ OutcomeScorecardsDashboard \} from "\.\/OutcomeScorecardsDashboard"/);
   assert.match(operatorSource, /section === "outcomes" \? <OutcomeScorecardsDashboard \/>/);
@@ -13052,7 +13063,7 @@ test("OutcomeScorecardsDashboard renders explicit stale, unavailable, incomplete
   assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "PRIVACY_VIOLATION", onReset: reset })), /Отклонено политикой конфиденциальности/);
   assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "COHORT_LIMIT_EXCEEDED", onReset: reset })), /Ограниченная когорта отклонена/);
   const source = renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "SCORECARD_TOO_LARGE", onReset: reset }));
-  assert.match(source, /превышает принятые ограничения Phase 9/);
+  assert.match(source, /превышает принятые ограничения фазы 9/);
 });
 
 test("OutcomeScorecardsDashboard privacy and metric rendering keeps unsupported and insufficient evidence non-numeric", () => {
@@ -13115,11 +13126,11 @@ test("visual task editor exposes accessible optional context controls", () => {
     task: { title: "Review", prompt: "Review repository", contextProfile: "review" },
     onChange: () => undefined,
   }));
-  assert.match(markup, /<label[^>]*>Context profile/);
-  assert.match(markup, /<label[^>]*>Maximum context sources/);
-  assert.match(markup, /aria-label="Context profile"/);
-  assert.match(markup, /aria-label="Maximum context sources"/);
-  assert.match(markup, /aria-label="Require repository context"/);
+  assert.match(markup, /<label[^>]*>Профиль контекста/);
+  assert.match(markup, /<label[^>]*>Максимум источников контекста/);
+  assert.match(markup, /aria-label="Профиль контекста"/);
+  assert.match(markup, /aria-label="Максимум источников контекста"/);
+  assert.match(markup, /aria-label="Требовать контекст репозитория"/);
   assert.match(markup, /type="number"[^>]*min="1"[^>]*max="50"[^>]*step="1"/);
 });
 
@@ -13217,7 +13228,7 @@ tasks:
   assert.equal(queue.tasks[1].dependsOn?.[0], "parse");
   assert.doesNotMatch(serialized.toLowerCase(), new RegExp(removedRuntimeName));
   const prompt = buildPrompt(createRun(queue).tasks[0], queue.project);
-  assert.match(prompt, /npm test/);
+  assert.match(prompt, process.platform === "win32" ? /npm\.cmd test/ : /npm test/);
   assert.match(prompt, /Stop on scope violation/);
   assert.match(
     prompt,
@@ -13795,6 +13806,54 @@ test("Orchestrator consumes its own bounded secondary-memory profile through the
   );
   assert.equal(validateContextContractV1("bundle", result.bundle), result.bundle);
   assert.equal(validateContextContractV1("receipt", result.receipt), result.receipt);
+});
+
+test("repository helper resolves explicit, virtualenv, and bundled Python executables deterministically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-python-resolution-"));
+  try {
+    const virtualEnvironment = join(root, "active-venv");
+    const virtualPython = join(
+      virtualEnvironment,
+      process.platform === "win32" ? "Scripts" : "bin",
+      process.platform === "win32" ? "python.exe" : "python",
+    );
+    await mkdir(join(virtualPython, ".."), { recursive: true });
+    await writeFile(virtualPython, "python");
+    assert.equal(
+      repositoryPythonExecutable(root, {
+        PYTHON_BIN: "explicit-python",
+        VIRTUAL_ENV: virtualEnvironment,
+      }),
+      "explicit-python",
+    );
+    assert.equal(
+      repositoryPythonExecutable(root, { VIRTUAL_ENV: virtualEnvironment }),
+      virtualPython,
+    );
+
+    if (process.platform === "win32") {
+      const profile = join(root, "profile");
+      const bundledPython = join(
+        profile,
+        ".cache",
+        "codex-runtimes",
+        "codex-primary-runtime",
+        "dependencies",
+        "python",
+        "python.exe",
+      );
+      await mkdir(join(bundledPython, ".."), { recursive: true });
+      await writeFile(bundledPython, "python");
+      assert.equal(
+        repositoryPythonExecutable(join(root, "project-without-venv"), {
+          USERPROFILE: profile,
+        }),
+        bundledPython,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("helper timeout, invalid JSON, and contract mismatch use observable safe fallback", async () => {
@@ -14721,7 +14780,7 @@ test("retry and resume preserve completed work and reset graph descendants", () 
 });
 
 test("Codex prompts use stdin instead of the process command line", () => {
-  const prompt = "review this change\n".repeat(8_000);
+  const prompt = "Проверь русскую строку без повреждений\n".repeat(8_000);
   const invocation = codexPromptInvocation(
     ["exec", "--ephemeral", "--json"],
     prompt,
@@ -14736,6 +14795,29 @@ test("Codex prompts use stdin instead of the process command line", () => {
   assert.equal(invocation.stdin, prompt);
   assert.equal(invocation.args.includes(prompt), false);
   assert.ok(invocation.stdin.length > 100_000);
+  assert.ok(invocation.stdin.includes("Проверь русскую строку"));
+});
+
+test("UTF-8 stream decoders preserve Russian text and JSON lines across chunk boundaries", () => {
+  const source = 'Результат: очередь завершена\n{"message":"Проверка пройдена"}\n';
+  const bytes = Buffer.from(source, "utf8");
+  const decoded: string[] = [];
+  const stream = createUtf8StreamDecoder((text) => decoded.push(text));
+  for (let index = 0; index < bytes.length; index += 1)
+    stream.write(bytes.subarray(index, index + 1));
+  stream.end();
+  assert.equal(decoded.join(""), source);
+  assert.doesNotMatch(decoded.join(""), /\uFFFD/);
+
+  const lines: string[] = [];
+  const lineStream = createUtf8LineDecoder((line) => lines.push(line));
+  for (let index = 0; index < bytes.length; index += 2)
+    lineStream.write(bytes.subarray(index, index + 2));
+  lineStream.end();
+  assert.deepEqual(lines, [
+    "Результат: очередь завершена",
+    '{"message":"Проверка пройдена"}',
+  ]);
 });
 
 test("review-enabled completion fails closed unless a strict reviewer verdict approves it", () => {
@@ -14811,6 +14893,85 @@ test("reviewer prompt requires the exact configured verification commands", () =
   assert.ok(prompt.includes(`1. ${python}`));
   assert.ok(prompt.includes("2. git diff --check"));
   assert.doesNotMatch(prompt, /ignored fallback/);
+});
+
+test("read-only reviewer receives the Russian executor result and does not require a diff", () => {
+  const prompt = buildReviewerPrompt(
+    {
+      ...task("read-only-russian", "completed"),
+      title: "Проверка русской строки",
+      prompt: "Проверь существующий результат без изменений.",
+      finalOutput: "Все проверки пройдены. Русская строка сохранена.",
+      authorizationEvidence: {
+        contractType: "TaskAuthorizationEvidenceV1",
+        enabled: false,
+        decision: "disabled",
+        reason: "NON_MUTATING_CONTRACT",
+        intent: "review",
+        technicalPermission: "read_only",
+        sideEffectRisk: "none",
+        allowedPaths: [],
+        verificationCommands: ["npm test"],
+        scopeFingerprint: "scope",
+        goalFingerprint: "goal",
+        branch: "main",
+        authorityFingerprint: "authority",
+      },
+    },
+    {},
+  );
+  assert.match(prompt, /Русская строка сохранена/);
+  assert.match(prompt, /empty task change set is expected/);
+  assert.match(prompt, /do not require a task-owned diff/);
+  assert.match(prompt, /npm\.cmd test/);
+  assert.match(prompt, /actual U\+FFFD/);
+});
+
+test("legacy reviewer task without explicit scope is not treated as read-only", () => {
+  const prompt = buildReviewerPrompt(
+    {
+      ...task("legacy-review", "completed"),
+      title: "Legacy writable task",
+      prompt: "Implement the requested change.",
+      finalOutput: "Implementation completed.",
+    },
+    {},
+  );
+  assert.doesNotMatch(prompt, /empty task change set is expected/);
+  assert.doesNotMatch(prompt, /do not require a task-owned diff/);
+});
+
+test("replacement-character-only reviewer false positives are distinguishable from real findings", () => {
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Terminal rendering appears to contain U+FFFD replacement character.",
+    ),
+    true,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD.\n- Required test failed and must be fixed.",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD, and the required test failed.",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Direct UTF-8 inspection found an actual U+FFFD in server/source.ts.",
+    ),
+    false,
+  );
+  assert.equal(
+    reviewerReplacementCharacterFalsePositive(
+      "VERDICT: CHANGES_REQUESTED\n- Found U+FFFD.",
+    ),
+    false,
+  );
 });
 
 test("reviewer prompt isolates the task change set from pre-existing workspace changes", () => {
@@ -15146,8 +15307,24 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
   }
 
   const ordinary = verificationCommandInvocation("npm test");
-  assert.equal(ordinary.executable, "npm test");
+  assert.equal(ordinary.executable, "npm.cmd test");
   assert.equal(ordinary.shell, true);
+});
+
+test("Windows verification normalizes bare npm without changing npm.cmd or non-Windows commands", () => {
+  assert.equal(normalizeWindowsNpmCommand("npm test", "win32"), "npm.cmd test");
+  assert.equal(
+    normalizeWindowsNpmCommand(
+      '$out = Join-Path $env:TEMP "build"; npm run build; npm.cmd test',
+      "win32",
+    ),
+    '$out = Join-Path $env:TEMP "build"; npm.cmd run build; npm.cmd test',
+  );
+  assert.equal(
+    normalizeWindowsNpmCommand("Write-Output ready\nnpm test", "win32"),
+    "Write-Output ready\nnpm.cmd test",
+  );
+  assert.equal(normalizeWindowsNpmCommand("npm test", "linux"), "npm test");
 });
 
 test("correction loop is disabled only for an explicitly empty allowedPaths scope", () => {

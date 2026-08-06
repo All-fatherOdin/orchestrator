@@ -360,7 +360,13 @@ async function runProcess(
 }
 
 async function git(cwd: string, args: readonly string[]) {
-  return runProcess("git", args, cwd);
+  return runProcess(
+    "git",
+    process.platform === "win32"
+      ? ["-c", "core.longpaths=true", ...args]
+      : args,
+    cwd,
+  );
 }
 
 async function gitValue(cwd: string, args: readonly string[], label: string) {

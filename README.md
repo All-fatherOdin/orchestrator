@@ -486,6 +486,11 @@ preflight. Writable tasks cannot use `git diff --quiet` or
 changes necessarily create a diff; put clean-start requirements in
 `executionGuards`. A task with an explicit `allowedPaths: []` is read-only:
 reviewer changes fail the task directly and do not enter the correction loop.
+On Windows, bare `npm` commands are normalized to `npm.cmd` before they reach
+the executor, verification runner, or reviewer, so PowerShell execution policy
+cannot select a blocked `npm.ps1`. Process output and reviewer evidence are
+decoded as streaming UTF-8; a rendered `�` is not a blocking finding unless
+direct UTF-8 inspection proves an actual U+FFFD in task-owned source evidence.
 
 Machine-testable baseline conditions belong in task-level `preconditions`,
 not in post-change `verificationCommands` or prose-only `executionGuards`.
@@ -506,7 +511,7 @@ diff and therefore created no checkpoint.
 
 Set a task's `model` to `auto` to let the orchestrator choose before the run. It routes everyday implementation and verification work to Terra. Contained work uses Luna only when that runtime capability is enabled; otherwise it falls back to Terra. Use `minModel: sol` for the explicit quality-first Sol escalation and compare its preserved reasoning baseline with one lower effort before changing the setting. An explicit model always takes precedence, but an unsupported model, reasoning, or local-tool route is rejected rather than sent to Codex. The resolved model and routing reason are stored in the run record and report. See [GPT-5.6 routing](docs/gpt56-model-routing-v1.md) for source date and fallback behavior.
 
-To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
+To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. Python resolution prefers `PYTHON_BIN`, an active or project-local virtual environment, and the bundled Codex runtime on Windows before falling back to `python` on `PATH`. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
 
 Set `requireRepositoryContext: true` when that controlled fallback is not
 sufficient. In that mode, any helper fallback makes preflight fail instead of
