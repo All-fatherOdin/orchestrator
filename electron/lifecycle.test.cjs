@@ -5,6 +5,7 @@ const test = require("node:test");
 const {
   buildRunNotification,
   configureSingleInstance,
+  configureWindowsAppIdentity,
   createRunEventStream,
   createRunNotificationTracker,
   createServerLogHandles,
@@ -18,6 +19,21 @@ const {
   shouldReportServerExit,
   shouldStopServerOnQuit,
 } = require("./lifecycle.cjs");
+
+test("Windows desktop registers the Orchestrator notification identity", () => {
+  const calls = [];
+  const app = {
+    setName: (name) => calls.push(["name", name]),
+    setAppUserModelId: (appId) => calls.push(["appId", appId]),
+  };
+  assert.equal(configureWindowsAppIdentity(app, "win32"), true);
+  assert.deepEqual(calls, [
+    ["name", "Orchestrator"],
+    ["appId", "com.codex.orchestrator"],
+  ]);
+  assert.equal(configureWindowsAppIdentity(app, "linux"), false);
+  assert.equal(calls.length, 2);
+});
 
 test("second desktop instance quits without starting another server", async () => {
   let quitCalls = 0;
@@ -273,7 +289,7 @@ test("native notification click handler is passive and can focus the existing wi
     }
     show() { this.shown = true; }
   }
-  const content = { title: "Очередь завершена", body: "Результат: успешно." };
+  const content = { title: "Очередь завершена", body: "Результат: успешно.", icon: "C:\\app\\icon.ico" };
   assert.equal(deliverNativeNotification(SupportedNotification, content, () => { clicks += 1; }), true);
   assert.equal(instance.shown, true);
   assert.deepEqual(instance.content, content);

@@ -5,6 +5,7 @@ const http = require("node:http");
 const path = require("node:path");
 const {
   configureSingleInstance,
+  configureWindowsAppIdentity,
   createRunEventStream,
   createRunNotificationTracker,
   createServerLogHandles,
@@ -26,6 +27,14 @@ let ownsServer = false;
 let serverReady = false;
 let serverStderrPath;
 let runEventStream;
+
+configureWindowsAppIdentity(app, process.platform);
+
+function appIconPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "icon.ico")
+    : path.join(app.getAppPath(), "build", "icon.ico");
+}
 
 function probeCompatibleServer() {
   return new Promise((resolve) => {
@@ -133,16 +142,13 @@ function stopServer() {
 }
 
 function createWindow() {
-  const icon = app.isPackaged
-    ? path.join(process.resourcesPath, "icon.ico")
-    : path.join(app.getAppPath(), "build", "icon.ico");
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1024,
     minHeight: 700,
     autoHideMenuBar: true,
-    icon,
+    icon: appIconPath(),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   mainWindow.loadURL(url);
@@ -160,7 +166,7 @@ function startRunNotifications() {
         if (!content) return;
         deliverNativeNotification(
           Notification,
-          content,
+          { ...content, icon: appIconPath() },
           () => restoreAndFocusWindow(mainWindow),
         );
       },
