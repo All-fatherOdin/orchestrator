@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-9 implemented; Phase 7-8 completion-reviewed
+Status: evidence-backed target, Phase 1-9 implemented and completion-reviewed
 Last reviewed: 2026-08-06
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -32,8 +32,8 @@ were observed.
 12. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
     accepted, implemented, and completion-reviewed Phase 8 boundary.
 13. [outcome-scorecards-contract-v1.md](outcome-scorecards-contract-v1.md)
-    defines the accepted Phase 9 read-only metrics boundary; Slices 1-2 are
-    implemented and formal automated completion review is pending.
+    defines the accepted, implemented, and completion-reviewed Phase 9
+    read-only metrics boundary.
 
 ## Current Boundary
 
@@ -82,10 +82,11 @@ The Russian read-only dashboard consumes only bounded Phase 6 selection evidence
 and Phase 9 responses, renders explicit non-numeric insufficient/unsupported
 states and technical identities, and downloads returned JSON only after direct
 user action. The 16 focused Phase 9/API/UI tests, TypeScript, production Vite
-build, and diff checks pass. Owner-provided manual Windows desktop rendered
-verification confirmed that the tab opened without errors, clipping, or
-horizontal overflow; this is not automated browser QA. Formal automated
-completion review remains pending. Notifications, publication, persistence,
+build, and diff checks pass. Automated rendered checks in the in-app Chromium
+browser verified desktop and 390 px mobile navigation, meaningful content, a
+clean console, and no page-level horizontal overflow. Owner-provided Windows
+desktop verification independently confirmed the installed application. The
+formal completion review passed on 2026-08-06. Publication, persistence,
 external telemetry, deployment/defect inference, and product-impact claims
 remain deferred.
 

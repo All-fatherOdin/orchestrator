@@ -1,6 +1,6 @@
 # Outcome Scorecards Contract v1
 
-Status: accepted contract; Slices 1-2 implemented; formal automated completion review pending
+Status: accepted contract; Slices 1-2 implemented and completion-reviewed
 Accepted: 2026-08-05
 Slice 1 implemented: 2026-08-05
 Slice 2 implemented: 2026-08-06
@@ -191,11 +191,13 @@ their machine form. Unsupported and zero-denominator metrics remain explicitly
 non-numeric. Download is a direct user action over the already-returned bounded
 JSON and never recomputes.
 
-The 16 focused Phase 9/API/UI tests, TypeScript, production Vite build, and diff
-checks pass. Owner-provided manual Windows desktop rendered verification
-confirmed that the tab opened without errors, clipping, or horizontal overflow;
-this is not automated browser QA. Formal automated completion review remains
-pending.
+The Phase 9 completion review passed on 2026-08-06. The 16 focused Phase
+9/API/UI tests, TypeScript, production Vite build, and diff checks pass.
+Automated rendered checks in the in-app Chromium browser verified the Russian
+Control Plane at desktop and 390 px mobile widths, including navigation,
+meaningful content, a clean console, and no page-level horizontal overflow.
+Owner-provided Windows desktop verification independently confirmed the
+installed application behavior.
 
 ## Acceptance
 
