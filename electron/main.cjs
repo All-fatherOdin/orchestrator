@@ -1,7 +1,8 @@
 const { app, BrowserWindow, dialog, Notification } = require("electron");
 const { spawn } = require("node:child_process");
-const { existsSync } = require("node:fs");
+const { randomUUID } = require("node:crypto");
 const http = require("node:http");
+const net = require("node:net");
 const path = require("node:path");
 const {
   configureSingleInstance,
@@ -10,16 +11,20 @@ const {
   createRunNotificationTracker,
   createServerLogHandles,
   deliverNativeNotification,
-  ensureServerAvailability,
-  isCompatibleHealth,
+  isOwnedHealth,
+  resolveDesktopDataDirectory,
   restoreAndFocusWindow,
+  selectDesktopPort,
   shouldStartRunNotifications,
   shouldReportServerExit,
   shouldStopServerOnQuit,
+  startOwnedServer,
 } = require("./lifecycle.cjs");
 
-const port = Number(process.env.ORCHESTRATOR_PORT || 4318);
-const url = `http://127.0.0.1:${port}`;
+const preferredPort = Number(process.env.ORCHESTRATOR_PORT || 4318);
+const desktopInstanceToken = randomUUID();
+let port;
+let url;
 let mainWindow;
 let serverProcess;
 let isQuitting = false;
@@ -36,7 +41,7 @@ function appIconPath() {
     : path.join(app.getAppPath(), "build", "icon.ico");
 }
 
-function probeCompatibleServer() {
+function probeOwnedServer() {
   return new Promise((resolve) => {
     const request = http.get(`${url}/api/health`, (response) => {
       let body = "";
@@ -44,7 +49,7 @@ function probeCompatibleServer() {
       response.on("data", (chunk) => { body += chunk; });
       response.on("end", () => {
         try {
-          resolve(response.statusCode === 200 && isCompatibleHealth(JSON.parse(body)));
+          resolve(response.statusCode === 200 && isOwnedHealth(JSON.parse(body), desktopInstanceToken));
         } catch {
           resolve(false);
         }
@@ -54,6 +59,22 @@ function probeCompatibleServer() {
     request.setTimeout(1_000, () => {
       request.destroy();
       resolve(false);
+    });
+  });
+}
+
+function reserveAvailablePort(requestedPort) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    const finish = (value) => {
+      server.removeAllListeners();
+      resolve(value);
+    };
+    server.once("error", () => finish(undefined));
+    server.listen({ host: "127.0.0.1", port: requestedPort, exclusive: true }, () => {
+      const address = server.address();
+      const selectedPort = typeof address === "object" && address ? address.port : undefined;
+      server.close(() => finish(selectedPort));
     });
   });
 }
@@ -74,7 +95,7 @@ function waitForServer(child, timeoutMs = 15_000) {
     );
     child.once("exit", onExit);
     const check = async () => {
-      if (await probeCompatibleServer()) return finish(resolve);
+      if (await probeOwnedServer()) return finish(resolve);
       if (Date.now() >= deadline)
         return finish(reject, new Error("The local Orchestrator server did not start in time."));
       setTimeout(check, 200);
@@ -90,18 +111,10 @@ function startServer() {
   const webRoot = app.isPackaged
     ? path.join(process.resourcesPath, "dist")
     : path.join(app.getAppPath(), "dist");
-  const portableWorkspaceData = path.resolve(
-    process.resourcesPath,
-    "..",
-    "..",
-    "..",
-    ".orchestrator",
-  );
-  const dataDirectory =
-    process.env.ORCHESTRATOR_DATA_DIR ||
-    (app.isPackaged && existsSync(portableWorkspaceData)
-      ? portableWorkspaceData
-      : path.join(app.getPath("userData"), ".orchestrator"));
+  const dataDirectory = resolveDesktopDataDirectory({
+    override: process.env.ORCHESTRATOR_DATA_DIR,
+    userData: app.getPath("userData"),
+  });
 
   const logs = createServerLogHandles(dataDirectory);
   serverStderrPath = logs.stderrPath;
@@ -114,6 +127,7 @@ function startServer() {
         ORCHESTRATOR_NO_OPEN: "1",
         ORCHESTRATOR_WEB_ROOT: webRoot,
         ORCHESTRATOR_DATA_DIR: dataDirectory,
+        ORCHESTRATOR_DESKTOP_TOKEN: desktopInstanceToken,
         PORT: String(port),
       },
       stdio: logs.stdio,
@@ -184,8 +198,9 @@ function stopRunNotifications() {
 if (configureSingleInstance(app, () => mainWindow)) {
   app.whenReady().then(async () => {
     try {
-      const availability = await ensureServerAvailability({
-        probe: probeCompatibleServer,
+      port = await selectDesktopPort(preferredPort, reserveAvailablePort);
+      url = `http://127.0.0.1:${port}`;
+      const availability = await startOwnedServer({
         start: startServer,
         wait: waitForServer,
         stop: async (child) => stopServerProcess(child),
