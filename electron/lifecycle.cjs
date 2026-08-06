@@ -11,6 +11,16 @@ const NOTIFIABLE_TERMINAL_RUN_STATUSES = new Set([
 ]);
 const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 
+function configureWindowsAppIdentity(app, platform, {
+  appId = "com.codex.orchestrator",
+  name = "Orchestrator",
+} = {}) {
+  if (platform !== "win32") return false;
+  app.setName(name);
+  app.setAppUserModelId(appId);
+  return true;
+}
+
 function restoreAndFocusWindow(window) {
   if (!window) return;
   try {
@@ -328,6 +338,7 @@ module.exports = {
   ORCHESTRATOR_API_VERSION,
   ORCHESTRATOR_SERVICE,
   buildRunNotification,
+  configureWindowsAppIdentity,
   configureSingleInstance,
   createRunEventStream,
   createRunNotificationTracker,

@@ -12861,8 +12861,17 @@ test("Phase 7 Slice 2 dashboard keeps five projections and gates contextual acti
   ]) assert.match(markup, new RegExp(`>${label}<`));
   assert.match(markup, /Панель управления/);
   assert.match(markup, /явно подтверждённые действия/);
-  assert.match(markup, /Reading canonical projections/);
+  assert.match(markup, /Чтение канонических проекций/);
   const source = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
+  const appSource = await readFile(join("src", "App.tsx"), "utf8");
+  for (const label of ["РАБОЧАЯ ОБЛАСТЬ", "Панель управления"])
+    assert.match(appSource, new RegExp(label));
+  for (const label of ["WORKSPACE", "Control plane"])
+    assert.equal(appSource.includes(`>${label}<`), false, label);
+  for (const label of ["Источники", "Доступно", "Недоступно", "Записи", "Отметка данных", "Нечего показывать", "Пока нет проверенных журналов проектов."])
+    assert.match(source, new RegExp(label));
+  for (const label of ["Sources", "Available", "Unavailable", "Records", "Watermark", "Nothing to show", "No validated project ledgers are available yet."])
+    assert.equal(source.includes(`>${label}<`), false, label);
   assert.match(source, /requestId === requestIdRef\.current/);
   assert.match(source, /\/api\/operator-actions\/v1\/preview/);
   assert.match(source, /\/api\/operator-actions\/v1\/execute/);

@@ -865,7 +865,7 @@ export function App() {
         <div className="brand">
           <BrandIcon /> Orchestrator
         </div>
-        <div className="navTitle">WORKSPACE</div>
+        <div className="navTitle">РАБОЧАЯ ОБЛАСТЬ</div>
         <div className="projectName">
           {run?.project.name ?? "Новый запуск"}
           <small>{run?.project.path ?? "Загрузите YAML-очередь"}</small>
@@ -925,7 +925,7 @@ export function App() {
               setShowProjects(false);
             }}
           >
-            Control plane
+            Панель управления
           </button>
         </nav>
         <div className="sidebarFoot">
