@@ -114,6 +114,7 @@ const {
   changeControlStore,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
+  repositoryPythonExecutable,
   resolveTaskContext,
   cachePreflightContexts,
   contextsForRun,
@@ -970,11 +971,17 @@ function ajvErrors(
 }
 
 function gitForWorkspaceContract(cwd: string, args: string[]): string {
-  return execFileSync("git", args, {
+  return execFileSync(
+    "git",
+    process.platform === "win32"
+      ? ["-c", "core.longpaths=true", ...args]
+      : args,
+    {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+    },
+  ).trim();
 }
 
 function windowsPathContained(root: string, candidate: string): boolean {
@@ -12923,7 +12930,7 @@ test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and use
   const dashboardMarkup = renderToStaticMarkup(createElement(OperatorDashboard));
   const auditMarkup = renderToStaticMarkup(createElement(AuditBundlesDashboard));
   assert.match(dashboardMarkup, />Пакеты аудита</);
-  assert.match(auditMarkup, /Reading Phase 6 evidence sources/);
+  assert.match(auditMarkup, /Чтение источников доказательств фазы 6/);
   assert.equal(
     auditBundleRequestPath({
       selectorType: "project-sequence-range",
@@ -12949,8 +12956,8 @@ test("Phase 8 Slice 2 dashboard exposes bounded GET-only audit selection and use
   assert.match(source, /URL\.createObjectURL\(new Blob/);
   assert.match(source, /link\.click\(\)/);
   assert.match(source, /URL\.revokeObjectURL\(url\)/);
-  assert.match(source, /Download bounded JSON/);
-  assert.match(source, /Nothing is downloaded automatically/);
+  assert.match(source, /Скачать ограниченный JSON/);
+  assert.match(source, /Ничего не скачивается автоматически/);
   for (const prohibited of ["upload", "share", "notify", "schedule", "change-control-v1"])
     assert.equal(source.toLowerCase().includes(prohibited), false, prohibited);
 });
@@ -12962,7 +12969,7 @@ test("Russian Control Plane exposes OutcomeScorecardsDashboard through exactly o
   assert.match(dashboardMarkup, />Пакеты аудита</);
   for (const view of operatorViews) assert.match(dashboardMarkup, new RegExp(`>${view.label}<`));
   assert.match(dashboardMarkup, /aria-label="Разделы панели управления"/);
-  assert.match(markup, /Чтение данных проектов Phase 6/);
+  assert.match(markup, /Чтение данных проектов фазы 6/);
   const operatorSource = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
   assert.match(operatorSource, /import \{ OutcomeScorecardsDashboard \} from "\.\/OutcomeScorecardsDashboard"/);
   assert.match(operatorSource, /section === "outcomes" \? <OutcomeScorecardsDashboard \/>/);
@@ -13056,7 +13063,7 @@ test("OutcomeScorecardsDashboard renders explicit stale, unavailable, incomplete
   assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "PRIVACY_VIOLATION", onReset: reset })), /Отклонено политикой конфиденциальности/);
   assert.match(renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "COHORT_LIMIT_EXCEEDED", onReset: reset })), /Ограниченная когорта отклонена/);
   const source = renderToStaticMarkup(createElement(OutcomeScorecardErrorState, { code: "SCORECARD_TOO_LARGE", onReset: reset }));
-  assert.match(source, /превышает принятые ограничения Phase 9/);
+  assert.match(source, /превышает принятые ограничения фазы 9/);
 });
 
 test("OutcomeScorecardsDashboard privacy and metric rendering keeps unsupported and insufficient evidence non-numeric", () => {
@@ -13119,11 +13126,11 @@ test("visual task editor exposes accessible optional context controls", () => {
     task: { title: "Review", prompt: "Review repository", contextProfile: "review" },
     onChange: () => undefined,
   }));
-  assert.match(markup, /<label[^>]*>Context profile/);
-  assert.match(markup, /<label[^>]*>Maximum context sources/);
-  assert.match(markup, /aria-label="Context profile"/);
-  assert.match(markup, /aria-label="Maximum context sources"/);
-  assert.match(markup, /aria-label="Require repository context"/);
+  assert.match(markup, /<label[^>]*>Профиль контекста/);
+  assert.match(markup, /<label[^>]*>Максимум источников контекста/);
+  assert.match(markup, /aria-label="Профиль контекста"/);
+  assert.match(markup, /aria-label="Максимум источников контекста"/);
+  assert.match(markup, /aria-label="Требовать контекст репозитория"/);
   assert.match(markup, /type="number"[^>]*min="1"[^>]*max="50"[^>]*step="1"/);
 });
 
@@ -13799,6 +13806,54 @@ test("Orchestrator consumes its own bounded secondary-memory profile through the
   );
   assert.equal(validateContextContractV1("bundle", result.bundle), result.bundle);
   assert.equal(validateContextContractV1("receipt", result.receipt), result.receipt);
+});
+
+test("repository helper resolves explicit, virtualenv, and bundled Python executables deterministically", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-python-resolution-"));
+  try {
+    const virtualEnvironment = join(root, "active-venv");
+    const virtualPython = join(
+      virtualEnvironment,
+      process.platform === "win32" ? "Scripts" : "bin",
+      process.platform === "win32" ? "python.exe" : "python",
+    );
+    await mkdir(join(virtualPython, ".."), { recursive: true });
+    await writeFile(virtualPython, "python");
+    assert.equal(
+      repositoryPythonExecutable(root, {
+        PYTHON_BIN: "explicit-python",
+        VIRTUAL_ENV: virtualEnvironment,
+      }),
+      "explicit-python",
+    );
+    assert.equal(
+      repositoryPythonExecutable(root, { VIRTUAL_ENV: virtualEnvironment }),
+      virtualPython,
+    );
+
+    if (process.platform === "win32") {
+      const profile = join(root, "profile");
+      const bundledPython = join(
+        profile,
+        ".cache",
+        "codex-runtimes",
+        "codex-primary-runtime",
+        "dependencies",
+        "python",
+        "python.exe",
+      );
+      await mkdir(join(bundledPython, ".."), { recursive: true });
+      await writeFile(bundledPython, "python");
+      assert.equal(
+        repositoryPythonExecutable(join(root, "project-without-venv"), {
+          USERPROFILE: profile,
+        }),
+        bundledPython,
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("helper timeout, invalid JSON, and contract mismatch use observable safe fallback", async () => {

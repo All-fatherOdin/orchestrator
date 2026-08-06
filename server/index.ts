@@ -620,6 +620,32 @@ type RepositoryContextHelperOptions = {
   timeoutMs?: number;
 };
 
+export function repositoryPythonExecutable(
+  projectPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  if (environment.PYTHON_BIN) return environment.PYTHON_BIN;
+  const candidates = [
+    environment.VIRTUAL_ENV
+      ? join(environment.VIRTUAL_ENV, process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python")
+      : undefined,
+    join(projectPath, ".venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    join(projectPath, "venv", process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python"),
+    process.platform === "win32" && environment.USERPROFILE
+      ? join(
+          environment.USERPROFILE,
+          ".cache",
+          "codex-runtimes",
+          "codex-primary-runtime",
+          "dependencies",
+          "python",
+          "python.exe",
+        )
+      : undefined,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  return candidates.find((candidate) => existsSync(candidate)) ?? "python";
+}
+
 export class RepositoryContextHelperProvider implements ContextProvider {
   constructor(private readonly options: RepositoryContextHelperOptions = {}) {}
 
@@ -628,7 +654,8 @@ export class RepositoryContextHelperProvider implements ContextProvider {
     const helper = join(request.projectPath, this.options.helperRelativePath ?? "scripts/ai_context_helper.py");
     if (!existsSync(helper))
       throw new ContextProviderFailure("HELPER_UNAVAILABLE", "Repository context helper was not found.");
-    const executable = this.options.executable ?? process.env.PYTHON_BIN ?? "python";
+    const executable =
+      this.options.executable ?? repositoryPythonExecutable(request.projectPath);
     const args = [helper, "--root", request.projectPath, "api-context", "--request-id", request.requestId, "--task", request.task, "--profile", request.profile, "--max-sources", String(request.maxSources), "--format", "json"];
     const output = await new Promise<string>((resolveOutput, reject) => {
       const child = spawn(executable, args, { cwd: request.projectPath, windowsHide: true });
