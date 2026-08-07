@@ -150,3 +150,9 @@ currency. Every result retains explicit denominators, coverage, exclusions,
 and evidence references; legacy evidence remains unsupported. External connectors, background capture,
 publication, deployment/rollback execution, automatic attribution, business
 impact, currency conversion, and a second ledger remain outside Phase 10.
+
+The Phase 10 completion review passed on 2026-08-07: focused Phase 9/10 tests,
+TypeScript, production build, context smoke, diff checks, the 260/260 Windows
+regression, and read-only desktop/390 px rendered QA passed. The roadmap has no
+accepted Phase 11 boundary; further implementation requires a new accepted
+contract rather than inference from Phase 10 evidence.

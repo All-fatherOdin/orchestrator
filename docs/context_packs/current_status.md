@@ -125,13 +125,15 @@ recovery, persistence, or external calls. Exact project watermarks and immutable
 run-record hashes/byte lengths fence every included run. Missing and unlinked
 runs remain explicit exclusions; changed or conflicting identities fail closed.
 
-The closed registry covers first-pass acceptance, review cycles,
+The original Phase 9 registry covers first-pass acceptance, review cycles,
 dispatch-to-accepted duration, tokens per accepted task, override rate, human
 escalation rate, and halt recurrence with reconstructible evidence,
 denominators, coverage, and exclusions. Zero denominators are
-`insufficient-evidence`; deployment outcomes, escaped defects, provider
-monetary cost, business impact, and unversioned baselines remain explicitly
-unsupported. Slice 2 adds consistent Russian Control Plane navigation and a
+`insufficient-evidence`. Phase 10 extends this registry with exact deployment,
+completed-window attributed-defect, and complete single-currency provider-cost
+metrics; without accepted Phase 10 evidence those outcomes remain explicitly
+unsupported. Business impact and unversioned baselines remain unsupported.
+Phase 9 Slice 2 adds consistent Russian Control Plane navigation and a
 Russian read-only scorecard view that consumes only bounded Phase 6 selection
 evidence and Phase 9 responses, renders explicit evidence and failure states,
 keeps unsupported and zero-denominator results non-numeric, and downloads the
@@ -161,6 +163,11 @@ one currency. Legacy ledgers keep all eight operational outcomes explicitly
 unsupported; business/customer impact, productivity savings, bug-free claims,
 and manual baselines remain unsupported. Rendered desktop QA had no console
 errors, and the full Windows regression passed 260/260 in 433.18 seconds.
+The formal Phase 10 completion review passed on 2026-08-07. In-app browser QA
+opened the intended read-only scorecard state at 1280 px and 390 px with a
+clean console, no framework overlay, and no page-level overflow. Phase 1-10
+are completion-reviewed; a subsequent phase requires a separately accepted
+contract boundary.
 External connectors, polling, background
 capture, publication, deployment/rollback execution, currency conversion, and
 business-impact claims remain unauthorized.

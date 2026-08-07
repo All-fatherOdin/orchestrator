@@ -1,8 +1,10 @@
 # Operational Outcome Evidence Contract v1
 
-Status: accepted contract; Slice 1 implemented and verified
+Status: implemented through Slice 2; completion-reviewed
 Accepted: 2026-08-07
 Slice 1 implemented: 2026-08-07
+Slice 2 implemented: 2026-08-07
+Completion reviewed: 2026-08-07
 
 ## Outcome
 
@@ -268,6 +270,14 @@ Fresh verification on 2026-08-07 passed the 16 focused Phase 9/10 tests,
 TypeScript, the production Vite build, rendered desktop QA without console
 errors, `git diff --check`, and the full Windows server/Electron regression:
 260/260 with zero failures and zero skips in 433.18 seconds.
+
+The formal Phase 10 completion review passed on 2026-08-07. In-app browser
+checks exercised `Control plane -> Outcome scorecards` at 1280 px and 390 px:
+the intended Russian read-only state rendered, navigation changed the visible
+section, no framework overlay or relevant console warning/error appeared, and
+document width matched each viewport. Horizontal scrolling remained confined
+to the two mobile navigation strips. This review grants no connector,
+background-capture, publication, deployment, billing, or impact authority.
 
 ## Acceptance
 
