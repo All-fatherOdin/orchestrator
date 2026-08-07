@@ -104,6 +104,10 @@ an isolated temporary ledger at 1280 px, plus the guarded no-candidate
 attribution state at 390 px; console, framework overlay, raw-draft, and
 page-level overflow checks were clean. The browser-discovered receipt-unmount
 defect was fixed and the full verification repeated on the final code.
+The formal completion review passed on 2026-08-07 with all 13 acceptance
+clauses evidenced and no unresolved or deferred finding. Phase 1-11 are now
+completion-reviewed. There is no Phase 11 Slice 3 and no accepted Phase 12;
+further implementation requires a separately reviewed and accepted contract.
 
 ## Source Boundaries
 
@@ -132,7 +136,7 @@ defect was fixed and the full verification repeated on the final code.
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
 - Accepted Phase 10 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
-- Accepted and reviewed Phase 11 contract; Slices 1-2 implemented:
+- Accepted Phase 11 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/operational-evidence-intake-contract-v1.md`.
 - Phase 11 product evidence: current code and `server/index.test.ts`.
 - Phase 10 product evidence: current code and `server/index.test.ts`.

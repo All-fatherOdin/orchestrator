@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: Phase 1-10 completion-reviewed
+Status: Phase 1-11 completion-reviewed
 Last reviewed: 2026-08-07
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -38,8 +38,8 @@ were observed.
     defines the accepted Phase 10 boundary; Slices 1-2 are implemented and
     completion-reviewed.
 15. [operational-evidence-intake-contract-v1.md](operational-evidence-intake-contract-v1.md)
-    defines the accepted and reviewed Phase 11 manual-intake UI boundary;
-    Slices 1-2 are implemented.
+    defines the accepted Phase 11 manual-intake UI boundary; Slices 1-2 are
+    implemented and completion-reviewed.
 
 ## Current Boundary
 
@@ -125,6 +125,9 @@ Five focused tests, TypeScript, production build, context smoke, diff checks,
 the final 265/265 Windows regression, and real temporary-ledger Chromium QA at
 1280/390 px pass. Preview, execute, receipt refresh, no-candidate attribution,
 console health, draft clearing, and page overflow were exercised.
+The formal completion review passed on 2026-08-07 with all 13 acceptance
+clauses evidenced and no unresolved or deferred finding. Phase 11 is closed;
+there is no Slice 3 or accepted Phase 12 boundary.
 
 ## Authority
 
