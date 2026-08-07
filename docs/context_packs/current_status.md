@@ -171,3 +171,15 @@ contract boundary.
 External connectors, polling, background
 capture, publication, deployment/rollback execution, currency conversion, and
 business-impact claims remain unauthorized.
+
+Phase 11 Operational Evidence Intake Slice 1 is implemented. One local Russian
+`Данные результатов` section uses bounded Phase 6 GET projections for exact
+project/change selection and performs the existing exact-change Phase 10 GET
+only after an explicit action. It renders bounded sources, observations,
+attributions, receipts, watermark, loading, empty, unavailable, stale, privacy,
+and limit states. It has no mutation route, file input, browser/repository draft
+persistence, or automatic Phase 10 request. Slice 2 may later add locally
+reviewed source lifecycle and preview-first, explicit-confirmation import and
+defect-attribution workflows with stable request identity. The contract still
+adds no connector, backend route, canonical event, background job, automatic
+attribution, deployment/billing action, or scorecard authority.

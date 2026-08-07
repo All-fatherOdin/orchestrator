@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AuditBundlesDashboard } from "./AuditBundlesDashboard";
 import { OutcomeScorecardsDashboard } from "./OutcomeScorecardsDashboard";
+import { OperationalEvidenceIntakeDashboard } from "./OperationalEvidenceIntakeDashboard";
 
 export const operatorViews = [
   { id: "overview", label: "Обзор" },
@@ -129,7 +130,7 @@ function ActionDialog({ selection, mark, onClose, onExecuted }: { selection: Act
 }
 
 export function OperatorDashboard() {
-  const [section, setSection] = useState<"projections" | "audit" | "outcomes">("projections");
+  const [section, setSection] = useState<"projections" | "audit" | "outcomes" | "intake">("projections");
   const [view, setView] = useState<OperatorView>("overview");
   const [projection, setProjection] = useState<OperatorProjection | null>(null);
   const [loading, setLoading] = useState(true); const [error, setError] = useState("");
@@ -155,8 +156,8 @@ export function OperatorDashboard() {
   function selectView(next: OperatorView) { setView(next); setProjection(null); setCursorHistory([]); }
   return <section className="operatorPage">
     <header className="operatorHeader"><div><h1>Панель управления</h1><p>Операционные данные и явно подтверждённые действия по проверенным журналам проектов.</p></div><button className="operatorRefresh" onClick={() => void load()} disabled={loading}><RefreshIcon /> Обновить</button></header>
-    <nav className="operatorTabs" aria-label="Разделы панели управления">{operatorViews.map((item) => <button key={item.id} className={section === "projections" && view === item.id ? "active" : ""} onClick={() => { setSection("projections"); selectView(item.id); }}>{item.label}</button>)}<button className={section === "audit" ? "active" : ""} onClick={() => { setSection("audit"); setAction(null); }}>Пакеты аудита</button><button className={section === "outcomes" ? "active" : ""} onClick={() => { setSection("outcomes"); setAction(null); }}>Сводки результатов</button></nav>
-    {section === "audit" ? <AuditBundlesDashboard /> : section === "outcomes" ? <OutcomeScorecardsDashboard /> : <>
+    <nav className="operatorTabs" aria-label="Разделы панели управления">{operatorViews.map((item) => <button key={item.id} className={section === "projections" && view === item.id ? "active" : ""} onClick={() => { setSection("projections"); selectView(item.id); }}>{item.label}</button>)}<button className={section === "audit" ? "active" : ""} onClick={() => { setSection("audit"); setAction(null); }}>Пакеты аудита</button><button className={section === "outcomes" ? "active" : ""} onClick={() => { setSection("outcomes"); setAction(null); }}>Сводки результатов</button><button className={section === "intake" ? "active" : ""} onClick={() => { setSection("intake"); setAction(null); }}>Данные результатов</button></nav>
+    {section === "audit" ? <AuditBundlesDashboard /> : section === "outcomes" ? <OutcomeScorecardsDashboard /> : section === "intake" ? <OperationalEvidenceIntakeDashboard /> : <>
     <div className="operatorSummary" aria-label="Сводка проекции"><div><span>Источники</span><strong>{totals.sources}</strong></div><div><span>Доступно</span><strong>{totals.available}</strong></div><div><span>Недоступно</span><strong className={totals.unavailable ? "alert" : ""}>{totals.unavailable}</strong></div><div><span>Записи</span><strong>{totals.records}</strong></div><div className="operatorWatermark"><span>Отметка данных</span><code>{projection?.sourceWatermark.slice(0, 12) ?? "ожидание"}</code></div></div>
     {projection?.warnings.length ? <div className="operatorWarnings" role="status">{projection.warnings.map((warning) => <p key={`${warning.sourceRef}-${warning.message}`}><b>{warning.code.replaceAll("_", " ")}</b><span>{warning.projectId ?? warning.sourceRef}</span><small>{warning.message}</small></p>)}</div> : null}
     {loading ? <div className="operatorLoading"><i /><span>Чтение канонических проекций…</span></div> : error ? <div className="operatorError" role="alert"><b>Проекция недоступна</b><p>{error}</p><button onClick={() => { setCursorHistory([]); void load(view, undefined); }}>Повторить с текущими источниками</button></div> : projection ? <>{view === "overview" ? <Overview projection={projection} /> : <ProjectionTable projection={projection} onAction={setAction} />}<footer className="operatorPagination"><span>{projection.page.totalItems ? `${cursorHistory.length * projection.page.limit + 1}–${Math.min((cursorHistory.length + 1) * projection.page.limit, projection.page.totalItems)} из ${projection.page.totalItems}` : "0 записей"}</span><button aria-label="Предыдущая страница" disabled={!cursorHistory.length || loading} onClick={() => setCursorHistory((items) => items.slice(0, -1))}><ArrowIcon direction="left" /></button><button aria-label="Следующая страница" disabled={!projection.page.nextCursor || loading} onClick={() => setCursorHistory((items) => [...items, projection.page.nextCursor!])}><ArrowIcon direction="right" /></button></footer></> : null}

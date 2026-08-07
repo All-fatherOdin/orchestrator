@@ -153,6 +153,19 @@ impact, currency conversion, and a second ledger remain outside Phase 10.
 
 The Phase 10 completion review passed on 2026-08-07: focused Phase 9/10 tests,
 TypeScript, production build, context smoke, diff checks, the 260/260 Windows
-regression, and read-only desktop/390 px rendered QA passed. The roadmap has no
-accepted Phase 11 boundary; further implementation requires a new accepted
-contract rather than inference from Phase 10 evidence.
+regression, and read-only desktop/390 px rendered QA passed. Phase 11 now
+proceeds only within its separately accepted contract.
+
+## Phase 11: Operational Evidence Intake
+
+Accepted and reviewed contract:
+`docs/architecture/change-control-plane/operational-evidence-intake-contract-v1.md`.
+Phase 11 adds one local Russian Control Plane section over existing Phase 6
+selection and Phase 10 APIs. Slice 1 is a read-only projection/intake shell.
+Slice 2 adds locally reviewed source lifecycle and preview-first,
+explicit-confirmation observation import and defect attribution. The phase adds
+no backend route, canonical event, connector, background work, automatic
+attribution, deployment/billing action, draft persistence, or scorecard
+authority. Slice 1 is implemented: one GET-only Russian intake section uses
+exact Phase 6 project/change selection and renders bounded Phase 10 projection
+groups and explicit safe states. Slice 2 has not started.

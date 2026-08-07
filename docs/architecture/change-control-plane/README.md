@@ -37,6 +37,9 @@ were observed.
 14. [operational-outcome-evidence-contract-v1.md](operational-outcome-evidence-contract-v1.md)
     defines the accepted Phase 10 boundary; Slices 1-2 are implemented and
     completion-reviewed.
+15. [operational-evidence-intake-contract-v1.md](operational-evidence-intake-contract-v1.md)
+    defines the accepted and reviewed Phase 11 manual-intake UI boundary;
+    Slice 1 is implemented.
 
 ## Current Boundary
 
@@ -108,6 +111,15 @@ with a clean console and no page-level overflow.
 Automatic external connectors, background capture, publication, deployment or
 rollback execution, automatic defect attribution, business impact, and
 currency conversion remain deferred.
+
+Phase 11 Operational Evidence Intake Contract v1 is accepted and reviewed.
+It authorizes only a local Russian dashboard over existing Phase 6 selection
+and Phase 10 projection/mutation APIs. Slice 1 is a read-only intake shell;
+Slice 2 adds explicit-confirmation source lifecycle plus preview-first import
+and attribution workflows. Slice 1 is implemented with exact bounded selection,
+an explicit GET-only Phase 10 read, bounded projection groups, and explicit
+safe states. Slice 2 has not started. No connector, background capture, new
+route, or new canonical authority is authorized.
 
 ## Authority
 

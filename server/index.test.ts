@@ -236,6 +236,12 @@ const {
   outcomeScorecardRejectedState,
 } = await import("../src/OutcomeScorecardsDashboard.tsx");
 const {
+  OperationalEvidenceIntakeDashboard,
+  OperationalEvidenceProjectionResult,
+  operationalEvidenceErrorState,
+  operationalEvidenceProjectionUrl,
+} = await import("../src/OperationalEvidenceIntakeDashboard.tsx");
+const {
   ChangeControlError,
   ChangeControlStore,
   attemptEvidenceSnapshotHashV1,
@@ -13943,6 +13949,53 @@ test("OutcomeScorecardsDashboard download is gated to a direct action over alrea
   assert.match(downloadBody, /URL\.revokeObjectURL\(url\)/);
   assert.equal(downloadBody.includes("fetch("), false);
   assert.match(source, /Расчёт и скачивание не запускаются автоматически/);
+});
+
+test("Phase 11 Slice 1 exposes one exact read-only operational evidence entry with GET-only sources", async () => {
+  const dashboardMarkup = renderToStaticMarkup(createElement(OperatorDashboard));
+  const intakeMarkup = renderToStaticMarkup(createElement(OperationalEvidenceIntakeDashboard));
+  assert.equal((dashboardMarkup.match(/>Данные результатов</g) ?? []).length, 1);
+  assert.match(intakeMarkup, /Чтение точных проектов и изменений фазы 6/);
+  assert.equal(
+    operationalEvidenceProjectionUrl("project one/blue", "change one/two"),
+    "/api/operational-outcomes/v1/projects/project%20one%2Fblue/changes/change%20one%2Ftwo",
+  );
+  assert.throws(() => operationalEvidenceProjectionUrl("project", ""), /точная идентичность/);
+  const operatorSource = await readFile(join("src", "OperatorDashboard.tsx"), "utf8");
+  assert.match(operatorSource, /import \{ OperationalEvidenceIntakeDashboard \} from "\.\/OperationalEvidenceIntakeDashboard"/);
+  assert.match(operatorSource, /section === "intake" \? <OperationalEvidenceIntakeDashboard \/>/);
+  const source = await readFile(join("src", "OperationalEvidenceIntakeDashboard.tsx"), "utf8");
+  assert.match(source, /Promise\.all\(\[/);
+  assert.match(source, /\/api\/operator-projections\/v1\/overview\?limit=25/);
+  assert.match(source, /\/api\/operator-projections\/v1\/execution-bucket\?limit=25/);
+  assert.match(source, /\/api\/operational-outcomes\/v1\/projects\/\$\{encodeURIComponent\(projectId\)\}\/changes/);
+  assert.equal(/method:\s*"(?:POST|PUT|PATCH|DELETE)"/.test(source), false);
+  for (const prohibited of ["/sources/register", "/sources/revoke", "/imports/preview", "/imports/execute", "/attributions/preview", "/attributions/execute", "localStorage", "sessionStorage", "indexedDB", "type=\"file\""])
+    assert.equal(source.includes(prohibited), false, prohibited);
+  for (const required of ["Источники доказательств", "Операционные наблюдения", "Решения об атрибуции", "Неизменяемые квитанции", "Только чтение", "Показать данные"])
+    assert.match(source, new RegExp(required));
+  const styles = await readFile(join("src", "styles.css"), "utf8");
+  assert.match(styles, /@media\(max-width:720px\).*\.intakeFields\{grid-template-columns:1fr\}/s);
+});
+
+test("Phase 11 Slice 1 renders bounded evidence groups and explicit unavailable, stale, privacy, and limit states", () => {
+  const projection: any = {
+    contractType: "OperationalOutcomeProjectionV1", contractVersion: "1.0", projectId: "project-one",
+    watermark: { sequence: 12, hash: "a".repeat(64) },
+    sources: [{ sourceId: "source-one", family: "deployment", sourceSystem: "manual", formatVersion: "1", allowedKinds: ["deployment"], privacyClass: "restricted-metadata-only", status: "active", ownerActor: "human:operator", registeredAt: "2026-08-07T10:00:00.000Z", registeredSequence: 3, sourceHash: "b".repeat(64) }],
+    observations: [{ observationId: "observation-one", sourceRecordId: "record-one", occurredAt: "2026-08-07T10:01:00.000Z", environmentClass: "production", outcome: "succeeded", evidenceRefs: ["event:one", "event:two", "event:three", "event:four"] }],
+    attributions: [{ observationId: "observation-one", changeId: "change-one", decision: "confirmed", reasonCode: "manual-review", evidenceRefs: ["event:one"], decidedBy: "human:reviewer", decidedAt: "2026-08-07T10:02:00.000Z", sequence: 4 }],
+    receipts: [{ receiptId: "receipt-one", operationKind: "import-observations", actor: "human:operator", contentHash: "c".repeat(64), sourceWatermark: { sequence: 3, hash: "d".repeat(64) }, resultingWatermark: { sequence: 4, hash: "e".repeat(64) }, observationIds: ["observation-one"], publishedAt: "2026-08-07T10:03:00.000Z", receiptHash: "f".repeat(64) }],
+  };
+  const markup = renderToStaticMarkup(createElement(OperationalEvidenceProjectionResult, { projection, changeId: "change-one" }));
+  for (const value of ["project-one / change-one", "source-one", "observation-one", "manual-review", "receipt-one", "Отметка проекта · посл. 12"])
+    assert.match(markup, new RegExp(value));
+  assert.match(markup, /event:three/);
+  assert.equal(markup.includes("event:four"), false);
+  assert.deepEqual(operationalEvidenceErrorState("OUTCOME_PROJECT_WATERMARK_CHANGED"), { kind: "stale", title: "Данные устарели" });
+  assert.equal(operationalEvidenceErrorState("OUTCOME_PRIVACY_VIOLATION").kind, "privacy-rejected");
+  assert.equal(operationalEvidenceErrorState("OUTCOME_MANIFEST_TOO_LARGE").kind, "limit-rejected");
+  assert.equal(operationalEvidenceErrorState("SOURCE_UNAVAILABLE").kind, "unavailable");
 });
 
 test("visual task editor exposes accessible optional context controls", () => {
