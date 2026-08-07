@@ -145,7 +145,7 @@ formal completion review passed on 2026-08-06. Persistence, publication,
 background aggregation, search,
 external telemetry, operator actions, and new authority remain unauthorized.
 
-Phase 10 Operational Outcome Evidence Slice 1 is implemented and verified for
+Phase 10 Operational Outcome Evidence is implemented through Slice 2 for
 exactly three caller-supplied evidence families: deployment outcomes,
 post-delivery defects, and measured provider monetary cost. Five closed event
 types publish validated sources, observations, attribution decisions, and
@@ -154,7 +154,13 @@ deterministic and no-mutation; execution requires fresh explicit confirmation;
 privacy/count/byte limits, replay, exact idempotency, source lifecycle,
 concurrency fencing, attribution supersession, and exact resolved-provider
 invocation joins fail closed. The six focused tests, TypeScript, production
-build, diff checks, and full Windows regression (258/258 in 457.87 seconds)
-pass. Slice 2 has not started. External connectors, polling, background
+build, and diff checks pass. Slice 2 consumes effective in-range evidence in
+Phase 9: exact production deployment cohorts, confirmed defects only after
+completed 7/30/90-day windows, and complete exact provider-invocation costs in
+one currency. Legacy ledgers keep all eight operational outcomes explicitly
+unsupported; business/customer impact, productivity savings, bug-free claims,
+and manual baselines remain unsupported. Rendered desktop QA had no console
+errors, and the full Windows regression passed 260/260 in 433.18 seconds.
+External connectors, polling, background
 capture, publication, deployment/rollback execution, currency conversion, and
 business-impact claims remain unauthorized.

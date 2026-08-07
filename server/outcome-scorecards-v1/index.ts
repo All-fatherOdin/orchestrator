@@ -5,6 +5,14 @@ import type {
   AuditEvidenceSourceV1,
   ChangeControlEvent,
 } from "../change-control-v1/index.ts";
+import type {
+  DeploymentObservationV1,
+  OperationalDefectAttributionV1,
+  OperationalEvidenceSourceV1,
+  OperationalObservationV1,
+  PostDeliveryDefectObservationV1,
+  ProviderCostObservationV1,
+} from "../operational-outcomes-v1/index.ts";
 
 export const OUTCOME_SCORECARD_POLICY_VERSION_V1 =
   "outcome-scorecard-policy-v1" as const;
@@ -30,8 +38,20 @@ export const OUTCOME_SCORECARD_METRICS_V1 = [
   "haltRecurrenceRate",
 ] as const;
 
+export const OPERATIONAL_OUTCOME_SCORECARD_METRICS_V1 = [
+  "escapedDefects7Day",
+  "escapedDefects30Day",
+  "escapedDefects90Day",
+  "deploymentFailureRate",
+  "rollbackRate",
+  "hotfixRate",
+  "productionReworkRate",
+  "providerMonetaryCost",
+] as const;
+
 export type OutcomeScorecardMetricIdV1 =
-  (typeof OUTCOME_SCORECARD_METRICS_V1)[number];
+  | (typeof OUTCOME_SCORECARD_METRICS_V1)[number]
+  | (typeof OPERATIONAL_OUTCOME_SCORECARD_METRICS_V1)[number];
 
 export const OUTCOME_SCORECARD_REASON_CODES_V1 = [
   "SOURCE_UNAVAILABLE",
@@ -61,6 +81,14 @@ export const OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1 = [
   ["hotfixRate", "deployment-authority"],
   ["productionReworkRate", "deployment-authority"],
   ["providerMonetaryCost", "provider-billing-authority"],
+  ["businessImpact", "business-outcome-authority"],
+  ["customerImpact", "customer-outcome-authority"],
+  ["productivitySavings", "productivity-baseline-authority"],
+  ["bugFreeDelivery", "post-delivery-defect-authority"],
+  ["manualBaselineComparison", "versioned-cohort-authority"],
+] as const;
+
+const STILL_UNSUPPORTED_OUTCOMES_V1 = [
   ["businessImpact", "business-outcome-authority"],
   ["customerImpact", "customer-outcome-authority"],
   ["productivitySavings", "productivity-baseline-authority"],
@@ -148,6 +176,7 @@ export type OutcomeScorecardMetricV1 = Readonly<{
   coverage: number;
   policyVersion: typeof OUTCOME_SCORECARD_POLICY_VERSION_V1;
   value: number | null;
+  unit?: string;
   evidence: readonly OutcomeScorecardMetricEvidenceV1[];
   distribution?: Readonly<{
     count: number;
@@ -197,6 +226,16 @@ export type OutcomeScorecardV1 = Readonly<{
     qualitySafety: Readonly<{
       humanEscalationRate: OutcomeScorecardMetricV1;
       haltRecurrenceRate: OutcomeScorecardMetricV1;
+    }>;
+    operational?: Readonly<{
+      escapedDefects7Day: OutcomeScorecardMetricV1;
+      escapedDefects30Day: OutcomeScorecardMetricV1;
+      escapedDefects90Day: OutcomeScorecardMetricV1;
+      deploymentFailureRate: OutcomeScorecardMetricV1;
+      rollbackRate: OutcomeScorecardMetricV1;
+      hotfixRate: OutcomeScorecardMetricV1;
+      productionReworkRate: OutcomeScorecardMetricV1;
+      providerMonetaryCost: OutcomeScorecardMetricV1;
     }>;
     unsupported: readonly Readonly<{
       outcomeClass: UnsupportedOutcomeClassV1;
@@ -468,7 +507,14 @@ function assertMetricSemantics(
     value.excludedCount !== excludedCount ||
     !sameNumber(value.coverage, coverage) ||
     value.status !== (complete ? "complete" : "insufficient-evidence") ||
-    (complete && !sameNumber(value.value!, numerator / denominator)) ||
+    (expectedMetricId === "providerMonetaryCost"
+      ? (value.unit !== undefined && !/^[A-Z]{3}:minor-units$/.test(value.unit)) ||
+        (complete && value.unit === undefined)
+      : value.unit !== undefined) ||
+    (complete && !sameNumber(
+      value.value!,
+      expectedMetricId === "providerMonetaryCost" ? numerator : numerator / denominator,
+    )) ||
     (!complete && value.value !== null)
   )
     fail("EVIDENCE_CONFLICT", "A metric does not reconstruct from its evidence.");
@@ -527,6 +573,9 @@ function assertScorecardSemantics(value: OutcomeScorecardV1) {
     ["overrideRate", value.metrics.delivery.overrideRate],
     ["humanEscalationRate", value.metrics.qualitySafety.humanEscalationRate],
     ["haltRecurrenceRate", value.metrics.qualitySafety.haltRecurrenceRate],
+    ...(value.metrics.operational
+      ? Object.entries(value.metrics.operational) as Array<readonly [OutcomeScorecardMetricIdV1, OutcomeScorecardMetricV1]>
+      : []),
   ];
   metrics.forEach(([metricId, item]) => assertMetricSemantics(metricId, item));
   const runIdentities = value.cohort.includedRuns.map((item) => item.identity);
@@ -550,6 +599,7 @@ function assertScorecardSemantics(value: OutcomeScorecardV1) {
   const expectedCompleteness = completeness({
     delivery: value.metrics.delivery,
     qualitySafety: value.metrics.qualitySafety,
+    ...(value.metrics.operational ? { operational: value.metrics.operational } : {}),
   });
   if (
     canonicalOutcomeScorecardJsonV1(value.selector) !==
@@ -575,7 +625,11 @@ function assertScorecardSemantics(value: OutcomeScorecardV1) {
       canonicalOutcomeScorecardJsonV1(value.sourceWatermarks.runs) ||
     value.cohortId !== expectedCohortId ||
     canonicalOutcomeScorecardJsonV1(unsupported) !==
-      canonicalOutcomeScorecardJsonV1(OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1) ||
+      canonicalOutcomeScorecardJsonV1(
+        value.metrics.operational
+          ? STILL_UNSUPPORTED_OUTCOMES_V1
+          : OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1,
+      ) ||
     value.metrics.unsupported.some(
       (item) =>
         item.status !== "unsupported" || item.reasonCode !== "METRIC_UNSUPPORTED",
@@ -990,7 +1044,8 @@ function sourceWatermarkMatches(
 function metric(
   metricId: OutcomeScorecardMetricIdV1,
   evidence: readonly OutcomeScorecardMetricEvidenceV1[],
-  kind: "rate" | "distribution",
+  kind: "rate" | "distribution" | "sum",
+  unit?: string,
 ): OutcomeScorecardMetricV1 {
   const ordered = [...evidence].sort((left, right) => left.subjectRef.localeCompare(right.subjectRef));
   const numerator = ordered.reduce((sum, item) => sum + item.numeratorContribution, 0);
@@ -1010,10 +1065,11 @@ function metric(
     excludedCount,
     coverage,
     policyVersion: OUTCOME_SCORECARD_POLICY_VERSION_V1,
-    value: status === "complete" ? numerator / denominator : null,
+    value: status === "complete" ? (kind === "sum" ? numerator : numerator / denominator) : null,
+    ...(unit ? { unit } : {}),
     evidence: ordered,
   } as const;
-  if (kind === "rate") return base;
+  if (kind === "rate" || kind === "sum") return base;
   const percentile = (fraction: number) =>
     values[Math.max(0, Math.ceil(values.length * fraction) - 1)]!;
   return {
@@ -1488,8 +1544,214 @@ function qualitySafetyMetrics(context: CohortContextV1) {
   };
 }
 
-function unsupportedMetrics() {
-  return OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1.map(
+type OperationalObservationStateV1 = Readonly<{
+  observation: OperationalObservationV1;
+  sourceId: string;
+  event: ChangeControlEvent;
+}>;
+
+function selectedOperationalState(context: CohortContextV1) {
+  const sources = new Map<string, OperationalEvidenceSourceV1>();
+  const observations = new Map<string, OperationalObservationStateV1>();
+  const attributions = new Map<string, OperationalDefectAttributionV1>();
+  let observed = false;
+  for (const event of context.events) {
+    if (!event.type.startsWith("operational.")) continue;
+    observed = true;
+    const request = isRecord(event.payload.request) ? event.payload.request : undefined;
+    if (!request) continue;
+    if (event.type === "operational.source-registered" && isRecord(request.source)) {
+      const source = request.source;
+      const sourceId = identifier(source.sourceId) ? source.sourceId : undefined;
+      if (!sourceId) continue;
+      if (identifier(source.supersedesSourceId)) {
+        const prior = sources.get(source.supersedesSourceId);
+        if (prior) sources.set(prior.sourceId, { ...prior, status: "superseded" });
+      }
+      sources.set(sourceId, {
+        ...(source as unknown as OperationalEvidenceSourceV1),
+        projectId: context.selector.projectId,
+        ownerActor: event.actor,
+        status: "active",
+        registeredAt: event.occurredAt,
+        registeredSequence: event.sequence,
+        sourceHash: sha256(canonicalOutcomeScorecardJsonV1(source)),
+      });
+      continue;
+    }
+    if (event.type === "operational.source-revoked" && identifier(request.sourceId)) {
+      const source = sources.get(request.sourceId);
+      if (source) sources.set(source.sourceId, {
+        ...source,
+        status: request.reasonCode === "source-superseded" ? "superseded" : "revoked",
+        revokedAt: event.occurredAt,
+      });
+      continue;
+    }
+    if (event.type === "operational.observations-imported" &&
+      identifier(request.sourceId) && Array.isArray(request.observations)) {
+      for (const candidate of request.observations) {
+        if (!isRecord(candidate) || !identifier(candidate.observationId)) continue;
+        observations.set(candidate.observationId, {
+          observation: candidate as unknown as OperationalObservationV1,
+          sourceId: request.sourceId,
+          event,
+        });
+      }
+      continue;
+    }
+    if (event.type === "operational.defect-attribution-recorded" &&
+      identifier(request.observationId) && identifier(request.changeId) &&
+      ["confirmed", "rejected", "unresolved"].includes(String(request.decision))) {
+      attributions.set(`${request.observationId}\0${request.changeId}`, {
+        observationId: request.observationId,
+        changeId: request.changeId,
+        decision: request.decision as OperationalDefectAttributionV1["decision"],
+        reasonCode: String(request.reasonCode),
+        evidenceRefs: Array.isArray(request.evidenceRefs)
+          ? request.evidenceRefs.filter((item): item is string => typeof item === "string")
+          : [],
+        decidedBy: event.actor,
+        decidedAt: event.occurredAt,
+        sequence: event.sequence,
+      });
+    }
+  }
+  const activeSourceIds = new Set(
+    [...sources.values()].filter((source) => source.status === "active").map((source) => source.sourceId),
+  );
+  const candidates = [...observations.values()].filter((item) => activeSourceIds.has(item.sourceId));
+  const superseded = new Set(
+    candidates.map((item) => item.observation.supersedesObservationId).filter(identifier),
+  );
+  return {
+    observed,
+    sources: [...sources.values()],
+    observations: candidates.filter((item) => !superseded.has(item.observation.observationId)),
+    attributions,
+  };
+}
+
+function operationalObservationRefs(item: OperationalObservationStateV1) {
+  return boundedRefs([
+    `operational-observation:${item.observation.observationId}`,
+    eventRef(item.event),
+    ...item.observation.evidenceRefs,
+  ]);
+}
+
+function operationalMetrics(
+  context: CohortContextV1,
+  includedTasks: readonly IncludedTaskV1[],
+) {
+  const state = selectedOperationalState(context);
+  if (!state.observed) return undefined;
+  const changeIds = new Set(includedTasks.map((item) => item.changeId));
+  const runIds = new Set(includedTasks.map((item) => item.runId));
+  const hasAuthority = (kind: "deployment" | "post-delivery-defect" | "provider-cost") =>
+    state.sources.some((source) => source.status === "active" && source.allowedKinds.includes(kind));
+  const deployments = state.observations.filter((item): item is OperationalObservationStateV1 & { observation: DeploymentObservationV1 } =>
+    item.observation.contractType === "DeploymentObservationV1" &&
+    item.observation.environmentClass === "production" &&
+    changeIds.has(item.observation.changeId));
+  const deploymentEvidence = (outcome: DeploymentObservationV1["outcome"]) =>
+    hasAuthority("deployment")
+      ? deployments.map((item) => metricEvidence(
+          `deployment:${item.observation.observationId}`,
+          operationalObservationRefs(item),
+          { numerator: item.observation.outcome === outcome ? 1 : 0 },
+        ))
+      : [];
+
+  const defects = state.observations.filter((item): item is OperationalObservationStateV1 & { observation: PostDeliveryDefectObservationV1 } =>
+    item.observation.contractType === "PostDeliveryDefectObservationV1");
+  const cohortEnd = Date.parse(context.events.at(-1)!.occurredAt);
+  const escapedDefects = (days: 7 | 30 | 90) => {
+    if (!hasAuthority("deployment") || !hasAuthority("post-delivery-defect")) return [];
+    const windowMs = days * 86_400_000;
+    return deployments.map((deployment) => {
+      const deployedAt = Date.parse(deployment.observation.occurredAt);
+      const refs = [...operationalObservationRefs(deployment)];
+      if (!Number.isFinite(deployedAt) || !Number.isFinite(cohortEnd) || cohortEnd - deployedAt < windowMs)
+        return metricEvidence(`defect-window:${days}:${deployment.observation.observationId}`, refs, {
+          excluded: true,
+          reasonCode: "EVIDENCE_INCOMPLETE",
+        });
+      const inWindow = defects.filter((item) => {
+        const detectedAt = Date.parse(item.observation.detectedAt);
+        return item.observation.candidateChangeIds.includes(deployment.observation.changeId) &&
+          detectedAt >= deployedAt && detectedAt <= deployedAt + windowMs;
+      });
+      refs.push(...inWindow.flatMap(operationalObservationRefs));
+      const decisions = inWindow.map((item) => state.attributions.get(
+        `${item.observation.observationId}\0${deployment.observation.changeId}`,
+      ));
+      refs.push(...decisions.flatMap((item) => item?.evidenceRefs ?? []));
+      if (decisions.some((item) => !item || item.decision === "unresolved"))
+        return metricEvidence(`defect-window:${days}:${deployment.observation.observationId}`, refs, {
+          excluded: true,
+          reasonCode: "EVIDENCE_INCOMPLETE",
+        });
+      const count = decisions.filter((item) => item?.decision === "confirmed").length;
+      return metricEvidence(`defect-window:${days}:${deployment.observation.observationId}`, refs, {
+        numerator: count,
+      });
+    });
+  };
+
+  const resolutions = context.events.flatMap((event) => {
+    if (event.type !== "model.execution-resolved" || !isRecord(event.payload.resolution)) return [];
+    const resolution = event.payload.resolution;
+    return identifier(resolution.invocationId) && identifier(resolution.runId) &&
+      identifier(resolution.changeId) && changeIds.has(resolution.changeId) && runIds.has(resolution.runId)
+      ? [{ resolution, event }]
+      : [];
+  });
+  const costs = state.observations.filter((item): item is OperationalObservationStateV1 & { observation: ProviderCostObservationV1 } =>
+    item.observation.contractType === "ProviderCostObservationV1" &&
+    changeIds.has(item.observation.changeId) && runIds.has(item.observation.runId));
+  let costEvidence = hasAuthority("provider-cost") ? resolutions.map(({ resolution, event }) => {
+    const cost = costs.find((item) => item.observation.runId === resolution.runId &&
+      item.observation.taskId === resolution.taskId && item.observation.attemptId === resolution.attemptId &&
+      item.observation.invocationId === resolution.invocationId && item.observation.provider === resolution.providerId);
+    const subjectRef = `provider-invocation:${resolution.invocationId}`;
+    if (!cost) return metricEvidence(subjectRef, [eventRef(event)], {
+      excluded: true,
+      reasonCode: "EVIDENCE_INCOMPLETE",
+    });
+    return metricEvidence(subjectRef, [eventRef(event), ...operationalObservationRefs(cost)], {
+      numerator: cost.observation.minorUnits,
+      value: cost.observation.minorUnits,
+    });
+  }) : [];
+  const currencies = [...new Set(costs.map((item) => item.observation.currency))].sort();
+  if (currencies.length > 1) costEvidence = costEvidence.map((item) => metricEvidence(
+    item.subjectRef,
+    item.evidenceRefs,
+    { excluded: true, reasonCode: "EVIDENCE_CONFLICT" },
+  ));
+  const currency = currencies.length === 1 ? currencies[0] : undefined;
+  return {
+    escapedDefects7Day: metric("escapedDefects7Day", escapedDefects(7), "rate"),
+    escapedDefects30Day: metric("escapedDefects30Day", escapedDefects(30), "rate"),
+    escapedDefects90Day: metric("escapedDefects90Day", escapedDefects(90), "rate"),
+    deploymentFailureRate: metric("deploymentFailureRate", deploymentEvidence("failed"), "rate"),
+    rollbackRate: metric("rollbackRate", deploymentEvidence("rolled-back"), "rate"),
+    hotfixRate: metric("hotfixRate", deploymentEvidence("hotfix"), "rate"),
+    productionReworkRate: metric("productionReworkRate", deploymentEvidence("production-rework"), "rate"),
+    providerMonetaryCost: metric(
+      "providerMonetaryCost",
+      costEvidence,
+      "sum",
+      currency ? `${currency}:minor-units` : undefined,
+    ),
+  };
+}
+
+function unsupportedMetrics(includeOperational: boolean) {
+  return (includeOperational
+    ? STILL_UNSUPPORTED_OUTCOMES_V1
+    : OUTCOME_SCORECARD_UNSUPPORTED_OUTCOMES_V1).map(
     ([outcomeClass, missingAuthority]) => ({
       outcomeClass,
       status: "unsupported" as const,
@@ -1504,6 +1766,7 @@ function completeness(
   metrics: Readonly<{
     delivery: OutcomeScorecardV1["metrics"]["delivery"];
     qualitySafety: OutcomeScorecardV1["metrics"]["qualitySafety"];
+    operational?: NonNullable<OutcomeScorecardV1["metrics"]["operational"]>;
   }>,
 ) {
   const values: readonly OutcomeScorecardMetricV1[] = [
@@ -1514,6 +1777,7 @@ function completeness(
     metrics.delivery.overrideRate,
     metrics.qualitySafety.humanEscalationRate,
     metrics.qualitySafety.haltRecurrenceRate,
+    ...Object.values(metrics.operational ?? {}),
   ];
   return {
     complete: values.every((item) => item.status === "complete"),
@@ -1689,7 +1953,10 @@ export class OutcomeScorecardServiceV1 {
       fail("COHORT_LIMIT_EXCEEDED", "The cohort exceeds the diagnostic limit.");
     const delivery = deliveryMetrics(context, observations);
     const qualitySafety = qualitySafetyMetrics(context);
-    const metricGroups = { delivery, qualitySafety };
+    const includedTasks = observations.map((item) => item.included)
+      .sort((left, right) => left.taskRef.localeCompare(right.taskRef));
+    const operational = operationalMetrics(context, includedTasks);
+    const metricGroups = { delivery, qualitySafety, ...(operational ? { operational } : {}) };
     const identities = includedRuns.map((item) => item.identity).sort((left, right) => left.runId.localeCompare(right.runId));
     const cohortIdentityInput = {
       policyVersion: OUTCOME_SCORECARD_POLICY_VERSION_V1,
@@ -1712,7 +1979,7 @@ export class OutcomeScorecardServiceV1 {
       cohort: {
         includedRuns: includedRuns.sort((left, right) => left.identity.runId.localeCompare(right.identity.runId)),
         excludedRuns: excludedRuns.sort(compareFindings),
-        includedTasks: observations.map((item) => item.included).sort((left, right) => left.taskRef.localeCompare(right.taskRef)),
+        includedTasks,
         excludedTasks: excludedTasks.sort(compareFindings),
         includedAttempts: includedAttempts.sort((left, right) => left.attemptRef.localeCompare(right.attemptRef)),
         excludedAttempts: excludedAttempts.sort(compareFindings),
@@ -1720,7 +1987,8 @@ export class OutcomeScorecardServiceV1 {
       metrics: {
         delivery,
         qualitySafety,
-        unsupported: unsupportedMetrics(),
+        ...(operational ? { operational } : {}),
+        unsupported: unsupportedMetrics(Boolean(operational)),
       },
       findings,
       privacy,

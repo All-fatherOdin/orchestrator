@@ -143,8 +143,10 @@ post-delivery defect, and measured provider-cost evidence. Slice 1 is
 implemented and verified with closed sources, observations, attribution
 decisions, preview/execute imports, immutable receipts, replay, privacy limits,
 exact idempotency, concurrency fencing, and bounded HTTP APIs in the existing
-project ledger. Slice 2 will let Phase 9 calculate only the newly
-supported metrics with explicit denominators, coverage, observation windows,
-currency, and exclusions. External connectors, background capture,
+project ledger. Slice 2 is implemented in Phase 9 with exact eligible
+production deployment cohorts, completed 7/30/90-day defect windows requiring
+confirmed attribution, and complete exact provider-invocation coverage in one
+currency. Every result retains explicit denominators, coverage, exclusions,
+and evidence references; legacy evidence remains unsupported. External connectors, background capture,
 publication, deployment/rollback execution, automatic attribution, business
 impact, currency conversion, and a second ledger remain outside Phase 10.

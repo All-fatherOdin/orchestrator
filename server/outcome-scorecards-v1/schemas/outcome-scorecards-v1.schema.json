@@ -52,7 +52,15 @@
         "tokensPerAcceptedTask",
         "overrideRate",
         "humanEscalationRate",
-        "haltRecurrenceRate"
+        "haltRecurrenceRate",
+        "escapedDefects7Day",
+        "escapedDefects30Day",
+        "escapedDefects90Day",
+        "deploymentFailureRate",
+        "rollbackRate",
+        "hotfixRate",
+        "productionReworkRate",
+        "providerMonetaryCost"
       ]
     },
     "Watermark": {
@@ -266,6 +274,7 @@
         "coverage": { "type": "number", "minimum": 0, "maximum": 1 },
         "policyVersion": { "const": "outcome-scorecard-policy-v1" },
         "value": { "oneOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }] },
+        "unit": { "type": "string", "pattern": "^[A-Z]{3}:minor-units$" },
         "evidence": {
           "type": "array",
           "maxItems": 500,
@@ -393,6 +402,30 @@
         "haltRecurrenceRate": { "$ref": "#/$defs/Metric" }
       }
     },
+    "OperationalMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "escapedDefects7Day",
+        "escapedDefects30Day",
+        "escapedDefects90Day",
+        "deploymentFailureRate",
+        "rollbackRate",
+        "hotfixRate",
+        "productionReworkRate",
+        "providerMonetaryCost"
+      ],
+      "properties": {
+        "escapedDefects7Day": { "$ref": "#/$defs/Metric" },
+        "escapedDefects30Day": { "$ref": "#/$defs/Metric" },
+        "escapedDefects90Day": { "$ref": "#/$defs/Metric" },
+        "deploymentFailureRate": { "$ref": "#/$defs/Metric" },
+        "rollbackRate": { "$ref": "#/$defs/Metric" },
+        "hotfixRate": { "$ref": "#/$defs/Metric" },
+        "productionReworkRate": { "$ref": "#/$defs/Metric" },
+        "providerMonetaryCost": { "$ref": "#/$defs/Metric" }
+      }
+    },
     "CompletenessCheck": {
       "type": "object",
       "additionalProperties": false,
@@ -406,7 +439,15 @@
               "metric:tokensPerAcceptedTask",
               "metric:overrideRate",
               "metric:humanEscalationRate",
-              "metric:haltRecurrenceRate"
+              "metric:haltRecurrenceRate",
+              "metric:escapedDefects7Day",
+              "metric:escapedDefects30Day",
+              "metric:escapedDefects90Day",
+              "metric:deploymentFailureRate",
+              "metric:rollbackRate",
+              "metric:hotfixRate",
+              "metric:productionReworkRate",
+              "metric:providerMonetaryCost"
             ]
           },
         "status": { "enum": ["pass", "insufficient-evidence"] },
@@ -426,7 +467,7 @@
         "checks": {
           "type": "array",
           "minItems": 7,
-          "maxItems": 7,
+          "maxItems": 15,
           "items": { "$ref": "#/$defs/CompletenessCheck" }
         }
       }
@@ -471,9 +512,10 @@
           "properties": {
             "delivery": { "$ref": "#/$defs/DeliveryMetrics" },
             "qualitySafety": { "$ref": "#/$defs/QualitySafetyMetrics" },
+            "operational": { "$ref": "#/$defs/OperationalMetrics" },
             "unsupported": {
               "type": "array",
-              "minItems": 13,
+              "minItems": 5,
               "maxItems": 13,
               "items": { "$ref": "#/$defs/UnsupportedOutcome" }
             }

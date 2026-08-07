@@ -254,13 +254,20 @@ Extend only the Phase 9 domain service, schemas, focused APIs, tests, and
 read-only dashboard states to consume effective Phase 10 evidence. Preserve
 legacy Phase 1-9 behavior and keep every still-unsupported outcome explicit.
 
+Implemented with effective in-range source/observation supersession,
+production deployment cohorts, completed 7/30/90-day windows, confirmed defect
+attribution, complete exact provider-invocation coverage, one explicit
+minor-unit currency, closed scorecard schemas, reconstructible evidence, and
+read-only Russian metric cards. Legacy scorecards retain the original eight
+operational outcomes as unsupported when no Phase 10 evidence exists.
+
 Automatic external connectors are a future separately authorized phase, not a
 Phase 10 implementation slice.
 
-Fresh verification on 2026-08-07 passed the six focused Phase 10 tests,
-TypeScript, the production Vite build, `git diff --check`, and the full Windows
-server/Electron regression: 258/258 with zero failures and zero skips in
-457.87 seconds.
+Fresh verification on 2026-08-07 passed the 16 focused Phase 9/10 tests,
+TypeScript, the production Vite build, rendered desktop QA without console
+errors, `git diff --check`, and the full Windows server/Electron regression:
+260/260 with zero failures and zero skips in 433.18 seconds.
 
 ## Acceptance
 

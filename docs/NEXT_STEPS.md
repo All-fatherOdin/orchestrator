@@ -68,15 +68,19 @@ meaningful Russian content, a clean console, and no page-level horizontal
 overflow. Do not treat this review as publication, telemetry, persistence, or
 new action authority.
 
-Phase 10 Operational Outcome Evidence Slice 1 is implemented and verified.
+Phase 10 Operational Outcome Evidence is implemented through Slice 2.
 Closed source/observation schemas, deterministic no-mutation preview, fresh
 explicit-confirmation import and attribution, adjacent immutable receipts in
 one atomic ledger write, replay, privacy/limit checks, exact idempotency,
 concurrency fencing, source lifecycle, and bounded HTTP reads are present. Six
-focused tests, TypeScript, the production build, diff checks, and the full
-Windows regression pass. The next safe implementation step is Slice 2: extend
-only Phase 9 scorecard calculation/schema/API/read-only rendering to consume
-effective Phase 10 evidence.
+focused Slice 1 tests pass. Slice 2 extends only the Phase 9 scorecard schema,
+calculation, tests, and read-only rendering: exact production deployment
+cohorts, completed 7/30/90-day defect windows with confirmed attribution, and
+complete single-currency provider-invocation coverage are reconstructible.
+Missing evidence remains non-numeric, legacy ledgers retain explicit
+unsupported outcomes, and business/customer impact and baselines remain
+unsupported. TypeScript, production build, diff checks, rendered desktop QA,
+and the full Windows regression pass (260/260 in 433.18 seconds).
 
 ## Source Boundaries
 
@@ -103,9 +107,9 @@ effective Phase 10 evidence.
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
 - Accepted Phase 9 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
-- Accepted Phase 10 contract; Slice 1 implemented and verified:
+- Accepted Phase 10 contract; Slices 1-2 implemented and verified:
   `docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
-- Phase 10 Slice 1 product evidence: current code and `server/index.test.ts`.
+- Phase 10 product evidence: current code and `server/index.test.ts`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.

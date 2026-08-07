@@ -48,6 +48,7 @@ type Metric = {
   coverage: number;
   policyVersion: string;
   value: number | null;
+  unit?: string;
   evidence: readonly MetricEvidence[];
   distribution?: {
     count: number;
@@ -77,6 +78,7 @@ export type OutcomeScorecard = {
   metrics: {
     delivery: Record<string, Metric>;
     qualitySafety: Record<string, Metric>;
+    operational?: Record<string, Metric>;
     unsupported: readonly {
       outcomeClass: string;
       status: "unsupported";
@@ -198,9 +200,13 @@ export function outcomeScorecardDownload(
 
 export function outcomeScorecardMetricValue(metric: Metric): string {
   if (metric.status !== "complete" || metric.denominator === 0 || metric.value === null) return "Не рассчитано";
-  if (["firstPassAcceptanceRate", "overrideRate", "humanEscalationRate", "haltRecurrenceRate"].includes(metric.metricId))
+  if (["firstPassAcceptanceRate", "overrideRate", "humanEscalationRate", "haltRecurrenceRate", "deploymentFailureRate", "rollbackRate", "hotfixRate", "productionReworkRate"].includes(metric.metricId))
     return metric.value.toLocaleString("ru-RU", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 });
   if (metric.metricId === "dispatchToAcceptedMs") return `${Math.round(metric.value).toLocaleString("ru-RU")} мс`;
+  if (metric.metricId === "providerMonetaryCost" && metric.unit) {
+    const currency = metric.unit.split(":")[0];
+    return (metric.value / 100).toLocaleString("ru-RU", { style: "currency", currency });
+  }
   return metric.value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
 }
 
@@ -216,6 +222,14 @@ const metricLabels: Record<string, string> = {
   overrideRate: "Доля обходов диспетчеризации",
   humanEscalationRate: "Доля эскалаций человеку",
   haltRecurrenceRate: "Доля повторных остановок",
+  escapedDefects7Day: "Пропущенные дефекты за 7 дней",
+  escapedDefects30Day: "Пропущенные дефекты за 30 дней",
+  escapedDefects90Day: "Пропущенные дефекты за 90 дней",
+  deploymentFailureRate: "Доля неудачных развёртываний",
+  rollbackRate: "Доля откатов",
+  hotfixRate: "Доля срочных исправлений",
+  productionReworkRate: "Доля доработок в рабочей среде",
+  providerMonetaryCost: "Денежная стоимость провайдера",
 };
 
 const unsupportedLabels: Record<string, string> = {
@@ -283,6 +297,7 @@ function MetricCard({ metric }: { metric: Metric }) {
       <div><dt>Покрытие</dt><dd>{metric.coverage.toLocaleString("ru-RU", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 })}</dd></div>
     </dl>
     <p className="scorecardPolicy"><span>Политика метрики</span><code>{metric.policyVersion}</code></p>
+    {metric.unit ? <p className="scorecardPolicy"><span>Единица</span><code>{metric.unit}</code></p> : null}
     {metric.distribution ? <div className="scorecardDistribution" aria-label={`Ограниченное распределение: ${metricLabel(metric.metricId)}`}>
       <h4>Ограниченное распределение</h4>
       <dl>
@@ -319,7 +334,11 @@ function Findings({ title, findings }: { title: string; findings: readonly Findi
 }
 
 export function OutcomeScorecardResult({ scorecard, onDownload }: { scorecard: OutcomeScorecard; onDownload?: () => void }) {
-  const metrics = [...Object.values(scorecard.metrics.delivery), ...Object.values(scorecard.metrics.qualitySafety)];
+  const metrics = [
+    ...Object.values(scorecard.metrics.delivery),
+    ...Object.values(scorecard.metrics.qualitySafety),
+    ...Object.values(scorecard.metrics.operational ?? {}),
+  ];
   const exclusions = [
     ...scorecard.cohort.excludedRuns,
     ...scorecard.cohort.excludedTasks,
@@ -503,7 +522,7 @@ export function OutcomeScorecardsDashboard() {
       <footer><span>Включительный канонический диапазон · {fromSequence}–{toSequence}</span><button type="button" onClick={() => void discover(false)} disabled={!rangeValid || loading !== null}>{loading === "discovery" ? "Поиск…" : "Найти точные запуски"}</button></footer>
     </section>
 
-    {loading ? <section className="scorecardLoading" role="status"><i /><div><b>{loading === "compute" ? "Расчёт сводки" : loading === "refresh" ? "Проверка привязанных данных" : "Поиск точных запусков"}</b><span>Читаются только версионированные данные фаз 6 и 9.</span></div></section> : null}
+    {loading ? <section className="scorecardLoading" role="status"><i /><div><b>{loading === "compute" ? "Расчёт сводки" : loading === "refresh" ? "Проверка привязанных данных" : "Поиск точных запусков"}</b><span>Читаются только версионированные данные фаз 6, 9 и 10.</span></div></section> : null}
     {errorCode ? <OutcomeScorecardErrorState code={errorCode} onReset={() => { clearBoundEvidence(); }} /> : null}
 
     {discovery && !errorCode ? <section className="scorecardDiscovery" aria-label="Найденные точные идентификаторы запусков">

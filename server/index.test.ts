@@ -2092,6 +2092,238 @@ test("outcome scorecard exact joins, seven metrics, exclusions, and unsupported 
   }
 });
 
+test("outcome scorecard consumes exact deployment and attributed defect evidence with completed windows", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  try {
+    let current = await fixture.store.getOperationalOutcomeProjectionV1(fixture.projectId);
+    await fixture.store.registerOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRegistrationRequestV1",
+      contractVersion: "1.0",
+      requestId: "scorecard-register-deployments",
+      idempotencyKey: "scorecard-register-deployments",
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      actor: "human:owner",
+      occurredAt: "2026-05-01T00:00:00.000Z",
+      observedProject: current.watermark,
+      source: {
+        sourceId: "scorecard-deployments",
+        family: "deployment",
+        sourceSystem: "manual-deployment-export",
+        formatVersion: "deployment-export-v1",
+        allowedKinds: ["deployment"],
+        privacyClass: "restricted-metadata-only",
+      },
+    });
+    current = await fixture.store.getOperationalOutcomeProjectionV1(fixture.projectId);
+    await fixture.store.registerOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRegistrationRequestV1",
+      contractVersion: "1.0",
+      requestId: "scorecard-register-defects",
+      idempotencyKey: "scorecard-register-defects",
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      actor: "human:owner",
+      occurredAt: "2026-05-01T00:01:00.000Z",
+      observedProject: current.watermark,
+      source: {
+        sourceId: "scorecard-defects",
+        family: "defect",
+        sourceSystem: "manual-defect-export",
+        formatVersion: "defect-export-v1",
+        allowedKinds: ["post-delivery-defect"],
+        privacyClass: "restricted-metadata-only",
+      },
+    });
+    current = await fixture.store.getOperationalOutcomeProjectionV1(fixture.projectId);
+    await fixture.store.executeOperationalOutcomeImportV1({
+      contractType: "OperationalOutcomeImportRequestV1",
+      contractVersion: "1.0",
+      requestId: "scorecard-import-deployment",
+      idempotencyKey: "scorecard-import-deployment",
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      actor: "human:owner",
+      observedProject: current.watermark,
+      sourceId: "scorecard-deployments",
+      confirm: true,
+      observations: [{
+        contractType: "DeploymentObservationV1",
+        contractVersion: "1.0",
+        observationId: "scorecard-production-deployment",
+        sourceRecordId: "scorecard-production-deployment-record",
+        occurredAt: "2026-05-01T01:00:00.000Z",
+        evidenceRefs: ["deployment:scorecard-production-deployment-record"],
+        changeId: "scorecard-change",
+        commitSha: "a".repeat(40),
+        treeSha: "b".repeat(40),
+        environmentClass: "production",
+        outcome: "failed",
+      }],
+    });
+    current = await fixture.store.getOperationalOutcomeProjectionV1(fixture.projectId);
+    await fixture.store.executeOperationalOutcomeImportV1({
+      contractType: "OperationalOutcomeImportRequestV1",
+      contractVersion: "1.0",
+      requestId: "scorecard-import-defect",
+      idempotencyKey: "scorecard-import-defect",
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      actor: "human:owner",
+      observedProject: current.watermark,
+      sourceId: "scorecard-defects",
+      confirm: true,
+      observations: [{
+        contractType: "PostDeliveryDefectObservationV1",
+        contractVersion: "1.0",
+        observationId: "scorecard-escaped-defect",
+        sourceRecordId: "scorecard-escaped-defect-record",
+        occurredAt: "2026-05-02T01:00:00.000Z",
+        detectedAt: "2026-05-02T01:00:00.000Z",
+        releasedCommitSha: "a".repeat(40),
+        releasedTreeSha: "b".repeat(40),
+        severity: "high",
+        defectClass: "behavior-regression",
+        lifecycleState: "resolved",
+        candidateChangeIds: ["scorecard-change"],
+        evidenceRefs: ["defect:scorecard-escaped-defect-record"],
+      }],
+    });
+    current = await fixture.store.getOperationalOutcomeProjectionV1(fixture.projectId);
+    await fixture.store.executeOperationalDefectAttributionV1({
+      contractType: "OperationalDefectAttributionRequestV1",
+      contractVersion: "1.0",
+      requestId: "scorecard-attribute-defect",
+      idempotencyKey: "scorecard-attribute-defect",
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      actor: "human:owner",
+      occurredAt: "2026-05-02T02:00:00.000Z",
+      observedProject: current.watermark,
+      observationId: "scorecard-escaped-defect",
+      decision: "confirmed",
+      reasonCode: "owner-confirmed-link",
+      evidenceRefs: ["decision:scorecard-escaped-defect"],
+      confirm: true,
+    });
+    const source = await fixture.store.readAuditEvidenceV1(fixture.projectId);
+    const scorecard = await fixture.service.compute({
+      ...fixture.request,
+      selector: { ...fixture.request.selector, toSequence: source.watermark.sequence },
+      sourceWatermark: source.watermark,
+    });
+    assertOutcomeScorecardV1(scorecard);
+    assert.ok(scorecard.metrics.operational);
+    assert.equal(scorecard.metrics.operational.deploymentFailureRate.value, 1);
+    assert.equal(scorecard.metrics.operational.rollbackRate.value, 0);
+    assert.equal(scorecard.metrics.operational.escapedDefects7Day.value, 1);
+    assert.equal(scorecard.metrics.operational.escapedDefects30Day.value, 1);
+    assert.equal(scorecard.metrics.operational.escapedDefects90Day.value, 1);
+    assert.equal(scorecard.metrics.operational.providerMonetaryCost.value, null);
+    assert.deepEqual(
+      scorecard.metrics.unsupported.map((item) => item.outcomeClass),
+      ["businessImpact", "customerImpact", "productivitySavings", "bugFreeDelivery", "manualBaselineComparison"],
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("outcome scorecard provider cost requires complete exact invocation coverage and one currency", async () => {
+  const fixture = await outcomeScorecardFixtureV1();
+  try {
+    const base = await fixture.store.readAuditEvidenceV1(fixture.projectId);
+    const append = (type: string, payload: Record<string, unknown>, sequence: number) => ({
+      id: `scorecard-provider-event-${sequence}`,
+      sequence,
+      type,
+      occurredAt: `2026-08-05T11:00:${String(sequence).padStart(2, "0")}.000Z`,
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      actor: "system:test",
+      causationId: `scorecard-provider-cause-${sequence}`,
+      correlationId: `scorecard-provider-correlation-${sequence}`,
+      payload,
+      previousHash: sequence === base.watermark.sequence + 1 ? base.watermark.hash : "c".repeat(64),
+      hash: "c".repeat(64),
+    });
+    const firstSequence = base.watermark.sequence + 1;
+    const sourceEvent = append("operational.source-registered", { request: {
+      source: {
+        sourceId: "scorecard-provider-source",
+        family: "provider-billing",
+        sourceSystem: "manual-billing-export",
+        formatVersion: "billing-export-v1",
+        allowedKinds: ["provider-cost"],
+        privacyClass: "restricted-metadata-only",
+      },
+    } }, firstSequence);
+    const resolutionEvent = append("model.execution-resolved", { resolution: {
+      projectId: fixture.projectId,
+      changeId: "scorecard-change",
+      waveId: "scorecard-wave",
+      taskId: "scorecard-task",
+      runId: fixture.runId,
+      attemptId: "scorecard-attempt",
+      invocationId: "scorecard-provider-invocation",
+      providerId: "openai",
+    } }, firstSequence + 1);
+    const costEvent = append("operational.observations-imported", { request: {
+      sourceId: "scorecard-provider-source",
+      observations: [{
+        contractType: "ProviderCostObservationV1",
+        contractVersion: "1.0",
+        observationId: "scorecard-provider-cost",
+        sourceRecordId: "scorecard-provider-cost-record",
+        occurredAt: "2026-08-05T11:05:00.000Z",
+        evidenceRefs: ["billing:scorecard-provider-cost-record"],
+        changeId: "scorecard-change",
+        runId: fixture.runId,
+        taskId: "scorecard-task",
+        attemptId: "scorecard-attempt",
+        invocationId: "scorecard-provider-invocation",
+        provider: "openai",
+        billingPeriod: "2026-08",
+        currency: "USD",
+        minorUnits: 125,
+        measurementState: "measured",
+      }],
+    } }, firstSequence + 2);
+    const events = [...base.events, sourceEvent, resolutionEvent, costEvent] as any;
+    const watermark = { sequence: firstSequence + 2, hash: "c".repeat(64) };
+    const service = new OutcomeScorecardServiceV1({
+      readProjectEvidence: async () => ({ ...base, events, watermark }),
+      readRunRecord: async (runId) => fixture.records.get(runId),
+    });
+    const scorecard = await service.compute({
+      ...fixture.request,
+      selector: { ...fixture.request.selector, toSequence: watermark.sequence },
+      sourceWatermark: watermark,
+    });
+    assert.equal(scorecard.metrics.operational?.providerMonetaryCost.value, 125);
+    assert.equal(scorecard.metrics.operational?.providerMonetaryCost.unit, "USD:minor-units");
+    assert.equal(scorecard.metrics.operational?.providerMonetaryCost.coverage, 1);
+
+    const incomplete = await new OutcomeScorecardServiceV1({
+      readProjectEvidence: async () => ({
+        ...base,
+        events: [...base.events, sourceEvent, resolutionEvent] as any,
+        watermark: { sequence: firstSequence + 1, hash: "c".repeat(64) },
+      }),
+      readRunRecord: async (runId) => fixture.records.get(runId),
+    }).compute({
+      ...fixture.request,
+      selector: { ...fixture.request.selector, toSequence: firstSequence + 1 },
+      sourceWatermark: { sequence: firstSequence + 1, hash: "c".repeat(64) },
+    });
+    assert.equal(incomplete.metrics.operational?.providerMonetaryCost.value, null);
+    assert.equal(incomplete.metrics.operational?.providerMonetaryCost.coverage, 0);
+    assert.equal(incomplete.metrics.operational?.providerMonetaryCost.excludedCount, 1);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("OutcomeScorecardV1 changed identities and conflicting exact joins fail closed", async () => {
   const changed = await outcomeScorecardFixtureV1();
   try {

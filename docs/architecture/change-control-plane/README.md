@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: Phase 1-9 completion-reviewed; Phase 10 Slice 1 implemented and verified
+Status: Phase 1-9 completion-reviewed; Phase 10 implemented through Slice 2
 Last reviewed: 2026-08-07
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -35,7 +35,7 @@ were observed.
     defines the accepted, implemented, and completion-reviewed Phase 9
     read-only metrics boundary.
 14. [operational-outcome-evidence-contract-v1.md](operational-outcome-evidence-contract-v1.md)
-    defines the accepted Phase 10 boundary; Slice 1 is implemented and verified.
+    defines the accepted Phase 10 boundary; Slices 1-2 are implemented and verified.
 
 ## Current Boundary
 
@@ -93,12 +93,14 @@ formal completion review passed on 2026-08-06. Publication, persistence,
 external telemetry, deployment/defect inference, and product-impact claims
 remain deferred.
 
-Phase 10 Operational Outcome Evidence Slice 1 is implemented and verified.
+Phase 10 Operational Outcome Evidence is implemented through Slice 2.
 Closed manually supplied operational evidence now uses the existing project
 ledger, exact watermarks, deterministic preview, explicit confirmation,
-immutable receipts, replay, privacy limits, and idempotency. Six focused tests,
-TypeScript, production build, diff checks, and the full 258/258 Windows
-regression pass. Slice 2, strict Phase 9 consumption, is not implemented.
+immutable receipts, replay, privacy limits, and idempotency. Phase 9 now
+calculates exact deployment, completed-window attributed-defect, and complete
+single-currency provider-cost metrics while legacy evidence remains explicitly
+unsupported. Focused tests, TypeScript, production build, rendered desktop QA,
+diff checks, and the full 260/260 Windows regression pass.
 Automatic external connectors, background capture, publication, deployment or
 rollback execution, automatic defect attribution, business impact, and
 currency conversion remain deferred.
