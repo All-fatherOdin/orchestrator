@@ -56,6 +56,8 @@ import auditBundlesV1Schema from "./audit-bundles-v1/schemas/audit-bundles-v1.sc
 import auditBundlesV1Examples from "./audit-bundles-v1/schemas/audit-bundles-v1.examples.json";
 import outcomeScorecardsV1Schema from "./outcome-scorecards-v1/schemas/outcome-scorecards-v1.schema.json";
 import outcomeScorecardsV1Examples from "./outcome-scorecards-v1/schemas/outcome-scorecards-v1.examples.json";
+import operationalOutcomesV1Schema from "./operational-outcomes-v1/schemas/operational-outcomes-v1.schema.json";
+import operationalOutcomesV1Examples from "./operational-outcomes-v1/schemas/operational-outcomes-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -176,6 +178,7 @@ const {
   installAuditBundleRoutesV1,
   installOutcomeScorecardRoutesV1,
   installOperatorActionRoutesV1,
+  installOperationalOutcomeRoutesV1,
   desktopRuntimeDiagnostics,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
@@ -293,10 +296,599 @@ const {
   parseAuditBundleSelectorV1,
   parseAuditBundleV1,
 } = await import("./audit-bundles-v1/index.ts");
+const {
+  OPERATIONAL_OUTCOME_EVENT_TYPES_V1,
+  OperationalOutcomeErrorV1,
+  operationalOutcomeRequestContentHashV1,
+  parseOperationalDefectAttributionRequestV1,
+  parseOperationalEvidenceSourceRegistrationRequestV1,
+  parseOperationalOutcomeImportRequestV1,
+} = await import("./operational-outcomes-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 const planningShaOne = "1".repeat(40);
 const planningShaTwo = "2".repeat(40);
+
+async function operationalOutcomeFixtureV1() {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operational-outcomes-"));
+  const store = new ChangeControlStore(root);
+  const projectId = "operational-project";
+  const changeId = "operational-change";
+  await store.create(projectId, {
+    changeId,
+    actor: "user:owner",
+    payload: { title: "Operational evidence fixture" },
+  });
+  const initial = await store.getOperationalOutcomeProjectionV1(projectId);
+  const sourceRequest = {
+    contractType: "OperationalEvidenceSourceRegistrationRequestV1" as const,
+    contractVersion: "1.0" as const,
+    requestId: "register-deployment-source",
+    idempotencyKey: "idem-register-deployment-source",
+    projectId,
+    changeId,
+    actor: "user:owner",
+    occurredAt: "2026-08-07T10:00:00.000Z",
+    observedProject: initial.watermark,
+    source: {
+      sourceId: "deployment-source",
+      family: "deployment" as const,
+      sourceSystem: "manual-export",
+      formatVersion: "deployment-export-v1",
+      allowedKinds: ["deployment" as const],
+      privacyClass: "restricted-metadata-only" as const,
+    },
+  };
+  const sourceReceipt = await store.registerOperationalEvidenceSourceV1(sourceRequest);
+  const afterSource = await store.getOperationalOutcomeProjectionV1(projectId);
+  const importRequest = {
+    contractType: "OperationalOutcomeImportRequestV1" as const,
+    contractVersion: "1.0" as const,
+    requestId: "import-deployment-observation",
+    idempotencyKey: "idem-import-deployment-observation",
+    projectId,
+    changeId,
+    actor: "user:owner",
+    observedProject: afterSource.watermark,
+    sourceId: "deployment-source",
+    observations: [{
+      contractType: "DeploymentObservationV1" as const,
+      contractVersion: "1.0" as const,
+      observationId: "deployment-observation",
+      sourceRecordId: "external-deployment-record",
+      occurredAt: "2026-08-07T10:10:00.000Z",
+      evidenceRefs: ["deployment:external-deployment-record"],
+      changeId,
+      commitSha: "1".repeat(40),
+      treeSha: "2".repeat(40),
+      environmentClass: "production" as const,
+      outcome: "succeeded" as const,
+    }],
+    confirm: true,
+  };
+  return {
+    root,
+    store,
+    projectId,
+    changeId,
+    sourceRequest,
+    sourceReceipt,
+    importRequest,
+  };
+}
+
+test("Operational Outcome v1 schemas are closed and examples validate", () => {
+  const validator = new Ajv2020({ allErrors: true, strict: true }).compile(
+    operationalOutcomesV1Schema,
+  );
+  for (const example of Object.values(operationalOutcomesV1Examples))
+    assert.equal(validator(example), true, JSON.stringify(validator.errors));
+  assert.equal(
+    validator({ ...operationalOutcomesV1Examples.deploymentImport, rawPayload: "private" }),
+    false,
+  );
+  assert.equal(OPERATIONAL_OUTCOME_EVENT_TYPES_V1.length, 5);
+  assert.throws(
+    () => parseOperationalOutcomeImportRequestV1({
+      ...operationalOutcomesV1Examples.deploymentImport,
+      rawPayload: "PRIVATE_VALUE_MUST_NOT_ESCAPE",
+    }),
+    (error: unknown) =>
+      error instanceof OperationalOutcomeErrorV1 &&
+      error.reasonCode === "OUTCOME_PRIVACY_VIOLATION" &&
+      !error.message.includes("PRIVATE_VALUE_MUST_NOT_ESCAPE"),
+  );
+});
+
+test("Operational Outcome v1 preview is no-mutation and execute is atomic, idempotent, replayable, and fenced", async () => {
+  const fixture = await operationalOutcomeFixtureV1();
+  try {
+    const [ledgerFile] = await readdir(join(fixture.root, "projects"));
+    const ledgerPath = join(fixture.root, "projects", ledgerFile);
+    const beforePreview = await readFile(ledgerPath, "utf8");
+    const preview = await fixture.store.previewOperationalOutcomeImportV1({
+      ...fixture.importRequest,
+      confirm: false,
+    });
+    assert.equal(preview.allowed, true);
+    assert.equal(preview.wouldMutate, false);
+    assert.equal(
+      preview.contentHash,
+      operationalOutcomeRequestContentHashV1(fixture.importRequest),
+    );
+    assert.equal(await readFile(ledgerPath, "utf8"), beforePreview);
+
+    const receipt = await fixture.store.executeOperationalOutcomeImportV1(
+      fixture.importRequest,
+    );
+    assert.equal(receipt.operationKind, "import-observations");
+    assert.deepEqual(receipt.observationIds, ["deployment-observation"]);
+    assert.deepEqual(
+      await fixture.store.executeOperationalOutcomeImportV1(fixture.importRequest),
+      receipt,
+    );
+    const replayed = await new ChangeControlStore(
+      fixture.root,
+    ).getOperationalOutcomeProjectionV1(fixture.projectId);
+    assert.equal(replayed.sources[0].status, "active");
+    assert.equal(replayed.observations[0].observationId, "deployment-observation");
+    assert.equal(replayed.receipts.length, 2);
+    assert.equal(
+      replayed.receipts.find((item) => item.operationKind === "import-observations")?.receiptHash,
+      receipt.receiptHash,
+    );
+
+    await assert.rejects(
+      fixture.store.executeOperationalOutcomeImportV1({
+        ...fixture.importRequest,
+        observations: [{
+          ...fixture.importRequest.observations[0],
+          observationId: "conflicting-observation",
+        }],
+      }),
+      (error: unknown) =>
+        error instanceof OperationalOutcomeErrorV1 &&
+        error.reasonCode === "OUTCOME_IDEMPOTENCY_CONFLICT",
+    );
+    const stale = await fixture.store.previewOperationalOutcomeImportV1({
+      ...fixture.importRequest,
+      requestId: "stale-preview",
+      idempotencyKey: "stale-preview",
+      observations: [{
+        ...fixture.importRequest.observations[0],
+        observationId: "stale-observation",
+        sourceRecordId: "stale-record",
+      }],
+      confirm: false,
+    });
+    assert.deepEqual(stale.reasonCodes, ["OUTCOME_PROJECT_WATERMARK_CHANGED"]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Operational Outcome v1 defect attribution is explicit and provider cost requires an exact invocation", async () => {
+  const fixture = await operationalOutcomeFixtureV1();
+  try {
+    const current = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    await fixture.store.registerOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRegistrationRequestV1",
+      contractVersion: "1.0",
+      requestId: "register-defect-source",
+      idempotencyKey: "idem-register-defect-source",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      occurredAt: "2026-08-07T11:00:00.000Z",
+      observedProject: current.watermark,
+      source: {
+        sourceId: "defect-source",
+        family: "defect",
+        sourceSystem: "manual-defect-export",
+        formatVersion: "defect-export-v1",
+        allowedKinds: ["post-delivery-defect"],
+        privacyClass: "restricted-metadata-only",
+      },
+    });
+    const afterDefectSource = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    await fixture.store.executeOperationalOutcomeImportV1({
+      contractType: "OperationalOutcomeImportRequestV1",
+      contractVersion: "1.0",
+      requestId: "import-defect",
+      idempotencyKey: "idem-import-defect",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      observedProject: afterDefectSource.watermark,
+      sourceId: "defect-source",
+      confirm: true,
+      observations: [{
+        contractType: "PostDeliveryDefectObservationV1",
+        contractVersion: "1.0",
+        observationId: "defect-observation",
+        sourceRecordId: "external-defect-record",
+        occurredAt: "2026-08-07T11:05:00.000Z",
+        detectedAt: "2026-08-07T11:04:00.000Z",
+        releasedCommitSha: "3".repeat(40),
+        releasedTreeSha: "4".repeat(40),
+        severity: "high",
+        defectClass: "behavior-regression",
+        lifecycleState: "open",
+        candidateChangeIds: [fixture.changeId],
+        evidenceRefs: ["defect:external-defect-record"],
+      }],
+    });
+    const beforeAttribution = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    const attributionRequest = {
+      contractType: "OperationalDefectAttributionRequestV1" as const,
+      contractVersion: "1.0" as const,
+      requestId: "attribute-defect",
+      idempotencyKey: "idem-attribute-defect",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      occurredAt: "2026-08-07T11:10:00.000Z",
+      observedProject: beforeAttribution.watermark,
+      observationId: "defect-observation",
+      decision: "confirmed" as const,
+      reasonCode: "owner-confirmed-link",
+      evidenceRefs: ["decision:defect-observation"],
+      confirm: true,
+    };
+    assert.equal(
+      (await fixture.store.previewOperationalDefectAttributionV1({
+        ...attributionRequest,
+        confirm: false,
+      })).allowed,
+      true,
+    );
+    await fixture.store.executeOperationalDefectAttributionV1(attributionRequest);
+    const attributed = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    assert.equal(attributed.attributions[0].decision, "confirmed");
+
+    await fixture.store.executeOperationalDefectAttributionV1({
+      ...attributionRequest,
+      requestId: "supersede-defect-attribution",
+      idempotencyKey: "idem-supersede-defect-attribution",
+      occurredAt: "2026-08-07T11:20:00.000Z",
+      observedProject: attributed.watermark,
+      decision: "unresolved",
+      reasonCode: "new-evidence-requires-review",
+      supersedesAttributionSequence: attributed.attributions[0].sequence,
+    });
+    const supersededAttribution =
+      await fixture.store.getOperationalOutcomeProjectionV1(fixture.projectId);
+    assert.equal(supersededAttribution.attributions[0].decision, "unresolved");
+
+    const providerCurrent = supersededAttribution.watermark;
+    await fixture.store.registerOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRegistrationRequestV1",
+      contractVersion: "1.0",
+      requestId: "register-provider-source",
+      idempotencyKey: "idem-register-provider-source",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      occurredAt: "2026-08-07T12:00:00.000Z",
+      observedProject: providerCurrent,
+      source: {
+        sourceId: "provider-source",
+        family: "provider-billing",
+        sourceSystem: "manual-billing-export",
+        formatVersion: "billing-export-v1",
+        allowedKinds: ["provider-cost"],
+        privacyClass: "restricted-metadata-only",
+      },
+    });
+    const providerSource = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    const denied = await fixture.store.previewOperationalOutcomeImportV1({
+      contractType: "OperationalOutcomeImportRequestV1",
+      contractVersion: "1.0",
+      requestId: "provider-cost-without-invocation",
+      idempotencyKey: "provider-cost-without-invocation",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      observedProject: providerSource.watermark,
+      sourceId: "provider-source",
+      confirm: false,
+      observations: [{
+        contractType: "ProviderCostObservationV1",
+        contractVersion: "1.0",
+        observationId: "provider-cost-observation",
+        sourceRecordId: "provider-cost-record",
+        occurredAt: "2026-08-07T12:05:00.000Z",
+        evidenceRefs: ["billing:provider-cost-record"],
+        changeId: fixture.changeId,
+        runId: "missing-run",
+        taskId: "missing-task",
+        attemptId: "missing-attempt",
+        invocationId: "missing-invocation",
+        provider: "openai",
+        billingPeriod: "2026-08",
+        currency: "USD",
+        minorUnits: 125,
+        measurementState: "measured",
+      }],
+    });
+    assert.deepEqual(denied.reasonCodes, ["OUTCOME_IDENTITY_MISSING"]);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Operational Outcome v1 concurrent imports have one receipt and source lifecycle fails closed", async () => {
+  const fixture = await operationalOutcomeFixtureV1();
+  try {
+    const contender = new ChangeControlStore(fixture.root);
+    const [first, second] = await Promise.all([
+      fixture.store.executeOperationalOutcomeImportV1(fixture.importRequest),
+      contender.executeOperationalOutcomeImportV1(fixture.importRequest),
+    ]);
+    assert.deepEqual(first, second);
+    const afterImport = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    assert.equal(afterImport.observations.length, 1);
+    assert.equal(
+      afterImport.receipts.filter((receipt) =>
+        receipt.operationKind === "import-observations").length,
+      1,
+    );
+
+    await fixture.store.registerOperationalEvidenceSourceV1({
+      ...fixture.sourceRequest,
+      requestId: "register-replacement-source",
+      idempotencyKey: "idem-register-replacement-source",
+      observedProject: afterImport.watermark,
+      occurredAt: "2026-08-07T10:20:00.000Z",
+      source: {
+        ...fixture.sourceRequest.source,
+        sourceId: "deployment-source-v2",
+        supersedesSourceId: "deployment-source",
+      },
+    });
+    const superseded = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    assert.equal(
+      superseded.sources.find((source) => source.sourceId === "deployment-source")?.status,
+      "superseded",
+    );
+    const deniedOldSource = await fixture.store.previewOperationalOutcomeImportV1({
+      ...fixture.importRequest,
+      requestId: "old-source-preview",
+      idempotencyKey: "old-source-preview",
+      observedProject: superseded.watermark,
+      observations: [{
+        ...fixture.importRequest.observations[0],
+        observationId: "old-source-observation",
+        sourceRecordId: "old-source-record",
+      }],
+      confirm: false,
+    });
+    assert.deepEqual(deniedOldSource.reasonCodes, ["OUTCOME_SOURCE_REVOKED"]);
+
+    await fixture.store.revokeOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRevocationRequestV1",
+      contractVersion: "1.0",
+      requestId: "revoke-replacement-source",
+      idempotencyKey: "idem-revoke-replacement-source",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      occurredAt: "2026-08-07T10:30:00.000Z",
+      observedProject: superseded.watermark,
+      sourceId: "deployment-source-v2",
+      reasonCode: "source-retired",
+    });
+    const revoked = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+    );
+    assert.equal(
+      revoked.sources.find((source) => source.sourceId === "deployment-source-v2")?.status,
+      "revoked",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Operational Outcome v1 provider cost accepts only an exact resolved provider invocation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-operational-provider-cost-"));
+  try {
+    const { store, artifact, route } = await promptModelPlanningFixture(root);
+    const parentEvent = await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "operational-provider-parent-binding",
+        binding: attemptBindingV1(artifact, route),
+      },
+    );
+    const parent = parentEvent.payload.binding as AttemptConfigurationBindingV1;
+    const invocation = attemptBindingV1(artifact, route, {
+      bindingId: "operational-provider-invocation-binding",
+      bindingScope: "invocation",
+      role: "reviewer",
+      invocationId: "operational-provider-invocation",
+      parentAttemptBindingId: parent.bindingId,
+    });
+    const invocationEvent = await store.bindAttemptConfigurationV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "operational-provider-invocation-binding-event",
+        binding: invocation,
+      },
+    );
+    const publishedInvocation = invocationEvent.payload
+      .binding as AttemptConfigurationBindingV1;
+    await store.recordResolvedModelExecutionV1(
+      "planning-project",
+      "planning-change",
+      {
+        publisherOccurrenceId: "operational-provider-resolution-event",
+        actor: "runtime-adapter:codex-cli-v1",
+        resolution: resolvedExecutionV1(publishedInvocation, {
+          resolutionId: "operational-provider-resolution",
+        }),
+      },
+    );
+    const initial = await store.getOperationalOutcomeProjectionV1("planning-project");
+    await store.registerOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRegistrationRequestV1",
+      contractVersion: "1.0",
+      requestId: "register-exact-provider-source",
+      idempotencyKey: "idem-register-exact-provider-source",
+      projectId: "planning-project",
+      changeId: "planning-change",
+      actor: "user:owner",
+      occurredAt: "2026-08-07T12:00:00.000Z",
+      observedProject: initial.watermark,
+      source: {
+        sourceId: "exact-provider-source",
+        family: "provider-billing",
+        sourceSystem: "manual-billing-export",
+        formatVersion: "billing-export-v1",
+        allowedKinds: ["provider-cost"],
+        privacyClass: "restricted-metadata-only",
+      },
+    });
+    const afterSource = await store.getOperationalOutcomeProjectionV1("planning-project");
+    const exactRequest = {
+      contractType: "OperationalOutcomeImportRequestV1" as const,
+      contractVersion: "1.0" as const,
+      requestId: "import-exact-provider-cost",
+      idempotencyKey: "idem-import-exact-provider-cost",
+      projectId: "planning-project",
+      changeId: "planning-change",
+      actor: "user:owner",
+      observedProject: afterSource.watermark,
+      sourceId: "exact-provider-source",
+      confirm: true,
+      observations: [{
+        contractType: "ProviderCostObservationV1" as const,
+        contractVersion: "1.0" as const,
+        observationId: "exact-provider-cost",
+        sourceRecordId: "exact-provider-cost-record",
+        occurredAt: "2026-08-07T12:05:00.000Z",
+        evidenceRefs: ["billing:exact-provider-cost-record"],
+        changeId: "planning-change",
+        runId: publishedInvocation.runId,
+        taskId: publishedInvocation.taskId,
+        attemptId: publishedInvocation.attemptId,
+        invocationId: publishedInvocation.invocationId!,
+        provider: "openai",
+        billingPeriod: "2026-08",
+        currency: "USD",
+        minorUnits: 125,
+        measurementState: "measured" as const,
+      }],
+    };
+    assert.equal(
+      (await store.previewOperationalOutcomeImportV1({
+        ...exactRequest,
+        confirm: false,
+      })).allowed,
+      true,
+    );
+    await store.executeOperationalOutcomeImportV1(exactRequest);
+    const imported = await store.getOperationalOutcomeProjectionV1("planning-project");
+    assert.equal(imported.observations[0].contractType, "ProviderCostObservationV1");
+
+    const mismatched = await store.previewOperationalOutcomeImportV1({
+      ...exactRequest,
+      requestId: "mismatched-provider-cost",
+      idempotencyKey: "mismatched-provider-cost",
+      observedProject: imported.watermark,
+      confirm: false,
+      observations: [{
+        ...exactRequest.observations[0],
+        observationId: "mismatched-provider-cost",
+        sourceRecordId: "mismatched-provider-cost-record",
+        provider: "different-provider",
+      }],
+    });
+    assert.deepEqual(mismatched.reasonCodes, ["OUTCOME_IDENTITY_MISSING"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Operational Outcome v1 HTTP routes expose bounded preview, execute, read, and private errors", async () => {
+  const fixture = await operationalOutcomeFixtureV1();
+  const httpApp = express();
+  httpApp.use(express.json({ limit: "64kb" }));
+  installOperationalOutcomeRoutesV1(httpApp, fixture.store);
+  const server = httpApp.listen(0, "127.0.0.1");
+  try {
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const base = `http://127.0.0.1:${address.port}/api/operational-outcomes/v1`;
+    const previewResponse = await fetch(`${base}/imports/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...fixture.importRequest, confirm: false }),
+    });
+    assert.equal(previewResponse.status, 200);
+    assert.equal((await previewResponse.json() as { allowed: boolean }).allowed, true);
+    const executeResponse = await fetch(`${base}/imports/execute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(fixture.importRequest),
+    });
+    assert.equal(executeResponse.status, 201);
+    const projectionResponse = await fetch(`${base}/projects/${fixture.projectId}`);
+    assert.equal(projectionResponse.status, 200);
+    assert.equal(
+      (await projectionResponse.json() as { observations: unknown[] }).observations.length,
+      1,
+    );
+    const changeProjectionResponse = await fetch(
+      `${base}/projects/${fixture.projectId}/changes/${fixture.changeId}`,
+    );
+    assert.equal(changeProjectionResponse.status, 200);
+    assert.equal(
+      (await changeProjectionResponse.json() as { observations: unknown[] })
+        .observations.length,
+      1,
+    );
+    const observationResponse = await fetch(
+      `${base}/projects/${fixture.projectId}/observations/deployment-observation`,
+    );
+    assert.equal(observationResponse.status, 200);
+    assert.equal(
+      (await observationResponse.json() as { observationId: string }).observationId,
+      "deployment-observation",
+    );
+    const privateResponse = await fetch(`${base}/imports/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...fixture.importRequest, rawPayload: "PRIVATE_VALUE" }),
+    });
+    assert.equal(privateResponse.status, 400);
+    const privateBody = await privateResponse.text();
+    assert.match(privateBody, /OUTCOME_PRIVACY_VIOLATION/);
+    assert.doesNotMatch(privateBody, /PRIVATE_VALUE/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    );
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 function haltContractsV1(input: {
   haltId: string;

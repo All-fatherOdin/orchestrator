@@ -133,3 +133,18 @@ Control Plane at desktop and 390 px mobile widths with meaningful content, a
 clean console, and no page-level horizontal overflow. Owner-provided Windows
 desktop verification independently confirmed the installed application. The
 formal completion review passed on 2026-08-06.
+
+## Phase 10: Operational Outcome Evidence
+
+Accepted contract:
+`docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
+Phase 10 defines one bounded authority for caller-supplied deployment,
+post-delivery defect, and measured provider-cost evidence. Slice 1 is
+implemented and verified with closed sources, observations, attribution
+decisions, preview/execute imports, immutable receipts, replay, privacy limits,
+exact idempotency, concurrency fencing, and bounded HTTP APIs in the existing
+project ledger. Slice 2 will let Phase 9 calculate only the newly
+supported metrics with explicit denominators, coverage, observation windows,
+currency, and exclusions. External connectors, background capture,
+publication, deployment/rollback execution, automatic attribution, business
+impact, currency conversion, and a second ledger remain outside Phase 10.

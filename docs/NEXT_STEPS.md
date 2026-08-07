@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-06
+Last updated: 2026-08-07
 
 ## Current Priority
 
@@ -43,10 +43,11 @@ Every external publication capability remains deferred.
 
 The Phase 8 completion review passed all 13 focused contract/service/API/UI
 tests, TypeScript, the production Vite build, diff checks, and desktop/mobile
-rendered smoke with a clean console and no page-level overflow. The combined
-server/Electron command exceeded its six-minute environment cap without a
-failure diagnostic; keep that as explicit runtime-environment risk rather than
-claiming a full-suite pass.
+rendered smoke with a clean console and no page-level overflow. A fresh full
+Windows server/Electron regression on 2026-08-07 passed 252/252 with zero
+failures and zero skips in 402.24 seconds. Allow at least ten minutes for this
+gate: the former six-minute review cap was shorter than the healthy suite
+runtime and did not indicate a hang.
 
 Phase 9 Outcome Scorecards is implemented through Slice 2. Closed schemas and a
 request-scoped domain service provide exact ledger/run joins, the seven bounded
@@ -66,6 +67,16 @@ in the in-app Chromium browser verified desktop and 390 px mobile navigation,
 meaningful Russian content, a clean console, and no page-level horizontal
 overflow. Do not treat this review as publication, telemetry, persistence, or
 new action authority.
+
+Phase 10 Operational Outcome Evidence Slice 1 is implemented and verified.
+Closed source/observation schemas, deterministic no-mutation preview, fresh
+explicit-confirmation import and attribution, adjacent immutable receipts in
+one atomic ledger write, replay, privacy/limit checks, exact idempotency,
+concurrency fencing, source lifecycle, and bounded HTTP reads are present. Six
+focused tests, TypeScript, the production build, diff checks, and the full
+Windows regression pass. The next safe implementation step is Slice 2: extend
+only Phase 9 scorecard calculation/schema/API/read-only rendering to consume
+effective Phase 10 evidence.
 
 ## Source Boundaries
 
@@ -92,6 +103,9 @@ new action authority.
   `docs/architecture/change-control-plane/audit-bundles-contract-v1.md`.
 - Accepted Phase 9 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
+- Accepted Phase 10 contract; Slice 1 implemented and verified:
+  `docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
+- Phase 10 Slice 1 product evidence: current code and `server/index.test.ts`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:
   `docs/goals/workspace-merge-v1/state.yaml`.
@@ -114,6 +128,9 @@ new action authority.
 - Do not treat Phase 9 scorecards as telemetry, a baseline authority, product-
   impact proof, an SLA, a budget, or an action gate. Unsupported metrics remain
   explicit and cannot enter denominators.
+- Do not treat Phase 10 imports as deployment, rollback, billing, incident,
+  acceptance, or runtime authority. External connectors and background capture
+  remain unauthorized.
 
 ## Verification
 
@@ -125,3 +142,7 @@ npm test
 npm run build
 git diff --check
 ```
+
+On Windows, give `npm test` at least a ten-minute execution window. The suite
+contains real Git/worktree, crash-recovery, and cross-process fencing stress
+tests and most recently completed in 402.24 seconds.

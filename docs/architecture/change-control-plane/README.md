@@ -1,7 +1,7 @@
 # Change Control Plane
 
-Status: evidence-backed target, Phase 1-9 implemented and completion-reviewed
-Last reviewed: 2026-08-06
+Status: Phase 1-9 completion-reviewed; Phase 10 Slice 1 implemented and verified
+Last reviewed: 2026-08-07
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -34,6 +34,8 @@ were observed.
 13. [outcome-scorecards-contract-v1.md](outcome-scorecards-contract-v1.md)
     defines the accepted, implemented, and completion-reviewed Phase 9
     read-only metrics boundary.
+14. [operational-outcome-evidence-contract-v1.md](operational-outcome-evidence-contract-v1.md)
+    defines the accepted Phase 10 boundary; Slice 1 is implemented and verified.
 
 ## Current Boundary
 
@@ -70,9 +72,10 @@ publication or new authority is implied.
 The Phase 8 completion review passed its focused acceptance boundary on
 2026-08-05: 13 contract, replay, privacy, limit, HTTP, no-mutation, and dashboard
 tests passed; TypeScript, the production Vite build, diff checks, and desktop/
-mobile rendered smoke passed. The combined server/Electron regression command
-again exceeded the six-minute environment cap without diagnostic output and is
-recorded as an environment risk, not passing evidence.
+mobile rendered smoke passed. A fresh full Windows server/Electron regression
+on 2026-08-07 passed 252/252 with zero failures and zero skips in 402.24 seconds.
+The earlier six-minute cap was shorter than the healthy suite runtime; full
+regression runs should allow at least ten minutes.
 
 Phase 9 Outcome Scorecards is implemented through Slice 2. Closed schemas, exact
 ledger/run identity joins, a bounded seven-metric registry, deterministic
@@ -89,6 +92,16 @@ desktop verification independently confirmed the installed application. The
 formal completion review passed on 2026-08-06. Publication, persistence,
 external telemetry, deployment/defect inference, and product-impact claims
 remain deferred.
+
+Phase 10 Operational Outcome Evidence Slice 1 is implemented and verified.
+Closed manually supplied operational evidence now uses the existing project
+ledger, exact watermarks, deterministic preview, explicit confirmation,
+immutable receipts, replay, privacy limits, and idempotency. Six focused tests,
+TypeScript, production build, diff checks, and the full 258/258 Windows
+regression pass. Slice 2, strict Phase 9 consumption, is not implemented.
+Automatic external connectors, background capture, publication, deployment or
+rollback execution, automatic defect attribution, business impact, and
+currency conversion remain deferred.
 
 ## Authority
 

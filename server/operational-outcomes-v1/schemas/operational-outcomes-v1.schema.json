@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/operational-outcomes-v1.schema.json",
+  "title": "Operational Outcome Evidence v1",
+  "oneOf": [
+    { "$ref": "#/$defs/SourceRegistrationRequestV1" },
+    { "$ref": "#/$defs/SourceRevocationRequestV1" },
+    { "$ref": "#/$defs/ImportRequestV1" },
+    { "$ref": "#/$defs/AttributionRequestV1" },
+    { "$ref": "#/$defs/PreviewV1" },
+    { "$ref": "#/$defs/MutationReceiptV1" },
+    { "$ref": "#/$defs/ProjectionV1" }
+  ],
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Identity": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "Timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "Sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "GitObjectId": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+    "EvidenceRefs": {
+      "type": "array", "maxItems": 50, "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "Watermark": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "hash"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "hash": { "oneOf": [{ "$ref": "#/$defs/Sha256" }, { "type": "null" }] }
+      }
+    },
+    "SourceSpec": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceId", "family", "sourceSystem", "formatVersion", "allowedKinds", "privacyClass"],
+      "properties": {
+        "sourceId": { "$ref": "#/$defs/Identifier" },
+        "family": { "enum": ["deployment", "defect", "provider-billing"] },
+        "sourceSystem": { "$ref": "#/$defs/Identifier" },
+        "formatVersion": { "$ref": "#/$defs/Identifier" },
+        "allowedKinds": {
+          "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true,
+          "items": { "enum": ["deployment", "post-delivery-defect", "provider-cost"] }
+        },
+        "privacyClass": { "const": "restricted-metadata-only" },
+        "supersedesSourceId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "SourceV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceId", "family", "sourceSystem", "formatVersion", "allowedKinds", "privacyClass", "projectId", "ownerActor", "status", "registeredAt", "registeredSequence", "sourceHash"],
+      "properties": {
+        "sourceId": { "$ref": "#/$defs/Identifier" },
+        "family": { "enum": ["deployment", "defect", "provider-billing"] },
+        "sourceSystem": { "$ref": "#/$defs/Identifier" },
+        "formatVersion": { "$ref": "#/$defs/Identifier" },
+        "allowedKinds": { "type": "array", "minItems": 1, "maxItems": 5, "uniqueItems": true, "items": { "enum": ["deployment", "post-delivery-defect", "provider-cost"] } },
+        "privacyClass": { "const": "restricted-metadata-only" },
+        "supersedesSourceId": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "ownerActor": { "$ref": "#/$defs/Identity" },
+        "status": { "enum": ["active", "revoked", "superseded"] },
+        "registeredAt": { "$ref": "#/$defs/Timestamp" },
+        "registeredSequence": { "type": "integer", "minimum": 1 },
+        "revokedAt": { "$ref": "#/$defs/Timestamp" },
+        "sourceHash": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "SourceRegistrationRequestV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "occurredAt", "observedProject", "source"],
+      "properties": {
+        "contractType": { "const": "OperationalEvidenceSourceRegistrationRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "observedProject": { "$ref": "#/$defs/Watermark" },
+        "source": { "$ref": "#/$defs/SourceSpec" }
+      }
+    },
+    "SourceRevocationRequestV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "occurredAt", "observedProject", "sourceId", "reasonCode"],
+      "properties": {
+        "contractType": { "const": "OperationalEvidenceSourceRevocationRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "observedProject": { "$ref": "#/$defs/Watermark" },
+        "sourceId": { "$ref": "#/$defs/Identifier" },
+        "reasonCode": { "enum": ["source-retired", "source-compromised", "source-superseded"] }
+      }
+    },
+    "CommonObservation": {
+      "type": "object",
+      "required": ["observationId", "sourceRecordId", "occurredAt", "evidenceRefs"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/Identifier" },
+        "sourceRecordId": { "$ref": "#/$defs/Identifier" },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "supersedesObservationId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "DeploymentObservationV1": {
+      "allOf": [
+        { "$ref": "#/$defs/CommonObservation" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["contractType", "contractVersion", "observationId", "sourceRecordId", "occurredAt", "evidenceRefs", "changeId", "commitSha", "treeSha", "environmentClass", "outcome"],
+          "properties": {
+            "contractType": { "const": "DeploymentObservationV1" },
+            "contractVersion": { "const": "1.0" },
+            "observationId": { "$ref": "#/$defs/Identifier" },
+            "sourceRecordId": { "$ref": "#/$defs/Identifier" },
+            "occurredAt": { "$ref": "#/$defs/Timestamp" },
+            "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+            "supersedesObservationId": { "$ref": "#/$defs/Identifier" },
+            "changeId": { "$ref": "#/$defs/Identifier" },
+            "commitSha": { "$ref": "#/$defs/GitObjectId" },
+            "treeSha": { "$ref": "#/$defs/GitObjectId" },
+            "environmentClass": { "enum": ["production", "staging", "canary"] },
+            "outcome": { "enum": ["succeeded", "failed", "rolled-back", "hotfix", "production-rework"] },
+            "predecessorObservationId": { "$ref": "#/$defs/Identifier" }
+          }
+        }
+      ]
+    },
+    "DefectObservationV1": {
+      "allOf": [
+        { "$ref": "#/$defs/CommonObservation" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["contractType", "contractVersion", "observationId", "sourceRecordId", "occurredAt", "evidenceRefs", "detectedAt", "releasedCommitSha", "releasedTreeSha", "severity", "defectClass", "lifecycleState", "candidateChangeIds"],
+          "properties": {
+            "contractType": { "const": "PostDeliveryDefectObservationV1" },
+            "contractVersion": { "const": "1.0" },
+            "observationId": { "$ref": "#/$defs/Identifier" },
+            "sourceRecordId": { "$ref": "#/$defs/Identifier" },
+            "occurredAt": { "$ref": "#/$defs/Timestamp" },
+            "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+            "supersedesObservationId": { "$ref": "#/$defs/Identifier" },
+            "detectedAt": { "$ref": "#/$defs/Timestamp" },
+            "releasedCommitSha": { "$ref": "#/$defs/GitObjectId" },
+            "releasedTreeSha": { "$ref": "#/$defs/GitObjectId" },
+            "severity": { "enum": ["low", "medium", "high", "critical"] },
+            "defectClass": { "$ref": "#/$defs/Identifier" },
+            "lifecycleState": { "enum": ["open", "resolved", "closed"] },
+            "candidateChangeIds": { "type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } }
+          }
+        }
+      ]
+    },
+    "ProviderCostObservationV1": {
+      "allOf": [
+        { "$ref": "#/$defs/CommonObservation" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["contractType", "contractVersion", "observationId", "sourceRecordId", "occurredAt", "evidenceRefs", "changeId", "runId", "taskId", "attemptId", "invocationId", "provider", "billingPeriod", "currency", "minorUnits", "measurementState"],
+          "properties": {
+            "contractType": { "const": "ProviderCostObservationV1" },
+            "contractVersion": { "const": "1.0" },
+            "observationId": { "$ref": "#/$defs/Identifier" },
+            "sourceRecordId": { "$ref": "#/$defs/Identifier" },
+            "occurredAt": { "$ref": "#/$defs/Timestamp" },
+            "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+            "supersedesObservationId": { "$ref": "#/$defs/Identifier" },
+            "changeId": { "$ref": "#/$defs/Identifier" },
+            "runId": { "$ref": "#/$defs/Identifier" },
+            "taskId": { "$ref": "#/$defs/Identifier" },
+            "attemptId": { "$ref": "#/$defs/Identifier" },
+            "invocationId": { "$ref": "#/$defs/Identifier" },
+            "provider": { "$ref": "#/$defs/Identifier" },
+            "billingPeriod": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}$" },
+            "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+            "minorUnits": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+            "measurementState": { "enum": ["measured", "credited"] }
+          }
+        }
+      ]
+    },
+    "Observation": {
+      "oneOf": [
+        { "$ref": "#/$defs/DeploymentObservationV1" },
+        { "$ref": "#/$defs/DefectObservationV1" },
+        { "$ref": "#/$defs/ProviderCostObservationV1" }
+      ]
+    },
+    "ImportRequestV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "observedProject", "sourceId", "observations", "confirm"],
+      "properties": {
+        "contractType": { "const": "OperationalOutcomeImportRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "observedProject": { "$ref": "#/$defs/Watermark" },
+        "sourceId": { "$ref": "#/$defs/Identifier" },
+        "observations": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/$defs/Observation" } },
+        "confirm": { "type": "boolean" }
+      }
+    },
+    "AttributionRequestV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "occurredAt", "observedProject", "observationId", "decision", "reasonCode", "evidenceRefs", "confirm"],
+      "properties": {
+        "contractType": { "const": "OperationalDefectAttributionRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "observedProject": { "$ref": "#/$defs/Watermark" },
+        "observationId": { "$ref": "#/$defs/Identifier" },
+        "decision": { "enum": ["confirmed", "rejected", "unresolved"] },
+        "reasonCode": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "confirm": { "type": "boolean" },
+        "supersedesAttributionSequence": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "AttributionV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observationId", "changeId", "decision", "reasonCode", "evidenceRefs", "decidedBy", "decidedAt", "sequence"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "decision": { "enum": ["confirmed", "rejected", "unresolved"] },
+        "reasonCode": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "decidedBy": { "$ref": "#/$defs/Identity" },
+        "decidedAt": { "$ref": "#/$defs/Timestamp" },
+        "sequence": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "PreviewV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "allowed", "reasonCodes", "sourceWatermark", "contentHash", "observationCount", "wouldMutate"],
+      "properties": {
+        "contractType": { "const": "OperationalOutcomePreviewV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "allowed": { "type": "boolean" },
+        "reasonCodes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" },
+        "contentHash": { "$ref": "#/$defs/Sha256" },
+        "observationCount": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "wouldMutate": { "const": false }
+      }
+    },
+    "MutationReceiptV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "receiptId", "operationKind", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "contentHash", "sourceWatermark", "resultingWatermark", "eventId", "eventHash", "observationIds", "publishedAt", "receiptHash"],
+      "properties": {
+        "contractType": { "const": "OperationalOutcomeMutationReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "operationKind": { "enum": ["register-source", "revoke-source", "import-observations", "record-attribution"] },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "contentHash": { "$ref": "#/$defs/Sha256" },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" },
+        "resultingWatermark": { "$ref": "#/$defs/Watermark" },
+        "eventId": { "$ref": "#/$defs/Identifier" },
+        "eventHash": { "$ref": "#/$defs/Sha256" },
+        "observationIds": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+        "publishedAt": { "$ref": "#/$defs/Timestamp" },
+        "receiptHash": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "ProjectionV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "projectId", "watermark", "sources", "observations", "attributions", "receipts"],
+      "properties": {
+        "contractType": { "const": "OperationalOutcomeProjectionV1" },
+        "contractVersion": { "const": "1.0" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "watermark": { "$ref": "#/$defs/Watermark" },
+        "sources": { "type": "array", "items": { "$ref": "#/$defs/SourceV1" } },
+        "observations": { "type": "array", "items": { "$ref": "#/$defs/Observation" } },
+        "attributions": { "type": "array", "items": { "$ref": "#/$defs/AttributionV1" } },
+        "receipts": { "type": "array", "items": { "$ref": "#/$defs/MutationReceiptV1" } }
+      }
+    }
+  }
+}

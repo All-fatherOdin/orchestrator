@@ -1,7 +1,7 @@
 # Current Status
 
 Status: active compact context pack
-Last updated: 2026-08-06
+Last updated: 2026-08-07
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run
@@ -87,11 +87,11 @@ The Phase 7 completion review passed on 2026-08-05: all 16 focused contract,
 preview, execution, HTTP, idempotency, concurrency, replay, crash-boundary, and
 dashboard-gating tests passed; TypeScript and the production Vite build passed;
 desktop and mobile rendered QA found no relevant console errors or page-level
-overflow. The combined server/Electron regression command exceeded the
-six-minute review cap without emitting a failure diagnostic, so full-suite
-completion remains an explicit runtime-environment risk rather than passing
-evidence. The completion review itself authorized no Phase 8 implementation;
-the separately accepted boundary is recorded below.
+overflow. A fresh full Windows server/Electron regression on 2026-08-07 passed
+252/252 with zero failures and zero skips in 402.24 seconds. The former
+six-minute review cap was shorter than the healthy suite runtime; future full
+runs need at least a ten-minute window. The completion review itself authorized
+no Phase 8 implementation; the separately accepted boundary is recorded below.
 
 Phase 8 Audit Bundles Contract v1 is implemented through Slice 2.
 Exactly two strict GET routes produce bounded deterministic privacy-safe
@@ -113,9 +113,8 @@ HTTP, no-mutation, and dashboard tests passed. TypeScript, the production Vite
 build with the read-only-safe config loader, and diff checks passed. Desktop and
 390 px mobile rendered smoke verified `Control plane -> Audit bundles`, the
 explicit no-source state, keyboard-semantic controls, a clean console, and no
-page-level overflow. The combined server/Electron regression command exceeded
-369 seconds without emitting a failure diagnostic, so it remains an explicit
-runtime-environment risk and is not recorded as passing evidence.
+page-level overflow. The fresh 2026-08-07 full Windows regression supersedes
+the earlier capped run: `npm test` passed 252/252 in 402.24 seconds.
 
 Phase 9 Outcome Scorecards is implemented through Slice 2. Exactly one strict discovery
 GET and one closed-manifest compute POST provide bounded deterministic
@@ -145,3 +144,17 @@ desktop verification independently confirmed the installed application. The
 formal completion review passed on 2026-08-06. Persistence, publication,
 background aggregation, search,
 external telemetry, operator actions, and new authority remain unauthorized.
+
+Phase 10 Operational Outcome Evidence Slice 1 is implemented and verified for
+exactly three caller-supplied evidence families: deployment outcomes,
+post-delivery defects, and measured provider monetary cost. Five closed event
+types publish validated sources, observations, attribution decisions, and
+adjacent immutable receipts through the existing project ledger. Preview is
+deterministic and no-mutation; execution requires fresh explicit confirmation;
+privacy/count/byte limits, replay, exact idempotency, source lifecycle,
+concurrency fencing, attribution supersession, and exact resolved-provider
+invocation joins fail closed. The six focused tests, TypeScript, production
+build, diff checks, and full Windows regression (258/258 in 457.87 seconds)
+pass. Slice 2 has not started. External connectors, polling, background
+capture, publication, deployment/rollback execution, currency conversion, and
+business-impact claims remain unauthorized.

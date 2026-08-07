@@ -40,6 +40,7 @@ import {
 import {
   ChangeControlError,
   ChangeControlStore,
+  OperationalOutcomeErrorV1,
   attemptEvidenceSnapshotHashV1,
   compositePromptManifestHashV1,
   promptModelSha256V1,
@@ -7354,6 +7355,143 @@ export function installOutcomeScorecardRoutesV1(
   );
 }
 installOutcomeScorecardRoutesV1(app, outcomeScorecardServiceV1);
+function sendOperationalOutcomeErrorV1(
+  response: express.Response,
+  error: unknown,
+) {
+  if (error instanceof OperationalOutcomeErrorV1)
+    return response.status(error.status).json({
+      error: "Operational outcome request rejected.",
+      code: error.reasonCode,
+    });
+  return sendChangeControlError(response, error);
+}
+
+type OperationalOutcomeRouteServiceV1 = Pick<
+  ChangeControlStore,
+  | "registerOperationalEvidenceSourceV1"
+  | "revokeOperationalEvidenceSourceV1"
+  | "previewOperationalOutcomeImportV1"
+  | "executeOperationalOutcomeImportV1"
+  | "previewOperationalDefectAttributionV1"
+  | "executeOperationalDefectAttributionV1"
+  | "getOperationalOutcomeProjectionV1"
+  | "getOperationalOutcomeObservationV1"
+>;
+
+export function installOperationalOutcomeRoutesV1(
+  targetApp: express.Express,
+  service: OperationalOutcomeRouteServiceV1,
+) {
+  const mutationRoute = (
+    path: string,
+    status: number,
+    operation: (body: unknown) => Promise<unknown>,
+  ) =>
+    targetApp.post(path, async (request, response) => {
+      try {
+        return response.status(status).json(await operation(request.body));
+      } catch (error) {
+        return sendOperationalOutcomeErrorV1(response, error);
+      }
+    });
+
+  mutationRoute(
+    "/api/operational-outcomes/v1/sources/register",
+    201,
+    (body) => service.registerOperationalEvidenceSourceV1(body),
+  );
+  mutationRoute(
+    "/api/operational-outcomes/v1/sources/revoke",
+    201,
+    (body) => service.revokeOperationalEvidenceSourceV1(body),
+  );
+  mutationRoute(
+    "/api/operational-outcomes/v1/imports/preview",
+    200,
+    (body) => service.previewOperationalOutcomeImportV1(body),
+  );
+  mutationRoute(
+    "/api/operational-outcomes/v1/imports/execute",
+    201,
+    (body) => service.executeOperationalOutcomeImportV1(body),
+  );
+  mutationRoute(
+    "/api/operational-outcomes/v1/attributions/preview",
+    200,
+    (body) => service.previewOperationalDefectAttributionV1(body),
+  );
+  mutationRoute(
+    "/api/operational-outcomes/v1/attributions/execute",
+    201,
+    (body) => service.executeOperationalDefectAttributionV1(body),
+  );
+  targetApp.get(
+    "/api/operational-outcomes/v1/projects/:projectId/observations/:observationId",
+    async (request, response) => {
+      try {
+        return response.json(
+          await service.getOperationalOutcomeObservationV1(
+            request.params.projectId,
+            request.params.observationId,
+          ),
+        );
+      } catch (error) {
+        return sendOperationalOutcomeErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.get(
+    "/api/operational-outcomes/v1/projects/:projectId/changes/:changeId",
+    async (request, response) => {
+      try {
+        return response.json(
+          await service.getOperationalOutcomeProjectionV1(
+            request.params.projectId,
+            request.params.changeId,
+          ),
+        );
+      } catch (error) {
+        return sendOperationalOutcomeErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.get(
+    "/api/operational-outcomes/v1/projects/:projectId",
+    async (request, response) => {
+      try {
+        return response.json(
+          await service.getOperationalOutcomeProjectionV1(
+            request.params.projectId,
+          ),
+        );
+      } catch (error) {
+        return sendOperationalOutcomeErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.use(
+    "/api/operational-outcomes/v1",
+    (
+      error: unknown,
+      _request: express.Request,
+      response: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      const bodyError = error as { type?: unknown; status?: unknown };
+      const tooLarge =
+        bodyError?.type === "entity.too.large" || bodyError?.status === 413;
+      return response.status(tooLarge ? 413 : 400).json({
+        error: "Operational outcome request rejected.",
+        code: tooLarge
+          ? "OUTCOME_MANIFEST_TOO_LARGE"
+          : "OUTCOME_MANIFEST_INVALID",
+      });
+    },
+  );
+}
+installOperationalOutcomeRoutesV1(app, changeControlStore);
+
 function sendOperatorActionErrorV1(
   response: express.Response,
   error: unknown,

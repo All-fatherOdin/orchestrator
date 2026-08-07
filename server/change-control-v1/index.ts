@@ -130,6 +130,36 @@ import {
   type OperatorActionReceiptV1,
   type OperatorActionReasonCodeV1,
 } from "../operator-actions-v1/index.ts";
+import {
+  OPERATIONAL_OUTCOME_EVENT_TYPES_V1,
+  OperationalOutcomeErrorV1,
+  applyOperationalOutcomeEventV1,
+  assertOperationalOutcomeFreshWatermarkV1,
+  createOperationalOutcomeProjectionV1,
+  operationalOutcomeHashV1,
+  operationalOutcomeOperationKindV1,
+  operationalOutcomeRequestContentHashV1,
+  parseOperationalDefectAttributionRequestV1,
+  parseOperationalEvidenceSourceRegistrationRequestV1,
+  parseOperationalEvidenceSourceRevocationRequestV1,
+  parseOperationalOutcomeImportRequestV1,
+  previewOperationalOutcomeRequestV1,
+  publicOperationalOutcomeProjectionV1,
+  validateOperationalOutcomeRequestV1,
+  type MutableOperationalOutcomeProjectionV1,
+  type OperationalDefectAttributionRequestV1,
+  type OperationalOutcomeEventV1,
+  type OperationalOutcomeEventTypeV1,
+  type OperationalOutcomeImportRequestV1,
+  type OperationalOutcomeMutationReceiptV1,
+  type OperationalOutcomeMutationRequestV1,
+  type OperationalObservationV1,
+  type OperationalOutcomePreviewV1,
+  type OperationalOutcomeProjectionV1,
+  type OperationalOutcomeReplayContextV1,
+  type OperationalEvidenceSourceRegistrationRequestV1,
+  type OperationalEvidenceSourceRevocationRequestV1,
+} from "../operational-outcomes-v1/index.ts";
 
 export {
   type CorrectIncidentCorrelationInputV1,
@@ -185,6 +215,21 @@ export {
   type EvalSuiteV1,
 } from "../prompt-model-eval-v1/eval-lineage-v1.ts";
 
+export {
+  OPERATIONAL_OUTCOME_EVENT_TYPES_V1,
+  OperationalOutcomeErrorV1,
+  type OperationalDefectAttributionRequestV1,
+  type OperationalOutcomeEventV1,
+  type OperationalOutcomeEventTypeV1,
+  type OperationalOutcomeImportRequestV1,
+  type OperationalOutcomeMutationReceiptV1,
+  type OperationalObservationV1,
+  type OperationalOutcomePreviewV1,
+  type OperationalOutcomeProjectionV1,
+  type OperationalEvidenceSourceRegistrationRequestV1,
+  type OperationalEvidenceSourceRevocationRequestV1,
+} from "../operational-outcomes-v1/index.ts";
+
 export const CHANGE_CONTROL_EVENT_TYPES = [
   "change.created",
   "change.planned",
@@ -219,6 +264,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   ...PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
   ...EVAL_LINEAGE_EVENT_TYPES_V1,
   "operator.action-receipt-published",
+  ...OPERATIONAL_OUTCOME_EVENT_TYPES_V1,
 ] as const;
 
 export type ChangeControlEventType =
@@ -1137,6 +1183,9 @@ const evalLineageEventTypes = new Set<ChangeControlEventType>(
 const operatorActionEventTypes = new Set<ChangeControlEventType>([
   "operator.action-receipt-published",
 ]);
+const operationalOutcomeEventTypes = new Set<ChangeControlEventType>(
+  OPERATIONAL_OUTCOME_EVENT_TYPES_V1,
+);
 const changeTargetForType = {
   "change.created": "draft",
   "change.planned": "planned",
@@ -1428,6 +1477,7 @@ type ProjectedLedger = {
   evalLineage: MutableEvalLineageProjectionV1;
   operatorActionReceipts: Map<string, OperatorActionReceiptV1>;
   operatorActionReceiptByIdempotencyKey: Map<string, OperatorActionReceiptV1>;
+  operationalOutcomes: MutableOperationalOutcomeProjectionV1;
 };
 
 type OperatorActionTransactionV1 = {
@@ -1500,6 +1550,28 @@ function evalReplayContext(
     },
     hasHalt: (haltId: string) => projected.halts.has(haltId),
     hasIncident: (incidentId: string) => projected.incidents.has(incidentId),
+  };
+}
+
+function operationalOutcomeReplayContext(
+  projected: Pick<ProjectedLedger, "projections" | "promptModelLineage">,
+  previousEvent?: ChangeControlEvent,
+): OperationalOutcomeReplayContextV1 {
+  return {
+    hasChange: (changeId) => projected.projections.has(changeId),
+    hasInvocation: (observation) =>
+      [...projected.promptModelLineage.resolvedExecutions.values()].some(
+        (resolution) =>
+          resolution.projectId === projected.promptModelLineage.projectId &&
+          resolution.runId === observation.runId &&
+          resolution.taskId === observation.taskId &&
+          resolution.attemptId === observation.attemptId &&
+          resolution.invocationId === observation.invocationId &&
+          resolution.providerId === observation.provider,
+      ),
+    ...(previousEvent
+      ? { previousEvent: previousEvent as unknown as OperationalOutcomeEventV1 }
+      : {}),
   };
 }
 
@@ -4029,6 +4101,9 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
   const operatorActionReceipts = new Map<string, OperatorActionReceiptV1>();
   const operatorActionReceiptByIdempotencyKey =
     new Map<string, OperatorActionReceiptV1>();
+  const operationalOutcomes = createOperationalOutcomeProjectionV1(
+    ledger.projectId,
+  );
   const eventIds = new Set<string>();
   const eventsById = new Map<string, ChangeControlEvent>();
   let previousHash: string | null = null;
@@ -4910,6 +4985,23 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(`${error.reasonCode}: ${error.message}`);
         throw error;
       }
+    } else if (operationalOutcomeEventTypes.has(event.type)) {
+      if (event.waveId !== undefined || event.taskId !== undefined)
+        corrupt(`Operational outcome event ${event.id} has an invalid task scope.`);
+      try {
+        applyOperationalOutcomeEventV1(
+          event as unknown as OperationalOutcomeEventV1,
+          operationalOutcomes,
+          operationalOutcomeReplayContext(
+            { projections, promptModelLineage },
+            ledger.events[index - 1],
+          ),
+        );
+      } catch (error) {
+        if (error instanceof OperationalOutcomeErrorV1)
+          corrupt(`${error.reasonCode}: ${error.message}`);
+        throw error;
+      }
     } else if (operatorActionEventTypes.has(event.type)) {
       if (event.waveId !== undefined && typeof event.waveId !== "string")
         corrupt(`Operator action receipt event ${event.id} has an invalid waveId.`);
@@ -5162,6 +5254,7 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     evalLineage,
     operatorActionReceipts,
     operatorActionReceiptByIdempotencyKey,
+    operationalOutcomes,
   };
 }
 
@@ -10320,6 +10413,254 @@ export class ChangeControlStore {
       );
     }
     return deepFreeze(structuredClone(matches[0]));
+  }
+
+  private async executeOperationalOutcomeMutationV1(
+    request: OperationalOutcomeMutationRequestV1,
+  ): Promise<OperationalOutcomeMutationReceiptV1> {
+    return this.serialize(request.projectId, async () => {
+      const file = this.file(request.projectId);
+      const ledger = await readLedger(file, request.projectId);
+      const projected = validateAndProject(ledger);
+      const contentHash = operationalOutcomeRequestContentHashV1(request);
+      const operationKind = operationalOutcomeOperationKindV1(request);
+      const existing = projected.operationalOutcomes.receiptsByIdempotencyKey.get(
+        request.idempotencyKey,
+      );
+      if (existing) {
+        if (
+          existing.contentHash === contentHash &&
+          existing.operationKind === operationKind &&
+          existing.projectId === request.projectId &&
+          existing.changeId === request.changeId
+        )
+          return deepFreeze(structuredClone(existing));
+        throw new OperationalOutcomeErrorV1(
+          "OUTCOME_IDEMPOTENCY_CONFLICT",
+          "Operational outcome idempotency key was reused for different content.",
+          409,
+        );
+      }
+      const last = ledger.events.at(-1);
+      const watermark = {
+        sequence: last?.sequence ?? 0,
+        hash: last?.hash ?? null,
+      };
+      assertOperationalOutcomeFreshWatermarkV1(
+        request.observedProject,
+        watermark,
+      );
+      validateOperationalOutcomeRequestV1(
+        request,
+        projected.operationalOutcomes,
+        operationalOutcomeReplayContext({
+          projections: projected.projections,
+          promptModelLineage: projected.promptModelLineage,
+        }),
+      );
+      if (
+        (request.contractType === "OperationalOutcomeImportRequestV1" ||
+          request.contractType === "OperationalDefectAttributionRequestV1") &&
+        request.confirm !== true
+      )
+        throw new OperationalOutcomeErrorV1(
+          "OUTCOME_MANIFEST_INVALID",
+          "Operational outcome execution requires explicit confirmation.",
+        );
+
+      const staged = structuredClone(ledger);
+      const type: OperationalOutcomeEventTypeV1 =
+        request.contractType === "OperationalEvidenceSourceRegistrationRequestV1"
+          ? "operational.source-registered"
+          : request.contractType === "OperationalEvidenceSourceRevocationRequestV1"
+            ? "operational.source-revoked"
+            : request.contractType === "OperationalOutcomeImportRequestV1"
+              ? "operational.observations-imported"
+              : "operational.defect-attribution-recorded";
+      const owningEvent = this.append(staged, {
+        id: requireIdentifier(this.createId(), "id"),
+        type,
+        occurredAt:
+          "occurredAt" in request ? request.occurredAt : this.now(),
+        projectId: request.projectId,
+        changeId: request.changeId,
+        actor: request.actor,
+        causationId: request.requestId,
+        correlationId: request.requestId,
+        payload: {
+          request: structuredClone(request) as unknown as JsonValue,
+        },
+      });
+      const receiptWithoutHash: Omit<
+        OperationalOutcomeMutationReceiptV1,
+        "receiptHash"
+      > = {
+        contractType: "OperationalOutcomeMutationReceiptV1",
+        contractVersion: "1.0",
+        receiptId: requireIdentifier(this.createId(), "receiptId"),
+        operationKind,
+        requestId: request.requestId,
+        idempotencyKey: request.idempotencyKey,
+        projectId: request.projectId,
+        changeId: request.changeId,
+        actor: request.actor,
+        contentHash,
+        sourceWatermark: { ...request.observedProject },
+        resultingWatermark: {
+          sequence: owningEvent.sequence,
+          hash: owningEvent.hash,
+        },
+        eventId: owningEvent.id,
+        eventHash: owningEvent.hash,
+        observationIds:
+          request.contractType === "OperationalOutcomeImportRequestV1"
+            ? request.observations.map((observation) => observation.observationId)
+            : request.contractType === "OperationalDefectAttributionRequestV1"
+              ? [request.observationId]
+              : [],
+        publishedAt: this.now(),
+      };
+      const receipt: OperationalOutcomeMutationReceiptV1 = {
+        ...receiptWithoutHash,
+        receiptHash: operationalOutcomeHashV1(receiptWithoutHash),
+      };
+      this.append(staged, {
+        id: requireIdentifier(this.createId(), "id"),
+        type: "operational.mutation-receipt-published",
+        occurredAt: receipt.publishedAt,
+        projectId: request.projectId,
+        changeId: request.changeId,
+        actor: request.actor,
+        causationId: owningEvent.id,
+        correlationId: request.requestId,
+        payload: { receipt: structuredClone(receipt) as unknown as JsonValue },
+      });
+      validateCandidateLedger(staged);
+      await writeLedgerAtomically(file, staged);
+      return deepFreeze(structuredClone(receipt));
+    });
+  }
+
+  async registerOperationalEvidenceSourceV1(
+    value: unknown,
+  ): Promise<OperationalOutcomeMutationReceiptV1> {
+    return this.executeOperationalOutcomeMutationV1(
+      parseOperationalEvidenceSourceRegistrationRequestV1(value),
+    );
+  }
+
+  async revokeOperationalEvidenceSourceV1(
+    value: unknown,
+  ): Promise<OperationalOutcomeMutationReceiptV1> {
+    return this.executeOperationalOutcomeMutationV1(
+      parseOperationalEvidenceSourceRevocationRequestV1(value),
+    );
+  }
+
+  async previewOperationalOutcomeImportV1(
+    value: unknown,
+  ): Promise<OperationalOutcomePreviewV1> {
+    const request = parseOperationalOutcomeImportRequestV1(value);
+    const ledger = await readLedger(this.file(request.projectId), request.projectId);
+    const projected = validateAndProject(ledger);
+    const last = ledger.events.at(-1);
+    return previewOperationalOutcomeRequestV1(
+      request,
+      projected.operationalOutcomes,
+      { sequence: last?.sequence ?? 0, hash: last?.hash ?? null },
+      operationalOutcomeReplayContext({
+        projections: projected.projections,
+        promptModelLineage: projected.promptModelLineage,
+      }),
+    );
+  }
+
+  async executeOperationalOutcomeImportV1(
+    value: unknown,
+  ): Promise<OperationalOutcomeMutationReceiptV1> {
+    return this.executeOperationalOutcomeMutationV1(
+      parseOperationalOutcomeImportRequestV1(value),
+    );
+  }
+
+  async previewOperationalDefectAttributionV1(
+    value: unknown,
+  ): Promise<OperationalOutcomePreviewV1> {
+    const request = parseOperationalDefectAttributionRequestV1(value);
+    const ledger = await readLedger(this.file(request.projectId), request.projectId);
+    const projected = validateAndProject(ledger);
+    const last = ledger.events.at(-1);
+    return previewOperationalOutcomeRequestV1(
+      request,
+      projected.operationalOutcomes,
+      { sequence: last?.sequence ?? 0, hash: last?.hash ?? null },
+      operationalOutcomeReplayContext({
+        projections: projected.projections,
+        promptModelLineage: projected.promptModelLineage,
+      }),
+    );
+  }
+
+  async executeOperationalDefectAttributionV1(
+    value: unknown,
+  ): Promise<OperationalOutcomeMutationReceiptV1> {
+    return this.executeOperationalOutcomeMutationV1(
+      parseOperationalDefectAttributionRequestV1(value),
+    );
+  }
+
+  async getOperationalOutcomeProjectionV1(
+    projectIdValue: string,
+    changeIdValue?: string,
+  ): Promise<OperationalOutcomeProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const changeId = changeIdValue === undefined
+      ? undefined
+      : requireIdentifier(changeIdValue, "changeId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    if (changeId && !projected.projections.has(changeId))
+      throw new ChangeControlError(
+        "Operational outcome change was not found.",
+        "NOT_FOUND",
+        404,
+      );
+    const last = ledger.events.at(-1);
+    if (
+      projected.operationalOutcomes.observations.size > 10_000 ||
+      projected.operationalOutcomes.receipts.size > 10_000
+    )
+      throw new ChangeControlError(
+        "Operational outcome projection exceeds the bounded read scope.",
+        "CONFLICT",
+        409,
+      );
+    return deepFreeze(
+      structuredClone(
+        publicOperationalOutcomeProjectionV1(projected.operationalOutcomes, {
+          sequence: last?.sequence ?? 0,
+          hash: last?.hash ?? null,
+        }, changeId),
+      ),
+    );
+  }
+
+  async getOperationalOutcomeObservationV1(
+    projectIdValue: string,
+    observationIdValue: string,
+  ): Promise<OperationalObservationV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const observationId = requireIdentifier(observationIdValue, "observationId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    const observation = projected.operationalOutcomes.observations.get(observationId);
+    if (!observation)
+      throw new ChangeControlError(
+        "Operational outcome observation was not found.",
+        "NOT_FOUND",
+        404,
+      );
+    return deepFreeze(structuredClone(observation));
   }
 
   async readAuditEvidenceV1(

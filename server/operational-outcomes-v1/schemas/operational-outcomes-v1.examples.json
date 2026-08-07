@@ -1,0 +1,62 @@
+{
+  "sourceRegistration": {
+    "contractType": "OperationalEvidenceSourceRegistrationRequestV1",
+    "contractVersion": "1.0",
+    "requestId": "request-source-1",
+    "idempotencyKey": "idem-source-1",
+    "projectId": "project-one",
+    "changeId": "change-one",
+    "actor": "user:owner",
+    "occurredAt": "2026-08-07T10:00:00.000Z",
+    "observedProject": { "sequence": 1, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "source": {
+      "sourceId": "deploy-source-1",
+      "family": "deployment",
+      "sourceSystem": "manual-export",
+      "formatVersion": "deploy-export-v1",
+      "allowedKinds": ["deployment"],
+      "privacyClass": "restricted-metadata-only"
+    }
+  },
+  "deploymentImport": {
+    "contractType": "OperationalOutcomeImportRequestV1",
+    "contractVersion": "1.0",
+    "requestId": "request-import-1",
+    "idempotencyKey": "idem-import-1",
+    "projectId": "project-one",
+    "changeId": "change-one",
+    "actor": "user:owner",
+    "observedProject": { "sequence": 2, "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+    "sourceId": "deploy-source-1",
+    "confirm": true,
+    "observations": [{
+      "contractType": "DeploymentObservationV1",
+      "contractVersion": "1.0",
+      "observationId": "deploy-observation-1",
+      "sourceRecordId": "external-deploy-1",
+      "occurredAt": "2026-08-07T10:01:00.000Z",
+      "evidenceRefs": ["deployment:external-deploy-1"],
+      "changeId": "change-one",
+      "commitSha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "treeSha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "environmentClass": "production",
+      "outcome": "succeeded"
+    }]
+  },
+  "defectAttribution": {
+    "contractType": "OperationalDefectAttributionRequestV1",
+    "contractVersion": "1.0",
+    "requestId": "request-attribution-1",
+    "idempotencyKey": "idem-attribution-1",
+    "projectId": "project-one",
+    "changeId": "change-one",
+    "actor": "user:owner",
+    "occurredAt": "2026-08-07T11:00:00.000Z",
+    "observedProject": { "sequence": 3, "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+    "observationId": "defect-observation-1",
+    "decision": "confirmed",
+    "reasonCode": "owner-confirmed-link",
+    "evidenceRefs": ["decision:defect-observation-1"],
+    "confirm": true
+  }
+}
