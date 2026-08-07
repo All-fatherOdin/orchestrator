@@ -178,4 +178,35 @@ Windows regression, and isolated-ledger Chromium interaction at 1280/390 px.
 The formal Phase 11 completion review passed on 2026-08-07 with all 13
 acceptance clauses evidenced and no unresolved or deferred finding. Phase 11
 has no Slice 3. Any Phase 12 implementation requires a separately reviewed and
-accepted contract.
+accepted contract; the contract below now satisfies that prerequisite.
+
+## Phase 12: GitHub Deployment Connector
+
+Accepted and formally reviewed contract:
+`docs/architecture/change-control-plane/github-deployment-connector-contract-v1.md`.
+Slices 1-2 are implemented and verified. Phase 12 is limited to one manually triggered,
+read-only adapter for one exact GitHub production deployment and terminal
+status. It maps only `success`, `failure`, and `error` into the existing Phase
+10 deployment observation, uses fixed server-side repository configuration and
+least-privilege credentials, performs a no-mutation preview, refetches the same
+remote snapshot for explicit-confirmation execute, and delegates the only
+canonical mutation to Phase 10.
+
+Slice 1 provides closed runtime config, three bounded GitHub GETs,
+deterministic sanitized mapping, two connector POST routes, Phase 10 delegation,
+privacy/freshness/idempotency enforcement, receipt-first reconciliation, and
+mocked-network tests. Its five focused tests, combined Phase 10/12 run 11/11,
+TypeScript, production build, context smoke, diff checks, and the full 270/270
+Windows regression pass. Slice 2 adds only the confirmed Russian operator
+workflow: compatible-source selection, sanitized preview, explicit
+confirmation, immutable receipt, reconciliation, exact retry, and responsive
+desktop/390 px states. The formal Phase 12 completion review is now the next
+boundary; there is no authorized Slice 3. Enumeration, webhooks,
+polling, background work, remote writes, other providers/evidence families,
+and inferred rollback/hotfix/rework remain outside Phase 12.
+
+Slice 2 verification passed on 2026-08-07: three focused UI tests, the combined
+Phase 12 run 8/8, TypeScript, production build, context smoke 3/3, diff checks,
+the full 273/273 Windows regression with zero failures/skips, and local mocked
+browser interaction at desktop and 390 px with a clean console and preserved
+immutable receipt.

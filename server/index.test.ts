@@ -58,6 +58,8 @@ import outcomeScorecardsV1Schema from "./outcome-scorecards-v1/schemas/outcome-s
 import outcomeScorecardsV1Examples from "./outcome-scorecards-v1/schemas/outcome-scorecards-v1.examples.json";
 import operationalOutcomesV1Schema from "./operational-outcomes-v1/schemas/operational-outcomes-v1.schema.json";
 import operationalOutcomesV1Examples from "./operational-outcomes-v1/schemas/operational-outcomes-v1.examples.json";
+import githubDeploymentConnectorV1Schema from "./github-deployment-connector-v1/schemas/github-deployment-connector-v1.schema.json";
+import githubDeploymentConnectorV1Examples from "./github-deployment-connector-v1/schemas/github-deployment-connector-v1.examples.json";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -179,6 +181,7 @@ const {
   installOutcomeScorecardRoutesV1,
   installOperatorActionRoutesV1,
   installOperationalOutcomeRoutesV1,
+  installGitHubDeploymentConnectorRoutesV1,
   desktopRuntimeDiagnostics,
 } = await import("./index.ts");
 // @ts-ignore JavaScript cache-layout module is covered by its node:test suite.
@@ -248,6 +251,12 @@ const {
   parseOperationalObservationDraft,
 } = await import("../src/OperationalEvidenceWorkflows.tsx");
 const {
+  GitHubDeploymentConnectorWorkflow,
+  compatibleGitHubDeploymentSources,
+  githubDeploymentErrorTitle,
+  githubDeploymentPreviewMatches,
+} = await import("../src/GitHubDeploymentConnectorWorkflow.tsx");
+const {
   ChangeControlError,
   ChangeControlStore,
   attemptEvidenceSnapshotHashV1,
@@ -316,6 +325,13 @@ const {
   parseOperationalEvidenceSourceRegistrationRequestV1,
   parseOperationalOutcomeImportRequestV1,
 } = await import("./operational-outcomes-v1/index.ts");
+const {
+  GITHUB_DEPLOYMENT_CONNECTOR_LIMITS_V1,
+  GitHubDeploymentConnectorErrorV1,
+  GitHubDeploymentConnectorServiceV1,
+  loadGitHubDeploymentConnectorConfigV1,
+  parseGitHubDeploymentConnectorPreviewRequestV1,
+} = await import("./github-deployment-connector-v1/index.ts");
 const testNodeExecutable = process.env.ORCHESTRATOR_TEST_NODE ?? process.execPath;
 
 const planningShaOne = "1".repeat(40);
@@ -388,6 +404,541 @@ async function operationalOutcomeFixtureV1() {
     importRequest,
   };
 }
+
+type MockGitHubResponseV1 = Readonly<{
+  status?: number;
+  body: unknown;
+  headers?: Readonly<Record<string, string>>;
+}>;
+
+function mockGitHubFetchV1(responses: readonly MockGitHubResponseV1[]) {
+  const pending = [...responses];
+  const calls: Array<Readonly<{
+    url: string;
+    method: string;
+    redirect: RequestRedirect | undefined;
+    authorization: string | null;
+    apiVersion: string | null;
+  }>> = [];
+  const fetcher = async (input: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    calls.push({
+      url: input,
+      method: init?.method ?? "GET",
+      redirect: init?.redirect,
+      authorization: headers.get("authorization"),
+      apiVersion: headers.get("x-github-api-version"),
+    });
+    const response = pending.shift();
+    assert.ok(response, "Unexpected GitHub request.");
+    return new Response(JSON.stringify(response.body), {
+      status: response.status ?? 200,
+      headers: {
+        "content-type": "application/json",
+        ...response.headers,
+      },
+    });
+  };
+  return { fetcher, calls, pending };
+}
+
+function githubDeploymentResponsesV1(input?: {
+  state?: string;
+  deploymentSha?: string;
+  treeSha?: string;
+  statusId?: number;
+}) {
+  const commitSha = input?.deploymentSha ?? "1".repeat(40);
+  const treeSha = input?.treeSha ?? "2".repeat(40);
+  const repositoryUrl = "https://api.github.com/repos/owner-one/repository-one";
+  const deploymentUrl = `${repositoryUrl}/deployments/42`;
+  return [
+    {
+      body: {
+        id: 42,
+        sha: commitSha,
+        environment: "production",
+        production_environment: true,
+        repository_url: repositoryUrl,
+        description: "PRIVATE_DEPLOYMENT_DESCRIPTION",
+        payload: { private: "PRIVATE_DEPLOYMENT_PAYLOAD" },
+      },
+    },
+    {
+      body: {
+        id: input?.statusId ?? 101,
+        state: input?.state ?? "success",
+        environment: "production",
+        created_at: "2026-08-07T10:00:00Z",
+        repository_url: repositoryUrl,
+        deployment_url: deploymentUrl,
+        log_url: "https://private.invalid/deployment-log",
+        description: "PRIVATE_STATUS_DESCRIPTION",
+      },
+    },
+    {
+      body: {
+        sha: commitSha,
+        tree: { sha: treeSha, url: "https://private.invalid/tree" },
+        message: "PRIVATE_COMMIT_MESSAGE",
+        author: { name: "PRIVATE_AUTHOR", email: "private@example.invalid" },
+        verification: { signature: "PRIVATE_SIGNATURE" },
+      },
+    },
+  ] satisfies MockGitHubResponseV1[];
+}
+
+async function githubDeploymentConnectorFixtureV1(
+  fetcher: (input: string, init?: RequestInit) => Promise<Response>,
+  options?: { exactTargets?: boolean; token?: string },
+) {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-github-deployment-"));
+  const store = new ChangeControlStore(root);
+  const projectId = "github-connector-project";
+  const changeId = "github-connector-change";
+  await store.create(projectId, {
+    changeId,
+    actor: "user:owner",
+    payload: options?.exactTargets === false
+      ? { title: "Missing exact deployment targets" }
+      : {
+          title: "Exact deployment target",
+          targetCommitSha: "1".repeat(40),
+          targetTreeSha: "2".repeat(40),
+        },
+  });
+  const initial = await store.getOperationalOutcomeProjectionV1(projectId);
+  await store.registerOperationalEvidenceSourceV1({
+    contractType: "OperationalEvidenceSourceRegistrationRequestV1",
+    contractVersion: "1.0",
+    requestId: "register-github-deployment-source",
+    idempotencyKey: "register-github-deployment-source",
+    projectId,
+    changeId,
+    actor: "user:owner",
+    occurredAt: "2026-08-07T09:00:00.000Z",
+    observedProject: initial.watermark,
+    source: {
+      sourceId: "github-deployment-source",
+      family: "deployment",
+      sourceSystem: "github-deployments",
+      formatVersion: "github-deployments-v1",
+      allowedKinds: ["deployment"],
+      privacyClass: "restricted-metadata-only",
+    },
+  });
+  const projection = await store.getOperationalOutcomeProjectionV1(projectId, changeId);
+  const config = loadGitHubDeploymentConnectorConfigV1({
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_OWNER: "owner-one",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_REPOSITORY: "repository-one",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_PRODUCTION_ENVIRONMENT: "production",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_SOURCE_ID: "github-deployment-source",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_TOKEN: options?.token ?? "PRIVATE_GITHUB_TOKEN",
+  });
+  assert.ok(config);
+  const authority = {
+    getChangeDetails: async (selectedProjectId: string, selectedChangeId: string) =>
+      (await store.get(selectedProjectId, selectedChangeId)).change.details as Record<
+        string,
+        unknown
+      >,
+    getOperationalOutcomeProjectionV1: (
+      selectedProjectId: string,
+      selectedChangeId: string,
+    ) => store.getOperationalOutcomeProjectionV1(selectedProjectId, selectedChangeId),
+    previewOperationalOutcomeImportV1: (value: unknown) =>
+      store.previewOperationalOutcomeImportV1(value),
+    executeOperationalOutcomeImportV1: (value: unknown) =>
+      store.executeOperationalOutcomeImportV1(value),
+  };
+  const service = new GitHubDeploymentConnectorServiceV1(config, authority, fetcher);
+  const previewRequest = {
+    contractType: "GitHubDeploymentConnectorPreviewRequestV1" as const,
+    contractVersion: "1.0" as const,
+    requestId: "github-deployment-import",
+    idempotencyKey: "github-deployment-import",
+    projectId,
+    changeId,
+    actor: "human:operator",
+    observedProject: projection.watermark,
+    sourceId: "github-deployment-source",
+    deploymentId: "42",
+    deploymentStatusId: "101",
+    confirm: false as const,
+  };
+  return {
+    root,
+    store,
+    service,
+    config,
+    authority,
+    projectId,
+    changeId,
+    previewRequest,
+  };
+}
+
+test("Phase 12 Slice 1 connector schemas and runtime config are closed and secret-safe", () => {
+  const validate = new Ajv2020({ allErrors: true, strict: true }).compile(
+    githubDeploymentConnectorV1Schema,
+  );
+  for (const example of Object.values(githubDeploymentConnectorV1Examples))
+    assert.equal(validate(example), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    ...githubDeploymentConnectorV1Examples.previewRequest,
+    token: "PRIVATE_SCHEMA_TOKEN",
+  }), false);
+  assert.throws(
+    () => parseGitHubDeploymentConnectorPreviewRequestV1({
+      ...githubDeploymentConnectorV1Examples.previewRequest,
+      token: "PRIVATE_REQUEST_TOKEN",
+    }),
+    (error: unknown) =>
+      error instanceof GitHubDeploymentConnectorErrorV1 &&
+      error.reasonCode === "CONNECTOR_REQUEST_INVALID" &&
+      !error.message.includes("PRIVATE_REQUEST_TOKEN"),
+  );
+  const config = loadGitHubDeploymentConnectorConfigV1({
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_OWNER: "Owner-One",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_REPOSITORY: "Repository-One",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_PRODUCTION_ENVIRONMENT: "production",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_SOURCE_ID: "github-deployment-source",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_TOKEN: "PRIVATE_CONFIG_TOKEN",
+  });
+  assert.ok(config);
+  assert.equal(config.apiOrigin, "https://api.github.com");
+  assert.equal(config.repositoryFingerprint.length, 64);
+  assert.equal(JSON.stringify(config).includes("PRIVATE_CONFIG_TOKEN"), false);
+  assert.throws(
+    () => loadGitHubDeploymentConnectorConfigV1({
+      ORCHESTRATOR_GITHUB_DEPLOYMENTS_OWNER: "owner-one",
+    }),
+    (error: unknown) =>
+      error instanceof GitHubDeploymentConnectorErrorV1 &&
+      error.reasonCode === "CONNECTOR_NOT_CONFIGURED",
+  );
+});
+
+test("Phase 12 Slice 1 preview performs exactly three bounded GETs and no mutation", async () => {
+  const remote = mockGitHubFetchV1(githubDeploymentResponsesV1());
+  const fixture = await githubDeploymentConnectorFixtureV1(remote.fetcher);
+  try {
+    const [ledgerFile] = await readdir(join(fixture.root, "projects"));
+    const ledgerPath = join(fixture.root, "projects", ledgerFile);
+    const before = await readFile(ledgerPath, "utf8");
+    const preview = await fixture.service.preview(fixture.previewRequest);
+    assert.equal(preview.allowed, true);
+    assert.equal(preview.wouldMutate, false);
+    assert.equal(preview.observation.outcome, "succeeded");
+    assert.equal(preview.observation.occurredAt, "2026-08-07T10:00:00.000Z");
+    assert.equal(preview.observation.commitSha, "1".repeat(40));
+    assert.equal(preview.observation.treeSha, "2".repeat(40));
+    assert.equal(preview.remoteSnapshotHash.length, 64);
+    assert.equal(preview.contentHash.length, 64);
+    assert.equal(await readFile(ledgerPath, "utf8"), before);
+    assert.equal(remote.calls.length, 3);
+    assert.deepEqual(remote.calls.map((call) => call.method), ["GET", "GET", "GET"]);
+    assert.ok(remote.calls.every((call) => call.redirect === "error"));
+    assert.ok(remote.calls.every((call) => call.authorization === "Bearer PRIVATE_GITHUB_TOKEN"));
+    assert.ok(remote.calls.every((call) => call.apiVersion === "2026-03-10"));
+    assert.deepEqual(remote.calls.map((call) => call.url), [
+      "https://api.github.com/repos/owner-one/repository-one/deployments/42",
+      "https://api.github.com/repos/owner-one/repository-one/deployments/42/statuses/101",
+      `https://api.github.com/repos/owner-one/repository-one/git/commits/${"1".repeat(40)}`,
+    ]);
+    const rendered = JSON.stringify(preview);
+    for (const prohibited of [
+      "PRIVATE_DEPLOYMENT_DESCRIPTION",
+      "PRIVATE_DEPLOYMENT_PAYLOAD",
+      "PRIVATE_STATUS_DESCRIPTION",
+      "private.invalid",
+      "PRIVATE_COMMIT_MESSAGE",
+      "PRIVATE_AUTHOR",
+      "PRIVATE_SIGNATURE",
+      "PRIVATE_GITHUB_TOKEN",
+      "owner-one",
+      "repository-one",
+    ]) assert.equal(rendered.includes(prohibited), false);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 12 Slice 1 execute refetches exact evidence and imports once with receipt reconciliation", async () => {
+  const remote = mockGitHubFetchV1([
+    ...githubDeploymentResponsesV1(),
+    ...githubDeploymentResponsesV1(),
+  ]);
+  const fixture = await githubDeploymentConnectorFixtureV1(remote.fetcher);
+  try {
+    const preview = await fixture.service.preview(fixture.previewRequest);
+    const executeRequest = {
+      ...fixture.previewRequest,
+      contractType: "GitHubDeploymentConnectorExecuteRequestV1" as const,
+      confirm: true as const,
+      remoteSnapshotHash: preview.remoteSnapshotHash,
+      contentHash: preview.contentHash,
+    };
+    const receipt = await fixture.service.execute(executeRequest);
+    assert.equal(receipt.operationKind, "import-observations");
+    assert.deepEqual(receipt.observationIds, [preview.observation.observationId]);
+    assert.equal(remote.calls.length, 6);
+    const repeated = await fixture.service.execute(executeRequest);
+    assert.deepEqual(repeated, receipt);
+    assert.equal(remote.calls.length, 6, "Receipt reconciliation must precede remote retry.");
+    const projection = await fixture.store.getOperationalOutcomeProjectionV1(
+      fixture.projectId,
+      fixture.changeId,
+    );
+    assert.equal(projection.observations.length, 1);
+    assert.equal(projection.receipts.filter((item) =>
+      item.operationKind === "import-observations").length, 1);
+    const replayed = await new ChangeControlStore(fixture.root)
+      .getOperationalOutcomeProjectionV1(fixture.projectId, fixture.changeId);
+    assert.deepEqual(replayed.observations, projection.observations);
+    assert.deepEqual(replayed.receipts, projection.receipts);
+    await fixture.store.revokeOperationalEvidenceSourceV1({
+      contractType: "OperationalEvidenceSourceRevocationRequestV1",
+      contractVersion: "1.0",
+      requestId: "revoke-github-deployment-source",
+      idempotencyKey: "revoke-github-deployment-source",
+      projectId: fixture.projectId,
+      changeId: fixture.changeId,
+      actor: "user:owner",
+      occurredAt: "2026-08-07T11:00:00.000Z",
+      observedProject: projection.watermark,
+      sourceId: "github-deployment-source",
+      reasonCode: "source-retired",
+    });
+    const noSecretConfig = loadGitHubDeploymentConnectorConfigV1({
+      ORCHESTRATOR_GITHUB_DEPLOYMENTS_OWNER: "owner-one",
+      ORCHESTRATOR_GITHUB_DEPLOYMENTS_REPOSITORY: "repository-one",
+      ORCHESTRATOR_GITHUB_DEPLOYMENTS_PRODUCTION_ENVIRONMENT: "production",
+      ORCHESTRATOR_GITHUB_DEPLOYMENTS_SOURCE_ID: "github-deployment-source",
+    });
+    assert.ok(noSecretConfig);
+    let unexpectedRemoteCalls = 0;
+    const reconciliationService = new GitHubDeploymentConnectorServiceV1(
+      noSecretConfig,
+      fixture.authority,
+      async () => {
+        unexpectedRemoteCalls += 1;
+        throw new Error("Remote read must not occur during receipt reconciliation.");
+      },
+    );
+    assert.deepEqual(await reconciliationService.execute(executeRequest), receipt);
+    assert.equal(unexpectedRemoteCalls, 0);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 12 Slice 1 fails closed before mutation on target, snapshot, rate, and size errors", async () => {
+  const unavailableConfig = loadGitHubDeploymentConnectorConfigV1({
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_OWNER: "owner-one",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_REPOSITORY: "repository-one",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_PRODUCTION_ENVIRONMENT: "production",
+    ORCHESTRATOR_GITHUB_DEPLOYMENTS_SOURCE_ID: "github-deployment-source",
+  });
+  assert.ok(unavailableConfig);
+  let unavailableAuthorityCalls = 0;
+  let unavailableRemoteCalls = 0;
+  const unavailableService = new GitHubDeploymentConnectorServiceV1(
+    unavailableConfig,
+    {
+      getChangeDetails: async () => {
+        unavailableAuthorityCalls += 1;
+        return {};
+      },
+      getOperationalOutcomeProjectionV1: async () => {
+        unavailableAuthorityCalls += 1;
+        throw new Error("Authority must not be called without a secret.");
+      },
+      previewOperationalOutcomeImportV1: async () => {
+        unavailableAuthorityCalls += 1;
+        throw new Error("Authority must not be called without a secret.");
+      },
+      executeOperationalOutcomeImportV1: async () => {
+        unavailableAuthorityCalls += 1;
+        throw new Error("Authority must not be called without a secret.");
+      },
+    },
+    async () => {
+      unavailableRemoteCalls += 1;
+      throw new Error("Remote must not be called without a secret.");
+    },
+  );
+  await assert.rejects(
+    unavailableService.preview(githubDeploymentConnectorV1Examples.previewRequest),
+    (error: unknown) =>
+      error instanceof GitHubDeploymentConnectorErrorV1 &&
+      error.reasonCode === "CONNECTOR_SECRET_UNAVAILABLE",
+  );
+  assert.equal(unavailableAuthorityCalls, 0);
+  assert.equal(unavailableRemoteCalls, 0);
+
+  const noTargetRemote = mockGitHubFetchV1(githubDeploymentResponsesV1());
+  const noTarget = await githubDeploymentConnectorFixtureV1(noTargetRemote.fetcher, {
+    exactTargets: false,
+  });
+  try {
+    await assert.rejects(
+      noTarget.service.preview(noTarget.previewRequest),
+      (error: unknown) =>
+        error instanceof GitHubDeploymentConnectorErrorV1 &&
+        error.reasonCode === "CONNECTOR_REMOTE_IDENTITY_MISMATCH",
+    );
+    assert.equal(noTargetRemote.calls.length, 0);
+  } finally {
+    await rm(noTarget.root, { recursive: true, force: true });
+  }
+
+  const changedRemote = mockGitHubFetchV1([
+    ...githubDeploymentResponsesV1(),
+    ...githubDeploymentResponsesV1({ state: "failure" }),
+  ]);
+  const changed = await githubDeploymentConnectorFixtureV1(changedRemote.fetcher);
+  try {
+    const preview = await changed.service.preview(changed.previewRequest);
+    await assert.rejects(
+      changed.service.execute({
+        ...changed.previewRequest,
+        contractType: "GitHubDeploymentConnectorExecuteRequestV1",
+        confirm: true,
+        remoteSnapshotHash: preview.remoteSnapshotHash,
+        contentHash: preview.contentHash,
+      }),
+      (error: unknown) =>
+        error instanceof GitHubDeploymentConnectorErrorV1 &&
+        error.reasonCode === "CONNECTOR_REMOTE_SNAPSHOT_CHANGED",
+    );
+    assert.equal((await changed.store.getOperationalOutcomeProjectionV1(
+      changed.projectId,
+      changed.changeId,
+    )).observations.length, 0);
+  } finally {
+    await rm(changed.root, { recursive: true, force: true });
+  }
+
+  const rateRemote = mockGitHubFetchV1([{
+    status: 429,
+    headers: { "retry-after": "60", "x-ratelimit-reset": "1786096800" },
+    body: { message: "PRIVATE_RATE_LIMIT_BODY" },
+  }]);
+  const rated = await githubDeploymentConnectorFixtureV1(rateRemote.fetcher);
+  try {
+    await assert.rejects(
+      rated.service.preview(rated.previewRequest),
+      (error: unknown) =>
+        error instanceof GitHubDeploymentConnectorErrorV1 &&
+        error.reasonCode === "CONNECTOR_REMOTE_RATE_LIMITED" &&
+        error.retryAfterSeconds === 60 &&
+        !error.message.includes("PRIVATE_RATE_LIMIT_BODY"),
+    );
+    assert.equal(rateRemote.calls.length, 1);
+  } finally {
+    await rm(rated.root, { recursive: true, force: true });
+  }
+
+  const largeRemote = mockGitHubFetchV1([{
+    body: { ignored: true },
+    headers: {
+      "content-length": String(GITHUB_DEPLOYMENT_CONNECTOR_LIMITS_V1.responseBytes + 1),
+    },
+  }]);
+  const oversized = await githubDeploymentConnectorFixtureV1(largeRemote.fetcher);
+  try {
+    await assert.rejects(
+      oversized.service.preview(oversized.previewRequest),
+      (error: unknown) =>
+        error instanceof GitHubDeploymentConnectorErrorV1 &&
+        error.reasonCode === "CONNECTOR_REMOTE_TOO_LARGE",
+    );
+    assert.equal(largeRemote.calls.length, 1);
+  } finally {
+    await rm(oversized.root, { recursive: true, force: true });
+  }
+
+  let timeoutCalls = 0;
+  const timeoutFixture = await githubDeploymentConnectorFixtureV1(async () => {
+    timeoutCalls += 1;
+    throw new DOMException("bounded abort", "AbortError");
+  });
+  try {
+    await assert.rejects(
+      timeoutFixture.service.preview(timeoutFixture.previewRequest),
+      (error: unknown) =>
+        error instanceof GitHubDeploymentConnectorErrorV1 &&
+        error.reasonCode === "CONNECTOR_REMOTE_TIMEOUT",
+    );
+    assert.equal(timeoutCalls, 1);
+  } finally {
+    await rm(timeoutFixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Phase 12 Slice 1 HTTP routes expose bounded preview/execute and private errors", async () => {
+  const remote = mockGitHubFetchV1([
+    ...githubDeploymentResponsesV1(),
+    ...githubDeploymentResponsesV1(),
+  ]);
+  const fixture = await githubDeploymentConnectorFixtureV1(remote.fetcher);
+  const httpApp = express();
+  httpApp.use(express.json({ limit: "64kb" }));
+  installGitHubDeploymentConnectorRoutesV1(httpApp, fixture.service);
+  const server = httpApp.listen(0, "127.0.0.1");
+  try {
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const base = `http://127.0.0.1:${address.port}/api/evidence-connectors/v1/github-deployments`;
+    const previewResponse = await fetch(`${base}/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(fixture.previewRequest),
+    });
+    assert.equal(previewResponse.status, 200);
+    const preview = await previewResponse.json() as {
+      remoteSnapshotHash: string;
+      contentHash: string;
+      allowed: boolean;
+    };
+    assert.equal(preview.allowed, true);
+    const executeResponse = await fetch(`${base}/execute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...fixture.previewRequest,
+        contractType: "GitHubDeploymentConnectorExecuteRequestV1",
+        confirm: true,
+        remoteSnapshotHash: preview.remoteSnapshotHash,
+        contentHash: preview.contentHash,
+      }),
+    });
+    assert.equal(executeResponse.status, 201);
+    assert.equal(
+      (await executeResponse.json() as { operationKind: string }).operationKind,
+      "import-observations",
+    );
+    const privateResponse = await fetch(`${base}/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...fixture.previewRequest,
+        token: "PRIVATE_HTTP_TOKEN",
+      }),
+    });
+    assert.equal(privateResponse.status, 400);
+    const privateBody = await privateResponse.text();
+    assert.match(privateBody, /CONNECTOR_REQUEST_INVALID/);
+    assert.doesNotMatch(privateBody, /PRIVATE_HTTP_TOKEN/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    );
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
 
 test("Operational Outcome v1 schemas are closed and examples validate", () => {
   const validator = new Ajv2020({ allErrors: true, strict: true }).compile(
@@ -14055,6 +14606,65 @@ test("Phase 11 Slice 2 exposes local-review lifecycle and preview-first import a
     assert.equal(source.includes(prohibited), false, prohibited);
   const styles = await readFile(join("src", "styles.css"), "utf8");
   assert.match(styles, /@media\(max-width:720px\).*\.intakeWorkflowFields\{grid-template-columns:1fr\}/s);
+});
+
+test("Phase 12 Slice 2 exposes only active compatible GitHub deployment sources and exact freshness", () => {
+  const source = (sourceId: string, overrides: Record<string, unknown> = {}) => ({
+    sourceId, family: "deployment", sourceSystem: "github-deployments", formatVersion: "github-deployments-v1",
+    allowedKinds: ["deployment"], privacyClass: "restricted-metadata-only", status: "active", ownerActor: "human:operator",
+    registeredAt: "2026-08-07T10:00:00.000Z", registeredSequence: 3, sourceHash: "b".repeat(64), ...overrides,
+  });
+  const compatible = source("github-source");
+  assert.deepEqual(compatibleGitHubDeploymentSources([
+    compatible,
+    source("revoked", { status: "revoked" }),
+    source("manual", { sourceSystem: "manual" }),
+    source("wrong-format", { formatVersion: "1.0" }),
+    source("wrong-kind", { allowedKinds: ["post-delivery-defect"] }),
+  ] as any).map((item: any) => item.sourceId), ["github-source"]);
+  const watermark = { sequence: 7, hash: "a".repeat(64) };
+  const request: any = { requestId: "phase12:request", observedProject: watermark };
+  const preview: any = { requestId: request.requestId, sourceWatermark: watermark };
+  assert.equal(githubDeploymentPreviewMatches(request, preview, watermark), true);
+  assert.equal(githubDeploymentPreviewMatches(request, preview, { sequence: 8, hash: "c".repeat(64) }), false);
+  assert.equal(githubDeploymentPreviewMatches({ ...request, requestId: "changed" }, preview, watermark), false);
+});
+
+test("Phase 12 Slice 2 renders configured and unavailable connector boundaries without secrets or outcome controls", async () => {
+  const projection: any = {
+    contractType: "OperationalOutcomeProjectionV1", contractVersion: "1.0", projectId: "project-one", watermark: { sequence: 7, hash: "a".repeat(64) },
+    sources: [{ sourceId: "github-source", family: "deployment", sourceSystem: "github-deployments", formatVersion: "github-deployments-v1", allowedKinds: ["deployment"], privacyClass: "restricted-metadata-only", status: "active", ownerActor: "human:operator", registeredAt: "2026-08-07T10:00:00.000Z", registeredSequence: 3, sourceHash: "b".repeat(64) }],
+    observations: [], attributions: [], receipts: [],
+  };
+  const configured = renderToStaticMarkup(createElement(GitHubDeploymentConnectorWorkflow, { projectId: "project-one", changeId: "change-one", actor: "human:operator", projection, onRefresh: async () => projection }));
+  for (const value of ["GitHub Deployments готов", "github-source", "Deployment ID", "Deployment status ID", "Получить снимок без изменений", "Явно подтвердить импорт"])
+    assert.match(configured, new RegExp(value));
+  assert.equal(/token|repository coordinate|owner/i.test(configured), false);
+  assert.equal(/<select[^>]*>[^<]*(?:succeeded|failed)/.test(configured), false);
+  const unavailable = renderToStaticMarkup(createElement(GitHubDeploymentConnectorWorkflow, { projectId: "project-one", changeId: "change-one", actor: "human:operator", projection: { ...projection, sources: [] }, onRefresh: async () => projection }));
+  assert.match(unavailable, /Коннектор недоступен/);
+  const workflow = renderToStaticMarkup(createElement(OperationalEvidenceWorkflows, { projectId: "project-one", changeId: "change-one", projection, onRefresh: async () => projection }));
+  assert.match(workflow, /GitHub Deployments/);
+  const sourceText = await readFile(join("src", "GitHubDeploymentConnectorWorkflow.tsx"), "utf8");
+  for (const path of ["/github-deployments/preview", "/github-deployments/execute"]) assert.match(sourceText, new RegExp(path.replaceAll("/", "\\/")));
+  for (const prohibited of ["localStorage", "sessionStorage", "indexedDB", "authorization", "ORCHESTRATOR_GITHUB", "api.github.com", "setInterval", "setTimeout"])
+    assert.equal(sourceText.includes(prohibited), false, prohibited);
+  assert.match(sourceText, /pendingExecute\.requestId/);
+  assert.match(sourceText, /execute\(pendingExecute\)/);
+  assert.match(sourceText, /type="checkbox"/);
+});
+
+test("Phase 12 Slice 2 classifies stale, changed snapshot, rate-limit, ambiguity, and unavailable states", async () => {
+  assert.equal(githubDeploymentErrorTitle("CONNECTOR_PROJECT_WATERMARK_CHANGED"), "Проекция устарела");
+  assert.equal(githubDeploymentErrorTitle("CONNECTOR_REMOTE_SNAPSHOT_CHANGED"), "Снимок GitHub изменился");
+  assert.equal(githubDeploymentErrorTitle("CONNECTOR_REMOTE_RATE_LIMITED"), "GitHub ограничил частоту запросов");
+  assert.equal(githubDeploymentErrorTitle("CONNECTOR_RESULT_AMBIGUOUS"), "Результат импорта неизвестен");
+  assert.equal(githubDeploymentErrorTitle("CONNECTOR_NOT_CONFIGURED"), "Коннектор недоступен");
+  const source = await readFile(join("src", "GitHubDeploymentConnectorWorkflow.tsx"), "utf8");
+  for (const value of ["retryAfterSeconds", "rateLimitResetAt", "Сверить квитанции", "Повторить тот же запрос", "CONNECTOR_REMOTE_SNAPSHOT_CHANGED", "CONNECTOR_PROJECT_WATERMARK_CHANGED", "Неизменяемая квитанция Phase 10 получена"])
+    assert.match(source, new RegExp(value));
+  const styles = await readFile(join("src", "styles.css"), "utf8");
+  assert.match(styles, /@media\(max-width:720px\).*\.intakeConnectorPreview dl\{grid-template-columns:1fr\}/s);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Observation, OperationalEvidenceProjection, Receipt } from "./OperationalEvidenceIntakeDashboard";
+import { GitHubDeploymentConnectorWorkflow } from "./GitHubDeploymentConnectorWorkflow";
 
-type Workflow = "source" | "import" | "attribution";
+type Workflow = "source" | "import" | "attribution" | "github-deployments";
 type Identity = { requestId: string; idempotencyKey: string };
 type Preview = {
   contractType: "OperationalOutcomePreviewV1"; contractVersion: "1.0"; requestId: string;
@@ -219,7 +220,7 @@ export function OperationalEvidenceWorkflows({ projectId, changeId, projection, 
 
   return <section className="intakeWorkflows" aria-label="Ручные операции с данными результатов">
     <header><div><small>ЯВНОЕ ПОДТВЕРЖДЕНИЕ · СРЕЗ 2</small><h2>Ручной приём доказательств</h2></div><span>Без сохранения черновиков</span></header>
-    <nav aria-label="Операции с данными результатов"><button className={workflow === "source" ? "active" : ""} onClick={() => chooseWorkflow("source")}>Источники</button><button className={workflow === "import" ? "active" : ""} onClick={() => chooseWorkflow("import")}>Импорт наблюдений</button><button className={workflow === "attribution" ? "active" : ""} onClick={() => chooseWorkflow("attribution")}>Атрибуция дефекта</button></nav>
+    <nav aria-label="Операции с данными результатов"><button className={workflow === "source" ? "active" : ""} onClick={() => chooseWorkflow("source")}>Источники</button><button className={workflow === "import" ? "active" : ""} onClick={() => chooseWorkflow("import")}>Импорт наблюдений</button><button className={workflow === "attribution" ? "active" : ""} onClick={() => chooseWorkflow("attribution")}>Атрибуция дефекта</button><button className={workflow === "github-deployments" ? "active" : ""} onClick={() => chooseWorkflow("github-deployments")}>GitHub Deployments</button></nav>
     <label className="intakeActor">Явный оператор<input value={actor} placeholder="human:operator-id" maxLength={256} onChange={(event) => { setActor(event.target.value); invalidate(); }} /></label>
     {workflow === "source" ? <div className="intakeWorkflowBody">
       <div className="intakeMode" role="group" aria-label="Операция с источником"><button className={sourceMode === "register" ? "active" : ""} onClick={() => { setSourceMode("register"); invalidate(); }}>Регистрация / замена</button><button className={sourceMode === "revoke" ? "active" : ""} onClick={() => { setSourceMode("revoke"); invalidate(); }}>Отзыв</button></div>
@@ -244,6 +245,7 @@ export function OperationalEvidenceWorkflows({ projectId, changeId, projection, 
       {!defectObservations.length ? <p className="intakeNotice">Для точного изменения нет дефектов-кандидатов. Решение не может быть создано.</p> : null}
       <footer><span>Решение confirmed никогда не выбирается автоматически.</span><button className="secondary" onClick={() => void previewAttribution()} disabled={attributionBusy || !defectId || !decision}>{attributionBusy ? "Проверяем…" : "Предпросмотр без изменений"}</button><button onClick={() => void executeAttribution()} disabled={attributionBusy || !attributionRequest || !attributionPreview?.allowed || !operationalPreviewMatches(attributionRequest, attributionPreview, projection.watermark)}>Явно подтвердить решение</button></footer>
     </div> : null}
+    {workflow === "github-deployments" ? <GitHubDeploymentConnectorWorkflow projectId={projectId} changeId={changeId} actor={actor} projection={projection} onRefresh={onRefresh} /> : null}
     {error ? <ErrorPanel error={error} onReconcile={pendingResult ? () => void reconcile() : undefined} onRetry={pendingResult && retryAllowed ? () => void retryPending() : undefined} reconciling={reconciling} /> : null}
     {receipt ? <ReceiptPanel receipt={receipt} /> : null}
   </section>;

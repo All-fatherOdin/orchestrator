@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/github-deployment-connector-v1.schema.json",
+  "title": "GitHub Deployment Connector v1",
+  "oneOf": [
+    { "$ref": "#/$defs/PreviewRequestV1" },
+    { "$ref": "#/$defs/ExecuteRequestV1" },
+    { "$ref": "#/$defs/PreviewV1" }
+  ],
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Identity": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "DecimalId": { "type": "string", "pattern": "^[1-9][0-9]{0,19}$" },
+    "Sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "GitObjectId": { "type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" },
+    "Timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "Watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "hash"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "hash": { "oneOf": [{ "$ref": "#/$defs/Sha256" }, { "type": "null" }] }
+      }
+    },
+    "BaseRequest": {
+      "type": "object",
+      "required": ["contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "observedProject", "sourceId", "deploymentId", "deploymentStatusId"],
+      "properties": {
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "actor": { "$ref": "#/$defs/Identity" },
+        "observedProject": { "$ref": "#/$defs/Watermark" },
+        "sourceId": { "$ref": "#/$defs/Identifier" },
+        "deploymentId": { "$ref": "#/$defs/DecimalId" },
+        "deploymentStatusId": { "$ref": "#/$defs/DecimalId" }
+      }
+    },
+    "PreviewRequestV1": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseRequest" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["contractType", "contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "observedProject", "sourceId", "deploymentId", "deploymentStatusId", "confirm"],
+          "properties": {
+            "contractType": { "const": "GitHubDeploymentConnectorPreviewRequestV1" },
+            "contractVersion": { "const": "1.0" },
+            "requestId": { "$ref": "#/$defs/Identifier" },
+            "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+            "projectId": { "$ref": "#/$defs/Identifier" },
+            "changeId": { "$ref": "#/$defs/Identifier" },
+            "actor": { "$ref": "#/$defs/Identity" },
+            "observedProject": { "$ref": "#/$defs/Watermark" },
+            "sourceId": { "$ref": "#/$defs/Identifier" },
+            "deploymentId": { "$ref": "#/$defs/DecimalId" },
+            "deploymentStatusId": { "$ref": "#/$defs/DecimalId" },
+            "confirm": { "const": false }
+          }
+        }
+      ]
+    },
+    "ExecuteRequestV1": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseRequest" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["contractType", "contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "observedProject", "sourceId", "deploymentId", "deploymentStatusId", "confirm", "remoteSnapshotHash", "contentHash"],
+          "properties": {
+            "contractType": { "const": "GitHubDeploymentConnectorExecuteRequestV1" },
+            "contractVersion": { "const": "1.0" },
+            "requestId": { "$ref": "#/$defs/Identifier" },
+            "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+            "projectId": { "$ref": "#/$defs/Identifier" },
+            "changeId": { "$ref": "#/$defs/Identifier" },
+            "actor": { "$ref": "#/$defs/Identity" },
+            "observedProject": { "$ref": "#/$defs/Watermark" },
+            "sourceId": { "$ref": "#/$defs/Identifier" },
+            "deploymentId": { "$ref": "#/$defs/DecimalId" },
+            "deploymentStatusId": { "$ref": "#/$defs/DecimalId" },
+            "confirm": { "const": true },
+            "remoteSnapshotHash": { "$ref": "#/$defs/Sha256" },
+            "contentHash": { "$ref": "#/$defs/Sha256" }
+          }
+        }
+      ]
+    },
+    "ObservationSummaryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observationId", "sourceRecordId", "deploymentId", "deploymentStatusId", "occurredAt", "commitSha", "treeSha", "environmentClass", "outcome", "evidenceRefs"],
+      "properties": {
+        "observationId": { "$ref": "#/$defs/Identifier" },
+        "sourceRecordId": { "$ref": "#/$defs/Identifier" },
+        "deploymentId": { "$ref": "#/$defs/DecimalId" },
+        "deploymentStatusId": { "$ref": "#/$defs/DecimalId" },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "commitSha": { "$ref": "#/$defs/GitObjectId" },
+        "treeSha": { "$ref": "#/$defs/GitObjectId" },
+        "environmentClass": { "const": "production" },
+        "outcome": { "enum": ["succeeded", "failed"] },
+        "evidenceRefs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+        }
+      }
+    },
+    "ReasonCode": {
+      "enum": [
+        "CONNECTOR_SOURCE_INVALID",
+        "CONNECTOR_REMOTE_IDENTITY_MISMATCH",
+        "CONNECTOR_PROJECT_WATERMARK_CHANGED",
+        "CONNECTOR_PHASE10_REJECTED"
+      ]
+    },
+    "PreviewV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "allowed", "reasonCodes", "remoteSnapshotHash", "contentHash", "sourceWatermark", "observationCount", "wouldMutate", "observation"],
+      "properties": {
+        "contractType": { "const": "GitHubDeploymentConnectorPreviewV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "allowed": { "type": "boolean" },
+        "reasonCodes": { "type": "array", "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/ReasonCode" } },
+        "remoteSnapshotHash": { "$ref": "#/$defs/Sha256" },
+        "contentHash": { "$ref": "#/$defs/Sha256" },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" },
+        "observationCount": { "const": 1 },
+        "wouldMutate": { "const": false },
+        "observation": { "$ref": "#/$defs/ObservationSummaryV1" }
+      }
+    }
+  }
+}

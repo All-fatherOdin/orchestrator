@@ -193,5 +193,37 @@ ledger that was deleted afterward. There were no console warnings/errors,
 framework overlay, page overflow, retained raw draft, or automatic decision.
 The formal Phase 11 completion review passed on 2026-08-07. All 13 acceptance
 clauses are evidenced with no unresolved or deferred finding, so Phase 1-11
-are completion-reviewed. No Phase 11 Slice 3 or Phase 12 work is authorized;
-the next phase requires a separately reviewed and accepted contract.
+are completion-reviewed. Phase 11 has no Slice 3; every subsequent phase needs
+a separately reviewed and accepted contract.
+
+Phase 12 GitHub Deployment Connector Contract v1 is accepted and formally
+reviewed; Slices 1-2 are implemented and verified. It permits one manually triggered,
+read-only GitHub REST adapter for one exact production deployment/status pair.
+Only terminal `success`, `failure`, and `error` map to the existing Phase 10
+deployment observation; all identity, watermark, preview, receipt, privacy,
+and idempotency authority remains in Phase 6/10. Repository coordinates and
+the API origin are fixed server configuration, the least-privilege token stays
+server-only, preview performs exactly three bounded GETs, and execute refetches
+the identical snapshot before delegating one Phase 10 mutation. Polling,
+webhooks, enumeration, remote writes, new canonical events, other providers or
+evidence families, and outcome inference remain unauthorized. Slice 2 adds one
+bounded Russian workflow in the existing intake section with exact compatible
+source selection, sanitized preview, explicit confirmation, immutable receipt,
+receipt reconciliation, exact retry, and responsive desktop/390 px states.
+The next safe step is the formal Phase 12 completion review; there is no
+authorized Slice 3.
+
+Slice 1 adds closed schemas/configuration, a secret-safe server adapter, exactly
+three fixed bounded GitHub GETs, deterministic sanitized mapping, preview and
+execute routes, exact refetch/content fencing, Phase 10 delegation, and
+receipt-first ambiguous retry reconciliation. Five focused tests, combined
+Phase 10/12 tests 11/11, TypeScript, production build, context smoke 3/3, diff
+checks, and the 270/270 full Windows regression pass. All connector network
+tests are mocked; no live GitHub token or external request was used.
+
+Slice 2 adds three focused UI tests; the combined Phase 12 run passes 8/8.
+TypeScript, production build, context smoke 3/3, diff checks, and the 273/273
+full Windows regression pass with zero failures/skips in 391.6 seconds.
+Desktop and 390 px rendered interaction pass with a clean console and a
+receipt preserved after projection refresh. Browser QA used a local mocked
+connector only; no live GitHub credential or external request was used.

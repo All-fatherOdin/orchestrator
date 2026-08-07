@@ -1,0 +1,61 @@
+{
+  "previewRequest": {
+    "contractType": "GitHubDeploymentConnectorPreviewRequestV1",
+    "contractVersion": "1.0",
+    "requestId": "github-deployment-preview",
+    "idempotencyKey": "github-deployment-preview",
+    "projectId": "project-one",
+    "changeId": "change-one",
+    "actor": "human:operator",
+    "observedProject": { "sequence": 3, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "sourceId": "github-deployments",
+    "deploymentId": "42",
+    "deploymentStatusId": "101",
+    "confirm": false
+  },
+  "executeRequest": {
+    "contractType": "GitHubDeploymentConnectorExecuteRequestV1",
+    "contractVersion": "1.0",
+    "requestId": "github-deployment-preview",
+    "idempotencyKey": "github-deployment-preview",
+    "projectId": "project-one",
+    "changeId": "change-one",
+    "actor": "human:operator",
+    "observedProject": { "sequence": 3, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "sourceId": "github-deployments",
+    "deploymentId": "42",
+    "deploymentStatusId": "101",
+    "confirm": true,
+    "remoteSnapshotHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "preview": {
+    "contractType": "GitHubDeploymentConnectorPreviewV1",
+    "contractVersion": "1.0",
+    "requestId": "github-deployment-preview",
+    "allowed": true,
+    "reasonCodes": [],
+    "remoteSnapshotHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contentHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "sourceWatermark": { "sequence": 3, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    "observationCount": 1,
+    "wouldMutate": false,
+    "observation": {
+      "observationId": "ghdo:dddddddddddddddddddddddddddddddd",
+      "sourceRecordId": "ghd:eeeeeeeeeeeeeeee:42:101",
+      "deploymentId": "42",
+      "deploymentStatusId": "101",
+      "occurredAt": "2026-08-07T10:00:00.000Z",
+      "commitSha": "1111111111111111111111111111111111111111",
+      "treeSha": "2222222222222222222222222222222222222222",
+      "environmentClass": "production",
+      "outcome": "succeeded",
+      "evidenceRefs": [
+        "github-repository:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "github-deployment:42",
+        "github-deployment-status:101",
+        "github-commit:1111111111111111111111111111111111111111"
+      ]
+    }
+  }
+}

@@ -106,8 +106,38 @@ page-level overflow checks were clean. The browser-discovered receipt-unmount
 defect was fixed and the full verification repeated on the final code.
 The formal completion review passed on 2026-08-07 with all 13 acceptance
 clauses evidenced and no unresolved or deferred finding. Phase 1-11 are now
-completion-reviewed. There is no Phase 11 Slice 3 and no accepted Phase 12;
-further implementation requires a separately reviewed and accepted contract.
+completion-reviewed. There is no Phase 11 Slice 3; every subsequent phase
+requires its own separately reviewed and accepted contract.
+
+Phase 12 GitHub Deployment Connector has a separately accepted and formally
+reviewed contract, and Slices 1-2 are implemented and verified. Its minimal scope
+is one manually triggered, read-only fetch of one exact GitHub production
+deployment and exact terminal status, mapped only to the existing Phase 10
+`DeploymentObservationV1`. The repository and API origin are server-fixed,
+credentials are server-only and read-only, preview performs exactly three
+bounded GETs and no mutation, and execute refetches the same snapshot before
+delegating the only write to Phase 10. No GitHub enumeration, webhook, polling,
+background job, remote write, rollback/hotfix inference, other provider, or
+other evidence family is authorized. Slice 2 adds the confirmed Russian
+operator workflow over the existing Slice 1 API: exact compatible-source
+selection, sanitized preview, explicit confirmation, immutable receipt,
+receipt reconciliation, exact retry, and responsive desktop/390 px states.
+The next safe step is the formal Phase 12 completion review; there is no
+authorized Slice 3.
+
+Slice 1 verification passes five focused connector tests, the combined Phase
+10/12 focused run (11/11), TypeScript, production build, context smoke 3/3,
+diff checks, and the full Windows regression (270/270, zero failures/skips,
+422.88 seconds). No live GitHub credential or external request was used; all
+network behavior was exercised through bounded mocked responses.
+
+Slice 2 verification passes three focused UI tests and the combined Phase 12
+run (8/8), TypeScript, production build, context smoke 3/3, diff checks, and
+the full Windows regression (273/273, zero failures/skips, 391.6 seconds).
+Rendered interaction passed at desktop and 390 px, including a clean console,
+sanitized preview, explicit confirmation, import, projection refresh, and
+preserved immutable receipt. Browser QA used a local mocked connector only;
+no live GitHub credential or external request was used.
 
 ## Source Boundaries
 
@@ -138,6 +168,8 @@ further implementation requires a separately reviewed and accepted contract.
   `docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
 - Accepted Phase 11 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/operational-evidence-intake-contract-v1.md`.
+- Accepted and reviewed Phase 12 contract; Slices 1-2 implemented and verified:
+  `docs/architecture/change-control-plane/github-deployment-connector-contract-v1.md`.
 - Phase 11 product evidence: current code and `server/index.test.ts`.
 - Phase 10 product evidence: current code and `server/index.test.ts`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
@@ -164,7 +196,11 @@ further implementation requires a separately reviewed and accepted contract.
   explicit and cannot enter denominators.
 - Do not treat Phase 10 imports as deployment, rollback, billing, incident,
   acceptance, or runtime authority. External connectors and background capture
-  remain unauthorized.
+  remain unauthorized except for the exact manually triggered read-only GitHub
+  deployment adapter declared by the accepted Phase 12 contract.
+- Do not expand Phase 12 into enumeration, polling, webhooks, background work,
+  GitHub writes, other providers/evidence families, or inferred operational
+  outcomes.
 
 ## Verification
 

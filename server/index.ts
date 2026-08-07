@@ -136,6 +136,11 @@ import {
   parseOutcomeScorecardDiscoveryRequestV1,
   type OutcomeScorecardSourcesV1,
 } from "./outcome-scorecards-v1/index.ts";
+import {
+  GitHubDeploymentConnectorErrorV1,
+  GitHubDeploymentConnectorServiceV1,
+  loadGitHubDeploymentConnectorConfigV1,
+} from "./github-deployment-connector-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -7491,6 +7496,97 @@ export function installOperationalOutcomeRoutesV1(
   );
 }
 installOperationalOutcomeRoutesV1(app, changeControlStore);
+
+type GitHubDeploymentConnectorRouteServiceV1 = Pick<
+  GitHubDeploymentConnectorServiceV1,
+  "preview" | "execute"
+>;
+
+function sendGitHubDeploymentConnectorErrorV1(
+  response: express.Response,
+  error: unknown,
+) {
+  if (error instanceof GitHubDeploymentConnectorErrorV1)
+    return response.status(error.status).json({
+      error: "GitHub deployment connector request rejected.",
+      code: error.reasonCode,
+      ...(error.retryAfterSeconds !== undefined
+        ? { retryAfterSeconds: error.retryAfterSeconds }
+        : {}),
+      ...(error.rateLimitResetAt !== undefined
+        ? { rateLimitResetAt: error.rateLimitResetAt }
+        : {}),
+    });
+  return response.status(503).json({
+    error: "GitHub deployment connector unavailable.",
+    code: "CONNECTOR_RESULT_AMBIGUOUS",
+  });
+}
+
+export function installGitHubDeploymentConnectorRoutesV1(
+  targetApp: express.Express,
+  service: GitHubDeploymentConnectorRouteServiceV1,
+) {
+  targetApp.post(
+    "/api/evidence-connectors/v1/github-deployments/preview",
+    async (request, response) => {
+      try {
+        return response.json(await service.preview(request.body));
+      } catch (error) {
+        return sendGitHubDeploymentConnectorErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.post(
+    "/api/evidence-connectors/v1/github-deployments/execute",
+    async (request, response) => {
+      try {
+        return response.status(201).json(await service.execute(request.body));
+      } catch (error) {
+        return sendGitHubDeploymentConnectorErrorV1(response, error);
+      }
+    },
+  );
+  targetApp.use(
+    "/api/evidence-connectors/v1/github-deployments",
+    (
+      error: unknown,
+      _request: express.Request,
+      response: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      const bodyError = error as { type?: unknown; status?: unknown };
+      const tooLarge =
+        bodyError?.type === "entity.too.large" || bodyError?.status === 413;
+      return response.status(tooLarge ? 413 : 400).json({
+        error: "GitHub deployment connector request rejected.",
+        code: "CONNECTOR_REQUEST_INVALID",
+      });
+    },
+  );
+}
+
+export const githubDeploymentConnectorServiceV1 =
+  new GitHubDeploymentConnectorServiceV1(
+    loadGitHubDeploymentConnectorConfigV1(process.env),
+    {
+      getChangeDetails: async (projectId, changeId) =>
+        (await changeControlStore.get(projectId, changeId)).change.details as Record<
+          string,
+          unknown
+        >,
+      getOperationalOutcomeProjectionV1: (projectId, changeId) =>
+        changeControlStore.getOperationalOutcomeProjectionV1(projectId, changeId),
+      previewOperationalOutcomeImportV1: (value) =>
+        changeControlStore.previewOperationalOutcomeImportV1(value),
+      executeOperationalOutcomeImportV1: (value) =>
+        changeControlStore.executeOperationalOutcomeImportV1(value),
+    },
+  );
+installGitHubDeploymentConnectorRoutesV1(
+  app,
+  githubDeploymentConnectorServiceV1,
+);
 
 function sendOperatorActionErrorV1(
   response: express.Response,
