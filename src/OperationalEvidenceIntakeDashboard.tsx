@@ -1,24 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { OperationalEvidenceWorkflows } from "./OperationalEvidenceWorkflows";
 
 type ProjectionItem = { projectId: string; entityId: string; data: Record<string, unknown> };
 type Phase6Projection = {
   sourceWatermarks: Array<{ projectId: string; sequence: number; hash: string | null }>;
   items: ProjectionItem[];
 };
-type EvidenceSource = {
+export type EvidenceSource = {
   sourceId: string; family: string; sourceSystem: string; formatVersion: string;
   allowedKinds: string[]; privacyClass: string; status: string; ownerActor: string;
   registeredAt: string; registeredSequence: number; sourceHash: string;
 };
-type Observation = Record<string, unknown> & {
+export type Observation = Record<string, unknown> & {
   observationId: string; sourceRecordId: string; occurredAt: string; evidenceRefs: string[];
 };
-type Attribution = {
+export type Attribution = {
   observationId: string; changeId: string; decision: string; reasonCode: string;
   evidenceRefs: string[]; decidedBy: string; decidedAt: string; sequence: number;
 };
-type Receipt = {
-  receiptId: string; operationKind: string; actor: string; contentHash: string;
+export type Receipt = {
+  receiptId: string; operationKind: string; requestId: string; idempotencyKey: string; actor: string; contentHash: string;
   sourceWatermark: { sequence: number; hash: string | null };
   resultingWatermark: { sequence: number; hash: string | null };
   observationIds: string[]; publishedAt: string; receiptHash: string;
@@ -160,8 +161,8 @@ export function OperationalEvidenceIntakeDashboard() {
     clearResult();
   }
 
-  async function loadProjection() {
-    if (!projectId || !changeId) return;
+  async function loadProjection(): Promise<OperationalEvidenceProjection | null> {
+    if (!projectId || !changeId) return null;
     const requestId = ++projectionRequestRef.current;
     setLoading(true); setError(null);
     try {
@@ -169,9 +170,11 @@ export function OperationalEvidenceIntakeDashboard() {
       const body = await response.json() as OperationalEvidenceProjection | { code?: string; error?: string };
       if (!response.ok) throw Object.assign(new Error("error" in body && body.error ? body.error : "Не удалось прочитать данные результатов."), { code: "code" in body ? body.code : undefined });
       if (requestId === projectionRequestRef.current) setProjection(body as OperationalEvidenceProjection);
+      return body as OperationalEvidenceProjection;
     } catch (reason) {
       const value = reason as Error & { code?: string };
       if (requestId === projectionRequestRef.current) { setProjection(null); setError({ code: value.code ?? "SOURCE_UNAVAILABLE", message: value.message }); }
+      return null;
     } finally { if (requestId === projectionRequestRef.current) setLoading(false); }
   }
 
@@ -190,7 +193,7 @@ export function OperationalEvidenceIntakeDashboard() {
     </section>
     {loading ? <div className="intakeLoading"><i /><div><b>Чтение проекции Phase 10</b><span>{projectId} / {changeId}</span></div></div> : null}
     {error && state ? <section className={`intakeState ${state.kind}`} role="alert"><small>{error.code}</small><h3>{state.title}</h3><p>{error.message}</p><button onClick={() => void loadProjection()} disabled={!changeId}>Повторить чтение</button></section> : null}
-    {!loading && !error && projection ? <OperationalEvidenceProjectionResult projection={projection} changeId={changeId} /> : null}
+    {!error && projection ? <><OperationalEvidenceWorkflows key={`${projectId}\0${changeId}`} projectId={projectId} changeId={changeId} projection={projection} onRefresh={loadProjection} /><OperationalEvidenceProjectionResult projection={projection} changeId={changeId} /></> : null}
     {!loading && !error && !projection ? <div className="operatorEmpty intakeWaiting"><span aria-hidden="true">↳</span><h3>Выберите точное изменение</h3><p>Затем явно запросите ограниченную проекцию Phase 10.</p></div> : null}
   </div>;
 }

@@ -172,14 +172,22 @@ External connectors, polling, background
 capture, publication, deployment/rollback execution, currency conversion, and
 business-impact claims remain unauthorized.
 
-Phase 11 Operational Evidence Intake Slice 1 is implemented. One local Russian
-`Данные результатов` section uses bounded Phase 6 GET projections for exact
-project/change selection and performs the existing exact-change Phase 10 GET
-only after an explicit action. It renders bounded sources, observations,
-attributions, receipts, watermark, loading, empty, unavailable, stale, privacy,
-and limit states. It has no mutation route, file input, browser/repository draft
-persistence, or automatic Phase 10 request. Slice 2 may later add locally
-reviewed source lifecycle and preview-first, explicit-confirmation import and
-defect-attribution workflows with stable request identity. The contract still
-adds no connector, backend route, canonical event, background job, automatic
-attribution, deployment/billing action, or scorecard authority.
+Phase 11 Operational Evidence Intake is implemented through Slice 2. The local
+Russian `Данные результатов` section uses exact bounded Phase 6 selection and
+existing Phase 10 APIs only. Read-only projection groups and explicit safe
+states are joined by local-review source lifecycle plus preview-first import
+and defect attribution. Closed local parsing rejects non-UTF-8, prohibited,
+wrong-kind, over-count, and oversized drafts. Stable request/idempotency
+identities bind preview, execute, receipt reconciliation, and exact retry;
+changing semantic input invalidates authority. No attribution decision is
+preselected. Raw drafts and filenames do not persist or enter rendered
+diagnostics. No connector, backend route, canonical event, background job,
+automatic attribution, deployment/billing action, or scorecard authority is
+added.
+Verification passes: five focused Phase 11 tests, TypeScript, production
+build, context smoke 3/3, diff checks, and the final 265/265 Windows regression.
+In-app Chromium QA exercised exact selection, local source review, allowed
+preview, explicit import, durable receipt visibility through projection
+refresh, and guarded empty attribution at 1280/390 px against a temporary
+ledger that was deleted afterward. There were no console warnings/errors,
+framework overlay, page overflow, retained raw draft, or automatic decision.

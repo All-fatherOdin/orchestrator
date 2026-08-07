@@ -168,4 +168,10 @@ no backend route, canonical event, connector, background work, automatic
 attribution, deployment/billing action, draft persistence, or scorecard
 authority. Slice 1 is implemented: one GET-only Russian intake section uses
 exact Phase 6 project/change selection and renders bounded Phase 10 projection
-groups and explicit safe states. Slice 2 has not started.
+groups and explicit safe states. Slice 2 is implemented with local-review
+source lifecycle, preview-first import/attribution, stable request identity,
+ambiguous-result receipt reconciliation, exact retry, closed local JSON
+validation, and no draft persistence.
+Slice 2 verification passed on 2026-08-07: five focused Phase 11 tests,
+TypeScript, production build, context smoke, diff checks, the final 265/265
+Windows regression, and isolated-ledger Chromium interaction at 1280/390 px.

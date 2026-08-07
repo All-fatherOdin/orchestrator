@@ -86,15 +86,24 @@ the exact read-only scorecard navigation at 1280 px and 390 px with meaningful
 Russian content, a clean console, no framework overlay, and no page-level
 horizontal overflow. Phase 1-10 are now completion-reviewed.
 
-Phase 11 Operational Evidence Intake Slice 1 is implemented. The Russian
-read-only Control Plane section selects exact bounded Phase 6 project/change
-evidence and, only after an explicit action, reads the existing Phase 10
-exact-change projection. It renders bounded sources, observations,
-attributions, receipts, watermarks, and explicit loading, empty, unavailable,
-stale, privacy, and limit states. It adds no mutation request, file input,
-draft persistence, or automatic fetch of Phase 10 evidence. The next safe step
-is the separately bounded Slice 2 manual source lifecycle and preview-first
-import/attribution workflow.
+Phase 11 Operational Evidence Intake is implemented through Slice 2. Slice 1
+provides exact bounded Phase 6 selection and an explicit read of the existing
+Phase 10 projection. Slice 2 adds local two-step source lifecycle review and
+preview-first import/attribution over the six existing Phase 10 POST routes.
+Request and idempotency identities remain stable through preview, execute,
+receipt reconciliation, and exact retry. Draft JSON is locally UTF-8,
+privacy, closed-shape, kind, count, and byte validated; raw input and filenames
+are not retained, rendered, logged, downloaded, or persisted. Attribution has
+no automatic decision and requires an exact candidate change. No connector,
+backend route, canonical event, background work, deployment/billing action, or
+scorecard authority is added.
+Five focused Phase 11 tests, TypeScript, production build, context smoke 3/3,
+diff checks, and the final 265/265 Windows regression pass. Rendered Chromium
+QA exercised local source review and a real preview/execute/receipt import over
+an isolated temporary ledger at 1280 px, plus the guarded no-candidate
+attribution state at 390 px; console, framework overlay, raw-draft, and
+page-level overflow checks were clean. The browser-discovered receipt-unmount
+defect was fixed and the full verification repeated on the final code.
 
 ## Source Boundaries
 
@@ -123,9 +132,9 @@ import/attribution workflow.
   `docs/architecture/change-control-plane/outcome-scorecards-contract-v1.md`.
 - Accepted Phase 10 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
-- Accepted and reviewed Phase 11 contract; Slice 1 implemented:
+- Accepted and reviewed Phase 11 contract; Slices 1-2 implemented:
   `docs/architecture/change-control-plane/operational-evidence-intake-contract-v1.md`.
-- Phase 11 Slice 1 product evidence: current code and `server/index.test.ts`.
+- Phase 11 product evidence: current code and `server/index.test.ts`.
 - Phase 10 product evidence: current code and `server/index.test.ts`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
 - Phase 3 execution evidence:

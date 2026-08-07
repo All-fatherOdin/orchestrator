@@ -1,6 +1,6 @@
 # Operational Evidence Intake Contract v1
 
-Status: accepted contract; Slice 1 implemented
+Status: accepted contract; Slices 1-2 implemented
 Accepted: 2026-08-07
 Reviewed: 2026-08-07
 
@@ -240,6 +240,29 @@ mutation route, file input, draft persistence, or automatic request.
 Add source lifecycle local review/confirmation plus import and attribution
 server preview/confirmation/execute flows. Preserve stable request identity,
 ambiguous-result receipt refresh, and no browser/repository draft persistence.
+
+Implemented on 2026-08-07. Source registration/supersession and revocation use
+a local closed-request review followed by a separate execute action. Import and
+defect attribution use the existing server preview endpoints, retain one
+request/idempotency identity through preview and execution, and enable execute
+only for an allowed preview bound to the current watermark. The UI locally
+rejects non-UTF-8, non-array, non-closed, prohibited, wrong-kind, over-count,
+and over-65,536-byte drafts; parsed raw input and filenames are not retained or
+rendered. Ambiguous execution first refreshes receipts by the original
+`requestId` and permits only an exact same-identity retry when no receipt is
+found. Attribution starts without a selected decision and accepts only an
+exact candidate change.
+
+Slice 2 verification passed on 2026-08-07: five focused Phase 11 tests,
+TypeScript, production build, context smoke 3/3, diff checks, and the full
+265/265 Windows regression pass. In-app Chromium QA used an isolated temporary
+ledger to exercise exact selection, projection read, local source review,
+allowed no-mutation import preview, explicit execute, receipt rendering, and
+projection refresh at 1280 px. The same state and an attribution-without-
+candidate guard were checked at 390 px with no console warning/error,
+framework overlay, page-level horizontal overflow, automatic attribution
+choice, or raw draft left in the DOM. The temporary ledger was deleted after
+QA and no repository or ordinary user data was mutated.
 
 ## Acceptance
 

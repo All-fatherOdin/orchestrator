@@ -39,7 +39,7 @@ were observed.
     completion-reviewed.
 15. [operational-evidence-intake-contract-v1.md](operational-evidence-intake-contract-v1.md)
     defines the accepted and reviewed Phase 11 manual-intake UI boundary;
-    Slice 1 is implemented.
+    Slices 1-2 are implemented.
 
 ## Current Boundary
 
@@ -116,10 +116,15 @@ Phase 11 Operational Evidence Intake Contract v1 is accepted and reviewed.
 It authorizes only a local Russian dashboard over existing Phase 6 selection
 and Phase 10 projection/mutation APIs. Slice 1 is a read-only intake shell;
 Slice 2 adds explicit-confirmation source lifecycle plus preview-first import
-and attribution workflows. Slice 1 is implemented with exact bounded selection,
-an explicit GET-only Phase 10 read, bounded projection groups, and explicit
-safe states. Slice 2 has not started. No connector, background capture, new
-route, or new canonical authority is authorized.
+and attribution workflows. Both slices are implemented with exact bounded
+selection, closed local validation, stable request identities, explicit
+preview/confirmation, receipt reconciliation, and no draft persistence. No
+connector, background capture, new route, or new canonical authority is
+authorized.
+Five focused tests, TypeScript, production build, context smoke, diff checks,
+the final 265/265 Windows regression, and real temporary-ledger Chromium QA at
+1280/390 px pass. Preview, execute, receipt refresh, no-candidate attribution,
+console health, draft clearing, and page overflow were exercised.
 
 ## Authority
 

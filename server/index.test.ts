@@ -242,6 +242,12 @@ const {
   operationalEvidenceProjectionUrl,
 } = await import("../src/OperationalEvidenceIntakeDashboard.tsx");
 const {
+  OperationalEvidenceWorkflows,
+  operationalPreviewMatches,
+  operationalRequestFitsLimit,
+  parseOperationalObservationDraft,
+} = await import("../src/OperationalEvidenceWorkflows.tsx");
+const {
   ChangeControlError,
   ChangeControlStore,
   attemptEvidenceSnapshotHashV1,
@@ -13974,6 +13980,8 @@ test("Phase 11 Slice 1 exposes one exact read-only operational evidence entry wi
     assert.equal(source.includes(prohibited), false, prohibited);
   for (const required of ["Источники доказательств", "Операционные наблюдения", "Решения об атрибуции", "Неизменяемые квитанции", "Только чтение", "Показать данные"])
     assert.match(source, new RegExp(required));
+  assert.match(source, /!error && projection \? <>/);
+  assert.equal(source.includes("!loading && !error && projection ?"), false);
   const styles = await readFile(join("src", "styles.css"), "utf8");
   assert.match(styles, /@media\(max-width:720px\).*\.intakeFields\{grid-template-columns:1fr\}/s);
 });
@@ -13996,6 +14004,57 @@ test("Phase 11 Slice 1 renders bounded evidence groups and explicit unavailable,
   assert.equal(operationalEvidenceErrorState("OUTCOME_PRIVACY_VIOLATION").kind, "privacy-rejected");
   assert.equal(operationalEvidenceErrorState("OUTCOME_MANIFEST_TOO_LARGE").kind, "limit-rejected");
   assert.equal(operationalEvidenceErrorState("SOURCE_UNAVAILABLE").kind, "unavailable");
+});
+
+test("Phase 11 Slice 2 locally accepts only closed privacy-safe bounded observation arrays", () => {
+  const observations = structuredClone((operationalOutcomesV1Examples as any).deploymentImport.observations);
+  assert.deepEqual(parseOperationalObservationDraft(JSON.stringify(observations), ["deployment"]), observations);
+  assert.throws(() => parseOperationalObservationDraft("{}", ["deployment"]), /закрытый массив/);
+  assert.throws(() => parseOperationalObservationDraft(JSON.stringify(observations), ["provider-cost"]), /закрытый массив/);
+  const extra = structuredClone(observations); extra[0].projectId = "cannot-override-envelope";
+  assert.throws(() => parseOperationalObservationDraft(JSON.stringify(extra), ["deployment"]), /закрытый массив/);
+  const privateDraft = structuredClone(observations); privateDraft[0].rawPayload = "private";
+  assert.throws(() => parseOperationalObservationDraft(JSON.stringify(privateDraft), ["deployment"]), (error: any) => error.code === "OUTCOME_PRIVACY_VIOLATION");
+  assert.throws(() => parseOperationalObservationDraft(`"${"x".repeat(65_537)}"`, ["deployment"]), (error: any) => error.code === "OUTCOME_MANIFEST_TOO_LARGE");
+  assert.equal(operationalRequestFitsLimit({ observations }), true);
+  assert.equal(operationalRequestFitsLimit({ observations, padding: "x".repeat(65_537) }), false);
+});
+
+test("Phase 11 Slice 2 binds preview to stable request identity and exact current watermark", () => {
+  const request: any = { requestId: "phase11:request", idempotencyKey: "phase11:request:once", observedProject: { sequence: 7, hash: "a".repeat(64) } };
+  const preview: any = { requestId: request.requestId, sourceWatermark: { ...request.observedProject }, allowed: true, contentHash: "b".repeat(64) };
+  assert.equal(operationalPreviewMatches(request, preview, request.observedProject), true);
+  assert.equal(operationalPreviewMatches({ ...request, requestId: "changed" }, preview, request.observedProject), false);
+  assert.equal(operationalPreviewMatches(request, preview, { sequence: 8, hash: "c".repeat(64) }), false);
+});
+
+test("Phase 11 Slice 2 exposes local-review lifecycle and preview-first import and attribution without draft persistence", async () => {
+  const projection: any = {
+    contractType: "OperationalOutcomeProjectionV1", contractVersion: "1.0", projectId: "project-one", watermark: { sequence: 7, hash: "a".repeat(64) },
+    sources: [{ sourceId: "source-one", family: "deployment", sourceSystem: "manual", formatVersion: "1.0", allowedKinds: ["deployment"], privacyClass: "restricted-metadata-only", status: "active", ownerActor: "human:operator", registeredAt: "2026-08-07T10:00:00.000Z", registeredSequence: 3, sourceHash: "b".repeat(64) }],
+    observations: [], attributions: [], receipts: [],
+  };
+  const markup = renderToStaticMarkup(createElement(OperationalEvidenceWorkflows, { projectId: "project-one", changeId: "change-one", projection, onRefresh: async () => projection }));
+  for (const value of ["Ручной приём доказательств", "Источники", "Импорт наблюдений", "Атрибуция дефекта", "Проверить закрытый запрос", "Подтвердить и выполнить", "Без сохранения черновиков"])
+    assert.match(markup, new RegExp(value));
+  const source = await readFile(join("src", "OperationalEvidenceWorkflows.tsx"), "utf8");
+  for (const path of ["/sources/register", "/sources/revoke", "/imports/preview", "/imports/execute", "/attributions/preview", "/attributions/execute"])
+    assert.match(source, new RegExp(path.replaceAll("/", "\\/")));
+  assert.match(source, /confirm: false/);
+  assert.match(source, /confirm: true/);
+  assert.match(source, /crypto\.randomUUID\(\)/);
+  assert.match(source, /pendingResult\.request/);
+  assert.match(source, /receipts\.find\(\(item\) => item\.requestId === pendingResult\.request\.requestId\)/);
+  assert.match(source, /Повторить тот же запрос/);
+  assert.match(source, /new TextDecoder\("utf-8", \{ fatal: true \}\)/);
+  assert.match(source, /file\.size > 65_536/);
+  assert.match(source, /type="file"/);
+  assert.match(source, /<option value="">Выберите вручную<\/option>/);
+  assert.equal(/useState<[^>]*>\("confirmed"\)/.test(source), false);
+  for (const prohibited of ["localStorage", "sessionStorage", "indexedDB", "console.log", "file.name"])
+    assert.equal(source.includes(prohibited), false, prohibited);
+  const styles = await readFile(join("src", "styles.css"), "utf8");
+  assert.match(styles, /@media\(max-width:720px\).*\.intakeWorkflowFields\{grid-template-columns:1fr\}/s);
 });
 
 test("visual task editor exposes accessible optional context controls", () => {
