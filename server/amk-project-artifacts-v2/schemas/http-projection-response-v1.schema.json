@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-project-artifacts/http-projection-response-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "requestId", "source", "results", "readOnly", "navigationOnly", "activated", "filesModified", "responseId"],
+  "properties": {
+    "contractType": { "const": "AmkProjectArtifactsProjectionResponseV1" },
+    "contractVersion": { "const": "1.0" },
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "source": { "$ref": "#/$defs/source" },
+    "results": { "type": "array", "maxItems": 201, "items": { "$ref": "#/$defs/result" } },
+    "readOnly": { "const": true },
+    "navigationOnly": { "const": true },
+    "activated": { "const": false },
+    "filesModified": { "const": false },
+    "responseId": { "type": "string", "pattern": "^AMK-HTTP-[a-f0-9]{64}$" }
+  },
+  "$defs": {
+    "source": { "oneOf": [{ "$ref": "#/$defs/runSource" }, { "$ref": "#/$defs/queueSource" }] },
+    "runSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorKind", "projectId", "runId", "sourceHash", "sourceByteLength", "sourceWatermark", "runStatus", "taskCount"],
+      "properties": {
+        "selectorKind": { "const": "run" },
+        "projectId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+        "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+        "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceByteLength": { "type": "integer", "minimum": 0 },
+        "sourceWatermark": { "type": "string", "pattern": "^AMK-RUN-[a-f0-9]{64}-[0-9]+$" },
+        "runStatus": { "type": "string", "minLength": 1 },
+        "taskCount": { "type": "integer", "minimum": 0 },
+        "startedAt": { "type": "string", "minLength": 1 },
+        "finishedAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "queueSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorKind", "projectId", "queueId", "sourceHash", "sourceByteLength", "sourceWatermark", "taskCount"],
+      "properties": {
+        "selectorKind": { "const": "queue" },
+        "projectId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+        "queueId": { "type": "string", "pattern": "^QUEUE-[a-f0-9]{64}$" },
+        "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceByteLength": { "type": "integer", "minimum": 0 },
+        "sourceWatermark": { "type": "string", "pattern": "^AMK-QUEUE-[a-f0-9]{64}-[0-9]+$" },
+        "taskCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "projectionVersion", "pinnedAmkCommit", "schemaSha256", "status", "reasonCodes", "projectionId", "artifact", "artifactAvailable", "artifactSha256", "artifactByteLength", "readOnly", "navigationOnly", "activated", "filesModified"],
+      "properties": {
+        "contractType": { "enum": ["TaskContractV3", "WorkItemGraphV1", "VerificationReceiptV2", "ReviewReceiptV1"] },
+        "contractVersion": { "enum": ["3.0", "2.0", "1.0"] },
+        "projectionVersion": { "const": "1.0" },
+        "pinnedAmkCommit": { "const": "86ffff56a61d51817891af9be569cb4c2923430a" },
+        "schemaSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "status": { "enum": ["compatible", "partial", "unsupported", "conflict", "stale"] },
+        "reasonCodes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "projectionId": { "type": "string", "minLength": 1 },
+        "artifact": { "type": "null" },
+        "artifactAvailable": { "const": false },
+        "artifactSha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "artifactByteLength": { "type": "integer", "minimum": 0 },
+        "readOnly": { "const": true },
+        "navigationOnly": { "const": true },
+        "activated": { "const": false },
+        "filesModified": { "const": false }
+      }
+    }
+  }
+}

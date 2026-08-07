@@ -27,6 +27,15 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
+The AMK v5 read-only integration is implemented and completion-reviewed through
+Slice 6. Exact server-discovered run and opaque queue selectors produce only
+bounded, privacy-redacted, navigation-only projections. The Russian Control
+Plane view adds no import, queue write/launch, frontier activation, approval,
+or persistence authority. The final gates passed: 29/29 focused tests, 275/275
+full Windows regression, TypeScript, production build, context smoke 3/3, diff
+checks, and desktop/390 px rendered interaction. Any AMK Phase 2 requires a
+separate boundary and explicit authorization.
+
 Treat Phase 6, Phase 7, and Phase 8 as implemented and completion-reviewed. The backend
 provides deterministic
 no-mutation preview, fresh explicit-confirmation execution, atomic immutable

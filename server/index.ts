@@ -17,6 +17,12 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parse } from "yaml";
 import { renderProductionLegacyPromptV1 } from "./prompt-compiler-v1/legacy-prompt-renderer.mjs";
+import {
+  AmkProjectArtifactsServiceV1,
+  captureAmkJsonBodyByteLengthV1,
+  installAmkProjectArtifactsRoutesV1,
+} from "./amk-project-artifacts-v2/http.ts";
+import { AmkFilesystemRunSourceAdapterV1 } from "./amk-project-artifacts-v2/filesystem-adapter.ts";
 // The static imports keep exact schema snapshots embedded in the desktop server bundle.
 import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
 import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
@@ -6339,7 +6345,7 @@ function normalizeProjectProfile(
 }
 
 export const app = express();
-app.use(express.json({ limit: "64kb" }));
+app.use(express.json({ limit: "64kb", verify: captureAmkJsonBodyByteLengthV1 }));
 app.use(
   express.text({
     type: ["application/yaml", "text/yaml", "text/plain"],
@@ -7586,6 +7592,10 @@ export const githubDeploymentConnectorServiceV1 =
 installGitHubDeploymentConnectorRoutesV1(
   app,
   githubDeploymentConnectorServiceV1,
+);
+installAmkProjectArtifactsRoutesV1(
+  app,
+  new AmkProjectArtifactsServiceV1(new AmkFilesystemRunSourceAdapterV1(runsDirectory, resolve("queues"))),
 );
 
 function sendOperatorActionErrorV1(

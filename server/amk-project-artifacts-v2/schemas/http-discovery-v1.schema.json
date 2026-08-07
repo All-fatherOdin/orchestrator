@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-project-artifacts/http-discovery-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "pinnedAmkCommit", "supportedContracts", "selectorKinds", "limits", "sources", "readOnly", "navigationOnly", "activated", "filesModified"],
+  "properties": {
+    "contractType": { "const": "AmkProjectArtifactsDiscoveryV1" },
+    "contractVersion": { "const": "1.0" },
+    "pinnedAmkCommit": { "const": "86ffff56a61d51817891af9be569cb4c2923430a" },
+    "supportedContracts": {
+      "const": ["TaskContractV3", "WorkItemGraphV1", "VerificationReceiptV2", "ReviewReceiptV1"]
+    },
+    "selectorKinds": { "const": ["run", "queue"] },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestBytes", "responseBytes", "tasks", "evidenceItems", "sources"],
+      "properties": {
+        "requestBytes": { "const": 8192 },
+        "responseBytes": { "const": 524288 },
+        "tasks": { "const": 100 },
+        "evidenceItems": { "const": 100 },
+        "sources": { "const": 50 }
+      }
+    },
+    "sources": { "type": "array", "maxItems": 50, "items": { "$ref": "#/$defs/source" } },
+    "readOnly": { "const": true },
+    "navigationOnly": { "const": true },
+    "activated": { "const": false },
+    "filesModified": { "const": false }
+  },
+  "$defs": {
+    "source": { "oneOf": [{ "$ref": "#/$defs/runSource" }, { "$ref": "#/$defs/queueSource" }] },
+    "runSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorKind", "projectId", "runId", "sourceHash", "sourceByteLength", "sourceWatermark", "runStatus", "taskCount"],
+      "properties": {
+        "selectorKind": { "const": "run" },
+        "projectId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+        "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+        "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceByteLength": { "type": "integer", "minimum": 0 },
+        "sourceWatermark": { "type": "string", "pattern": "^AMK-RUN-[a-f0-9]{64}-[0-9]+$" },
+        "runStatus": { "type": "string", "minLength": 1 },
+        "taskCount": { "type": "integer", "minimum": 0 },
+        "startedAt": { "type": "string", "minLength": 1 },
+        "finishedAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "queueSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selectorKind", "projectId", "queueId", "sourceHash", "sourceByteLength", "sourceWatermark", "taskCount"],
+      "properties": {
+        "selectorKind": { "const": "queue" },
+        "projectId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+        "queueId": { "type": "string", "pattern": "^QUEUE-[a-f0-9]{64}$" },
+        "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceByteLength": { "type": "integer", "minimum": 0 },
+        "sourceWatermark": { "type": "string", "pattern": "^AMK-QUEUE-[a-f0-9]{64}-[0-9]+$" },
+        "taskCount": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

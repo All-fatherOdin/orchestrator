@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-project-artifacts/http-request-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "requestId", "projectId", "selectorKind", "sourceHash", "sourceByteLength", "sourceWatermark", "contracts"],
+  "oneOf": [
+    { "properties": { "selectorKind": { "const": "run" } }, "required": ["runId"], "not": { "required": ["queueId"] } },
+    { "properties": { "selectorKind": { "const": "queue" } }, "required": ["queueId"], "not": { "required": ["runId"] } }
+  ],
+  "properties": {
+    "contractType": { "const": "AmkProjectArtifactsProjectionRequestV1" },
+    "contractVersion": { "const": "1.0" },
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "projectId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+    "selectorKind": { "enum": ["run", "queue"] },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+    "queueId": { "type": "string", "pattern": "^QUEUE-[a-f0-9]{64}$" },
+    "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sourceByteLength": { "type": "integer", "minimum": 0 },
+    "sourceWatermark": { "type": "string", "pattern": "^AMK-(RUN|QUEUE)-[a-f0-9]{64}-[0-9]+$" },
+    "contracts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": { "enum": ["TaskContractV3", "WorkItemGraphV1", "VerificationReceiptV2", "ReviewReceiptV1"] }
+    }
+  }
+}

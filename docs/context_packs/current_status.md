@@ -63,6 +63,15 @@ Current boundary:
 - `queues/` remains canonical for the local launch queue selected by the user.
 - this context pack and `docs/project_map/` are summaries/navigation only.
 
+The AMK v5 read-only integration is completion-reviewed through Slice 6.
+Server-discovered run and opaque queue identities support deterministic,
+privacy-redacted projections in the Russian Control Plane without import,
+execution, activation, approval, persistence, or Project Map mutation. Final
+evidence passed 29/29 focused tests, 275/275 full Windows tests, TypeScript,
+production build, context smoke 3/3, diff checks, and desktop/390 px rendered
+interaction. A second AMK phase is neither defined nor authorized by that
+completion review.
+
 The evidence ledger, target architecture, roadmap, Planning and Drift Contract
 v1, Workspace and Merge Contract v1, and Halts and Incidents Contract v1
 remain under `docs/architecture/change-control-plane/`. Completed local
