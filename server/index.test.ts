@@ -6612,6 +6612,137 @@ test("Phase 4 HTTP APIs publish and read focused halt/incident projections", asy
   }
 });
 
+test("Incident-to-Eval production HTTP keeps exact routes private and ahead of the SPA", async () => {
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListening) =>
+    server.once("listening", resolveListening),
+  );
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const recordRoute = `${origin}/api/change-control/projects/s1-production-project/incidents/s1-production-incident/eval-candidates`;
+    const exactRoutes = [recordRoute, `${recordRoute}/preview`];
+    const expectedError = (code: string) => ({
+      error: "Incident eval candidate request rejected.",
+      code,
+    });
+    const assertPrivateJsonError = async (
+      response: globalThis.Response,
+      status: number,
+      code: string,
+      rejectedContent?: string,
+    ) => {
+      assert.equal(response.status, status, code);
+      assert.match(
+        response.headers.get("content-type") ?? "",
+        /^application\/json\b/,
+        code,
+      );
+      const text = await response.text();
+      assert.ok(Buffer.byteLength(text, "utf8") < 160, code);
+      if (rejectedContent) assert.equal(text.includes(rejectedContent), false, code);
+      assert.deepEqual(JSON.parse(text), expectedError(code));
+    };
+
+    for (const exactRoute of exactRoutes) {
+      for (const method of ["GET", "PATCH"]) {
+        await assertPrivateJsonError(
+          await fetch(exactRoute, { method }),
+          405,
+          "METHOD_NOT_ALLOWED",
+        );
+      }
+
+      const malformedMarker = "PRIVATE_MALFORMED_S1_MUST_NOT_ECHO";
+      await assertPrivateJsonError(
+        await fetch(exactRoute, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: `{"private":"${malformedMarker}"`,
+        }),
+        400,
+        "MALFORMED_JSON",
+        malformedMarker,
+      );
+
+      const exactBoundaryBody = `${" ".repeat(16_382)}{}`;
+      assert.equal(Buffer.byteLength(exactBoundaryBody, "utf8"), 16_384);
+      await assertPrivateJsonError(
+        await fetch(exactRoute, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: exactBoundaryBody,
+        }),
+        400,
+        "REQUEST_VERSION_UNSUPPORTED",
+      );
+
+      const paddedOverLimitMarker = "PRIVATE_PADDED_S1_MUST_NOT_ECHO";
+      const paddedOverLimitJson = JSON.stringify({
+        private: paddedOverLimitMarker,
+      });
+      const paddedOverLimitBody = `${" ".repeat(
+        16_385 - Buffer.byteLength(paddedOverLimitJson, "utf8"),
+      )}${paddedOverLimitJson}`;
+      assert.equal(Buffer.byteLength(paddedOverLimitBody, "utf8"), 16_385);
+      await assertPrivateJsonError(
+        await fetch(exactRoute, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: paddedOverLimitBody,
+        }),
+        413,
+        "REQUEST_LIMIT_EXCEEDED",
+        paddedOverLimitMarker,
+      );
+
+      const parserLimitMarker = "PRIVATE_PARSER_LIMIT_S1_MUST_NOT_ECHO";
+      await assertPrivateJsonError(
+        await fetch(exactRoute, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            private: parserLimitMarker,
+            padding: "x".repeat(70_000),
+          }),
+        }),
+        413,
+        "REQUEST_TOO_LARGE",
+        parserLimitMarker,
+      );
+    }
+
+    const spaResponse = await fetch(
+      `${origin}/incident-to-eval-production-spa-proof/deep-link`,
+    );
+    let expectedSpaIndex: string | undefined;
+    try {
+      expectedSpaIndex = await readFile(
+        join(process.env.ORCHESTRATOR_WEB_ROOT || "dist", "index.html"),
+        "utf8",
+      );
+    } catch {
+      expectedSpaIndex = undefined;
+    }
+    if (expectedSpaIndex === undefined) {
+      assert.equal(spaResponse.status, 404);
+      assert.equal(
+        await spaResponse.text(),
+        "Run npm run dev for the Vite dashboard.",
+      );
+    } else {
+      assert.equal(spaResponse.status, 200);
+      assert.match(spaResponse.headers.get("content-type") ?? "", /^text\/html\b/);
+      assert.equal(await spaResponse.text(), expectedSpaIndex);
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("change-control preserves a JSON __proto__ payload key", async () => {
   const root = await mkdtemp(join(tmpdir(), "orchestrator-change-control-"));
   try {
@@ -16442,7 +16573,7 @@ test("review-enabled completion fails closed unless a strict reviewer verdict ap
   );
 });
 
-test("reviewer prompt requires the exact configured verification commands", () => {
+test("reviewer prompt consumes exact Orchestrator verification evidence without rerunning commands", () => {
   const python =
     "& 'C:\\Tools\\Python\\python.exe' -m pytest 'Agent Kit/kit/tests/test_governance_extensions.py' -q";
   const prompt = buildReviewerPrompt(
@@ -16465,14 +16596,21 @@ test("reviewer prompt requires the exact configured verification commands", () =
         branch: "main",
         authorityFingerprint: "authority",
       },
+      verificationEvidence: [
+        { command: python, exitCode: 0, timedOut: false, output: "7 passed" },
+        { command: "git diff --check", exitCode: 0, timedOut: false, output: "" },
+      ],
     },
     { verificationCommands: ["ignored fallback"] },
   );
 
-  assert.match(prompt, /Run only these exact verification commands verbatim/);
-  assert.match(prompt, /Do not substitute executables, aliases, launchers, or commands/);
-  assert.ok(prompt.includes(`1. ${python}`));
-  assert.ok(prompt.includes("2. git diff --check"));
+  assert.match(prompt, /already ran the exact verification commands/);
+  assert.match(prompt, /do not rerun verification commands/);
+  assert.ok(prompt.includes(`1. COMMAND: ${python}`));
+  assert.ok(prompt.includes("2. COMMAND: git diff --check"));
+  assert.match(prompt, /EXIT_CODE: 0/);
+  assert.match(prompt, /7 passed/);
+  assert.match(prompt, /Select-String\/Get-Content when rg is unavailable/);
   assert.doesNotMatch(prompt, /ignored fallback/);
 });
 

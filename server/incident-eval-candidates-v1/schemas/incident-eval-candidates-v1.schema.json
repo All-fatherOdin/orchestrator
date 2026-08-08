@@ -1,0 +1,587 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/incident-eval-candidates-v1.schema.json",
+  "title": "Incident Eval Candidates v1",
+  "oneOf": [
+    { "$ref": "#/$defs/IncidentEvalCandidateProposalV1" },
+    { "$ref": "#/$defs/IncidentEvalCandidateSourceSnapshotV1" },
+    { "$ref": "#/$defs/IncidentEvalCandidateV1" },
+    { "$ref": "#/$defs/IncidentEvalCandidatePreviewV1" },
+    { "$ref": "#/$defs/RecordIncidentEvalCandidateRequestV1" },
+    { "$ref": "#/$defs/IncidentEvalCandidateReceiptV1" }
+  ],
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$"
+    },
+    "ReferenceOnlyIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,255}$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "CandidateId": {
+      "type": "string",
+      "pattern": "^iec_[a-f0-9]{64}$"
+    },
+    "RequestId": {
+      "type": "string",
+      "pattern": "^iecp_[a-f0-9]{64}$"
+    },
+    "Watermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "hash"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "hash": {
+          "oneOf": [
+            { "$ref": "#/$defs/Sha256" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "EvidenceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/Identifier" }
+    },
+    "ProposalEvidenceRefs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/Identifier" }
+    },
+    "FixtureDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixtureRef",
+        "contentHash",
+        "byteLength",
+        "privacyClassification"
+      ],
+      "properties": {
+        "fixtureRef": { "$ref": "#/$defs/ReferenceOnlyIdentifier" },
+        "contentHash": { "$ref": "#/$defs/Sha256" },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "privacyClassification": {
+          "enum": ["public_fixture", "approved_internal_fixture"]
+        }
+      }
+    },
+    "OracleRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "oracleRef"],
+      "properties": {
+        "kind": { "enum": ["executable", "human"] },
+        "oracleRef": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "AttemptSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attemptId"],
+      "properties": {
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "invocationId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "IncidentEvalCandidateProposalV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "incidentId",
+        "expectedWatermark",
+        "fixture",
+        "oracle",
+        "selectedEvidenceRefs",
+        "idempotencyKey"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentEvalCandidateProposalV1" },
+        "contractVersion": { "const": "1.0" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "expectedWatermark": { "$ref": "#/$defs/Watermark" },
+        "fixture": { "$ref": "#/$defs/FixtureDescriptor" },
+        "oracle": { "$ref": "#/$defs/OracleRequirement" },
+        "selectedEvidenceRefs": { "$ref": "#/$defs/ProposalEvidenceRefs" },
+        "selector": { "$ref": "#/$defs/AttemptSelector" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "SourceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "HaltRecordHash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["haltId", "recordHash"],
+      "properties": {
+        "haltId": { "$ref": "#/$defs/Identifier" },
+        "recordHash": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "Phase5Snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindingId",
+        "waveId",
+        "taskId",
+        "attemptId",
+        "promptArtifactIds",
+        "modelRouteId",
+        "evidenceRefs",
+        "complete"
+      ],
+      "properties": {
+        "bindingId": { "$ref": "#/$defs/Identifier" },
+        "invocationBindingId": { "$ref": "#/$defs/Identifier" },
+        "resolutionId": { "$ref": "#/$defs/Identifier" },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "invocationId": { "$ref": "#/$defs/Identifier" },
+        "promptArtifactIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "modelRouteId": { "$ref": "#/$defs/Identifier" },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "complete": { "type": "boolean" }
+      }
+    },
+    "IncidentEvalCandidateSourceSnapshotV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "projectId",
+        "changeId",
+        "incidentId",
+        "incidentFingerprintVersion",
+        "incidentFingerprint",
+        "incidentState",
+        "reopenOrdinal",
+        "severity",
+        "orderedHaltIds",
+        "scope",
+        "incidentRecordHash",
+        "haltRecordHashes",
+        "knownEvidenceRefs",
+        "phase5Joins",
+        "registeredExecutableOracleRefs",
+        "watermark",
+        "generationPolicyId",
+        "privacyPolicyId",
+        "sourceSnapshotHash"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentEvalCandidateSourceSnapshotV1" },
+        "contractVersion": { "const": "1.0" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "incidentFingerprintVersion": { "const": "incident-v1" },
+        "incidentFingerprint": { "$ref": "#/$defs/Sha256" },
+        "incidentState": {
+          "enum": [
+            "open",
+            "investigating",
+            "healing",
+            "mitigated",
+            "escalated",
+            "resolved",
+            "reopened"
+          ]
+        },
+        "reopenOrdinal": { "type": "integer", "minimum": 0 },
+        "severity": { "enum": ["info", "warning", "blocking", "critical"] },
+        "orderedHaltIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "scope": { "$ref": "#/$defs/SourceScope" },
+        "incidentRecordHash": { "$ref": "#/$defs/Sha256" },
+        "haltRecordHashes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/HaltRecordHash" }
+        },
+        "knownEvidenceRefs": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "phase5Joins": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/Phase5Snapshot" }
+        },
+        "registeredExecutableOracleRefs": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "watermark": { "$ref": "#/$defs/Watermark" },
+        "generationPolicyId": {
+          "const": "incident-eval-candidate-generation-v1"
+        },
+        "privacyPolicyId": {
+          "const": "incident-eval-candidate-privacy-v1"
+        },
+        "sourceSnapshotHash": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "SupportedPhase5Lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "bindingId",
+        "resolutionId",
+        "promptArtifactIds",
+        "modelRouteId"
+      ],
+      "properties": {
+        "state": { "const": "supported" },
+        "bindingId": { "$ref": "#/$defs/Identifier" },
+        "invocationBindingId": { "$ref": "#/$defs/Identifier" },
+        "resolutionId": { "$ref": "#/$defs/Identifier" },
+        "invocationId": { "$ref": "#/$defs/Identifier" },
+        "promptArtifactIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "modelRouteId": { "$ref": "#/$defs/Identifier" }
+      }
+    },
+    "UnsupportedPhase5Lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reasonCode"],
+      "properties": {
+        "state": { "const": "unsupported" },
+        "reasonCode": { "const": "PHASE5_LINEAGE_NOT_AVAILABLE" }
+      }
+    },
+    "IncidentEvalCandidateV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "candidateId",
+        "projectId",
+        "changeId",
+        "incidentId",
+        "incidentFingerprintVersion",
+        "incidentFingerprint",
+        "haltIds",
+        "phase5Lineage",
+        "inputFixture",
+        "acceptanceOracle",
+        "severity",
+        "evidenceRefs",
+        "sourceWatermark",
+        "sourceSnapshotHash",
+        "generationPolicyId",
+        "privacyPolicyId"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentEvalCandidateV1" },
+        "contractVersion": { "const": "1.0" },
+        "candidateId": { "$ref": "#/$defs/CandidateId" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "changeId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "incidentFingerprintVersion": { "const": "incident-v1" },
+        "incidentFingerprint": { "$ref": "#/$defs/Sha256" },
+        "haltIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Identifier" }
+        },
+        "waveId": { "$ref": "#/$defs/Identifier" },
+        "taskId": { "$ref": "#/$defs/Identifier" },
+        "attemptId": { "$ref": "#/$defs/Identifier" },
+        "phase5Lineage": {
+          "oneOf": [
+            { "$ref": "#/$defs/SupportedPhase5Lineage" },
+            { "$ref": "#/$defs/UnsupportedPhase5Lineage" }
+          ]
+        },
+        "inputFixture": { "$ref": "#/$defs/FixtureDescriptor" },
+        "acceptanceOracle": { "$ref": "#/$defs/OracleRequirement" },
+        "severity": { "enum": ["warning", "blocking", "critical"] },
+        "evidenceRefs": { "$ref": "#/$defs/EvidenceRefs" },
+        "sourceWatermark": { "$ref": "#/$defs/Watermark" },
+        "sourceSnapshotHash": { "$ref": "#/$defs/Sha256" },
+        "generationPolicyId": {
+          "const": "incident-eval-candidate-generation-v1"
+        },
+        "privacyPolicyId": {
+          "const": "incident-eval-candidate-privacy-v1"
+        }
+      }
+    },
+    "ReasonCode": {
+      "enum": [
+        "REQUEST_SCHEMA_INVALID",
+        "REQUEST_VERSION_UNSUPPORTED",
+        "REQUEST_LIMIT_EXCEEDED",
+        "RESPONSE_LIMIT_EXCEEDED",
+        "PROHIBITED_FIELD",
+        "SECRET_LIKE_INPUT",
+        "PROJECT_MISSING",
+        "INCIDENT_MISSING",
+        "INCIDENT_IDENTITY_MISMATCH",
+        "INCIDENT_CONTRACT_INVALID",
+        "HALT_MISSING",
+        "HALT_IDENTITY_MISMATCH",
+        "HALT_CONTRACT_INVALID",
+        "PROJECT_SOURCE_STALE",
+        "SOURCE_SNAPSHOT_INVALID",
+        "EVIDENCE_MISSING",
+        "EVIDENCE_UNKNOWN",
+        "EVIDENCE_PROHIBITED",
+        "EVIDENCE_AMBIGUOUS",
+        "ATTEMPT_LINEAGE_UNSUPPORTED",
+        "ATTEMPT_LINEAGE_CONFLICT",
+        "BINDING_LINEAGE_UNSUPPORTED",
+        "BINDING_LINEAGE_CONFLICT",
+        "INVOCATION_LINEAGE_UNSUPPORTED",
+        "INVOCATION_LINEAGE_CONFLICT",
+        "FIXTURE_REFERENCE_INVALID",
+        "FIXTURE_PRIVACY_INVALID",
+        "FIXTURE_HASH_INVALID",
+        "FIXTURE_SIZE_INVALID",
+        "ORACLE_MISSING",
+        "ORACLE_UNSUPPORTED",
+        "ORACLE_UNREGISTERED",
+        "CANDIDATE_SCHEMA_INVALID",
+        "CANDIDATE_SEMANTIC_INVALID",
+        "CANDIDATE_IDENTITY_INVALID",
+        "CANDIDATE_HASH_INVALID",
+        "PREVIEW_CONFIRMATION_MISMATCH",
+        "EXPLICIT_CONFIRMATION_REQUIRED",
+        "IDEMPOTENCY_CONFLICT",
+        "COUNT_LIMIT_EXCEEDED",
+        "LEDGER_CORRUPTION",
+        "CONCURRENT_STALE_CONTENDER"
+      ]
+    },
+    "Confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "candidateId",
+        "candidateHash",
+        "sourceSnapshotHash",
+        "expectedWatermark",
+        "idempotencyKey",
+        "confirmationHash"
+      ],
+      "properties": {
+        "requestId": { "$ref": "#/$defs/RequestId" },
+        "candidateId": { "$ref": "#/$defs/CandidateId" },
+        "candidateHash": { "$ref": "#/$defs/Sha256" },
+        "sourceSnapshotHash": { "$ref": "#/$defs/Sha256" },
+        "expectedWatermark": { "$ref": "#/$defs/Watermark" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "confirmationHash": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "ReadyPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "requestId",
+        "projectId",
+        "incidentId",
+        "expectedWatermark",
+        "observedWatermark",
+        "status",
+        "reasonCodes",
+        "diagnostics",
+        "candidate",
+        "candidateHash",
+        "confirmation",
+        "wouldMutate"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentEvalCandidatePreviewV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/RequestId" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "expectedWatermark": { "$ref": "#/$defs/Watermark" },
+        "observedWatermark": { "$ref": "#/$defs/Watermark" },
+        "status": { "const": "ready" },
+        "reasonCodes": { "type": "array", "maxItems": 0 },
+        "diagnostics": { "type": "array", "maxItems": 0 },
+        "candidate": { "$ref": "#/$defs/IncidentEvalCandidateV1" },
+        "candidateHash": { "$ref": "#/$defs/Sha256" },
+        "confirmation": { "$ref": "#/$defs/Confirmation" },
+        "wouldMutate": { "const": false }
+      }
+    },
+    "NonReadyPreview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "requestId",
+        "projectId",
+        "incidentId",
+        "expectedWatermark",
+        "observedWatermark",
+        "status",
+        "reasonCodes",
+        "diagnostics",
+        "wouldMutate"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentEvalCandidatePreviewV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/RequestId" },
+        "projectId": { "$ref": "#/$defs/Identifier" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "expectedWatermark": { "$ref": "#/$defs/Watermark" },
+        "observedWatermark": { "$ref": "#/$defs/Watermark" },
+        "status": {
+          "enum": ["insufficient-evidence", "unsupported", "conflict", "stale"]
+        },
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/ReasonCode" }
+        },
+        "diagnostics": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+        },
+        "wouldMutate": { "const": false }
+      }
+    },
+    "IncidentEvalCandidatePreviewV1": {
+      "oneOf": [
+        { "$ref": "#/$defs/ReadyPreview" },
+        { "$ref": "#/$defs/NonReadyPreview" }
+      ]
+    },
+    "RecordIncidentEvalCandidateRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "proposal",
+        "confirmation",
+        "confirmed",
+        "actor"
+      ],
+      "properties": {
+        "contractType": { "const": "RecordIncidentEvalCandidateRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "proposal": { "$ref": "#/$defs/IncidentEvalCandidateProposalV1" },
+        "confirmation": { "$ref": "#/$defs/Confirmation" },
+        "confirmed": { "const": true },
+        "actor": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "IncidentEvalCandidateReceiptV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractType",
+        "contractVersion",
+        "receiptId",
+        "eventId",
+        "projectSequence",
+        "projectWatermark",
+        "requestId",
+        "idempotencyKey",
+        "candidateId",
+        "candidateHash",
+        "incidentId",
+        "sourceSnapshotHash",
+        "actor",
+        "recordedAt",
+        "outcome"
+      ],
+      "properties": {
+        "contractType": { "const": "IncidentEvalCandidateReceiptV1" },
+        "contractVersion": { "const": "1.0" },
+        "receiptId": { "$ref": "#/$defs/Identifier" },
+        "eventId": { "$ref": "#/$defs/Identifier" },
+        "projectSequence": { "type": "integer", "minimum": 1 },
+        "projectWatermark": { "$ref": "#/$defs/Watermark" },
+        "requestId": { "$ref": "#/$defs/RequestId" },
+        "idempotencyKey": { "$ref": "#/$defs/Identifier" },
+        "candidateId": { "$ref": "#/$defs/CandidateId" },
+        "candidateHash": { "$ref": "#/$defs/Sha256" },
+        "incidentId": { "$ref": "#/$defs/Identifier" },
+        "sourceSnapshotHash": { "$ref": "#/$defs/Sha256" },
+        "actor": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "recordedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "outcome": { "enum": ["recorded", "already-recorded"] }
+      }
+    }
+  }
+}

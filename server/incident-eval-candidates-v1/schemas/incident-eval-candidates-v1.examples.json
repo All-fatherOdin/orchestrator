@@ -1,0 +1,139 @@
+{
+  "valid": [
+    {
+      "schemaDefinition": "IncidentEvalCandidateProposalV1",
+      "value": {
+        "contractType": "IncidentEvalCandidateProposalV1",
+        "contractVersion": "1.0",
+        "incidentId": "incident-example-001",
+        "expectedWatermark": {
+          "sequence": 12,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "fixture": {
+          "fixtureRef": "fixture:incident-example-001",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byteLength": 4096,
+          "privacyClassification": "public_fixture"
+        },
+        "oracle": {
+          "kind": "executable",
+          "oracleRef": "oracle:verification-v1"
+        },
+        "selectedEvidenceRefs": ["evidence:verification-result-001"],
+        "idempotencyKey": "record:incident-example-001"
+      }
+    },
+    {
+      "schemaDefinition": "IncidentEvalCandidateV1",
+      "value": {
+        "contractType": "IncidentEvalCandidateV1",
+        "contractVersion": "1.0",
+        "candidateId": "iec_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "projectId": "orchestrator",
+        "changeId": "change-phase4",
+        "incidentId": "incident-example-001",
+        "incidentFingerprintVersion": "incident-v1",
+        "incidentFingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "haltIds": ["halt-example-001"],
+        "waveId": "wave-phase4",
+        "taskId": "task-contract",
+        "phase5Lineage": {
+          "state": "unsupported",
+          "reasonCode": "PHASE5_LINEAGE_NOT_AVAILABLE"
+        },
+        "inputFixture": {
+          "fixtureRef": "fixture:incident-example-001",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byteLength": 4096,
+          "privacyClassification": "approved_internal_fixture"
+        },
+        "acceptanceOracle": {
+          "kind": "human",
+          "oracleRef": "oracle:human-review-required-v1"
+        },
+        "severity": "blocking",
+        "evidenceRefs": ["evidence:verification-result-001"],
+        "sourceWatermark": {
+          "sequence": 12,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "sourceSnapshotHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "generationPolicyId": "incident-eval-candidate-generation-v1",
+        "privacyPolicyId": "incident-eval-candidate-privacy-v1"
+      }
+    },
+    {
+      "schemaDefinition": "IncidentEvalCandidatePreviewV1",
+      "value": {
+        "contractType": "IncidentEvalCandidatePreviewV1",
+        "contractVersion": "1.0",
+        "requestId": "iecp_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "projectId": "orchestrator",
+        "incidentId": "incident-example-001",
+        "expectedWatermark": {
+          "sequence": 11,
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "observedWatermark": {
+          "sequence": 12,
+          "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "status": "stale",
+        "reasonCodes": ["PROJECT_SOURCE_STALE"],
+        "diagnostics": ["The expected project watermark is stale."],
+        "wouldMutate": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "schemaDefinition": "IncidentEvalCandidateProposalV1",
+      "reasonCode": "REQUEST_SCHEMA_INVALID",
+      "value": {
+        "contractType": "IncidentEvalCandidateProposalV1",
+        "contractVersion": "1.0",
+        "incidentId": "incident-example-001",
+        "expectedWatermark": { "sequence": 0, "hash": null },
+        "fixture": {
+          "fixtureRef": "fixture:example",
+          "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "byteLength": 10,
+          "privacyClassification": "public_fixture"
+        },
+        "oracle": { "kind": "human", "oracleRef": "oracle:human-v1" },
+        "selectedEvidenceRefs": ["evidence:one"],
+        "idempotencyKey": "record:one",
+        "projectId": "caller-must-not-supply"
+      }
+    },
+    {
+      "schemaDefinition": "IncidentEvalCandidateProposalV1",
+      "reasonCode": "REQUEST_VERSION_UNSUPPORTED",
+      "value": {
+        "contractType": "IncidentEvalCandidateProposalV1",
+        "contractVersion": "2.0"
+      }
+    },
+    {
+      "schemaDefinition": "IncidentEvalCandidateV1",
+      "reasonCode": "CANDIDATE_SCHEMA_INVALID",
+      "value": {
+        "contractType": "IncidentEvalCandidateV1",
+        "contractVersion": "1.0",
+        "candidateId": "caller-defined",
+        "prompt": "prohibited"
+      }
+    },
+    {
+      "schemaDefinition": "IncidentEvalCandidatePreviewV1",
+      "reasonCode": "CANDIDATE_SCHEMA_INVALID",
+      "value": {
+        "contractType": "IncidentEvalCandidatePreviewV1",
+        "contractVersion": "1.0",
+        "status": "ready",
+        "eventId": "preview-must-not-mutate"
+      }
+    }
+  ]
+}

@@ -149,6 +149,10 @@ import {
   GitHubDeploymentConnectorServiceV1,
   loadGitHubDeploymentConnectorConfigV1,
 } from "./github-deployment-connector-v1/index.ts";
+import {
+  captureIncidentEvalCandidateJsonBodyByteLengthV1,
+  installIncidentEvalCandidateRoutesV1,
+} from "./incident-eval-candidates-v1/http.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -811,6 +815,12 @@ type ExecutorOutcomeAssessment = {
   outcome?: ExecutorOutcome;
   reason: string;
 };
+type VerificationEvidence = {
+  command: string;
+  exitCode: number;
+  timedOut: boolean;
+  output: string;
+};
 const EXECUTOR_OUTCOME_CONTRACT_VERSION = 1 as const;
 const EXECUTOR_OUTCOME_MARKER = "ORCHESTRATOR_EXECUTOR_OUTCOME_V1";
 type ReviewSettings = {
@@ -839,6 +849,8 @@ type Task = ResolvedTask & {
   reviewStatus?: ReviewStatus;
   reviewOutput?: string;
   reviewWriteViolations?: string[];
+  /** Exact Orchestrator-run verification evidence supplied to the read-only reviewer. */
+  verificationEvidence?: VerificationEvidence[];
   /** A subprocess is still responsible for this task even if an earlier phase succeeded. */
   executionPhase?: ExecutionPhase;
   attempts?: number;
@@ -5492,12 +5504,33 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
     (effectiveAllowedPaths !== undefined && effectiveAllowedPaths.length === 0);
   const executorResult = task.finalOutput?.trim() ||
     "(The executor did not return a textual result.)";
+  const evidenceByCommand = new Map(
+    (task.verificationEvidence ?? []).map((evidence) => [
+      normalizeWindowsNpmCommand(evidence.command),
+      evidence,
+    ]),
+  );
   const verification = verificationCommands.length
     ? [
-        "Run only these exact verification commands verbatim:",
-        ...verificationCommands.map((command, index) => `${index + 1}. ${command}`),
-        "Do not substitute executables, aliases, launchers, or commands.",
-        "Do not treat a failure of an unconfigured command as verification evidence.",
+        "The Orchestrator already ran the exact verification commands below in the task workspace.",
+        "Treat these bounded records as the authoritative verification evidence; do not rerun verification commands from the read-only reviewer sandbox.",
+        ...verificationCommands.flatMap((command, index) => {
+          const evidence = evidenceByCommand.get(command);
+          return evidence
+            ? [
+                `${index + 1}. COMMAND: ${command}`,
+                `   EXIT_CODE: ${evidence.exitCode}`,
+                `   TIMED_OUT: ${evidence.timedOut}`,
+                "   OUTPUT:",
+                evidence.output || "   (no output)",
+              ]
+            : [
+                `${index + 1}. COMMAND: ${command}`,
+                "   EVIDENCE: MISSING",
+              ];
+        }),
+        "Missing evidence, a non-zero exit code, or a timeout is a verification finding.",
+        "For additional read-only source inspection, use Select-String/Get-Content when rg is unavailable; tool availability alone is not a product finding.",
       ].join("\n")
     : "No verification commands are configured; do not invent substitute commands.";
   return [
@@ -5802,7 +5835,10 @@ async function runConfiguredTaskCommands(
   task: Task,
   commands: readonly string[],
   label: string,
+  captureEvidence = false,
 ) {
+  const evidence: VerificationEvidence[] = [];
+  if (captureEvidence) task.verificationEvidence = evidence;
   for (const command of commands) {
     const executionPath = await taskExecutionPathV1(run, task);
     task.log.push(`${label}: ${command}`);
@@ -5817,8 +5853,11 @@ async function runConfiguredTaskCommands(
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
+      const output = `Verification could not start: ${error instanceof Error ? error.message : String(error)}`;
+      if (captureEvidence)
+        evidence.push({ command, exitCode: 1, timedOut: false, output });
       task.log.push(
-        `Verification could not start: ${error instanceof Error ? error.message : String(error)}`,
+        output,
       );
       return { code: 1, timedOut: false };
     }
@@ -5838,6 +5877,13 @@ async function runConfiguredTaskCommands(
     stdoutDecoder.end();
     stderrDecoder.end();
     if (output.trim()) task.log.push(output.trim());
+    if (captureEvidence)
+      evidence.push({
+        command,
+        exitCode: result.exitCode || (result.timedOut ? 1 : 0),
+        timedOut: result.timedOut,
+        output: output.trim(),
+      });
     if (result.exitCode !== 0 || result.timedOut) return {
       code: result.exitCode || 1,
       timedOut: result.timedOut,
@@ -5854,6 +5900,7 @@ async function runTaskVerification(run: Run, task: Task) {
     task,
     orchestratorVerificationCommands(evidence),
     "Orchestrator verification",
+    true,
   );
 }
 
@@ -6442,7 +6489,23 @@ installAmkQueueDraftRoutesV1(
     }))),
   ),
 );
-app.use(express.json({ limit: "64kb", verify: captureAmkJsonBodyByteLengthV1 }));
+app.use(
+  express.json({
+    limit: "64kb",
+    verify: (request, response, body) => {
+      captureAmkJsonBodyByteLengthV1(
+        request as express.Request,
+        response as express.Response,
+        body,
+      );
+      captureIncidentEvalCandidateJsonBodyByteLengthV1(
+        request as express.Request,
+        response as express.Response,
+        body,
+      );
+    },
+  }),
+);
 app.use(
   express.text({
     type: ["application/yaml", "text/yaml", "text/plain"],
@@ -7192,6 +7255,7 @@ app.post(
     }
   },
 );
+installIncidentEvalCandidateRoutesV1(app, changeControlStore);
 app.get(
   "/api/change-control/projects/:projectId/execution-bucket",
   async (request, response) => {

@@ -160,6 +160,26 @@ import {
   type OperationalEvidenceSourceRegistrationRequestV1,
   type OperationalEvidenceSourceRevocationRequestV1,
 } from "../operational-outcomes-v1/index.ts";
+import {
+  INCIDENT_EVAL_CANDIDATE_EVENT_TYPE_V1,
+  IncidentEvalCandidateErrorV1,
+  assertIncidentEvalCandidateReceiptV1,
+  assertIncidentEvalCandidateV1,
+  buildIncidentEvalCandidateSourceSnapshotV1,
+  canonicalIncidentEvalCandidateJsonV1,
+  incidentEvalCandidateHashV1,
+  normalizeIncidentEvalCandidateProposalV1,
+  normalizeRecordIncidentEvalCandidateRequestV1,
+  previewIncidentEvalCandidateV1,
+  type IncidentEvalCandidatePreviewV1,
+  type IncidentEvalCandidateProjectionV1,
+  type IncidentEvalCandidateReceiptV1,
+  type IncidentEvalCandidateSourceSnapshotV1,
+  type IncidentEvalCandidateTrustedInputV1,
+  type IncidentEvalCandidateV1,
+  type IncidentEvalCandidateWatermarkV1,
+  type IncidentEvalPhase5JoinInputV1,
+} from "../incident-eval-candidates-v1/index.ts";
 
 export {
   type CorrectIncidentCorrelationInputV1,
@@ -263,6 +283,7 @@ export const CHANGE_CONTROL_EVENT_TYPES = [
   ...RECOVERY_AUTHORIZATION_EVENT_TYPES_V1,
   ...PROMPT_MODEL_LINEAGE_EVENT_TYPES_V1,
   ...EVAL_LINEAGE_EVENT_TYPES_V1,
+  INCIDENT_EVAL_CANDIDATE_EVENT_TYPE_V1,
   "operator.action-receipt-published",
   ...OPERATIONAL_OUTCOME_EVENT_TYPES_V1,
 ] as const;
@@ -1180,6 +1201,9 @@ const promptModelLineageEventTypes = new Set<ChangeControlEventType>(
 const evalLineageEventTypes = new Set<ChangeControlEventType>(
   EVAL_LINEAGE_EVENT_TYPES_V1,
 );
+const incidentEvalCandidateEventTypes = new Set<ChangeControlEventType>([
+  INCIDENT_EVAL_CANDIDATE_EVENT_TYPE_V1,
+]);
 const operatorActionEventTypes = new Set<ChangeControlEventType>([
   "operator.action-receipt-published",
 ]);
@@ -1475,6 +1499,12 @@ type ProjectedLedger = {
   recoveryAttemptIds: Set<string>;
   promptModelLineage: MutablePromptModelLineageProjectionV1;
   evalLineage: MutableEvalLineageProjectionV1;
+  incidentEvalCandidates: Map<string, IncidentEvalCandidateV1>;
+  incidentEvalCandidateReceipts: Map<string, IncidentEvalCandidateReceiptV1>;
+  incidentEvalCandidateReceiptByIdempotencyKey: Map<
+    string,
+    IncidentEvalCandidateReceiptV1
+  >;
   operatorActionReceipts: Map<string, OperatorActionReceiptV1>;
   operatorActionReceiptByIdempotencyKey: Map<string, OperatorActionReceiptV1>;
   operationalOutcomes: MutableOperationalOutcomeProjectionV1;
@@ -1573,6 +1603,241 @@ function operationalOutcomeReplayContext(
       ? { previousEvent: previousEvent as unknown as OperationalOutcomeEventV1 }
       : {}),
   };
+}
+
+function incidentEvalCandidateWatermarkV1(
+  ledger: Ledger,
+): IncidentEvalCandidateWatermarkV1 {
+  const last = ledger.events.at(-1);
+  return { sequence: last?.sequence ?? 0, hash: last?.hash ?? null };
+}
+
+function exactIncidentScopeValueV1(
+  halts: readonly HaltRecordV1[],
+  key: "waveId" | "taskId" | "attemptId",
+) {
+  const values = [
+    ...new Set(
+      halts
+        .map((halt) => halt.scope[key])
+        .filter((value): value is string => typeof value === "string"),
+    ),
+  ];
+  return values.length === 1 ? values[0] : undefined;
+}
+
+function incidentEvalCandidateTrustedInputV1(
+  projectId: string,
+  ledger: Ledger,
+  projected: Pick<
+    ProjectedLedger,
+    | "incidents"
+    | "halts"
+    | "effectiveIncidentByHalt"
+    | "incidentEvents"
+    | "promptModelLineage"
+    | "evalLineage"
+  >,
+  incidentId: string,
+): IncidentEvalCandidateTrustedInputV1 {
+  const incident = projected.incidents.get(incidentId) ?? null;
+  const effectiveHalts = incident
+    ? incident.haltIds
+        .map((haltId) => projected.halts.get(haltId))
+        .filter(
+          (halt): halt is HaltRecordV1 =>
+            halt !== undefined &&
+            projected.effectiveIncidentByHalt.get(halt.haltId) === incidentId,
+        )
+    : [];
+  const waveId = exactIncidentScopeValueV1(effectiveHalts, "waveId");
+  const taskId = exactIncidentScopeValueV1(effectiveHalts, "taskId");
+  const attemptId = exactIncidentScopeValueV1(effectiveHalts, "attemptId");
+  const allBindings = [...projected.promptModelLineage.bindings.values()];
+  const attempts = incident
+    ? allBindings
+        .filter(
+          (binding) =>
+            binding.bindingScope === "attempt" &&
+            binding.projectId === projectId &&
+            binding.changeId === incident.changeId &&
+            (waveId === undefined || binding.waveId === waveId) &&
+            (taskId === undefined || binding.taskId === taskId) &&
+            (attemptId === undefined || binding.attemptId === attemptId),
+        )
+        .sort((left, right) => left.bindingId.localeCompare(right.bindingId))
+    : [];
+  const phase5Joins: IncidentEvalPhase5JoinInputV1[] = [];
+  for (const attempt of attempts) {
+    const invocations = allBindings
+      .filter(
+        (binding) =>
+          binding.bindingScope === "invocation" &&
+          binding.parentAttemptBindingId === attempt.bindingId,
+      )
+      .sort((left, right) => left.bindingId.localeCompare(right.bindingId));
+    const directResolutionId = projected.promptModelLineage.resolutionIdsByBinding.get(
+      attempt.bindingId,
+    );
+    const directExecution = directResolutionId
+      ? projected.promptModelLineage.resolvedExecutions.get(directResolutionId)
+      : undefined;
+    const joins: Array<(typeof invocations)[number] | undefined> = [
+      ...(directExecution ? [undefined] : []),
+      ...invocations,
+    ];
+    if (!joins.length) joins.push(undefined);
+    for (const invocation of joins) {
+      const resolutionId = invocation
+        ? projected.promptModelLineage.resolutionIdsByBinding.get(invocation.bindingId)
+        : directResolutionId;
+      const execution = resolutionId
+        ? projected.promptModelLineage.resolvedExecutions.get(resolutionId)
+        : directExecution;
+      const artifactEvidence = attempt.promptArtifactIds.flatMap(
+        (artifactId) =>
+          projected.promptModelLineage.promptArtifacts.get(artifactId)?.artifact
+            .privacy.validationReceipt.evidenceRefs ?? [],
+      );
+      phase5Joins.push({
+        attemptBinding: attempt,
+        ...(invocation ? { invocationBinding: invocation } : {}),
+        ...(execution ? { execution } : {}),
+        evidenceRefs: [
+          attempt.bindingId,
+          ...(invocation ? [invocation.bindingId] : []),
+          ...(execution ? [execution.resolutionId] : []),
+          ...artifactEvidence,
+        ],
+      });
+    }
+  }
+  const incidentEvidenceRefs = incident
+    ? (projected.incidentEvents.get(incident.incidentId) ?? []).flatMap((event) => {
+        const payload = event.payload as unknown as Record<string, unknown>;
+        const direct = Array.isArray(payload.evidenceRefs)
+          ? payload.evidenceRefs.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [];
+        const receipt = payload.receipt as
+          | { evidenceRefs?: unknown }
+          | undefined;
+        const receiptRefs = Array.isArray(receipt?.evidenceRefs)
+          ? receipt.evidenceRefs.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [];
+        return [...direct, ...receiptRefs];
+      })
+    : [];
+  const registeredExecutableOracleRefs = [
+    ...projected.evalLineage.suites.values(),
+  ].flatMap((published) =>
+    published.status === "published"
+      ? published.value.cases
+          .filter((candidate) => candidate.acceptanceOracle.kind === "executable")
+          .map((candidate) => candidate.acceptanceOracle.oracleRef)
+      : [],
+  );
+  return {
+    projectId,
+    watermark: incidentEvalCandidateWatermarkV1(ledger),
+    incident,
+    effectiveHalts,
+    incidentEvidenceRefs,
+    phase5Joins,
+    registeredExecutableOracleRefs,
+  };
+}
+
+function assertIncidentEvalCandidateMatchesSourceV1(
+  candidate: IncidentEvalCandidateV1,
+  snapshot: IncidentEvalCandidateSourceSnapshotV1,
+) {
+  const expectedSeverity = snapshot.severity === "info" ? "warning" : snapshot.severity;
+  if (
+    candidate.projectId !== snapshot.projectId ||
+    candidate.changeId !== snapshot.changeId ||
+    candidate.incidentId !== snapshot.incidentId ||
+    candidate.incidentFingerprintVersion !== snapshot.incidentFingerprintVersion ||
+    candidate.incidentFingerprint !== snapshot.incidentFingerprint ||
+    candidate.haltIds.join("\0") !== snapshot.orderedHaltIds.join("\0") ||
+    candidate.sourceWatermark.sequence !== snapshot.watermark.sequence ||
+    candidate.sourceWatermark.hash !== snapshot.watermark.hash ||
+    candidate.sourceSnapshotHash !== snapshot.sourceSnapshotHash ||
+    candidate.severity !== expectedSeverity ||
+    (candidate.acceptanceOracle.kind === "executable" &&
+      !snapshot.registeredExecutableOracleRefs.includes(
+        candidate.acceptanceOracle.oracleRef,
+      ))
+  )
+    throw new IncidentEvalCandidateErrorV1(
+      "SOURCE_SNAPSHOT_INVALID",
+      "The recorded candidate conflicts with its canonical source snapshot.",
+      409,
+    );
+
+  const lineage = candidate.phase5Lineage;
+  if (lineage.state === "supported") {
+    const matchingJoin = snapshot.phase5Joins.find(
+      (join) =>
+        join.complete &&
+        join.bindingId === lineage.bindingId &&
+        join.invocationBindingId === lineage.invocationBindingId &&
+        join.resolutionId === lineage.resolutionId &&
+        join.invocationId === lineage.invocationId &&
+        join.waveId === candidate.waveId &&
+        join.taskId === candidate.taskId &&
+        join.attemptId === candidate.attemptId &&
+        join.modelRouteId === lineage.modelRouteId &&
+        join.promptArtifactIds.join("\0") ===
+          lineage.promptArtifactIds.join("\0"),
+    );
+    if (!matchingJoin)
+      throw new IncidentEvalCandidateErrorV1(
+        "BINDING_LINEAGE_CONFLICT",
+        "The recorded candidate has no exact canonical Phase 5 join.",
+        409,
+      );
+    const exactEvidenceRefs = new Set([
+      ...snapshot.knownEvidenceRefs,
+      ...matchingJoin.evidenceRefs,
+    ]);
+    if (candidate.evidenceRefs.some((ref) => !exactEvidenceRefs.has(ref)))
+      throw new IncidentEvalCandidateErrorV1(
+        "SOURCE_SNAPSHOT_INVALID",
+        "The recorded candidate evidence is outside its exact Phase 5 join.",
+        409,
+      );
+  } else if (
+    snapshot.phase5Joins.length > 1 ||
+    snapshot.phase5Joins.some((join) => join.complete && join.resolutionId)
+  ) {
+    throw new IncidentEvalCandidateErrorV1(
+      "BINDING_LINEAGE_CONFLICT",
+      "The recorded candidate omitted available canonical Phase 5 lineage.",
+      409,
+    );
+  } else if (
+    candidate.evidenceRefs.some((ref) => !snapshot.knownEvidenceRefs.includes(ref))
+  ) {
+    throw new IncidentEvalCandidateErrorV1(
+      "SOURCE_SNAPSHOT_INVALID",
+      "The recorded candidate evidence has no exact canonical lineage.",
+      409,
+    );
+  } else if (
+    candidate.waveId !== snapshot.scope.waveId ||
+    candidate.taskId !== snapshot.scope.taskId ||
+    candidate.attemptId !== snapshot.scope.attemptId
+  ) {
+    throw new IncidentEvalCandidateErrorV1(
+      "HALT_IDENTITY_MISMATCH",
+      "The recorded candidate scope conflicts with canonical halt evidence.",
+      409,
+    );
+  }
 }
 
 function samePlanReference(
@@ -4098,6 +4363,11 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     ledger.projectId,
   );
   const evalLineage = createEvalLineageProjectionV1(ledger.projectId);
+  const incidentEvalCandidates = new Map<string, IncidentEvalCandidateV1>();
+  const incidentEvalCandidateReceipts =
+    new Map<string, IncidentEvalCandidateReceiptV1>();
+  const incidentEvalCandidateReceiptByIdempotencyKey =
+    new Map<string, IncidentEvalCandidateReceiptV1>();
   const operatorActionReceipts = new Map<string, OperatorActionReceiptV1>();
   const operatorActionReceiptByIdempotencyKey =
     new Map<string, OperatorActionReceiptV1>();
@@ -4985,6 +5255,89 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
           corrupt(`${error.reasonCode}: ${error.message}`);
         throw error;
       }
+    } else if (incidentEvalCandidateEventTypes.has(event.type)) {
+      if (
+        event.type !== INCIDENT_EVAL_CANDIDATE_EVENT_TYPE_V1 ||
+        event.payload === null ||
+        typeof event.payload !== "object"
+      )
+        corrupt(`Incident eval candidate event ${event.id} is invalid.`);
+      assertPayloadKeys(event, ["candidate", "receipt"]);
+      try {
+        const candidate = event.payload.candidate as unknown;
+        const receipt = event.payload.receipt as unknown;
+        assertIncidentEvalCandidateV1(candidate);
+        assertIncidentEvalCandidateReceiptV1(receipt);
+        if (receipt.outcome !== "recorded")
+          throw new IncidentEvalCandidateErrorV1(
+            "CANDIDATE_SEMANTIC_INVALID",
+            "Persisted candidate receipts must represent the recording mutation.",
+            409,
+          );
+        const sourceLedger: Ledger = {
+          version: 1,
+          projectId: ledger.projectId,
+          events: ledger.events.slice(0, index),
+        };
+        const trusted = incidentEvalCandidateTrustedInputV1(
+          ledger.projectId,
+          sourceLedger,
+          {
+            halts,
+            incidents,
+            effectiveIncidentByHalt,
+            incidentEvents,
+            promptModelLineage,
+            evalLineage,
+          },
+          candidate.incidentId,
+        );
+        const snapshot = buildIncidentEvalCandidateSourceSnapshotV1(trusted);
+        assertIncidentEvalCandidateMatchesSourceV1(candidate, snapshot);
+        if (
+          event.projectId !== candidate.projectId ||
+          event.changeId !== candidate.changeId ||
+          event.waveId !== candidate.waveId ||
+          event.taskId !== candidate.taskId ||
+          event.actor !== receipt.actor ||
+          event.occurredAt !== receipt.recordedAt ||
+          event.id !== receipt.eventId ||
+          event.sequence !== receipt.projectSequence ||
+          event.causationId !== receipt.requestId ||
+          event.correlationId !== candidate.incidentId ||
+          receipt.candidateId !== candidate.candidateId ||
+          receipt.candidateHash !== incidentEvalCandidateHashV1(candidate) ||
+          receipt.incidentId !== candidate.incidentId ||
+          receipt.sourceSnapshotHash !== candidate.sourceSnapshotHash ||
+          receipt.projectWatermark.sequence !== candidate.sourceWatermark.sequence ||
+          receipt.projectWatermark.hash !== candidate.sourceWatermark.hash
+        )
+          throw new IncidentEvalCandidateErrorV1(
+            "CANDIDATE_SEMANTIC_INVALID",
+            "The candidate event and immutable receipt identities conflict.",
+            409,
+          );
+        if (
+          incidentEvalCandidates.has(candidate.candidateId) ||
+          incidentEvalCandidateReceipts.has(receipt.receiptId) ||
+          incidentEvalCandidateReceiptByIdempotencyKey.has(receipt.idempotencyKey)
+        )
+          throw new IncidentEvalCandidateErrorV1(
+            "IDEMPOTENCY_CONFLICT",
+            "The candidate event reuses an immutable identity.",
+            409,
+          );
+        incidentEvalCandidates.set(candidate.candidateId, candidate);
+        incidentEvalCandidateReceipts.set(receipt.receiptId, receipt);
+        incidentEvalCandidateReceiptByIdempotencyKey.set(
+          receipt.idempotencyKey,
+          receipt,
+        );
+      } catch (error) {
+        if (error instanceof IncidentEvalCandidateErrorV1)
+          corrupt(`${error.reasonCode}: ${error.message}`);
+        throw error;
+      }
     } else if (operationalOutcomeEventTypes.has(event.type)) {
       if (event.waveId !== undefined || event.taskId !== undefined)
         corrupt(`Operational outcome event ${event.id} has an invalid task scope.`);
@@ -5252,6 +5605,9 @@ function validateAndProject(ledger: Ledger): ProjectedLedger {
     recoveryAttemptIds,
     promptModelLineage,
     evalLineage,
+    incidentEvalCandidates,
+    incidentEvalCandidateReceipts,
+    incidentEvalCandidateReceiptByIdempotencyKey,
     operatorActionReceipts,
     operatorActionReceiptByIdempotencyKey,
     operationalOutcomes,
@@ -8661,6 +9017,188 @@ export class ChangeControlStore {
         404,
       );
     return deepFreeze(structuredClone(incident));
+  }
+
+  async previewIncidentEvalCandidateV1(
+    projectIdValue: string,
+    incidentIdValue: string,
+    proposalValue: unknown,
+  ): Promise<IncidentEvalCandidatePreviewV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const incidentId = requireIdentifier(incidentIdValue, "incidentId");
+    const proposal = normalizeIncidentEvalCandidateProposalV1(proposalValue);
+    if (proposal.incidentId !== incidentId)
+      throw new IncidentEvalCandidateErrorV1(
+        "INCIDENT_IDENTITY_MISMATCH",
+        "The route and proposal incident identities do not match.",
+        409,
+      );
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    return previewIncidentEvalCandidateV1(
+      proposal,
+      incidentEvalCandidateTrustedInputV1(
+        projectId,
+        ledger,
+        projected,
+        incidentId,
+      ),
+    );
+  }
+
+  async recordIncidentEvalCandidateV1(
+    projectIdValue: string,
+    incidentIdValue: string,
+    requestValue: unknown,
+  ): Promise<IncidentEvalCandidateReceiptV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const incidentId = requireIdentifier(incidentIdValue, "incidentId");
+    const request = normalizeRecordIncidentEvalCandidateRequestV1(requestValue);
+    if (request.proposal.incidentId !== incidentId)
+      throw new IncidentEvalCandidateErrorV1(
+        "INCIDENT_IDENTITY_MISMATCH",
+        "The route and recording request incident identities do not match.",
+        409,
+      );
+    return this.serialize(projectId, async () => {
+      const file = this.file(projectId);
+      const ledger = await readLedger(file, projectId);
+      const projected = validateAndProject(ledger);
+      const existing =
+        projected.incidentEvalCandidateReceiptByIdempotencyKey.get(
+          request.proposal.idempotencyKey,
+        );
+      if (existing) {
+        const exactRetry =
+          existing.requestId === request.confirmation.requestId &&
+          existing.idempotencyKey === request.proposal.idempotencyKey &&
+          existing.candidateId === request.confirmation.candidateId &&
+          existing.candidateHash === request.confirmation.candidateHash &&
+          existing.sourceSnapshotHash ===
+            request.confirmation.sourceSnapshotHash &&
+          existing.projectWatermark.sequence ===
+            request.proposal.expectedWatermark.sequence &&
+          existing.projectWatermark.hash ===
+            request.proposal.expectedWatermark.hash &&
+          existing.incidentId === incidentId &&
+          existing.actor === request.actor;
+        if (!exactRetry)
+          throw new IncidentEvalCandidateErrorV1(
+            "IDEMPOTENCY_CONFLICT",
+            "The idempotency key is already bound to another recording request.",
+            409,
+          );
+        return deepFreeze(
+          structuredClone({ ...existing, outcome: "already-recorded" as const }),
+        );
+      }
+
+      const preview = previewIncidentEvalCandidateV1(
+        request.proposal,
+        incidentEvalCandidateTrustedInputV1(
+          projectId,
+          ledger,
+          projected,
+          incidentId,
+        ),
+      );
+      if (preview.status !== "ready")
+        throw new IncidentEvalCandidateErrorV1(
+          preview.status === "stale"
+            ? "CONCURRENT_STALE_CONTENDER"
+            : preview.reasonCodes[0] ?? "PREVIEW_CONFIRMATION_MISMATCH",
+          "The candidate source is no longer ready for the confirmed recording.",
+          409,
+        );
+      if (
+        canonicalIncidentEvalCandidateJsonV1(preview.confirmation) !==
+          canonicalIncidentEvalCandidateJsonV1(request.confirmation)
+      )
+        throw new IncidentEvalCandidateErrorV1(
+          "PREVIEW_CONFIRMATION_MISMATCH",
+          "The recording request does not match the recomputed preview.",
+          409,
+        );
+      if (projected.incidentEvalCandidates.has(preview.candidate.candidateId))
+        throw new IncidentEvalCandidateErrorV1(
+          "IDEMPOTENCY_CONFLICT",
+          "The immutable candidate identity was already recorded under another key.",
+          409,
+        );
+
+      const eventId = requireIdentifier(this.createId(), "eventId");
+      const receiptId = requireIdentifier(this.createId(), "receiptId");
+      const recordedAt = this.now();
+      if (
+        !Number.isFinite(Date.parse(recordedAt)) ||
+        new Date(recordedAt).toISOString() !== recordedAt
+      )
+        throw new IncidentEvalCandidateErrorV1(
+          "CANDIDATE_SEMANTIC_INVALID",
+          "The recording clock did not produce a canonical UTC instant.",
+          409,
+        );
+      const sourceWatermark = incidentEvalCandidateWatermarkV1(ledger);
+      const receipt: IncidentEvalCandidateReceiptV1 = {
+        contractType: "IncidentEvalCandidateReceiptV1",
+        contractVersion: "1.0",
+        receiptId,
+        eventId,
+        projectSequence: ledger.events.length + 1,
+        projectWatermark: sourceWatermark,
+        requestId: preview.requestId,
+        idempotencyKey: request.proposal.idempotencyKey,
+        candidateId: preview.candidate.candidateId,
+        candidateHash: preview.candidateHash,
+        incidentId,
+        sourceSnapshotHash: preview.candidate.sourceSnapshotHash,
+        actor: request.actor,
+        recordedAt,
+        outcome: "recorded",
+      };
+      assertIncidentEvalCandidateReceiptV1(receipt);
+      this.append(ledger, {
+        id: eventId,
+        type: INCIDENT_EVAL_CANDIDATE_EVENT_TYPE_V1,
+        occurredAt: recordedAt,
+        projectId,
+        changeId: preview.candidate.changeId,
+        ...(preview.candidate.waveId
+          ? { waveId: preview.candidate.waveId }
+          : {}),
+        ...(preview.candidate.taskId
+          ? { taskId: preview.candidate.taskId }
+          : {}),
+        actor: request.actor,
+        causationId: preview.requestId,
+        correlationId: incidentId,
+        payload: {
+          candidate: structuredClone(preview.candidate) as unknown as JsonValue,
+          receipt: structuredClone(receipt) as unknown as JsonValue,
+        },
+      });
+      validateCandidateLedger(ledger);
+      await writeAtomically(file, ledger);
+      return deepFreeze(structuredClone(receipt));
+    });
+  }
+
+  async getIncidentEvalCandidateProjectionV1(
+    projectIdValue: string,
+  ): Promise<IncidentEvalCandidateProjectionV1> {
+    const projectId = requireIdentifier(projectIdValue, "projectId");
+    const ledger = await readLedger(this.file(projectId), projectId);
+    const projected = validateAndProject(ledger);
+    return deepFreeze(
+      structuredClone({
+        contractType: "IncidentEvalCandidateProjectionV1" as const,
+        contractVersion: "1.0" as const,
+        projectId,
+        watermark: incidentEvalCandidateWatermarkV1(ledger),
+        candidates: [...projected.incidentEvalCandidates.values()],
+        receipts: [...projected.incidentEvalCandidateReceipts.values()],
+      }),
+    );
   }
 
   async transitionHalt(

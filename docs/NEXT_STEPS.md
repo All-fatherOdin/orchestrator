@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-07
+Last updated: 2026-08-08
 
 ## Current Priority
 
@@ -26,6 +26,25 @@ matrices, deterministic reports, explicit unsupported import evidence, and
 authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
+
+Stage 1 S1 Incident-to-Eval is implemented and completion-reviewed. Two exact
+POST routes provide deterministic no-mutation preview and explicit-confirmation
+recording of one immutable, privacy-bounded eval candidate in the existing
+project ledger. Exact Phase 4/5 identity, invocation-local evidence fencing,
+ambiguous join rejection, raw 16 KiB request enforcement, private production
+HTTP failures, idempotency, concurrency, restart, corruption, and legacy replay
+are covered. Recording neither publishes an eval suite nor changes incident or
+runtime authority. Final verification passed 23/23 focused S1 tests, the
+production HTTP regression, TypeScript, production build, context smoke 3/3,
+diff checks, and the full Windows regression 279/279 with zero failures/skips.
+
+Reviewer infrastructure now supplies the read-only reviewer with the exact
+bounded evidence already produced by Orchestrator verification instead of
+asking it to rerun write-producing build/test commands in a read-only sandbox.
+The existing no-network and no-workspace-mutation boundary remains unchanged;
+`Select-String`/`Get-Content` are the declared read-only fallback when `rg` is
+unavailable. The next Stage 1 step is an owner-reviewed S2 contract; S2-S6 are
+not authorized by the integration plan alone.
 
 The AMK v5 read-only integration is implemented and completion-reviewed through
 Slice 6. Exact server-discovered run and opaque queue selectors produce only
@@ -179,6 +198,10 @@ no live GitHub credential or external request was used.
   `docs/architecture/change-control-plane/operational-evidence-intake-contract-v1.md`.
 - Accepted and reviewed Phase 12 contract; Slices 1-2 implemented and verified:
   `docs/architecture/change-control-plane/github-deployment-connector-contract-v1.md`.
+- Implemented and completion-reviewed Agentic Patterns Stage 1 S1 contract:
+  `docs/architecture/change-control-plane/incident-to-eval-candidate-contract-v1.md`.
+- S1 completion evidence:
+  `docs/architecture/change-control-plane/incident-to-eval-candidate-completion-review-v1.md`.
 - Phase 11 product evidence: current code and `server/index.test.ts`.
 - Phase 10 product evidence: current code and `server/index.test.ts`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
