@@ -1,0 +1,97 @@
+{
+  "target": {
+    "contractType": "AmkQueueDraftTargetDescriptorV1",
+    "contractVersion": "1.0",
+    "targetId": "PROJECT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetHash": "d356d28ed0673b3c280c001292e0c191241f80f6cda37722f80725d386986cc2",
+    "targetRevision": 7,
+    "targetWatermark": "AMK-TARGET-d356d28ed0673b3c280c001292e0c191241f80f6cda37722f80725d386986cc2-7",
+    "project": {
+      "profileId": "profile-main",
+      "name": "Fixture project",
+      "path": "C:/fixture/project",
+      "defaultModel": "terra",
+      "defaultEffort": "medium",
+      "allowedModels": ["terra", "sol"]
+    }
+  },
+  "request": {
+    "contractType": "AmkQueueDraftRequestV1",
+    "contractVersion": "1.0",
+    "targetId": "PROJECT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetHash": "d356d28ed0673b3c280c001292e0c191241f80f6cda37722f80725d386986cc2",
+    "targetWatermark": "AMK-TARGET-d356d28ed0673b3c280c001292e0c191241f80f6cda37722f80725d386986cc2-7",
+    "sourceHash": "571c39cd79a2ed6615d59745c23169b1a24779e9eba129c9df8adecadeed94f6",
+    "sourceByteLength": 2173,
+    "sourceWatermark": "AMK-UPLOAD-571c39cd79a2ed6615d59745c23169b1a24779e9eba129c9df8adecadeed94f6-2173",
+    "artifact": {
+      "TaskContractV3": [
+        {
+          "schema_version": "3.0",
+          "governance": { "contract_version": "3.0", "supersedes": "TaskContractV2", "effective_from": "2026-08-07", "compatibility": "breaking", "migration_note": "Reviewed migration." },
+          "task_id": "TASK-Alpha.One",
+          "title": "Implement alpha",
+          "status": "active",
+          "intent": "implement",
+          "permission_mode": "apply",
+          "goal": "Implement the alpha behavior exactly.",
+          "scope": { "project_map": [], "project_files": ["src/alpha.ts", "tests/alpha.test.ts"], "external_sources": [] },
+          "commitment_refs": [],
+          "expected_outcomes": ["Alpha works."],
+          "stop_conditions": ["The declared scope is insufficient."],
+          "rollback_or_recovery": ["Revert task-owned files."],
+          "reversibility": "reversible",
+          "expected_side_effects": [],
+          "done_definition": ["The alpha test passes."],
+          "workflow_profile": { "mode": "standard", "task_scale": "single_session", "risk_class": "routine", "delivery_strategy": "single_step", "work_item_graph_ref": null, "plan_challenge_ref": null, "exploration_map_ref": null, "triage_item_ref": null, "design_probe_ref": null, "review_policy": "none", "review_receipt_refs": [], "capability_impact": "none", "capability_refs": [], "domain_context_refs": [] }
+        },
+        {
+          "schema_version": "3.0",
+          "governance": { "contract_version": "3.0", "supersedes": "TaskContractV2", "effective_from": "2026-08-07", "compatibility": "breaking", "migration_note": "Reviewed migration." },
+          "task_id": "TASK-Beta_Two",
+          "status": "active",
+          "intent": "implement",
+          "permission_mode": "apply",
+          "goal": "Implement the beta behavior exactly.",
+          "scope": { "project_map": [], "project_files": ["src/beta.ts"], "external_sources": [] },
+          "commitment_refs": [],
+          "expected_outcomes": ["Beta works."],
+          "stop_conditions": ["The declared scope is insufficient."],
+          "rollback_or_recovery": ["Revert task-owned files."],
+          "reversibility": "reversible",
+          "expected_side_effects": [],
+          "done_definition": ["The beta test passes."],
+          "workflow_profile": { "mode": "standard", "task_scale": "single_session", "risk_class": "routine", "delivery_strategy": "single_step", "work_item_graph_ref": null, "plan_challenge_ref": null, "exploration_map_ref": null, "triage_item_ref": null, "design_probe_ref": null, "review_policy": "none", "review_receipt_refs": [], "capability_impact": "none", "capability_refs": [], "domain_context_refs": [] }
+        }
+      ]
+    },
+    "mappings": [
+      { "taskId": "TASK-Alpha.One", "independentlyUseful": true, "allowedPaths": ["src/alpha.ts", "tests/alpha.test.ts"], "verificationCommands": ["npm.cmd test -- alpha"] },
+      { "taskId": "TASK-Beta_Two", "independentlyUseful": true, "operatorTitle": "Implement beta", "allowedPaths": ["src/beta.ts"], "verificationCommands": ["npm.cmd test -- beta"], "model": "sol", "effort": "high" }
+    ]
+  },
+  "response": {
+    "contractType": "AmkQueueDraftResponseV1",
+    "contractVersion": "1.0",
+    "targetId": "PROJECT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "targetHash": "d356d28ed0673b3c280c001292e0c191241f80f6cda37722f80725d386986cc2",
+    "targetWatermark": "AMK-TARGET-d356d28ed0673b3c280c001292e0c191241f80f6cda37722f80725d386986cc2-7",
+    "sourceHash": "571c39cd79a2ed6615d59745c23169b1a24779e9eba129c9df8adecadeed94f6",
+    "sourceByteLength": 2173,
+    "sourceWatermark": "AMK-UPLOAD-571c39cd79a2ed6615d59745c23169b1a24779e9eba129c9df8adecadeed94f6-2173",
+    "taskCount": 2,
+    "compatibility": { "workItemGraphCount": 0, "verificationReceiptCount": 0, "reviewReceiptCount": 0, "schedulerAuthority": false, "verificationAuthority": false, "reviewAuthority": false, "executionAuthority": false },
+    "queueDraft": {
+      "project": { "name": "Fixture project", "path": "C:/fixture/project", "profileId": "profile-main", "defaultModel": "terra", "defaultEffort": "medium", "allowedModels": ["terra", "sol"] },
+      "git": { "checkpointCommits": false },
+      "tasks": [
+        { "key": "task-alpha-one", "title": "Implement alpha", "prompt": "alpha", "allowedPaths": ["src/alpha.ts"], "verificationCommands": ["npm.cmd test -- alpha"], "executionGuards": ["stop", "no scheduler authority", "no execution authority"], "dependsOn": [] },
+        { "key": "task-beta_two", "title": "Implement beta", "prompt": "beta", "allowedPaths": ["src/beta.ts"], "verificationCommands": ["npm.cmd test -- beta"], "executionGuards": ["stop", "no scheduler authority", "no execution authority"], "dependsOn": [], "model": "sol", "effort": "high" }
+      ]
+    },
+    "yaml": "project: fixture\n",
+    "yamlByteLength": 17,
+    "wouldMutate": false,
+    "authorizationGranted": false
+  }
+}

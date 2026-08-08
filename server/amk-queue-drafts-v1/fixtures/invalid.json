@@ -1,0 +1,43 @@
+[
+  {
+    "name": "request is closed",
+    "schema": "request",
+    "value": { "contractType": "AmkQueueDraftRequestV1", "contractVersion": "1.0", "legacyBundle": {} }
+  },
+  {
+    "name": "legacy TaskContractV2 is unsupported",
+    "schema": "request",
+    "value": {
+      "contractType": "AmkQueueDraftRequestV1",
+      "contractVersion": "1.0",
+      "targetId": "PROJECT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "targetHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "targetWatermark": "AMK-TARGET-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-1",
+      "sourceHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sourceByteLength": 2,
+      "sourceWatermark": "AMK-UPLOAD-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc-2",
+      "artifact": { "TaskContractV2": [] },
+      "mappings": []
+    }
+  },
+  {
+    "name": "mapping cannot claim scheduler authority",
+    "schema": "mapping",
+    "value": { "taskId": "TASK-A", "independentlyUseful": true, "allowedPaths": ["src/a.ts"], "verificationCommands": ["npm test"], "dependsOn": ["task-b"] }
+  },
+  {
+    "name": "queue task cannot carry authorization",
+    "schema": "queue",
+    "value": { "project": {}, "git": { "checkpointCommits": false }, "tasks": [{ "authorization": { "enabled": true } }] }
+  },
+  {
+    "name": "target descriptor is closed",
+    "schema": "target",
+    "value": { "contractType": "AmkQueueDraftTargetDescriptorV1", "contractVersion": "1.0", "path": "C:/caller/path" }
+  },
+  {
+    "name": "response cannot grant authority",
+    "schema": "response",
+    "value": { "contractType": "AmkQueueDraftResponseV1", "contractVersion": "1.0", "authorizationGranted": true }
+  }
+]

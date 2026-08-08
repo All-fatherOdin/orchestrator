@@ -23,6 +23,8 @@ import {
   installAmkProjectArtifactsRoutesV1,
 } from "./amk-project-artifacts-v2/http.ts";
 import { AmkFilesystemRunSourceAdapterV1 } from "./amk-project-artifacts-v2/filesystem-adapter.ts";
+import { installAmkQueueDraftRoutesV1 } from "./amk-queue-drafts-v1/http.ts";
+import { AmkQueueDraftServiceV1 } from "./amk-queue-drafts-v1/service.ts";
 // The static imports keep exact schema snapshots embedded in the desktop server bundle.
 import contextRequestV1Schema from "./context-contract-v1/schemas/context-request-v1.schema.json";
 import contextBundleV1Schema from "./context-contract-v1/schemas/context-bundle-v1.schema.json";
@@ -2221,9 +2223,26 @@ async function listRuns() {
     );
 }
 
-function readGitStatus(cwd: string) {
+export function parseGitStatusPorcelainV1Z(output: string) {
+  const records = output.split("\0");
+  const paths = new Set<string>();
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record || record.length < 4 || record[2] !== " ") continue;
+    const status = record.slice(0, 2);
+    paths.add(record.slice(3).split("\\").join("/"));
+    if (status.includes("R") || status.includes("C")) {
+      const sourcePath = records[index + 1];
+      if (sourcePath) paths.add(sourcePath.split("\\").join("/"));
+      index += 1;
+    }
+  }
+  return paths;
+}
+
+export function readGitStatus(cwd: string) {
   return new Promise<Set<string>>((resolveStatus) => {
-    const child = spawn("git", ["status", "--porcelain=v1", "-uall"], {
+    const child = spawn("git", ["status", "--porcelain=v1", "-z", "-uall"], {
       cwd,
       shell: false,
       stdio: ["ignore", "pipe", "ignore"],
@@ -2233,11 +2252,7 @@ function readGitStatus(cwd: string) {
     child.stdout?.on("data", decoder.write);
     child.on("close", () => {
       decoder.end();
-      const paths = output
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .map((line) => line.slice(3).split("\\").join("/"));
-      resolveStatus(new Set(paths));
+      resolveStatus(parseGitStatusPorcelainV1Z(output));
     });
     child.on("error", () => resolveStatus(new Set()));
   });
@@ -4236,22 +4251,88 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
   };
 }
 
-async function waitForProcess(
+const nodeUserInfoFallbackSource = [
+  'import os from "node:os";',
+  'import { syncBuiltinESMExports } from "node:module";',
+  'try { os.userInfo(); } catch {',
+  'const homedir = process.env.USERPROFILE || process.env.HOME || "";',
+  'const username = process.env.USERNAME || process.env.USER || "codex";',
+  'os.userInfo = () => ({ uid: -1, gid: -1, username, homedir, shell: null });',
+  'syncBuiltinESMExports();',
+  '}',
+].join("");
+
+export const nodeUserInfoFallbackImportUrl =
+  `data:text/javascript,${encodeURIComponent(nodeUserInfoFallbackSource)}`;
+const nodeUserInfoFallbackOption =
+  `--import=${nodeUserInfoFallbackImportUrl}`;
+
+export function runnerProcessEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const current = environment.NODE_OPTIONS?.trim() ?? "";
+  if (current.includes(nodeUserInfoFallbackImportUrl)) return { ...environment };
+  return {
+    ...environment,
+    NODE_OPTIONS: [current, nodeUserInfoFallbackOption].filter(Boolean).join(" "),
+  };
+}
+
+export function processTreeTerminationInvocation(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+) {
+  if (platform !== "win32" || !Number.isSafeInteger(pid) || pid <= 0)
+    return undefined;
+  return {
+    executable: "taskkill.exe",
+    args: ["/PID", String(pid), "/T", "/F"],
+  };
+}
+
+async function terminateProcessTree(child: ReturnType<typeof spawn>) {
+  const invocation = child.pid
+    ? processTreeTerminationInvocation(child.pid)
+    : undefined;
+  if (!invocation) {
+    child.kill();
+    return;
+  }
+  const code = await new Promise<number>((done) => {
+    let killer: ReturnType<typeof spawn>;
+    try {
+      killer = spawn(invocation.executable, invocation.args, {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+    } catch {
+      done(1);
+      return;
+    }
+    killer.once("close", (exitCode) => done(exitCode ?? 1));
+    killer.once("error", () => done(1));
+  });
+  if (code !== 0 && child.exitCode === null) child.kill();
+}
+
+export async function waitForProcess(
   child: ReturnType<typeof spawn>,
   timeoutMinutes: number,
   onTimeout: () => void,
 ) {
   let timedOut = false;
+  let termination: Promise<void> | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
     onTimeout();
-    child.kill();
+    termination = terminateProcessTree(child);
   }, timeoutMinutes * 60_000);
   const exitCode = await new Promise<number>((done) => {
     child.on("close", (code) => done(code ?? 1));
     child.on("error", () => done(1));
   });
   clearTimeout(timer);
+  if (termination) await termination;
   return { exitCode, timedOut };
 }
 
@@ -5381,6 +5462,7 @@ function spawnCodexWithPrompt(
     [...(testScript ? [testScript] : []), ...invocation.args],
     {
     cwd,
+    env: runnerProcessEnvironment(),
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
     },
@@ -5729,6 +5811,7 @@ async function runConfiguredTaskCommands(
       const invocation = verificationCommandInvocation(command);
       child = spawn(invocation.executable, invocation.args, {
         cwd: executionPath,
+        env: runnerProcessEnvironment(),
         shell: invocation.shell,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -6345,6 +6428,20 @@ function normalizeProjectProfile(
 }
 
 export const app = express();
+installAmkQueueDraftRoutesV1(
+  app,
+  new AmkQueueDraftServiceV1(
+    validateQueue,
+    () => Object.freeze(savedProjects.map((project) => Object.freeze({
+      id: project.id,
+      name: project.name,
+      path: project.path,
+      defaultModel: project.defaultModel,
+      defaultEffort: project.defaultEffort,
+      allowedModels: Object.freeze([...project.allowedModels]),
+    }))),
+  ),
+);
 app.use(express.json({ limit: "64kb", verify: captureAmkJsonBodyByteLengthV1 }));
 app.use(
   express.text({

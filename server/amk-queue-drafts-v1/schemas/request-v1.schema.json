@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-queue-drafts-v1/request-v1.schema.json",
+  "title": "AmkQueueDraftRequestV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "targetId", "targetHash", "targetWatermark", "sourceHash", "sourceByteLength", "sourceWatermark", "artifact", "mappings"],
+  "properties": {
+    "contractType": { "const": "AmkQueueDraftRequestV1" },
+    "contractVersion": { "const": "1.0" },
+    "targetId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+    "targetHash": { "$ref": "#/$defs/Sha256" },
+    "targetWatermark": { "type": "string", "pattern": "^AMK-TARGET-[a-f0-9]{64}-[0-9]+$", "maxLength": 96 },
+    "sourceHash": { "$ref": "#/$defs/Sha256" },
+    "sourceByteLength": { "type": "integer", "minimum": 2, "maximum": 262144 },
+    "sourceWatermark": { "type": "string", "pattern": "^AMK-UPLOAD-[a-f0-9]{64}-[0-9]+$", "maxLength": 96 },
+    "artifact": { "$ref": "#/$defs/Artifact" },
+    "mappings": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 100,
+      "items": { "$ref": "https://orchestrator.local/schemas/amk-queue-drafts-v1/mapping-input-v1.schema.json" }
+    }
+  },
+  "$defs": {
+    "Sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "Artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["TaskContractV3"],
+      "properties": {
+        "TaskContractV3": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 100,
+          "items": { "$ref": "urn:agent-memory-kit:project-artifact:v2:TaskContractV3" }
+        },
+        "WorkItemGraphV1": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "urn:agent-memory-kit:project-artifact:v2:WorkItemGraphV1" }
+        },
+        "VerificationReceiptV2": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "urn:agent-memory-kit:project-artifact:v2:VerificationReceiptV2" }
+        },
+        "ReviewReceiptV1": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "urn:agent-memory-kit:project-artifact:v2:ReviewReceiptV1" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-queue-drafts-v1/error-v1.schema.json",
+  "title": "AmkQueueDraftHttpErrorV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "code", "message", "requestScoped", "filesModified"],
+  "properties": {
+    "contractType": { "const": "AmkQueueDraftHttpErrorV1" },
+    "contractVersion": { "const": "1.0" },
+    "code": {
+      "enum": [
+        "REQUEST_INVALID", "REQUEST_TOO_LARGE", "SOURCE_INVALID", "SOURCE_STALE",
+        "TARGET_INVALID", "TARGET_CONFLICT", "TARGET_STALE", "TASK_CONTRACT_INVALID",
+        "COMPATIBILITY_INVALID", "TASK_COUNT_INVALID", "MAPPING_INVALID", "PATH_INVALID",
+        "PATH_OUTSIDE_SCOPE", "TASK_KEY_COLLISION", "LIMIT_EXCEEDED",
+        "QUEUE_VALIDATION_FAILED", "RESPONSE_TOO_LARGE", "METHOD_NOT_ALLOWED",
+        "SERVICE_UNAVAILABLE"
+      ]
+    },
+    "message": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "requestScoped": { "const": true },
+    "filesModified": { "const": false }
+  }
+}

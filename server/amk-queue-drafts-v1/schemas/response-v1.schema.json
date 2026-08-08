@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-queue-drafts-v1/response-v1.schema.json",
+  "title": "AmkQueueDraftResponseV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "targetId", "targetHash", "targetWatermark", "sourceHash", "sourceByteLength", "sourceWatermark", "taskCount", "compatibility", "queueDraft", "yaml", "yamlByteLength", "wouldMutate", "authorizationGranted"],
+  "properties": {
+    "contractType": { "const": "AmkQueueDraftResponseV1" },
+    "contractVersion": { "const": "1.0" },
+    "targetId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+    "targetHash": { "$ref": "#/$defs/Sha256" },
+    "targetWatermark": { "type": "string", "pattern": "^AMK-TARGET-[a-f0-9]{64}-[0-9]+$", "maxLength": 96 },
+    "sourceHash": { "$ref": "#/$defs/Sha256" },
+    "sourceByteLength": { "type": "integer", "minimum": 2, "maximum": 262144 },
+    "sourceWatermark": { "type": "string", "pattern": "^AMK-UPLOAD-[a-f0-9]{64}-[0-9]+$", "maxLength": 96 },
+    "taskCount": { "type": "integer", "minimum": 2, "maximum": 100 },
+    "compatibility": { "$ref": "#/$defs/Compatibility" },
+    "queueDraft": { "$ref": "https://orchestrator.local/schemas/amk-queue-drafts-v1/queue-draft-v1.schema.json" },
+    "yaml": { "type": "string", "minLength": 1, "maxLength": 524288 },
+    "yamlByteLength": { "type": "integer", "minimum": 1, "maximum": 524288 },
+    "wouldMutate": { "const": false },
+    "authorizationGranted": { "const": false }
+  },
+  "$defs": {
+    "Sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "Compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workItemGraphCount", "verificationReceiptCount", "reviewReceiptCount", "schedulerAuthority", "verificationAuthority", "reviewAuthority", "executionAuthority"],
+      "properties": {
+        "workItemGraphCount": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "verificationReceiptCount": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "reviewReceiptCount": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "schedulerAuthority": { "const": false },
+        "verificationAuthority": { "const": false },
+        "reviewAuthority": { "const": false },
+        "executionAuthority": { "const": false }
+      }
+    }
+  }
+}

@@ -84,12 +84,18 @@ const {
   powershellVerificationSyntaxPreflight,
   verificationCommandInvocation,
   normalizeWindowsNpmCommand,
+  nodeUserInfoFallbackImportUrl,
+  runnerProcessEnvironment,
+  processTreeTerminationInvocation,
+  waitForProcess,
   checkpointRequirementViolation,
   taskAllowsCorrection,
   boundedReviewerDiagnostics,
   reviewerReplacementCharacterFalsePositive,
   createUtf8StreamDecoder,
   createUtf8LineDecoder,
+  parseGitStatusPorcelainV1Z,
+  readGitStatus,
   resolveReviewedTaskStatus,
   resolveTaskStatus,
   schedulerSnapshot,
@@ -617,6 +623,35 @@ test("Phase 12 Slice 1 connector schemas and runtime config are closed and secre
       error instanceof GitHubDeploymentConnectorErrorV1 &&
       error.reasonCode === "CONNECTOR_NOT_CONFIGURED",
   );
+});
+
+test("git status parsing preserves unquoted paths and both sides of renames", () => {
+  assert.deepEqual(
+    [...parseGitStatusPorcelainV1Z(
+      "?? Agent Kit/kit/optional_integrations/new file.ts\0" +
+      "R  Agent Kit/new name.ts\0Agent Kit/old name.ts\0",
+    )],
+    [
+      "Agent Kit/kit/optional_integrations/new file.ts",
+      "Agent Kit/new name.ts",
+      "Agent Kit/old name.ts",
+    ],
+  );
+});
+
+test("git status reads untracked paths with spaces without Git quoting", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "orchestrator git status "));
+  try {
+    gitForWorkspaceContract(repository, ["init", "-b", "main"]);
+    const relativePath = "Agent Kit/kit/optional_integrations/new file.ts";
+    await mkdir(join(repository, "Agent Kit", "kit", "optional_integrations"), {
+      recursive: true,
+    });
+    await writeFile(join(repository, relativePath), "export {};\n");
+    assert.deepEqual([...await readGitStatus(repository)], [relativePath]);
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
 });
 
 test("Phase 12 Slice 1 preview performs exactly three bounded GETs and no mutation", async () => {
@@ -16871,6 +16906,80 @@ test("Windows verification normalizes bare npm without changing npm.cmd or non-W
     "Write-Output ready\nnpm.cmd test",
   );
   assert.equal(normalizeWindowsNpmCommand("npm test", "linux"), "npm test");
+});
+
+test("runner environment installs one inherited os.userInfo fallback without replacing existing Node options", () => {
+  const first = runnerProcessEnvironment({
+    NODE_OPTIONS: "--trace-warnings",
+    USERNAME: "runner",
+  });
+  assert.match(first.NODE_OPTIONS ?? "", /^--trace-warnings --import=data:text\/javascript,/);
+  assert.match(first.NODE_OPTIONS ?? "", new RegExp(nodeUserInfoFallbackImportUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(first.USERNAME, "runner");
+
+  const second = runnerProcessEnvironment(first);
+  assert.equal(second.NODE_OPTIONS, first.NODE_OPTIONS);
+  assert.equal(
+    (second.NODE_OPTIONS?.match(/--import=data:text\/javascript,/g) ?? []).length,
+    1,
+  );
+  assert.doesNotThrow(() =>
+    execFileSync(testNodeExecutable, ["-e", "require('node:os').userInfo()"], {
+      env: second,
+      stdio: "ignore",
+    })
+  );
+});
+
+test("Windows timeout cleanup targets the complete process tree", () => {
+  assert.deepEqual(processTreeTerminationInvocation(4242, "win32"), {
+    executable: "taskkill.exe",
+    args: ["/PID", "4242", "/T", "/F"],
+  });
+  assert.equal(processTreeTerminationInvocation(4242, "linux"), undefined);
+  assert.equal(processTreeTerminationInvocation(0, "win32"), undefined);
+});
+
+test("waitForProcess terminates a timed-out Windows parent and its descendant", async (context) => {
+  if (process.platform !== "win32") {
+    context.skip("Windows process-tree contract");
+    return;
+  }
+  const source = [
+    "const { spawn } = require('node:child_process');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+    "console.log(child.pid);",
+    "setInterval(() => {}, 1000);",
+  ].join("");
+  const parent = spawn(testNodeExecutable, ["-e", source], {
+    env: runnerProcessEnvironment(),
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+  const descendantPid = await new Promise<number>((resolvePid, reject) => {
+    parent.stdout?.once("data", (chunk) => resolvePid(Number(String(chunk).trim())));
+    parent.once("error", reject);
+  });
+  try {
+    const result = await waitForProcess(parent, 0.002, () => undefined);
+    assert.equal(result.timedOut, true);
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(descendantPid, 0);
+        await new Promise((done) => setTimeout(done, 50));
+      } catch {
+        return;
+      }
+    }
+    assert.fail(`Descendant process ${descendantPid} survived timeout cleanup.`);
+  } finally {
+    try {
+      process.kill(descendantPid);
+    } catch {
+      // The expected path already terminated the descendant.
+    }
+  }
 });
 
 test("correction loop is disabled only for an explicitly empty allowedPaths scope", () => {

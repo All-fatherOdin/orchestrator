@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-queue-drafts-v1/mapping-input-v1.schema.json",
+  "title": "AmkQueueDraftMappingInputV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["taskId", "independentlyUseful", "allowedPaths", "verificationCommands"],
+  "properties": {
+    "taskId": { "type": "string", "pattern": "^TASK-[A-Za-z0-9._-]+$", "maxLength": 133 },
+    "independentlyUseful": { "const": true },
+    "operatorTitle": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "allowedPaths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+    },
+    "verificationCommands": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+    },
+    "model": { "enum": ["auto", "luna", "terra", "sol"] },
+    "effort": { "enum": ["light", "medium", "high"] }
+  }
+}

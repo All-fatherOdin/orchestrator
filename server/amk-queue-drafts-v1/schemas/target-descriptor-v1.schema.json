@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-queue-drafts-v1/target-descriptor-v1.schema.json",
+  "title": "AmkQueueDraftTargetDescriptorV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "targetId", "targetHash", "targetRevision", "targetWatermark", "project"],
+  "properties": {
+    "contractType": { "const": "AmkQueueDraftTargetDescriptorV1" },
+    "contractVersion": { "const": "1.0" },
+    "targetId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+    "targetHash": { "$ref": "#/$defs/Sha256" },
+    "targetRevision": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "targetWatermark": { "type": "string", "pattern": "^AMK-TARGET-[a-f0-9]{64}-[0-9]+$", "maxLength": 96 },
+    "project": { "$ref": "#/$defs/Project" }
+  },
+  "$defs": {
+    "Sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "Project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profileId", "name", "path", "defaultModel", "defaultEffort", "allowedModels"],
+      "properties": {
+        "profileId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "defaultModel": { "enum": ["luna", "terra", "sol"] },
+        "defaultEffort": { "enum": ["light", "medium", "high"] },
+        "allowedModels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": ["luna", "terra", "sol"] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/amk-queue-drafts-v1/discovery-v1.schema.json",
+  "title": "AmkQueueDraftDiscoveryV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractType", "contractVersion", "operations", "sourceContracts", "limits", "targets", "requestScoped", "previewOnly", "filesModified"],
+  "properties": {
+    "contractType": { "const": "AmkQueueDraftDiscoveryV1" },
+    "contractVersion": { "const": "1.0" },
+    "operations": {
+      "type": "array",
+      "const": ["discover", "preview"]
+    },
+    "sourceContracts": {
+      "type": "array",
+      "const": ["TaskContractV3", "WorkItemGraphV1", "VerificationReceiptV2", "ReviewReceiptV1"]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestBytes", "responseBytes", "artifactEntries", "tasks", "allowedPaths", "verificationCommands", "targets"],
+      "properties": {
+        "requestBytes": { "const": 262144 },
+        "responseBytes": { "const": 524288 },
+        "artifactEntries": { "const": 100 },
+        "tasks": { "const": 100 },
+        "allowedPaths": { "const": 100 },
+        "verificationCommands": { "const": 100 },
+        "targets": { "const": 100 }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/Target" }
+    },
+    "requestScoped": { "const": true },
+    "previewOnly": { "const": true },
+    "filesModified": { "const": false }
+  },
+  "$defs": {
+    "Sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "Target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetId", "targetHash", "targetWatermark", "name", "defaultModel", "defaultEffort", "allowedModels"],
+      "properties": {
+        "targetId": { "type": "string", "pattern": "^PROJECT-[a-f0-9]{64}$" },
+        "targetHash": { "$ref": "#/$defs/Sha256" },
+        "targetWatermark": { "type": "string", "pattern": "^AMK-TARGET-[a-f0-9]{64}-[0-9]+$", "maxLength": 96 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "defaultModel": { "enum": ["luna", "terra", "sol"] },
+        "defaultEffort": { "enum": ["light", "medium", "high"] },
+        "allowedModels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": ["luna", "terra", "sol"] }
+        }
+      }
+    }
+  }
+}
