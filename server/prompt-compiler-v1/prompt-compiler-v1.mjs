@@ -171,10 +171,7 @@ function normalizeAuthorization(value, verificationCommands) {
       { allowEmpty: true },
     ),
   };
-  if (
-    normalized.intent === "apply" &&
-    !sameOrderedValues(normalized.verificationCommands, verificationCommands)
-  ) {
+  if (!sameOrderedValues(normalized.verificationCommands, verificationCommands)) {
     throw new Error(
       "authorization verification commands must exactly match task verification commands.",
     );
@@ -182,10 +179,9 @@ function normalizeAuthorization(value, verificationCommands) {
   if (
     normalized.intent !== "apply" &&
     (normalized.technicalPermission !== "read_only" ||
-      normalized.sideEffectRisk !== "none" ||
-      normalized.verificationCommands.length)
+      normalized.sideEffectRisk !== "none")
   ) {
-    throw new Error("non-apply authorization must be read-only with no verification authority.");
+    throw new Error("non-apply authorization must be read-only with no side-effect risk.");
   }
   if (
     normalized.intent !== "apply" &&
@@ -352,12 +348,12 @@ export function compilePromptV1(input) {
     authorizationLines.push("Do not modify files or cause side effects.");
   }
 
-  const verificationLines = readOnly
-    ? ["Do not run mutating verification commands."]
-    : [
+  const verificationLines = authorization.verificationCommands.length
+    ? [
         PROTECTED_INVARIANTS_V1.verificationOwner,
         list(authorization.verificationCommands),
-      ];
+      ]
+    : ["No verification commands are authorized; do not invent or run substitutes."];
 
   const outcomeContract =
     `Exactly one standalone final line: ${EXECUTOR_OUTCOME_MARKER_V1}: COMPLETED iff delivered and no guard; otherwise ${EXECUTOR_OUTCOME_MARKER_V1}: STOPPED.`;
@@ -398,7 +394,7 @@ export function compilePromptV1(input) {
     "authorizationBoundary",
     "arbitraryCommands",
     ...(executionGuards.length ? ["stopSemantics"] : []),
-    ...(readOnly ? [] : ["verificationOwner"]),
+    ...(authorization.verificationCommands.length ? ["verificationOwner"] : []),
   ]);
   assertProtectedInvariants(prompt, requiredIds);
   for (const outcome of ["COMPLETED", "STOPPED"]) {

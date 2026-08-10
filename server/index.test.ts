@@ -86,6 +86,7 @@ const {
   normalizeWindowsNpmCommand,
   nodeUserInfoFallbackImportUrl,
   runnerProcessEnvironment,
+  verificationProcessEnvironment,
   processTreeTerminationInvocation,
   waitForProcess,
   checkpointRequirementViolation,
@@ -111,6 +112,10 @@ const {
   projectTaskMetrics,
   projectRunMetrics,
   loadPipeline,
+  appendReadiness,
+  serializePipelineAppend,
+  queueLaunchAuthorizationChecks,
+  pipelineLaunchAuthorizationChecks,
   validateQueue,
   validateTaskQueue,
   persistRun,
@@ -120,15 +125,20 @@ const {
   renameWithTransientWindowsRetry,
   runInBackground,
   windowsPytestBasetempViolation,
+  portablePythonCommandViolation,
   app,
   changeControlStore,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
   repositoryPythonExecutable,
+  managedPythonPreflight,
   resolveTaskContext,
+  queueRepositoryContextChecks,
+  safeContextFailureReasonCode,
   cachePreflightContexts,
   contextsForRun,
   createRun,
+  markRunReadyForLaunch,
   executeQueue,
   buildPrompt,
   createContextRequestV1,
@@ -151,6 +161,7 @@ const {
   codexExecCommandStartArgs,
   codexPromptInvocation,
   orchestratorVerificationCommands,
+  runTaskVerification,
   changedProviderRuntimeIdentityV1,
   providerReasoningModeV1,
   recordProviderRuntimeStateV1,
@@ -11723,6 +11734,263 @@ test("exact changed-file and orchestrator verification boundaries fail closed", 
   ).reason, "APPROVAL_CONTRACT_MISMATCH");
 });
 
+test("launch authorization checks replay exact apply approvals without narrowing read-only contracts", () => {
+  const approval = {
+    approvalId: "apply-server",
+    intent: "apply" as const,
+    technicalPermission: "reversible_local_write" as const,
+    sideEffectRisk: "reversible_local_write" as const,
+    allowedPaths: ["server/index.ts"],
+    preconditions: ["git rev-parse --verify HEAD"],
+    verificationCommands: ["npm.cmd run check", "git diff --check -- server/index.ts"],
+  };
+  const applyTask = {
+    key: "apply-server",
+    title: "Apply server gate",
+    prompt: "Implement the exact approved server change.",
+    allowedPaths: [...approval.allowedPaths],
+    preconditions: [...approval.preconditions],
+    verificationCommands: [...approval.verificationCommands],
+    authorization: {
+      enabled: true,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      approvalId: approval.approvalId,
+    },
+  };
+  const makeQueue = (
+    overrides: Partial<typeof applyTask> = {},
+    contracts = [approval],
+    readOnlyIntent: "answer" | "review" | "diagnose" = "review",
+  ) => validateTaskQueue({
+    project: { path: process.cwd(), approvedApplyContracts: contracts },
+    tasks: [
+      { ...applyTask, ...overrides },
+      {
+        key: "review-result",
+        title: "Review result",
+        prompt: "Review without edits.",
+        allowedPaths: [],
+        authorization: {
+          enabled: true,
+          intent: readOnlyIntent,
+          technicalPermission: "read_only",
+          sideEffectRisk: "none",
+        },
+      },
+    ],
+  });
+  const reasonFor = (queue: ReturnType<typeof validateTaskQueue>) =>
+    queueLaunchAuthorizationChecks(queue).find((check) => !check.ok)?.detail;
+
+  const valid = makeQueue();
+  assert.deepEqual(queueLaunchAuthorizationChecks(valid), [
+    {
+      name: 'Task "apply-server" authorization',
+      ok: true,
+      detail: 'Task "apply-server" authorization: APPROVED_REVERSIBLE_LOCAL_APPLY.',
+    },
+    {
+      name: 'Task "review-result" authorization',
+      ok: true,
+      detail: 'Task "review-result" authorization: NON_MUTATING_AUTHORIZED.',
+    },
+  ]);
+  for (const intent of ["answer", "review", "diagnose"] as const)
+    assert.ok(queueLaunchAuthorizationChecks(makeQueue({}, [approval], intent)).every((check) => check.ok));
+
+  const alternateApproval = {
+    ...approval,
+    approvalId: "apply-other",
+    allowedPaths: ["server/other.ts"],
+  };
+  assert.equal(
+    reasonFor(makeQueue({ authorization: { ...applyTask.authorization, approvalId: "apply-other" } }, [approval, alternateApproval])),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+  const missingApprovalAuthorization = {
+    enabled: true,
+    intent: "apply" as const,
+    technicalPermission: "reversible_local_write" as const,
+    sideEffectRisk: "reversible_local_write" as const,
+    approvalId: "",
+  };
+  assert.throws(
+    () => makeQueue({ authorization: missingApprovalAuthorization }),
+    /authorization\.approvalId must be a non-empty string/,
+  );
+  assert.equal(
+    reasonFor(makeQueue({ allowedPaths: ["server/index.test.ts"] })),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+  assert.equal(
+    reasonFor(makeQueue({ preconditions: ["git rev-parse --verify main"] })),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+  assert.equal(
+    reasonFor(makeQueue({ verificationCommands: [] })),
+    'Task "apply-server" authorization denied: EXACT_SCOPE_REQUIRED.',
+  );
+  assert.equal(
+    reasonFor(makeQueue({ verificationCommands: [...approval.verificationCommands].reverse() })),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+});
+
+test("preflight and launch gates reject denied ordinary, pipeline, and appended queues before run or lock state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-launch-authorization-"));
+  const deniedQueue = {
+    project: { path: project },
+    tasks: [
+      {
+        key: "apply-server",
+        title: "Apply server gate",
+        prompt: "Implement a local change.",
+        allowedPaths: ["server/index.ts"],
+        verificationCommands: ["git diff --check -- server/index.ts"],
+        authorization: {
+          enabled: true,
+          intent: "apply",
+          technicalPermission: "reversible_local_write",
+          sideEffectRisk: "reversible_local_write",
+          approvalId: "missing-approval",
+        },
+      },
+      { key: "report", title: "Report", prompt: "Report the outcome." },
+    ],
+  };
+  const allowedQueue = {
+    project: { path: project },
+    tasks: [
+      { key: "first", title: "First", prompt: "Inspect only." },
+      { key: "second", title: "Second", prompt: "Report only." },
+    ],
+  };
+  const first = join(project, "first.yaml");
+  const second = join(project, "second.yaml");
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map((entry) => entry.toString()).sort();
+  try {
+    await writeFile(first, stringify(allowedQueue));
+    await writeFile(second, stringify(deniedQueue));
+    const pipeline = await loadPipeline({ queues: [{ file: first }, { file: second }] });
+    assert.deepEqual(pipelineLaunchAuthorizationChecks(pipeline), [{
+      name: 'Pipeline queue 2 Task "apply-server" authorization',
+      ok: false,
+      detail: 'Pipeline queue 2: Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+    }]);
+
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}`;
+      const runsBefore = await entries(join(testDataDirectory, "runs"));
+      const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+      const plansBefore = await entries(join(testDataDirectory, "plans"));
+
+      const preflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queues: [{ file: first }, { file: second }] }),
+      });
+      assert.equal(preflight.status, 200);
+      const preflightBody = await preflight.json() as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+      };
+      assert.equal(preflightBody.ok, false);
+      assert.deepEqual(
+        preflightBody.checks.find((check) => check.name === 'Pipeline queue 2 Task "apply-server" authorization'),
+        {
+          name: 'Pipeline queue 2 Task "apply-server" authorization',
+          ok: false,
+          detail: 'Pipeline queue 2: Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+        },
+      );
+
+      const launch = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(deniedQueue),
+      });
+      assert.equal(launch.status, 400);
+      assert.deepEqual(await launch.json(), {
+        error: 'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+      });
+      const pipelineLaunch = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queues: [{ file: first }, { file: second }] }),
+      });
+      assert.equal(pipelineLaunch.status, 400);
+      assert.deepEqual(await pipelineLaunch.json(), {
+        error: 'Pipeline queue 2: Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+      });
+      const append = await fetch(`${base}/api/pipeline/append`, {
+        method: "POST",
+        headers: { "Content-Type": "text/yaml", "X-Queue-Filename": "denied.yaml" },
+        body: stringify(deniedQueue),
+      });
+      assert.equal(append.status, 400);
+      assert.deepEqual(await append.json(), {
+        error: 'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "plans")), plansBefore);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("all authorized task intents retain their declared verification commands", () => {
+  for (const intent of ["answer", "review", "diagnose"] as const) {
+    const evidence = authorizeTask({
+      verificationCommands: ["node static-review-check.mjs"],
+      authorization: {
+        enabled: true,
+        intent,
+        technicalPermission: "read_only",
+        sideEffectRisk: "none",
+      },
+    });
+    assert.equal(evidence.decision, "authorized");
+    assert.deepEqual(orchestratorVerificationCommands(evidence), [
+      "node static-review-check.mjs",
+    ]);
+  }
+});
+
+test("read-only executor delegates every declared verification command to Orchestrator", () => {
+  const command = "& $env:PYTHON_BIN -m pytest --basetemp=\"$env:TEMP\\review-$PID\"";
+  const reviewTask = {
+    ...task("read-only-verification-owner", "pending"),
+    allowedPaths: [],
+    verificationCommands: [command],
+    authorization: {
+      enabled: true,
+      intent: "review" as const,
+      technicalPermission: "read_only" as const,
+      sideEffectRisk: "none" as const,
+    },
+  };
+  const authorizationEvidence = authorizeTask(reviewTask);
+  const prompt = buildPrompt({ ...reviewTask, authorizationEvidence }, {});
+  assert.match(prompt, /Do not run verification commands yourself/);
+  assert.match(prompt, /orchestrator's verification phase may run only these declared commands/);
+  assert.match(prompt, /\$env:PYTHON_BIN/);
+  assert.doesNotMatch(prompt, /Run these verification commands when relevant/);
+});
+
 test("disabled-by-default fallback does not invent approval or verification authority", () => {
   const evidence = authorizeTask({});
   assert.equal(evidence.decision, "disabled");
@@ -11733,6 +12001,64 @@ test("disabled-by-default fallback does not invent approval or verification auth
   ]);
   assert.deepEqual(orchestratorVerificationCommands(evidence), []);
   assert.deepEqual(authorizationWriteViolations(evidence, ["legacy-change.ts"]), []);
+  const prompt = buildReviewerPrompt({
+    ...task("disabled-verification", "completed"),
+    verificationCommands: ["node must-not-run.mjs"],
+    authorizationEvidence: {
+      ...evidence,
+      verificationCommands: ["node must-not-run.mjs"],
+    },
+  }, {});
+  assert.match(prompt, /No verification commands are configured/);
+  assert.doesNotMatch(prompt, /must-not-run|EVIDENCE: MISSING/);
+});
+
+test("verification runner persists exact evidence consumed by a read-only reviewer", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-review-evidence-"));
+  try {
+    const command = "Write-Output review-evidence-ok";
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        {
+          key: "review",
+          title: "Review",
+          prompt: "Review the result without edits.",
+          allowedPaths: [],
+          verificationCommands: [command],
+          authorization: {
+            enabled: true,
+            intent: "review",
+            technicalPermission: "read_only",
+            sideEffectRisk: "none",
+          },
+        },
+        { key: "report", title: "Report", prompt: "Report the result." },
+      ],
+    });
+    const run = createRun(queue);
+    const reviewTask = run.tasks[0];
+    reviewTask.authorizationEvidence = authorizeTask(reviewTask, run.project);
+
+    const result = await runTaskVerification(run, reviewTask);
+
+    assert.deepEqual(result, { code: 0, timedOut: false });
+    assert.deepEqual(reviewTask.verificationEvidence, [{
+      command,
+      exitCode: 0,
+      timedOut: false,
+      output: "review-evidence-ok",
+    }]);
+    const stored = await loadRun(run.id);
+    assert.deepEqual(stored?.tasks[0].verificationEvidence, reviewTask.verificationEvidence);
+    const prompt = buildReviewerPrompt(reviewTask, run.project);
+    assert.match(prompt, /COMMAND: Write-Output review-evidence-ok/);
+    assert.match(prompt, /EXIT_CODE: 0/);
+    assert.match(prompt, /review-evidence-ok/);
+    assert.doesNotMatch(prompt, /EVIDENCE: MISSING/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("external, destructive, costly, published, expanded, and ambiguous effects fail closed", () => {
@@ -14915,7 +15241,12 @@ test("versioned queue template keeps one production contract outcome in one cohe
   assert.match(template, /independently useful/i);
   const parsed = parse(template);
   parsed.project.path = process.cwd();
-  assert.doesNotThrow(() => validateTaskQueue(parsed));
+  const queue = validateTaskQueue(parsed);
+  const readOnlyReview = queue.tasks.find((task) => task.key === "review-integration");
+  assert.deepEqual(readOnlyReview?.allowedPaths, []);
+  assert.equal(readOnlyReview?.authorization?.intent, "review");
+  assert.equal(readOnlyReview?.authorization?.technicalPermission, "read_only");
+  assert.ok(readOnlyReview?.verificationCommands?.length);
 });
 
 test("ordinary YAML queues contain only ordinary task fields", () => {
@@ -15373,14 +15704,28 @@ test("Windows pytest verification requires an isolated sandbox temp directory", 
     ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator\\review-$PID\" tests\\test_acceptance.py";
   const safe =
     ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const managed =
+    "& $env:PYTHON_BIN -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const absoluteProfile =
+    "& 'C:\\Users\\Администратор\\.cache\\codex-runtimes\\runtime\\python\\python.exe' -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const corruptedProfile =
+    "& 'C:\\Users\\РђРґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ\\.cache\\codex-runtimes\\runtime\\python\\python.exe' -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const derivedProfile =
+    "& (Join-Path $env:USERPROFILE '.cache\\codex-runtimes\\runtime\\python\\python.exe') -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
   try {
     assert.match(windowsPytestBasetempViolation(unsafe) ?? "", /--basetemp/);
     assert.match(windowsPytestBasetempViolation(workspaceTemp) ?? "", /\$env:TEMP/);
     assert.match(windowsPytestBasetempViolation(sharedTemp) ?? "", /\$PID/);
     assert.match(windowsPytestBasetempViolation(nestedTemp) ?? "", /direct child/);
     assert.equal(windowsPytestBasetempViolation(safe), undefined);
+    assert.equal(windowsPytestBasetempViolation(managed), undefined);
     assert.equal(windowsPytestBasetempViolation("git diff --check"), undefined);
     assert.equal(windowsPytestBasetempViolation("rg -n pytest README.md"), undefined);
+    assert.equal(portablePythonCommandViolation(managed, "win32"), undefined);
+    assert.match(portablePythonCommandViolation(absoluteProfile, "win32") ?? "", /PYTHON_BIN/);
+    assert.match(portablePythonCommandViolation(corruptedProfile, "win32") ?? "", /PYTHON_BIN/);
+    assert.match(portablePythonCommandViolation(derivedProfile, "win32") ?? "", /PYTHON_BIN/);
+    assert.equal(portablePythonCommandViolation(absoluteProfile, "linux"), undefined);
 
     const base = {
       project: { path: project },
@@ -15408,6 +15753,19 @@ test("Windows pytest verification requires an isolated sandbox temp directory", 
         tasks: [{ ...base.tasks[0], verificationCommands: [safe] }],
       })
     );
+    if (process.platform === "win32") {
+      assert.throws(
+        () => validateQueue({
+          ...base,
+          tasks: [{ ...base.tasks[0], verificationCommands: [corruptedProfile] }],
+        }),
+        /user-profile Python path.*PYTHON_BIN/,
+      );
+      assert.doesNotThrow(() => validateQueue({
+        ...base,
+        tasks: [{ ...base.tasks[0], verificationCommands: [managed] }],
+      }));
+    }
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -15486,12 +15844,12 @@ test("safe fallback selects only fixed root entrypoints and emits ContextReceipt
   }
 });
 
-test("Orchestrator consumes its own bounded secondary-memory profile through the repository helper", async () => {
+test("repository helper resolves the supported implementation profile through Context Contract v1", async () => {
   const result = await new RepositoryContextHelperProvider().provide({
     projectPath: process.cwd(),
-    requestId: "request-orchestrator-startup",
-    task: "Start a grounded Orchestrator repository task",
-    profile: "startup",
+    requestId: "request-orchestrator-implementation",
+    task: "Implement a grounded Orchestrator repository task",
+    profile: "implementation",
     maxSources: 8,
   });
   assert.equal(result.provider, "repository-helper");
@@ -15595,6 +15953,89 @@ test("helper timeout, invalid JSON, and contract mismatch use observable safe fa
   }
 });
 
+test("unknown repository context profiles use a stable redacted fallback reason", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-unknown-profile-"));
+  const secret = "do-not-expose-context-secret";
+  try {
+    await mkdir(join(project, "scripts"));
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    await writeFile(
+      join(project, "scripts", "unknown.cjs"),
+      `console.error(${JSON.stringify(`unknown context profile: unrecognized; ${secret}; ${project}`)}); process.exit(2);`,
+    );
+    const request = {
+      projectPath: project,
+      requestId: "request-unknown-profile",
+      task: "Review",
+      profile: "unrecognized",
+      maxSources: 2,
+    };
+    const provider = new RepositoryContextHelperProvider({
+      executable: testNodeExecutable,
+      helperRelativePath: "scripts/unknown.cjs",
+      timeoutMs: 1_000,
+    });
+    await assert.rejects(
+      () => provider.provide(request),
+      (error: Error & { reasonCode?: string }) => {
+        assert.equal(error.reasonCode, "CONTEXT_PROFILE_UNKNOWN");
+        assert.match(error.message, /did not complete successfully/);
+        assert.doesNotMatch(error.message, new RegExp(secret));
+        assert.equal(error.message.includes(project), false);
+        return true;
+      },
+    );
+    const result = await resolveTaskContext(request, provider, new FallbackContextProvider());
+    assert.equal(result.fallbackReason, "CONTEXT_PROFILE_UNKNOWN");
+    assert.deepEqual(result.receipt.reason_codes, ["CONTEXT_PROFILE_UNKNOWN"]);
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+    assert.equal(JSON.stringify(result).includes(project), false);
+    assert.equal(safeContextFailureReasonCode("not a safe helper error"), "HELPER_FAILED");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("repository context checks warn for optional fallback and reject required fallback", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-launch-checks-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const context = await new FallbackContextProvider().provide({
+      projectPath: project,
+      requestId: "request-launch-checks",
+      task: "Review",
+      profile: "implementation",
+      maxSources: 2,
+    });
+    context.fallbackReason = "HELPER_TIMEOUT";
+    const optional = validateQueue({
+      project: { path: project },
+      tasks: [{ title: "Context", prompt: "Review", contextProfile: "implementation" }],
+    });
+    assert.deepEqual(queueRepositoryContextChecks(optional, [context]), [{
+      name: "Task 1 context",
+      ok: true,
+      detail: "Warning: controlled context fallback: HELPER_TIMEOUT",
+    }]);
+    const required = validateQueue({
+      project: { path: project },
+      tasks: [{
+        title: "Context",
+        prompt: "Review",
+        contextProfile: "implementation",
+        requireRepositoryContext: true,
+      }],
+    });
+    assert.deepEqual(queueRepositoryContextChecks(required, [context]), [{
+      name: "Task 1 context",
+      ok: false,
+      detail: "Repository context required; fallback rejected: HELPER_TIMEOUT",
+    }]);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("helper adapter preserves safety evidence and rejects divergent receipt selections", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-context-consistency-"));
   try {
@@ -15691,6 +16132,97 @@ test("preflight context is reused for prompt and serialized run receipt", async 
     const stored = JSON.parse(JSON.stringify(created));
     assert.equal(stored.contextReceipts[0].contract_type, "ContextReceiptV1");
     assert.equal(stored.contextReceipts[0].request_id, "request-reuse");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("required repository context blocks direct launch and makes preflight fail before run state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-required-context-launch-"));
+  const queue = {
+    project: { path: project },
+    tasks: [
+      {
+        title: "Grounded task",
+        prompt: "Review repository context.",
+        contextProfile: "implementation",
+        requireRepositoryContext: true,
+      },
+      { title: "Report", prompt: "Report the outcome." },
+    ],
+  };
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map((entry) => entry.toString()).sort();
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}`;
+      const runsBefore = await entries(join(testDataDirectory, "runs"));
+      const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+
+      const direct = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(queue),
+      });
+      assert.equal(direct.status, 400);
+      assert.deepEqual(await direct.json(), {
+        error: "Repository context required; fallback rejected: HELPER_UNAVAILABLE",
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+
+      const first = join(project, "first.yaml");
+      const requiredSecond = join(project, "required-second.yaml");
+      await writeFile(first, stringify({
+        project: { path: project },
+        tasks: [
+          { title: "First", prompt: "Inspect only." },
+          { title: "First report", prompt: "Report only." },
+        ],
+      }));
+      await writeFile(requiredSecond, stringify(queue));
+      const pipelineDirect = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queues: [{ file: first }, { file: requiredSecond }] }),
+      });
+      assert.equal(pipelineDirect.status, 400);
+      assert.deepEqual(await pipelineDirect.json(), {
+        error: "Repository context required; fallback rejected: HELPER_UNAVAILABLE",
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+
+      const preflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(queue),
+      });
+      assert.equal(preflight.status, 200);
+      const body = await preflight.json() as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+        contextPreviews: Array<{ fallbackReason?: string }>;
+      };
+      assert.equal(body.ok, false);
+      assert.deepEqual(body.checks.find((check) => check.name === "Task 1 context"), {
+        name: "Task 1 context",
+        ok: false,
+        detail: "Repository context required; fallback rejected: HELPER_UNAVAILABLE",
+      });
+      assert.equal(body.contextPreviews.length, 1);
+      assert.equal(body.contextPreviews[0].fallbackReason, "HELPER_UNAVAILABLE");
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -15921,6 +16453,79 @@ test("loads every queue in a sequential pipeline before it starts", async () => 
   } finally {
     await rm(project, { recursive: true, force: true });
   }
+});
+
+test("append readiness is stable for idle/starting, running, paused, and terminal runs", () => {
+  assert.deepEqual(appendReadiness({ id: "starting-run", status: "idle" }, undefined), {
+    ready: false,
+    code: "RUN_NOT_READY",
+    retryable: true,
+    retryAfterMs: 100,
+    state: {
+      run: { id: "starting-run", status: "idle" },
+      pipeline: null,
+    },
+  });
+  for (const status of ["running", "paused"] as const)
+    assert.deepEqual(appendReadiness({ id: `${status}-run`, status }, undefined), {
+      ready: true,
+      state: {
+        run: { id: `${status}-run`, status },
+        pipeline: null,
+      },
+    });
+  for (const status of ["completed", "failed", "timed_out", "cancelled"] as const)
+    assert.deepEqual(appendReadiness({ id: `${status}-run`, status }, undefined), {
+      ready: false,
+      code: "RUN_NOT_APPENDABLE",
+      retryable: false,
+      state: {
+        run: { id: `${status}-run`, status },
+        pipeline: null,
+      },
+  });
+});
+
+test("launch records are append-ready before their response becomes visible", () => {
+  const run = markRunReadyForLaunch(createRun(validateQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { title: "Launch", prompt: "Start safely." },
+      { title: "Confirm", prompt: "Confirm readiness." },
+    ],
+  })));
+  assert.equal(run.status, "running");
+  assert.ok(run.startedAt);
+  assert.deepEqual(appendReadiness(run, undefined), {
+    ready: true,
+    state: {
+      run: { id: run.id, status: "running" },
+      pipeline: null,
+    },
+  });
+});
+
+test("concurrent append mutations serialize without dropping either accepted queue", async () => {
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  let firstEntered!: () => void;
+  const first = serializePipelineAppend(async () => {
+    order.push("first-start");
+    firstEntered();
+    await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    order.push("first-committed");
+    return "first";
+  });
+  await new Promise<void>((resolve) => { firstEntered = resolve; });
+  const second = serializePipelineAppend(async () => {
+    order.push("second-committed");
+    return "second";
+  });
+  await Promise.resolve();
+  assert.deepEqual(order, ["first-start"]);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+  assert.deepEqual(order, ["first-start", "first-committed", "second-committed"]);
 });
 
 test("routes everyday work to Terra and uses Sol only for an explicit quality-first minimum", async () => {
@@ -16583,9 +17188,9 @@ test("reviewer prompt consumes exact Orchestrator verification evidence without 
       prompt: "Review the retained implementation.",
       authorizationEvidence: {
         contractType: "TaskAuthorizationEvidenceV1",
-        enabled: false,
-        decision: "disabled",
-        reason: "NON_MUTATING_CONTRACT",
+        enabled: true,
+        decision: "authorized",
+        reason: "NON_MUTATING_AUTHORIZED",
         intent: "review",
         technicalPermission: "read_only",
         sideEffectRisk: "none",
@@ -16614,6 +17219,37 @@ test("reviewer prompt consumes exact Orchestrator verification evidence without 
   assert.doesNotMatch(prompt, /ignored fallback/);
 });
 
+test("managed Python preflight proves executable availability before task execution", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-managed-python-"));
+  try {
+    assert.deepEqual(
+      await managedPythonPreflight(project, ["git diff --check"], {}),
+      { required: false, ok: true, executable: undefined },
+    );
+    const available = await managedPythonPreflight(
+      project,
+      ["& $env:PYTHON_BIN -m pytest --basetemp=\"$env:TEMP\\test-$PID\""],
+      { PYTHON_BIN: process.execPath },
+    );
+    assert.deepEqual(available, {
+      required: true,
+      ok: true,
+      executable: process.execPath,
+    });
+    const missing = join(project, "missing-python.exe");
+    assert.deepEqual(
+      await managedPythonPreflight(
+        project,
+        ["& $env:PYTHON_BIN -m pytest --basetemp=\"$env:TEMP\\test-$PID\""],
+        { PYTHON_BIN: missing },
+      ),
+      { required: true, ok: false, executable: missing },
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("read-only reviewer receives the Russian executor result and does not require a diff", () => {
   const prompt = buildReviewerPrompt(
     {
@@ -16623,9 +17259,9 @@ test("read-only reviewer receives the Russian executor result and does not requi
       finalOutput: "Все проверки пройдены. Русская строка сохранена.",
       authorizationEvidence: {
         contractType: "TaskAuthorizationEvidenceV1",
-        enabled: false,
-        decision: "disabled",
-        reason: "NON_MUTATING_CONTRACT",
+        enabled: true,
+        decision: "authorized",
+        reason: "NON_MUTATING_AUTHORIZED",
         intent: "review",
         technicalPermission: "read_only",
         sideEffectRisk: "none",
@@ -17067,6 +17703,12 @@ test("runner environment installs one inherited os.userInfo fallback without rep
       stdio: "ignore",
     })
   );
+  const verification = verificationProcessEnvironment(process.cwd(), {
+    NODE_OPTIONS: "--trace-warnings",
+    PYTHON_BIN: "managed-python",
+  });
+  assert.equal(verification.PYTHON_BIN, "managed-python");
+  assert.match(verification.NODE_OPTIONS ?? "", /--trace-warnings --import=/);
 });
 
 test("Windows timeout cleanup targets the complete process tree", () => {

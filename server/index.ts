@@ -493,6 +493,32 @@ class ContextProviderFailure extends Error {
   }
 }
 
+const CONTEXT_FAILURE_REASON_CODES = new Set([
+  "CONTEXT_UNAVAILABLE",
+  "CONTEXT_PROFILE_UNKNOWN",
+  "HELPER_CONTRACT_MISMATCH",
+  "HELPER_FAILED",
+  "HELPER_INVALID_JSON",
+  "HELPER_TIMEOUT",
+  "HELPER_UNAVAILABLE",
+]);
+
+/**
+ * Context-provider process output is untrusted: retain only a small, stable
+ * reason-code vocabulary in receipts, preflight output, and launch errors.
+ */
+export function safeContextFailureReasonCode(reason: unknown) {
+  return typeof reason === "string" && CONTEXT_FAILURE_REASON_CODES.has(reason)
+    ? reason
+    : "HELPER_FAILED";
+}
+
+function helperFailureReasonCode(stderr: string) {
+  return /unknown context profile/i.test(stderr)
+    ? "CONTEXT_PROFILE_UNKNOWN"
+    : "HELPER_FAILED";
+}
+
 const contextContractAjv = new Ajv2020({ allErrors: true, strict: true });
 const contextContractValidators = {
   request: contextContractAjv.compile(contextRequestV1Schema),
@@ -702,7 +728,12 @@ export class RepositoryContextHelperProvider implements ContextProvider {
       child.stdout?.on("data", stdoutDecoder.write);
       child.stderr?.on("data", stderrDecoder.write);
       child.on("error", () => finish(new ContextProviderFailure("HELPER_UNAVAILABLE", "Repository context helper could not start.")));
-      child.on("close", (code) => code === 0 ? finish() : finish(new ContextProviderFailure("HELPER_FAILED", stderr.trim() || `Repository context helper exited with code ${code}.`)));
+      child.on("close", (code) => code === 0
+        ? finish()
+        : finish(new ContextProviderFailure(
+            helperFailureReasonCode(stderr),
+            "Repository context helper did not complete successfully.",
+          )));
     });
     let value: unknown;
     try { value = JSON.parse(output); }
@@ -789,7 +820,9 @@ export async function resolveTaskContext(
   let routed: ContextProviderResult;
   try { routed = await primary.provide(request); }
   catch (error) {
-    const reason = error instanceof ContextProviderFailure ? error.reasonCode : "HELPER_FAILED";
+    const reason = safeContextFailureReasonCode(
+      error instanceof ContextProviderFailure ? error.reasonCode : undefined,
+    );
     const result = await fallback.provide(request);
     result.fallbackReason = reason;
     result.receipt.reason_codes = [reason];
@@ -1484,6 +1517,8 @@ const windowsCodexBin = join(
 );
 let activeRun: Run | undefined;
 let activePipeline: LoadedPipeline | undefined;
+let pipelineAppendChain: Promise<void> = Promise.resolve();
+let runLaunchChain: Promise<void> = Promise.resolve();
 const activeProcesses = new Map<string, ReturnType<typeof spawn>>();
 const skippedTaskIds = new Set<string>();
 let resumePausedRun: (() => void) | undefined;
@@ -3012,8 +3047,7 @@ export function orchestratorVerificationCommands(
   evidence: TaskAuthorizationEvidence,
 ) {
   return evidence.enabled &&
-    evidence.decision === "authorized" &&
-    evidence.intent === "apply"
+    evidence.decision === "authorized"
     ? [...evidence.verificationCommands]
     : [];
 }
@@ -3065,7 +3099,7 @@ async function taskAuthorizationIdentityViolations(run: Run, task: Task) {
 
 export function windowsPytestBasetempViolation(command: string) {
   const invokesPytest =
-    /(?:python(?:\.exe)?["']?\s+-m\s+pytest\b|(?:^|[;&|]\s*|[\\/])pytest(?:\.exe)?(?=\s|$))/i;
+    /(?:\s-m\s+pytest\b|(?:^|[;&|]\s*|[\\/])pytest(?:\.exe)?(?=\s|$))/i;
   if (!invokesPytest.test(command)) return undefined;
   const match = command.match(
     /--basetemp(?:=|\s+)(?:"([^"]*)"|'([^']*)'|([^\s;|]+))/i,
@@ -3083,6 +3117,21 @@ export function windowsPytestBasetempViolation(command: string) {
   return undefined;
 }
 
+export function portablePythonCommandViolation(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+) {
+  if (platform !== "win32" || !/\s-m\s+pytest\b/i.test(command))
+    return undefined;
+  const absoluteProfilePython =
+    /[A-Za-z]:[\\/]Users[\\/][^\r\n'";|]+[\\/]python(?:\.exe)?\b/i;
+  const derivedProfilePython =
+    /\$env:USERPROFILE[^\r\n;|]*codex-runtimes[^\r\n;|]*python(?:\.exe)?\b/i;
+  if (absoluteProfilePython.test(command) || derivedProfilePython.test(command))
+    return "Windows pytest verification cannot embed or derive a user-profile Python path; use $env:PYTHON_BIN supplied by Orchestrator.";
+  return undefined;
+}
+
 function assertWindowsPytestVerificationCommands(
   commands: string[] | undefined,
   field: string,
@@ -3091,6 +3140,8 @@ function assertWindowsPytestVerificationCommands(
   for (const command of commands) {
     const violation = windowsPytestBasetempViolation(command);
     if (violation) throw new Error(`${field}: ${violation}`);
+    const portableViolation = portablePythonCommandViolation(command);
+    if (portableViolation) throw new Error(`${field}: ${portableViolation}`);
   }
 }
 
@@ -3957,6 +4008,68 @@ export async function loadPipeline(value: unknown): Promise<LoadedPipeline> {
   };
 }
 
+type LaunchAuthorizationCheck = {
+  name: string;
+  ok: boolean;
+  detail: string;
+};
+
+function launchAuthorizationTaskLabel(task: ResolvedTask, index: number) {
+  return task.key
+    ? `Task "${task.key}"`
+    : `Task ${index + 1} "${task.title}"`;
+}
+
+/**
+ * Re-evaluate every opt-in task against the production authorization contract
+ * before a queue can be made durable or executed. Disabled tasks preserve the
+ * legacy queue contract and intentionally have no launch authorization check.
+ */
+export function queueLaunchAuthorizationChecks(
+  queue: ReturnType<typeof validateQueue>,
+): LaunchAuthorizationCheck[] {
+  return queue.tasks.flatMap((task, index) => {
+    if (!task.authorization?.enabled) return [];
+    const evidence = authorizeTask(task, queue.project);
+    const label = launchAuthorizationTaskLabel(task, index);
+    return [{
+      name: `${label} authorization`,
+      ok: evidence.decision === "authorized",
+      detail: evidence.decision === "authorized"
+        ? `${label} authorization: ${evidence.reason}.`
+        : `${label} authorization denied: ${evidence.reason}.`,
+    }];
+  });
+}
+
+export function assertQueueLaunchAuthorized(
+  queue: ReturnType<typeof validateQueue>,
+) {
+  const denied = queueLaunchAuthorizationChecks(queue)
+    .filter((check) => !check.ok);
+  if (denied.length)
+    throw new Error(denied.map((check) => check.detail).join(" "));
+}
+
+export function pipelineLaunchAuthorizationChecks(
+  pipeline: LoadedPipeline,
+): LaunchAuthorizationCheck[] {
+  return pipeline.queues.flatMap((entry, index) =>
+    queueLaunchAuthorizationChecks(entry.queue).map((check) => ({
+      ...check,
+      name: `Pipeline queue ${index + 1} ${check.name}`,
+      detail: `Pipeline queue ${index + 1}: ${check.detail}`,
+    })),
+  );
+}
+
+export function assertPipelineLaunchAuthorized(pipeline: LoadedPipeline) {
+  const denied = pipelineLaunchAuthorizationChecks(pipeline)
+    .filter((check) => !check.ok);
+  if (denied.length)
+    throw new Error(denied.map((check) => check.detail).join(" "));
+}
+
 export function boundedFinalOutput(source: string, limit = 24_000) {
   if (source.length <= limit) return source;
   const tailSize = Math.min(8_000, Math.floor(limit / 2));
@@ -3996,6 +4109,14 @@ export function createRun(
   };
 }
 
+/** Make the durable launch response and append admission observe the same state. */
+export function markRunReadyForLaunch(run: Run): Run {
+  run.status = "running";
+  run.startedAt ??= timestamp();
+  run.pausedAt = undefined;
+  return run;
+}
+
 function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
   return {
     project: run.project,
@@ -4029,26 +4150,118 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
   };
 }
 
+type AppendReadinessState = {
+  run: { id: string; status: Run["status"] } | null;
+  pipeline: PipelineView | null;
+};
+type AppendReadiness =
+  | { ready: true; state: AppendReadinessState }
+  | {
+      ready: false;
+      code: "RUN_NOT_READY" | "RUN_NOT_APPENDABLE";
+      retryable: boolean;
+      retryAfterMs?: number;
+      state: AppendReadinessState;
+    };
+
+function appendReadinessState(
+  run: Pick<Run, "id" | "status"> | undefined,
+  pipeline: LoadedPipeline | undefined,
+): AppendReadinessState {
+  return {
+    run: run ? { id: run.id, status: run.status } : null,
+    pipeline: pipeline ? pipelineView(pipeline) : null,
+  };
+}
+
+/**
+ * Appends are allowed only after the launch record is durable.  `idle` is the
+ * one transient state: it can become runnable without operator action.  Every
+ * terminal or absent state is deliberately non-retryable.
+ */
+export function appendReadiness(
+  run: Pick<Run, "id" | "status"> | undefined,
+  pipeline: LoadedPipeline | undefined,
+): AppendReadiness {
+  const state = appendReadinessState(run, pipeline);
+  if (!run)
+    return {
+      ready: false,
+      code: "RUN_NOT_APPENDABLE",
+      retryable: false,
+      state,
+    };
+  if (run.status === "running" || run.status === "paused")
+    return { ready: true, state };
+  if (run.status === "idle")
+    return {
+      ready: false,
+      code: "RUN_NOT_READY",
+      retryable: true,
+      retryAfterMs: 100,
+      state,
+    };
+  return {
+    ready: false,
+    code: "RUN_NOT_APPENDABLE",
+    retryable: false,
+    state,
+  };
+}
+
+class AppendReadinessError extends Error {
+  constructor(readonly readiness: Exclude<AppendReadiness, { ready: true }>) {
+    super(readiness.code);
+  }
+}
+
+function assertAppendReady(
+  run = activeRun,
+  pipeline = activePipeline,
+): asserts run is Run {
+  const readiness = appendReadiness(run, pipeline);
+  if (!readiness.ready) throw new AppendReadinessError(readiness);
+}
+
+/** Serialize in-process append transitions so every accepted queue has one position. */
+export function serializePipelineAppend<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = pipelineAppendChain;
+  let release!: () => void;
+  pipelineAppendChain = new Promise<void>((resolveRelease) => {
+    release = resolveRelease;
+  });
+  return previous.catch(() => undefined).then(operation).finally(() => release());
+}
+
+function serializeRunLaunch<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = runLaunchChain;
+  let release!: () => void;
+  runLaunchChain = new Promise<void>((resolveRelease) => {
+    release = resolveRelease;
+  });
+  return previous.catch(() => undefined).then(operation).finally(() => release());
+}
+
 async function activePipelineForAppend() {
-  if (!activeRun || (activeRun.status !== "running" && activeRun.status !== "paused"))
-    throw new Error("No active queue to append to.");
+  const run = activeRun;
+  assertAppendReady(run, activePipeline);
   if (activePipeline) return activePipeline;
+  assertQueueLaunchAuthorized(queueFromRun(run));
   const pipeline: LoadedPipeline = {
     id: identifier(),
     kind: "queues",
-    queues: [{ file: "(current queue)", queue: queueFromRun(activeRun) }],
+    queues: [{ file: "(current queue)", queue: queueFromRun(run) }],
     currentIndex: 0,
-    currentRunId: activeRun.id,
-    status: activeRun.status,
+    currentRunId: run.id,
+    status: run.status,
   };
   activePipeline = pipeline;
-  activeRun.pipeline = { id: pipeline.id, file: "(current queue)", index: 1, total: 1 };
+  run.pipeline = { id: pipeline.id, file: "(current queue)", index: 1, total: 1 };
   await persistPipeline(pipeline);
   return pipeline;
 }
 
 async function appendPipelineQueue(source: string, filename: string) {
-  const pipeline = await activePipelineForAppend();
   let queue: ReturnType<typeof validateQueue>;
   try {
     queue = validateTaskQueue(parse(source));
@@ -4057,46 +4270,89 @@ async function appendPipelineQueue(source: string, filename: string) {
       `Invalid appended YAML: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const safeName = basename(filename || "queue.yaml").replace(/[^a-zA-Z0-9._-]/g, "_");
-  const file = join(pipelinesDirectory, pipeline.id, "queues", `${identifier()}-${safeName}`);
-  await mkdir(join(pipelinesDirectory, pipeline.id, "queues"), { recursive: true });
-  await writeFile(file, source, "utf8");
-  pipeline.queues.push({ file, queue });
-  activeRun!.pipeline = {
-    id: pipeline.id,
-    file: activeRun!.pipeline?.file ?? "(current queue)",
-    index: pipeline.currentIndex + 1,
-    total: pipeline.queues.length,
-  };
-  await Promise.all([persistPipeline(pipeline), persist(activeRun!)]);
-  publish("run", activeRun);
-  return {
-    position: pipeline.queues.length,
-    total: pipeline.queues.length,
-    file,
-    pipeline: pipelineView(pipeline),
-  };
+  // Reject before turning an ordinary active run into a persisted pipeline.
+  assertQueueLaunchAuthorized(queue);
+  const requestedRun = activeRun;
+  const requestedReadiness = appendReadiness(requestedRun, activePipeline);
+  if (!requestedReadiness.ready) throw new AppendReadinessError(requestedReadiness);
+  return serializePipelineAppend(async () => {
+    const run = activeRun;
+    assertAppendReady(run, activePipeline);
+    if (run !== requestedRun)
+      throw new AppendReadinessError({
+        ready: false,
+        code: "RUN_NOT_READY",
+        retryable: true,
+        retryAfterMs: 100,
+        state: appendReadinessState(run, activePipeline),
+      });
+    const pipeline = await activePipelineForAppend();
+    assertPipelineLaunchAuthorized(pipeline);
+    const safeName = basename(filename || "queue.yaml").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const file = join(pipelinesDirectory, pipeline.id, "queues", `${identifier()}-${safeName}`);
+    try {
+      await mkdir(join(pipelinesDirectory, pipeline.id, "queues"), { recursive: true });
+      await writeFile(file, source, "utf8");
+      // The executor may settle while the file is being written. Do not turn a
+      // terminal run into a pipeline merely because append began a moment earlier.
+      const targetReadiness = appendReadiness(run, pipeline);
+      if (!targetReadiness.ready)
+        throw new AppendReadinessError({
+          ...targetReadiness,
+          state: appendReadinessState(activeRun, activePipeline),
+        });
+      assertAppendReady(activeRun, activePipeline);
+      if (activeRun !== run || activePipeline !== pipeline)
+        throw new AppendReadinessError({
+          ready: false,
+          code: "RUN_NOT_READY",
+          retryable: true,
+          retryAfterMs: 100,
+          state: appendReadinessState(activeRun, activePipeline),
+        });
+      pipeline.queues.push({ file, queue });
+      run.pipeline = {
+        id: pipeline.id,
+        file: run.pipeline?.file ?? "(current queue)",
+        index: pipeline.currentIndex + 1,
+        total: pipeline.queues.length,
+      };
+      await Promise.all([persistPipeline(pipeline), persist(run)]);
+      publish("run", run);
+      return {
+        position: pipeline.queues.length,
+        total: pipeline.queues.length,
+        file,
+        pipeline: pipelineView(pipeline),
+      };
+    } catch (error) {
+      await unlink(file).catch(() => undefined);
+      throw error;
+    }
+  });
 }
 
 async function removePipelineQueue(index: number) {
-  const pipeline = activePipeline;
-  if (!pipeline) throw new Error("No active pipeline.");
-  if (!Number.isInteger(index) || index <= pipeline.currentIndex)
-    throw new Error("Only queued files after the current queue can be removed.");
-  const entry = pipeline.queues[index];
-  if (!entry) throw new Error("Queued file not found.");
-  pipeline.queues.splice(index, 1);
-  if (activeRun?.pipeline) activeRun.pipeline.total = pipeline.queues.length;
-  const ownedQueueDirectory = resolve(pipelinesDirectory, pipeline.id, "queues");
-  const file = resolve(entry.file);
-  if (file.startsWith(`${ownedQueueDirectory}${process.platform === "win32" ? "\\" : "/"}`))
-    await unlink(file).catch(() => undefined);
-  await Promise.all([
-    persistPipeline(pipeline),
-    activeRun ? persist(activeRun) : Promise.resolve(),
-  ]);
-  if (activeRun) publish("run", activeRun);
-  return pipelineView(pipeline);
+  return serializePipelineAppend(async () => {
+    const pipeline = activePipeline;
+    if (!pipeline) throw new Error("No active pipeline.");
+    if (!Number.isInteger(index) || index <= pipeline.currentIndex)
+      throw new Error("Only queued files after the current queue can be removed.");
+    const entry = pipeline.queues[index];
+    if (!entry) throw new Error("Queued file not found.");
+    pipeline.queues.splice(index, 1);
+    if (activeRun?.pipeline) activeRun.pipeline.total = pipeline.queues.length;
+    const ownedQueueDirectory = resolve(pipelinesDirectory, pipeline.id, "queues");
+    const file = resolve(entry.file);
+    if (file.startsWith(`${ownedQueueDirectory}${process.platform === "win32" ? "\\" : "/"}`))
+      await unlink(file).catch(() => undefined);
+    await Promise.all([
+      persistPipeline(pipeline),
+      activeRun ? persist(activeRun) : Promise.resolve(),
+    ]);
+    if (activeRun) publish("run", activeRun);
+    return pipelineView(pipeline);
+  });
 }
 
 export function recoverRun(run: Run, branch?: string) {
@@ -4288,6 +4544,16 @@ export function runnerProcessEnvironment(
     ...environment,
     NODE_OPTIONS: [current, nodeUserInfoFallbackOption].filter(Boolean).join(" "),
   };
+}
+
+export function verificationProcessEnvironment(
+  projectPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  return runnerProcessEnvironment({
+    ...environment,
+    PYTHON_BIN: repositoryPythonExecutable(projectPath, environment),
+  });
 }
 
 export function processTreeTerminationInvocation(
@@ -5254,6 +5520,10 @@ async function readGitDiff(cwd: string, paths: string[]) {
 }
 
 const preflightContextCache = new Map<string, Array<ContextProviderResult | undefined>>();
+const pipelineLaunchContexts = new WeakMap<
+  LoadedPipeline,
+  Map<LoadedPipelineEntry, Array<ContextProviderResult | undefined>>
+>();
 
 function contextCacheKey(queue: ReturnType<typeof validateQueue>) {
   return JSON.stringify({
@@ -5263,6 +5533,7 @@ function contextCacheKey(queue: ReturnType<typeof validateQueue>) {
       prompt: task.prompt,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
+      requireRepositoryContext: task.requireRepositoryContext,
     })),
   });
 }
@@ -5287,6 +5558,41 @@ export function cachePreflightContexts(queue: ReturnType<typeof validateQueue>, 
   preflightContextCache.set(contextCacheKey(queue), contexts);
 }
 
+export function queueRepositoryContextChecks(
+  queue: ReturnType<typeof validateQueue>,
+  contexts: Array<ContextProviderResult | undefined>,
+): LaunchAuthorizationCheck[] {
+  return queue.tasks.flatMap((task, index) => {
+    if (!task.contextProfile) return [];
+    const context = contexts[index];
+    const fallbackReason = context?.fallbackReason
+      ? safeContextFailureReasonCode(context.fallbackReason)
+      : context
+        ? undefined
+        : "CONTEXT_UNAVAILABLE";
+    const required = task.requireRepositoryContext === true;
+    return [{
+      name: `Task ${index + 1} context`,
+      ok: !required || !fallbackReason,
+      detail: fallbackReason
+        ? required
+          ? `Repository context required; fallback rejected: ${fallbackReason}`
+          : `Warning: controlled context fallback: ${fallbackReason}`
+        : `${context?.bundle.sources.length ?? 0} source(s) from repository helper`,
+    }];
+  });
+}
+
+export function assertQueueLaunchRepositoryContext(
+  queue: ReturnType<typeof validateQueue>,
+  contexts: Array<ContextProviderResult | undefined>,
+) {
+  const rejected = queueRepositoryContextChecks(queue, contexts)
+    .filter((check) => !check.ok);
+  if (rejected.length)
+    throw new Error(rejected.map((check) => check.detail).join(" "));
+}
+
 export async function contextsForRun(queue: ReturnType<typeof validateQueue>) {
   const key = contextCacheKey(queue);
   const cached = preflightContextCache.get(key);
@@ -5297,14 +5603,53 @@ export async function contextsForRun(queue: ReturnType<typeof validateQueue>) {
   return resolveQueueContexts(queue);
 }
 
+async function preparePipelineLaunchContexts(pipeline: LoadedPipeline) {
+  const resolved = await Promise.all(pipeline.queues.map(async (entry) => ({
+    entry,
+    contexts: await contextsForRun(entry.queue),
+  })));
+  for (const { entry, contexts } of resolved)
+    assertQueueLaunchRepositoryContext(entry.queue, contexts);
+  pipelineLaunchContexts.set(
+    pipeline,
+    new Map(resolved.map(({ entry, contexts }) => [entry, contexts])),
+  );
+}
+
+export async function managedPythonPreflight(
+  projectPath: string,
+  commands: readonly string[],
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const required = commands.some((command) =>
+    /\$env:PYTHON_BIN\b/i.test(command),
+  );
+  if (!required)
+    return { required, ok: true, executable: undefined as string | undefined };
+  const executable = repositoryPythonExecutable(projectPath, environment);
+  return {
+    required,
+    ok: await commandSucceeds(executable, ["--version"], projectPath),
+    executable,
+  };
+}
+
 async function preflight(value: unknown) {
   const pipeline = isPipeline(value)
     ? await loadPipeline(value)
     : undefined;
   const queue = pipeline?.queues[0].queue ?? validateTaskQueue(value);
+  const authorizationChecks = pipeline
+    ? pipelineLaunchAuthorizationChecks(pipeline)
+    : queueLaunchAuthorizationChecks(queue);
   const agentsPath = join(queue.project.path, "AGENTS.md");
   const packageFile = join(queue.project.path, "package.json");
-  const [cli, git, scripts] = await Promise.all([
+  const configuredCommands = queue.tasks.flatMap((task) => [
+    ...(queue.project.verificationCommands ?? []),
+    ...(task.preconditions ?? []),
+    ...(task.verificationCommands ?? []),
+  ]);
+  const [cli, git, scripts, managedPython] = await Promise.all([
     codexCliAvailable(),
     commandSucceeds(
       "git",
@@ -5317,6 +5662,7 @@ async function preflight(value: unknown) {
             (JSON.parse(source) as { scripts?: Record<string, string> }).scripts ?? {},
         )
       : Promise.resolve({}),
+    managedPythonPreflight(queue.project.path, configuredCommands),
   ]);
   const checks = (
     await Promise.all(queue.tasks.map(async (task, index) => {
@@ -5350,15 +5696,42 @@ async function preflight(value: unknown) {
       ];
     }))
   ).flat();
-  const contexts = await resolveQueueContexts(queue);
-  if (contexts.some(Boolean)) {
-    cachePreflightContexts(queue, contexts);
-  }
+  const contextEntries = pipeline
+    ? await Promise.all(pipeline.queues.map(async (entry, index) => ({
+        contexts: await resolveQueueContexts(entry.queue),
+        queue: entry.queue,
+        queueIndex: index,
+      })))
+    : [{ contexts: await resolveQueueContexts(queue), queue, queueIndex: undefined }];
+  for (const entry of contextEntries)
+    if (entry.contexts.some(Boolean))
+      cachePreflightContexts(entry.queue, entry.contexts);
+  const contextChecks = contextEntries.flatMap((entry) =>
+    queueRepositoryContextChecks(entry.queue, entry.contexts).map((check) =>
+      entry.queueIndex === undefined
+        ? check
+        : {
+            ...check,
+            name: `Pipeline queue ${entry.queueIndex + 1} ${check.name}`,
+            detail: `Pipeline queue ${entry.queueIndex + 1}: ${check.detail}`,
+          },
+    ),
+  );
   const result = {
-    ok: cli && git && checks.every((check) => check.ok),
+    ok: cli && git && managedPython.ok &&
+      checks.every((check) => check.ok) &&
+      authorizationChecks.every((check) => check.ok) &&
+      contextChecks.every((check) => check.ok),
     checks: [
       { name: "Codex CLI", ok: cli, detail: codexBin() },
       { name: "Git repository", ok: git, detail: queue.project.path },
+      {
+        name: "Managed Python",
+        ok: managedPython.ok,
+        detail: managedPython.required
+          ? managedPython.executable ?? "Unavailable"
+          : "Not required",
+      },
       {
         name: "AGENTS.md",
         ok: existsSync(agentsPath),
@@ -5375,16 +5748,8 @@ async function preflight(value: unknown) {
           "No package scripts found",
       },
       ...checks,
-      ...contexts.flatMap((context, index) => context ? [{
-        name: `Task ${index + 1} context`,
-        ok: !queue.tasks[index].requireRepositoryContext ||
-          !context.fallbackReason,
-        detail: context.fallbackReason
-          ? queue.tasks[index].requireRepositoryContext
-            ? `Repository context required; fallback rejected: ${context.fallbackReason}`
-            : `Controlled fallback: ${context.fallbackReason}`
-          : `${context.bundle.sources.length} source(s) from repository helper`,
-      }] : []),
+      ...authorizationChecks,
+      ...contextChecks,
       ...(pipeline
         ? [
             {
@@ -5395,18 +5760,21 @@ async function preflight(value: unknown) {
           ]
         : []),
     ],
-    contextPreviews: contexts.flatMap((context, index) => context ? [{
+    contextPreviews: contextEntries.flatMap((entry) => entry.contexts.flatMap((context, index) => context ? [{
+      ...(entry.queueIndex === undefined ? {} : { queue: entry.queueIndex + 1 }),
       task: index + 1,
       profile: context.bundle.profile,
       provider: context.provider,
-      fallbackReason: context.fallbackReason,
+      fallbackReason: context.fallbackReason
+        ? safeContextFailureReasonCode(context.fallbackReason)
+        : undefined,
       sources: context.bundle.sources.map((source) => ({
         path: source.path,
         priority: source.priority,
         authority: source.authority,
         inclusionReason: source.inclusion_reason,
       })),
-    }] : []),
+    }] : [])),
   };
   return result;
 }
@@ -5485,9 +5853,10 @@ function spawnCodexWithPrompt(
 }
 
 export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
-  const verificationCommands = (
-    task.authorizationEvidence?.verificationCommands ??
-    authorizationScope(task, project).verificationCommands
+  const verificationPolicy =
+    task.authorizationEvidence ?? authorizeTask(task, project);
+  const verificationCommands = orchestratorVerificationCommands(
+    verificationPolicy,
   ).map((command) => normalizeWindowsNpmCommand(command));
   const changedFiles = task.changedFiles ?? [];
   const taskChangeSet = changedFiles.length
@@ -5839,6 +6208,12 @@ async function runConfiguredTaskCommands(
 ) {
   const evidence: VerificationEvidence[] = [];
   if (captureEvidence) task.verificationEvidence = evidence;
+  const recordEvidence = async (record: VerificationEvidence) => {
+    if (!captureEvidence) return;
+    evidence.push(record);
+    await persist(run);
+    publish("run", run);
+  };
   for (const command of commands) {
     const executionPath = await taskExecutionPathV1(run, task);
     task.log.push(`${label}: ${command}`);
@@ -5847,18 +6222,17 @@ async function runConfiguredTaskCommands(
       const invocation = verificationCommandInvocation(command);
       child = spawn(invocation.executable, invocation.args, {
         cwd: executionPath,
-        env: runnerProcessEnvironment(),
+        env: verificationProcessEnvironment(executionPath),
         shell: invocation.shell,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
       const output = `Verification could not start: ${error instanceof Error ? error.message : String(error)}`;
-      if (captureEvidence)
-        evidence.push({ command, exitCode: 1, timedOut: false, output });
       task.log.push(
         output,
       );
+      await recordEvidence({ command, exitCode: 1, timedOut: false, output });
       return { code: 1, timedOut: false };
     }
     let output = "";
@@ -5877,13 +6251,12 @@ async function runConfiguredTaskCommands(
     stdoutDecoder.end();
     stderrDecoder.end();
     if (output.trim()) task.log.push(output.trim());
-    if (captureEvidence)
-      evidence.push({
-        command,
-        exitCode: result.exitCode || (result.timedOut ? 1 : 0),
-        timedOut: result.timedOut,
-        output: output.trim(),
-      });
+    await recordEvidence({
+      command,
+      exitCode: result.exitCode || (result.timedOut ? 1 : 0),
+      timedOut: result.timedOut,
+      output: output.trim(),
+    });
     if (result.exitCode !== 0 || result.timedOut) return {
       code: result.exitCode || 1,
       timedOut: result.timedOut,
@@ -5892,7 +6265,7 @@ async function runConfiguredTaskCommands(
   return { code: 0, timedOut: false };
 }
 
-async function runTaskVerification(run: Run, task: Task) {
+export async function runTaskVerification(run: Run, task: Task) {
   const evidence = task.authorizationEvidence;
   if (!evidence) return { code: 0, timedOut: false };
   return runConfiguredTaskCommands(
@@ -6385,6 +6758,7 @@ export function runInBackground(
 async function startPipelineQueue(pipeline: LoadedPipeline) {
   const entry = pipeline.queues[pipeline.currentIndex];
   if (!entry) return;
+  assertQueueLaunchAuthorized(entry.queue);
   const pipelineLink: Run["pipeline"] = {
     id: pipeline.id,
     file: entry.file,
@@ -6392,7 +6766,9 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
     total: pipeline.queues.length,
     kind: pipeline.kind ?? "queues",
   };
-  const contexts = await contextsForRun(entry.queue);
+  const contexts = pipelineLaunchContexts.get(pipeline)?.get(entry) ??
+    await contextsForRun(entry.queue);
+  assertQueueLaunchRepositoryContext(entry.queue, contexts);
   const run = createRun(entry.queue, pipelineLink, contexts);
   await acquireProjectLock(run);
   pipeline.currentRunId = run.id;
@@ -6404,6 +6780,7 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
     status: run.status,
   });
   activeRun = run;
+  markRunReadyForLaunch(run);
   // A run must be durable before its executor starts. Besides making it visible
   // to the history endpoint immediately, this keeps a launch from disappearing
   // if the process exits while the executor is being scheduled.
@@ -6413,32 +6790,34 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
 }
 
 async function continuePipeline(run: Run) {
-  const pipeline = activePipeline;
-  if (!pipeline || pipeline.currentRunId !== run.id) return;
-  const recorded = pipeline.runs?.find((candidate) => candidate.runId === run.id);
-  if (recorded) recorded.status = run.status;
-  if (run.status !== "completed") {
-    pipeline.status = run.status;
-    await persistPipeline(pipeline);
-    return;
-  }
-  pipeline.currentIndex += 1;
-  if (pipeline.currentIndex >= pipeline.queues.length) {
-    pipeline.status = "completed";
-    await persistPipeline(pipeline);
-    return;
-  }
-  try {
-    await startPipelineQueue(pipeline);
-  } catch (error) {
-    pipeline.status = "failed";
-    await persistPipeline(pipeline);
-    lastSettledTask(run)?.log.push(
-      `Pipeline could not start the next queue: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    await persist(run);
-    publish("run", run);
-  }
+  return serializePipelineAppend(async () => {
+    const pipeline = activePipeline;
+    if (!pipeline || pipeline.currentRunId !== run.id) return;
+    const recorded = pipeline.runs?.find((candidate) => candidate.runId === run.id);
+    if (recorded) recorded.status = run.status;
+    if (run.status !== "completed") {
+      pipeline.status = run.status;
+      await persistPipeline(pipeline);
+      return;
+    }
+    pipeline.currentIndex += 1;
+    if (pipeline.currentIndex >= pipeline.queues.length) {
+      pipeline.status = "completed";
+      await persistPipeline(pipeline);
+      return;
+    }
+    try {
+      await startPipelineQueue(pipeline);
+    } catch (error) {
+      pipeline.status = "failed";
+      await persistPipeline(pipeline);
+      lastSettledTask(run)?.log.push(
+        `Pipeline could not start the next queue: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      await persist(run);
+      publish("run", run);
+    }
+  });
 }
 
 function normalizeProjectProfile(
@@ -8025,37 +8404,45 @@ app.post("/api/preflight", async (request, response) => {
 });
 app.post("/api/runs", async (request, response) => {
   try {
-    if (activeRun?.status === "running" || activeRun?.status === "paused")
-      return response.status(409).json({ error: "A run is already active." });
-    const value =
-      typeof request.body === "string" ? parse(request.body) : request.body;
-    if (isPipeline(value)) {
-      const pipeline = await loadPipeline(value);
-      activePipeline = pipeline;
-      try {
-        await startPipelineQueue(pipeline);
-        return response.status(201).json(activeRun);
-      } catch (error) {
-        activePipeline = undefined;
-        throw error;
+    return await serializeRunLaunch(async () => {
+      if (activeRun?.status === "running" || activeRun?.status === "paused")
+        return response.status(409).json({ error: "A run is already active." });
+      const value =
+        typeof request.body === "string" ? parse(request.body) : request.body;
+      if (isPipeline(value)) {
+        const pipeline = await loadPipeline(value);
+        assertPipelineLaunchAuthorized(pipeline);
+        await preparePipelineLaunchContexts(pipeline);
+        activePipeline = pipeline;
+        try {
+          await startPipelineQueue(pipeline);
+          return response.status(201).json(activeRun);
+        } catch (error) {
+          activePipeline = undefined;
+          throw error;
+        }
       }
-    }
-    activePipeline = undefined;
-    const queue = validateTaskQueue(value);
-    const run = createRun(queue, undefined, await contextsForRun(queue));
-    try {
-      await acquireProjectLock(run);
-    } catch (error) {
-      return response
-        .status(409)
-        .json({
-          error: error instanceof Error ? error.message : "Project is locked.",
-        });
-    }
-    activeRun = run;
-    await persist(run);
-    runInBackground(execute(run));
-    response.status(201).json(run);
+      activePipeline = undefined;
+      const queue = validateTaskQueue(value);
+      assertQueueLaunchAuthorized(queue);
+      const contexts = await contextsForRun(queue);
+      assertQueueLaunchRepositoryContext(queue, contexts);
+      const run = createRun(queue, undefined, contexts);
+      try {
+        await acquireProjectLock(run);
+      } catch (error) {
+        return response
+          .status(409)
+          .json({
+            error: error instanceof Error ? error.message : "Project is locked.",
+          });
+      }
+      activeRun = run;
+      markRunReadyForLaunch(run);
+      await persist(run);
+      runInBackground(execute(run));
+      return response.status(201).json(run);
+    });
   } catch (error) {
     response
       .status(400)
@@ -8074,6 +8461,16 @@ app.post("/api/pipeline/append", async (request, response) => {
     );
     return response.status(201).json(result);
   } catch (error) {
+    if (error instanceof AppendReadinessError)
+      return response.status(409).json({
+        error: error.readiness.code,
+        code: error.readiness.code,
+        retryable: error.readiness.retryable,
+        ...(error.readiness.retryAfterMs === undefined
+          ? {}
+          : { retryAfterMs: error.readiness.retryAfterMs }),
+        state: error.readiness.state,
+      });
     return response.status(400).json({
       error: error instanceof Error ? error.message : "Could not append queue.",
     });
@@ -8229,6 +8626,7 @@ app.post("/api/runs/:id/resume", async (request, response) => {
   }
   activeRun = resumed;
   activePipeline = pipeline;
+  markRunReadyForLaunch(resumed);
   await Promise.all([
     persist(resumed),
     pipeline ? persistPipeline(pipeline) : Promise.resolve(),

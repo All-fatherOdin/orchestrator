@@ -467,7 +467,12 @@ On Windows, pytest verification should use a unique direct child of the
 authorized temp root for every Codex process, for example
 `--basetemp="$env:TEMP\orchestrator-pytest-$PID"`. Do not reuse a fixed
 basetemp between executor and reviewer sessions. Queue preflight rejects
-Windows pytest verification commands that omit this isolated basetemp. Also
+Windows pytest verification commands that omit this isolated basetemp. Use
+`& $env:PYTHON_BIN -m pytest ...` instead of embedding `C:\Users\...` or
+deriving the bundled runtime from `$env:USERPROFILE`. Orchestrator resolves
+`PYTHON_BIN`, proves that it can execute `--version` during preflight, and
+injects the same value into preconditions and verification commands. This
+keeps queue YAML independent of Windows profile names and encoding. Also
 remember that ordinary
 `git diff --check` does not inspect new untracked files. Use a read-only
 `git diff --no-index --check` wrapper that treats emitted whitespace
@@ -492,6 +497,44 @@ cannot select a blocked `npm.ps1`. Process output and reviewer evidence are
 decoded as streaming UTF-8; a rendered `�` is not a blocking finding unless
 direct UTF-8 inspection proves an actual U+FFFD in task-owned source evidence.
 
+Verification commands are executed only for tasks with an enabled, authorized
+task contract. Authorized `apply`, `review`, `answer`, and `diagnose` tasks all
+retain their exact declared commands. The runner persists each command's exit
+code, timeout state, and bounded output before starting the independent
+reviewer; the reviewer consumes that evidence and does not rerun the commands.
+Disabled or denied authorization executes no verification commands, and the
+reviewer does not demand evidence that the runner was not authorized to
+produce. See `tasks.example.yaml` for matching writable apply contracts and a
+complete read-only review task.
+
+An executor cannot consume verification evidence produced after that same
+executor finishes. Keep one useful implementation task together with its
+Orchestrator verification and independent read-only review: the reviewer can
+consume the recorded verification evidence because it starts afterward. Do not
+split implementation and its checks into artificial dependent tasks. Only when
+a write-based closure record is mandatory, use a separate later queue; its
+task must consume only fixed, already-recorded predecessor evidence and may not
+claim access to evidence its own later verification will create. Do not invent
+an evidence-handoff field for this purpose.
+
+For an enabled `apply` task, `authorization.approvalId` must resolve to one
+`approvedApplyContracts` entry whose approval ID, intent, technical permission,
+side-effect risk, allowed paths, preconditions, and verification commands
+exactly match the task. A similar-looking or broader approval does not match.
+
+The packaged desktop application loads `resources/server.cjs` only when its
+owned server process starts. Rebuilding or replacing that bundle does not
+change an already running process: quit and restart Orchestrator before
+launching an acceptance run against a newly deployed bundle. Failed runs are
+terminal; start a new run after restart.
+
+Restarting or retrying a failed run always reuses that run's persisted task,
+authorization, prompt, and command snapshot. It does not reload a modified YAML
+queue. After repairing queue definitions or deploying a new queue contract,
+launch the corrected YAML as a new run rather than retrying the stale snapshot;
+use restart only when the persisted snapshot is still intentionally
+authoritative.
+
 Machine-testable baseline conditions belong in task-level `preconditions`,
 not in post-change `verificationCommands` or prose-only `executionGuards`.
 The runner executes preconditions before Codex and blocks the task on a
@@ -513,9 +556,16 @@ Set a task's `model` to `auto` to let the orchestrator choose before the run. It
 
 To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. Python resolution prefers `PYTHON_BIN`, an active or project-local virtual environment, and the bundled Codex runtime on Windows before falling back to `python` on `PATH`. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
 
+The target repository's `scripts/ai_context_helper.py` validates the requested
+`contextProfile` for that repository and must produce a valid bundle; the
+Orchestrator adapter does not reinterpret profile selection. Its controlled
+fallback is intentionally fixed to `AGENTS.md` and `README.md`, with no
+repository scan or reads of secret-bearing/high-risk paths.
+
 Set `requireRepositoryContext: true` when that controlled fallback is not
 sufficient. In that mode, any helper fallback makes preflight fail instead of
-launching with reduced context.
+launching with reduced context; `false` (or an omitted field) permits only the
+fixed-entrypoint fallback described above.
 
 Generated `ContextRequestV1`, `ContextBundleV1`, and `ContextReceiptV1` values are runtime-validated with Ajv 8 and JSON Schema Draft 2020-12. Exact versioned schema snapshots and their source hashes are recorded in `server/context-contract-v1/schemas/PROVENANCE.md`.
 

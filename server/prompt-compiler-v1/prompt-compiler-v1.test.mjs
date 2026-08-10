@@ -207,7 +207,7 @@ test("preserves apply authorization and exact allowed scope without granting arb
   }
 });
 
-test("preserves read-only intent and forbids mutation and mutating verification", () => {
+test("preserves read-only intent and forbids mutation and substitute verification", () => {
   const fixture = clone(productionEquivalentFixture);
   fixture.allowedPaths = [];
   fixture.authorization = {
@@ -227,7 +227,7 @@ test("preserves read-only intent and forbids mutation and mutating verification"
   assert.match(prompt, /intent=review/);
   assert.match(prompt, /permission=read_only/);
   assert.match(prompt, /Do not modify files or cause side effects\./);
-  assert.match(prompt, /Do not run mutating verification commands\./);
+  assert.match(prompt, /No verification commands are authorized; do not invent or run substitutes\./);
   assert.match(prompt, /ALLOWED\n\(read-only; no writable paths\)/);
 });
 
@@ -310,7 +310,7 @@ test("fails closed on ambiguous authorization or mismatched apply scope and veri
   assert.throws(() => compilePromptV1(missingApplyScope), /apply authorization requires at least one allowed path/i);
 });
 
-test("fails closed when read-only intent carries write or verification authority", () => {
+test("fails closed when read-only intent carries write authority and binds exact verification", () => {
   const writable = clone(productionEquivalentFixture);
   writable.allowedPaths = [];
   writable.verificationCommands = [];
@@ -327,7 +327,11 @@ test("fails closed when read-only intent carries write or verification authority
   const verifies = clone(writable);
   verifies.authorization.technicalPermission = "read_only";
   verifies.authorization.verificationCommands = ["node --test"];
-  assert.throws(() => compilePromptV1(verifies), /no verification authority/i);
+  assert.throws(() => compilePromptV1(verifies), /verification commands must exactly match/i);
+  verifies.verificationCommands = ["node --test"];
+  const prompt = compilePromptV1(verifies);
+  assert.match(prompt, /Executor: no verification\. Orchestrator: only listed commands:/);
+  assert.equal(count(prompt, "node --test"), 1);
 });
 
 test("rejects payloads that make the compact grammar ambiguous", () => {

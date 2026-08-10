@@ -1,12 +1,44 @@
 project:
   name: My project
   path: D:\\work\\my-project
+  # Every authorization-enabled apply task must reference one independently
+  # approved contract whose paths, preconditions, and verification commands
+  # exactly match the task, along with approvalId, intent, technicalPermission,
+  # and sideEffectRisk. A broader or merely similar apply approval does not
+  # match. Read-only answer/review/diagnose tasks do not need an apply approval,
+  # but still need their explicit non-mutating authorization.
+  approvedApplyContracts:
+    - approvalId: typecheck-fixes-v1
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      allowedPaths: [src/notifications]
+      preconditions:
+        - >-
+          $status = @(git status --short);
+          if ($status.Count -ne 0) {
+          Write-Error "Expected a clean baseline: $($status -join ', ')";
+          exit 1 };
+          exit 0
+      verificationCommands: [npm run typecheck]
+    - approvalId: reconnect-logic-v1
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      allowedPaths: [src/websocket]
+      verificationCommands: [npm test -- websocket]
+    - approvalId: integration-tests-v1
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      allowedPaths: [tests/integration]
+      verificationCommands: [npm test -- integration]
   # Windows pytest example: use a fresh direct child of TEMP for every Codex
   # process. Reusing pytest's default pytest-of-user directory, or a fixed
   # basetemp across executor/reviewer sessions, can fail with WinError 5.
   # verificationCommands:
   #   - >-
-  #     .\.venv\Scripts\python.exe -m pytest -q
+  #     & $env:PYTHON_BIN -m pytest -q
   #     --basetemp="$env:TEMP\orchestrator-pytest-$PID"
 limits:
   taskTimeoutMinutes: 30
@@ -74,15 +106,23 @@ tasks:
       #   if ($result) {
       #   $result | ForEach-Object { Write-Output $_ }; exit 1 };
       #   exit 0
-    # Optional Context Contract v1 selection through scripts/ai_context_helper.py.
+    # Optional Context Contract v1 selection. The target repository's helper
+    # validates this profile and supplies the exact execution bundle.
     contextProfile: review
     maxSources: 8
-    # Opt in when a controlled fallback would be too small for this task.
+    # Opt in when the fixed AGENTS.md/README.md controlled fallback would be
+    # too small; helper failure then blocks preflight instead of reduced context.
     requireRepositoryContext: true
     # Human-readable stop rules still belong in executionGuards. Put any
     # machine-testable baseline condition in `preconditions` above.
     executionGuards:
       - Stop if an allowed path has pre-existing user changes before work begins.
+    authorization:
+      enabled: true
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      approvalId: typecheck-fixes-v1
     # Named resources are exclusive across concurrently running tasks.
     resources: [typescript-check]
   - key: reconnect-logic
@@ -92,6 +132,15 @@ tasks:
     minModel: terra
     effort: medium
     allowedPaths: [src/websocket]
+    verificationCommands: [npm test -- websocket]
+    executionGuards:
+      - Stop if the requested reconnect behavior requires edits outside the allowed path.
+    authorization:
+      enabled: true
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      approvalId: reconnect-logic-v1
     resources: [websocket-test-server]
   - key: integration-tests
     title: Add integration coverage
@@ -108,3 +157,36 @@ tasks:
     # Use `allowedPaths: []` for a read-only task; reviewer rejection then
     # fails closed without an automatic correction attempt.
     allowedPaths: [tests/integration]
+    verificationCommands: [npm test -- integration]
+    executionGuards:
+      - Stop if integration coverage requires production edits outside the declared predecessor tasks.
+    authorization:
+      enabled: true
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      approvalId: integration-tests-v1
+  - key: review-integration
+    title: Review the completed integration result
+    # This independent read-only review may consume only the fixed, recorded
+    # Orchestrator verification evidence from its completed predecessor. Its
+    # own verification runs after this executor ends, so it cannot support this
+    # executor's conclusion. Prefer this pattern after one complete
+    # implementation/verification task; use a later queue only when a
+    # write-based closure record is mandatory.
+    prompt: Review the completed integration using fixed predecessor verification evidence and source inspection; report findings without edits.
+    model: terra
+    effort: medium
+    dependsOn: [integration-tests]
+    allowedPaths: []
+    verificationCommands:
+      - npm test -- integration
+      - git diff --check
+    executionGuards:
+      - Read-only review only; do not edit, repair, commit, or push files.
+      - Treat missing, failed, or timed-out Orchestrator verification evidence as a finding.
+    authorization:
+      enabled: true
+      intent: review
+      technicalPermission: read_only
+      sideEffectRisk: none
