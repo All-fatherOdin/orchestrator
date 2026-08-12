@@ -248,6 +248,15 @@ tasks:
       technicalPermission: read_only
       sideEffectRisk: none
 
+  # Advisory commands are an explicit legacy escape hatch. They may guide the
+  # executor, but Orchestrator does not execute them or accept them as machine
+  # verification evidence. Omit this mode for normal required verification.
+  # - key: advisory-investigation
+  #   title: Investigate a non-gating signal
+  #   prompt: Inspect the signal and report observations without claiming acceptance.
+  #   verificationMode: advisory
+  #   verificationCommands: [node "scripts/non-gating-observation.mjs"]
+
 # Recovery example (documentation only; this is not a live task): copy an apply
 # task, keep its impact map bound by the approvedApplyContracts entry, and add
 # this task-level source binding.

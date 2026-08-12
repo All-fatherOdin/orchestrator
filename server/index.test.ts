@@ -180,6 +180,7 @@ const {
   codexExecCommandStartArgs,
   codexPromptInvocation,
   orchestratorVerificationCommands,
+  requiredVerificationEvidenceIssue,
   runTaskVerification,
   changedProviderRuntimeIdentityV1,
   providerReasoningModeV1,
@@ -12565,6 +12566,7 @@ test("pipeline launch and append runtime preflight checks every queue before pla
       {
         title: "Appended",
         prompt: "Inspect only.",
+        verificationMode: "advisory",
         verificationCommands: [
           "& $env:PYTHON_BIN -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-runtime-$PID\"",
         ],
@@ -12696,7 +12698,7 @@ test("read-only executor delegates every declared verification command to Orches
   assert.doesNotMatch(prompt, /Run these verification commands when relevant/);
 });
 
-test("disabled-by-default fallback does not invent approval or verification authority", () => {
+test("disabled-by-default fallback permits only explicit advisory verification", () => {
   const evidence = authorizeTask({});
   assert.equal(evidence.decision, "disabled");
   assert.equal(taskSandbox(evidence), "workspace-write");
@@ -12708,14 +12710,180 @@ test("disabled-by-default fallback does not invent approval or verification auth
   assert.deepEqual(authorizationWriteViolations(evidence, ["legacy-change.ts"]), []);
   const prompt = buildReviewerPrompt({
     ...task("disabled-verification", "completed"),
+    verificationMode: "advisory",
     verificationCommands: ["node must-not-run.mjs"],
     authorizationEvidence: {
       ...evidence,
       verificationCommands: ["node must-not-run.mjs"],
     },
   }, {});
-  assert.match(prompt, /No verification commands are configured/);
-  assert.doesNotMatch(prompt, /must-not-run|EVIDENCE: MISSING/);
+  assert.match(prompt, /explicitly advisory and executor-owned/);
+  assert.match(prompt, /not machine acceptance evidence/);
+  assert.doesNotMatch(prompt, /EVIDENCE: MISSING/);
+});
+
+test("declared verification fails admission without authorization unless explicitly advisory", () => {
+  const base = {
+    project: { path: process.cwd() },
+    tasks: [
+      {
+        key: "implementation",
+        title: "Implementation",
+        prompt: "Implement the change.",
+        verificationCommands: ["node --version"],
+      },
+      { key: "report", title: "Report", prompt: "Report only." },
+    ],
+  };
+  const required = validateTaskQueue(base);
+  assert.deepEqual(queueLaunchAuthorizationChecks(required), [{
+    name: 'Task "implementation" verification authorization',
+    ok: false,
+    detail: 'Task "implementation" verification authorization denied: VERIFICATION_AUTHORIZATION_REQUIRED. Declare enabled authorization or mark the commands verificationMode: advisory.',
+  }]);
+  const advisory = validateTaskQueue({
+    ...base,
+    tasks: [
+      { ...base.tasks[0], verificationMode: "advisory" },
+      base.tasks[1],
+    ],
+  });
+  assert.deepEqual(queueLaunchAuthorizationChecks(advisory), []);
+  assert.throws(
+    () => validateTaskQueue({
+      ...base,
+      tasks: [
+        {
+          ...base.tasks[0],
+          verificationMode: "advisory",
+          authorization: {
+            enabled: true,
+            intent: "review",
+            technicalPermission: "read_only",
+            sideEffectRisk: "none",
+          },
+        },
+        base.tasks[1],
+      ],
+    }),
+    /advisory verification cannot be combined with enabled authorization/,
+  );
+});
+
+test("verification authorization denial is visible in preflight and creates no run or lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-verification-admission-"));
+  const queue = {
+    project: { path: project },
+    tasks: [
+      {
+        key: "implementation",
+        title: "Implementation",
+        prompt: "Implement the change.",
+        verificationCommands: ["node --version"],
+      },
+      { key: "report", title: "Report", prompt: "Report only." },
+    ],
+  };
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map(String).sort();
+  const runsBefore = await entries(join(testDataDirectory, "runs"));
+  const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const base = `http://127.0.0.1:${address.port}`;
+    const preflight = await fetch(`${base}/api/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(queue),
+    });
+    assert.equal(preflight.status, 200);
+    const preflightBody = await preflight.json() as {
+      ok: boolean;
+      checks: Array<{ name: string; ok: boolean; detail: string }>;
+    };
+    assert.equal(preflightBody.ok, false);
+    assert.deepEqual(
+      preflightBody.checks.find((check) =>
+        check.name === 'Task "implementation" verification authorization'
+      ),
+      {
+        name: 'Task "implementation" verification authorization',
+        ok: false,
+        detail: 'Task "implementation" verification authorization denied: VERIFICATION_AUTHORIZATION_REQUIRED. Declare enabled authorization or mark the commands verificationMode: advisory.',
+      },
+    );
+    const launch = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(queue),
+    });
+    assert.equal(launch.status, 400);
+    assert.match(JSON.stringify(await launch.json()), /VERIFICATION_AUTHORIZATION_REQUIRED/);
+    assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+    assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("required verification evidence must be exact and successful before review", () => {
+  const evidence = authorizeTask({
+    verificationCommands: ["node first.mjs", "node second.mjs"],
+    authorization: {
+      enabled: true,
+      intent: "review",
+      technicalPermission: "read_only",
+      sideEffectRisk: "none",
+    },
+  });
+  const subject = {
+    verificationMode: "required" as const,
+    authorizationEvidence: evidence,
+    verificationEvidence: [{
+      command: "node first.mjs",
+      exitCode: 0,
+      timedOut: false,
+      output: "ok",
+    }],
+  };
+  assert.match(
+    requiredVerificationEvidenceIssue(subject) ?? "",
+    /missing or incomplete/,
+  );
+  assert.match(
+    requiredVerificationEvidenceIssue({
+      ...subject,
+      verificationEvidence: [
+        ...subject.verificationEvidence,
+        {
+          command: "node second.mjs",
+          exitCode: 1,
+          timedOut: false,
+          output: "failed",
+        },
+      ],
+    }) ?? "",
+    /failed, timed out, or mismatched/,
+  );
+  assert.equal(requiredVerificationEvidenceIssue({
+    ...subject,
+    verificationEvidence: [
+      ...subject.verificationEvidence,
+      {
+        command: "node second.mjs",
+        exitCode: 0,
+        timedOut: false,
+        output: "ok",
+      },
+    ],
+  }), undefined);
 });
 
 test("verification runner persists exact evidence consumed by a read-only reviewer", async () => {

@@ -278,6 +278,7 @@ export type RecoveryTaskBindingV1 = {
   sourceTaskId: string;
 };
 export type TaskIntent = "answer" | "review" | "diagnose" | "apply";
+export type VerificationMode = "required" | "advisory";
 export type TechnicalPermission = "read_only" | "reversible_local_write";
 export type SideEffectRisk = "none" | "reversible_local_write" | "external_write" | "destructive" | "costly" | "publication" | "scope_expansion" | "ambiguous";
 export type TaskAuthorization = {
@@ -364,6 +365,8 @@ export type TaskInput = {
   recovery?: RecoveryTaskBindingV1;
   /** Read-only commands executed by the orchestrator before the executor starts. */
   preconditions?: string[];
+  /** Required commands are machine-executed; advisory commands are executor-owned and never acceptance evidence. */
+  verificationMode?: VerificationMode;
   verificationCommands?: string[];
   executionGuards?: string[];
   /** Direct predecessors whose successful task-owned checkpoint must exist. */
@@ -3735,6 +3738,14 @@ export function validateQueue(value: unknown): {
       (!Number.isInteger(task.maxSources) || task.maxSources < 1 || task.maxSources > 50)
     )
       throw new Error(`Task ${index + 1}: maxSources must be an integer from 1 to 50.`);
+    if (
+      task.verificationMode !== undefined &&
+      task.verificationMode !== "required" &&
+      task.verificationMode !== "advisory"
+    )
+      throw new Error(
+        `Task ${index + 1}: verificationMode must be required or advisory.`,
+      );
     for (const [field, value] of [
       ["allowedPaths", task.allowedPaths],
       ["externalReadRoots", task.externalReadRoots],
@@ -3804,6 +3815,18 @@ export function validateQueue(value: unknown): {
       if (authorization.approvalId !== undefined && (typeof authorization.approvalId !== "string" || !authorization.approvalId.trim()))
         throw new Error(`Task ${index + 1}: authorization.approvalId must be a non-empty string.`);
     }
+    const combinedVerificationCommands = [
+      ...(project.verificationCommands ?? []),
+      ...(task.verificationCommands ?? []),
+    ];
+    if (task.verificationMode !== undefined && !combinedVerificationCommands.length)
+      throw new Error(
+        `Task ${index + 1}: verificationMode requires at least one verification command.`,
+      );
+    if (task.verificationMode === "advisory" && authorization?.enabled)
+      throw new Error(
+        `Task ${index + 1}: advisory verification cannot be combined with enabled authorization.`,
+      );
     const hasAuthoringFields = task.impactPaths !== undefined ||
       task.runtimeConstraints !== undefined ||
       task.recovery !== undefined;
@@ -3967,6 +3990,7 @@ export function validateQueue(value: unknown): {
       preconditions: task.preconditions?.map((command) =>
         normalizeWindowsNpmCommand(command)
       ),
+      verificationMode: task.verificationMode,
       verificationCommands: task.verificationCommands?.map((command) =>
         normalizeWindowsNpmCommand(command)
       ),
@@ -4485,16 +4509,30 @@ function launchAuthorizationTaskLabel(task: ResolvedTask, index: number) {
 
 /**
  * Re-evaluate every opt-in task against the production authorization contract
- * before a queue can be made durable or executed. Disabled tasks preserve the
- * legacy queue contract and intentionally have no launch authorization check.
+ * before a queue can be made durable or executed. Disabled tasks may retain
+ * declared commands only when they explicitly classify them as advisory.
  */
 export function queueLaunchAuthorizationChecks(
   queue: ReturnType<typeof validateQueue>,
 ): LaunchAuthorizationCheck[] {
   return queue.tasks.flatMap((task, index) => {
+    const label = launchAuthorizationTaskLabel(task, index);
+    const declaredVerification = [
+      ...(queue.project.verificationCommands ?? []),
+      ...(task.verificationCommands ?? []),
+    ];
+    if (
+      declaredVerification.length &&
+      task.verificationMode !== "advisory" &&
+      !task.authorization?.enabled
+    )
+      return [{
+        name: `${label} verification authorization`,
+        ok: false,
+        detail: `${label} verification authorization denied: VERIFICATION_AUTHORIZATION_REQUIRED. Declare enabled authorization or mark the commands verificationMode: advisory.`,
+      }];
     if (!task.authorization?.enabled) return [];
     const evidence = authorizeTask(task, queue.project);
-    const label = launchAuthorizationTaskLabel(task, index);
     return [{
       name: `${label} authorization`,
       ok: evidence.decision === "authorized",
@@ -4786,6 +4824,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       runtimeConstraints: task.runtimeConstraints,
       recovery: task.recovery,
       preconditions: task.preconditions,
+      verificationMode: task.verificationMode,
       verificationCommands: task.verificationCommands,
       executionGuards: task.executionGuards,
       requiresCheckpointsFrom: task.requiresCheckpointsFrom,
@@ -6933,8 +6972,14 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
       evidence,
     ]),
   );
-  const verification = verificationCommands.length
+  const verification = task.verificationMode === "advisory"
     ? [
+        "The declared verification commands are explicitly advisory and executor-owned.",
+        "Orchestrator did not execute them and they are not machine acceptance evidence.",
+        "Do not infer a passing gate from executor claims about these commands.",
+      ].join("\n")
+    : verificationCommands.length
+      ? [
         "The Orchestrator already ran the exact verification commands below in the task workspace.",
         "Treat these bounded records as the authoritative verification evidence; do not rerun verification commands from the read-only reviewer sandbox.",
         ...verificationCommands.flatMap((command, index) => {
@@ -6954,8 +6999,8 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
         }),
         "Missing evidence, a non-zero exit code, or a timeout is a verification finding.",
         "For additional read-only source inspection, use Select-String/Get-Content when rg is unavailable; tool availability alone is not a product finding.",
-      ].join("\n")
-    : "No verification commands are configured; do not invent substitute commands.";
+        ].join("\n")
+      : "No verification commands are configured; do not invent substitute commands.";
   return [
     "Review only the authoritative task change set below. Do not edit files.",
     "",
@@ -6991,7 +7036,39 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
   ].join("\n");
 }
 
+export function requiredVerificationEvidenceIssue(
+  task: Pick<Task, "verificationMode" | "verificationEvidence" | "authorizationEvidence">,
+) {
+  if (task.verificationMode === "advisory") return undefined;
+  const commands = task.authorizationEvidence
+    ? orchestratorVerificationCommands(task.authorizationEvidence).map((command) =>
+        normalizeWindowsNpmCommand(command)
+      )
+    : [];
+  if (!commands.length) return undefined;
+  const evidence = task.verificationEvidence ?? [];
+  if (evidence.length !== commands.length)
+    return "Required Orchestrator verification evidence is missing or incomplete.";
+  for (let index = 0; index < commands.length; index += 1) {
+    const record = evidence[index];
+    if (
+      normalizeWindowsNpmCommand(record.command) !== commands[index] ||
+      record.exitCode !== 0 ||
+      record.timedOut
+    )
+      return "Required Orchestrator verification evidence is failed, timed out, or mismatched.";
+  }
+  return undefined;
+}
+
 async function reviewTask(run: Run, task: Task) {
+  const verificationIssue = requiredVerificationEvidenceIssue(task);
+  if (verificationIssue) {
+    task.reviewStatus = "changes_requested";
+    task.reviewOutput = `VERDICT: CHANGES_REQUESTED\n\n${verificationIssue}`;
+    task.log.push(verificationIssue);
+    return;
+  }
   if (!run.review.enabled) {
     task.reviewStatus = "approved";
     task.log.push("Reviewer отключён в настройках");
@@ -7416,6 +7493,26 @@ export async function finalizeSettledTask(run: Run, task: Task) {
 
 async function executeTask(run: Run, task: Task): Promise<Status> {
     const branch = await currentBranchIdentity(run.project.path);
+    const declaredVerification = [
+      ...(run.project.verificationCommands ?? []),
+      ...(task.verificationCommands ?? []),
+    ];
+    if (
+      declaredVerification.length &&
+      task.verificationMode !== "advisory" &&
+      !task.authorization?.enabled
+    ) {
+      task.status = "blocked";
+      task.startedAt = timestamp();
+      task.finishedAt = task.startedAt;
+      task.exitCode = 1;
+      task.log.push(
+        "Verification authorization denied: VERIFICATION_AUTHORIZATION_REQUIRED.",
+      );
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
     if (
       task.authorizationEvidence?.enabled &&
       !verifyStoredTaskAuthorization(

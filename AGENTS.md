@@ -35,6 +35,12 @@ by the failed run, including interpreter variables, shell/quoting rules,
 temporary-directory isolation, timeouts, and whole-change acceptance commands.
 Do not replace an authoritative failing check with a narrower scoped check.
 
+Declared `verificationCommands` are required machine gates by default and
+therefore require enabled task authorization. Use `verificationMode: advisory`
+only for intentionally non-gating executor-owned observations; advisory output
+is never Orchestrator acceptance evidence and cannot be combined with enabled
+authorization.
+
 On Windows, raw verification strings that do not explicitly select PowerShell
 run through `cmd.exe`. Use double quotes for their arguments. To use
 PowerShell quoting, variables, or control flow, prefix the command with the

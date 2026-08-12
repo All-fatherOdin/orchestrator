@@ -546,10 +546,20 @@ task contract. Authorized `apply`, `review`, `answer`, and `diagnose` tasks all
 retain their exact declared commands. The runner persists each command's exit
 code, timeout state, and bounded output before starting the independent
 reviewer; the reviewer consumes that evidence and does not rerun the commands.
-Disabled or denied authorization executes no verification commands, and the
-reviewer does not demand evidence that the runner was not authorized to
-produce. See `tasks.example.yaml` for matching writable apply contracts and a
-complete read-only review task.
+If task- or project-level `verificationCommands` exist, launch fails closed
+unless that task has enabled authorization. The only exception is an explicit
+task-level `verificationMode: advisory`: those commands remain executor-owned,
+Orchestrator never records them as machine evidence, and the reviewer is told
+not to infer a passing gate from executor claims. Advisory mode cannot be
+combined with enabled authorization. Disabled or denied authorization never
+silently turns declared commands into an acceptance gate.
+
+For required verification, the reviewer cannot start until the persisted
+evidence contains every exact normalized command in order with exit code zero
+and no timeout. Missing, partial, reordered, failed, or timed-out evidence
+forces `CHANGES_REQUESTED` even if an executor reports that checks passed. See
+`tasks.example.yaml` for matching writable apply contracts, explicit advisory
+syntax, and a complete read-only review task.
 
 An executor cannot consume verification evidence produced after that same
 executor finishes. Keep one useful implementation task together with its
