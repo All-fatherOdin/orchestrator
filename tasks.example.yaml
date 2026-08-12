@@ -94,6 +94,14 @@ tasks:
       production: [src/notifications/**]
     runtimeConstraints:
       - Node.js and npm are available from the inherited process environment.
+      # Name evidence files with exact repository-relative paths in prompts and
+      # constraints. Do not say only `state.yaml` when the actual file is, for
+      # example, `docs/goals/example/state.yaml`.
+      - Evidence files are read only through their exact normalized repository-relative paths.
+      # Declare and preflight rg only when it is truly mandatory. Otherwise an
+      # executor must use the built-in Windows PowerShell fallback rather than
+      # stop because rg is unavailable.
+      - Optional discovery tools may be replaced by bounded Get-ChildItem, Get-Content, and Select-String commands.
     # Machine-executed, read-only baseline checks belong in `preconditions`.
     # They run before Codex. A non-zero exit, timeout, or worktree mutation
     # blocks the task without starting the executor.
@@ -108,7 +116,8 @@ tasks:
       - npm.cmd run typecheck
       # On Windows, raw native commands use cmd.exe and therefore require
       # double-quoted arguments. Single quotes are rejected by preflight.
-      # Prefix with `&` to select PowerShell explicitly, for example:
+      # Prefix with `&` to select PowerShell explicitly. Use rg only when its
+      # runtime was declared and preflighted, for example:
       # - >-
       #   & rg -n 'contract|invariant|decision'
       #   'src/notifications/result.ts'
@@ -124,8 +133,8 @@ tasks:
       # identity/existence, not content correctness. Preflight parses detected
       # PowerShell commands and rejects syntax errors before execution.
       # - >-
-      #   rg -n "contract|invariant|decision"
-      #   "src/notifications/result.ts"
+      #   Select-String -LiteralPath "src/notifications/result.ts"
+      #   -Pattern "contract|invariant|decision"
       # For a bounded excerpt instead of a targeted search:
       # - >-
       #   Get-Content -LiteralPath 'src/notifications/result.ts'

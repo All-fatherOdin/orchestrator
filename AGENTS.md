@@ -56,6 +56,19 @@ absolute directory outside `project.path`, preflights it as a Git worktree,
 and supplies `safe.directory` only through the child-process environment.
 Never work around ownership checks with global or local `git config` changes.
 
+Prompts and checks must name every task-relevant evidence file by its exact
+normalized repository-relative path. A basename such as `state.yaml` is not a
+valid locator when the file is outside the repository root or could be
+ambiguous. Resolve the path while authoring the queue and carry it into recovery
+constraints; do not make the executor rediscover it by guessing or broad search.
+
+Do not make an optional discovery utility an undeclared runtime dependency. If
+`rg` or another non-system tool is mandatory, declare and preflight it. Otherwise
+Windows prompts must permit the built-in PowerShell fallback: `Get-ChildItem`
+for bounded discovery, `Get-Content` for exact files, and `Select-String` for
+targeted content inspection. Absence of an optional utility is not by itself a
+task failure when the declared fallback can establish the same evidence.
+
 Distinguish task-scoped verification from final whole-change verification. A
 final acceptance task must cover tracked and untracked files and must not claim
 predecessor verification evidence unless an explicit bounded handoff supplies
