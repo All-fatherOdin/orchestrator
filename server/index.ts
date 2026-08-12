@@ -266,6 +266,17 @@ type ProjectSettings = {
   /** Explicit, independently configured approvals for exact local apply scopes. */
   approvedApplyContracts?: TaskApplyApprovalContract[];
 };
+export type QueueAuthoringContractV1 = {
+  contractType: "QueueAuthoringContractV1";
+  contractVersion: "1.0";
+};
+export type ImpactPathsV1 = Record<string, string[]>;
+export type RecoveryTaskBindingV1 = {
+  contractType: "RecoveryTaskBindingV1";
+  contractVersion: "1.0";
+  sourceRunId: string;
+  sourceTaskId: string;
+};
 export type TaskIntent = "answer" | "review" | "diagnose" | "apply";
 export type TechnicalPermission = "read_only" | "reversible_local_write";
 export type SideEffectRisk = "none" | "reversible_local_write" | "external_write" | "destructive" | "costly" | "publication" | "scope_expansion" | "ambiguous";
@@ -287,8 +298,12 @@ export type TaskApplyApprovalContract = {
   technicalPermission: "reversible_local_write";
   sideEffectRisk: "reversible_local_write";
   allowedPaths: string[];
+  /** Exact external repositories that this task may inspect read-only. */
+  externalReadRoots?: string[];
   preconditions?: string[];
   verificationCommands: string[];
+  /** Required only for an apply task opting into Queue Authoring Contract v1. */
+  impactPaths?: ImpactPathsV1;
 };
 export type TaskAuthorizationEvidence = {
   contractType: "TaskAuthorizationEvidenceV1";
@@ -300,6 +315,11 @@ export type TaskAuthorizationEvidence = {
   sideEffectRisk?: SideEffectRisk;
   approvalId?: string;
   allowedPaths: string[];
+  externalReadRoots?: string[];
+  authoringContract?: QueueAuthoringContractV1;
+  impactPaths?: ImpactPathsV1;
+  runtimeConstraints?: string[];
+  recovery?: RecoveryTaskBindingV1;
   preconditions?: string[];
   verificationCommands: string[];
   scopeFingerprint: string;
@@ -332,6 +352,16 @@ export type TaskInput = {
   minModel?: Model;
   effort?: Effort;
   allowedPaths?: string[];
+  /** Absolute external repository roots available read-only to task processes. */
+  externalReadRoots?: string[];
+  /** Explicit opt-in to the machine-enforced Queue Authoring Contract v1. */
+  authoringContract?: QueueAuthoringContractV1;
+  /** Ordered, categorized impact declaration. It never grants write authority. */
+  impactPaths?: ImpactPathsV1;
+  /** Explicit runtime facts; never inferred from prompt or guard prose. */
+  runtimeConstraints?: string[];
+  /** Exact persisted source task for a recovery task. */
+  recovery?: RecoveryTaskBindingV1;
   /** Read-only commands executed by the orchestrator before the executor starts. */
   preconditions?: string[];
   verificationCommands?: string[];
@@ -1644,7 +1674,7 @@ export function writeTextAtomically(file: string, content: string) {
   const next = previous
     .catch(() => undefined)
     .then(async () => {
-      await mkdir(dirname(file), { recursive: true });
+      await mkdirWithTransientWindowsRetry(dirname(file));
       const temporary = `${file}.${process.pid}.${identifier()}.tmp`;
       try {
         await writeFile(temporary, content);
@@ -1664,6 +1694,36 @@ export function writeTextAtomically(file: string, content: string) {
 
 const TRANSIENT_WINDOWS_RENAME_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400, 800, 1_600, 2_000] as const;
+
+export async function mkdirWithTransientWindowsRetry(
+  directory: string,
+  options: {
+    platform?: NodeJS.Platform;
+    mkdirDirectory?: (directory: string) => Promise<unknown>;
+    wait?: (delayMs: number) => Promise<void>;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const mkdirDirectory = options.mkdirDirectory ?? ((path: string) =>
+    mkdir(path, { recursive: true }));
+  const wait = options.wait ?? ((delayMs: number) =>
+    new Promise<void>((resolveWait) => setTimeout(resolveWait, delayMs)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await mkdirDirectory(directory);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (
+        platform !== "win32" ||
+        !code ||
+        !TRANSIENT_WINDOWS_RENAME_CODES.has(code) ||
+        attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length
+      ) throw error;
+      await wait(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
 
 export async function renameWithTransientWindowsRetry(
   source: string,
@@ -1701,6 +1761,12 @@ function writeJsonAtomically(file: string, value: unknown) {
 
 function taskOwnsExecution(task: Pick<Task, "status" | "executionPhase">) {
   return task.status === "pending" || task.status === "running" || Boolean(task.executionPhase);
+}
+
+function taskOwnsActiveExecution(
+  task: Pick<Task, "status" | "executionPhase">,
+) {
+  return task.status === "running" || Boolean(task.executionPhase);
 }
 
 /**
@@ -2181,13 +2247,19 @@ export async function recoverPersistedRunForStartup(
   try {
     const run = await loadCanonicalRunRecordV1(file);
     const branch = await currentBranchIdentity(run.project.path);
-    if (runRequiresReplayAuthorization(run))
+    if (runRequiresReplayAuthorization(run)) {
       assertStoredRunAuthorizations(run, branch);
+      await assertQueueRecoveryContracts(queueFromRun(run));
+    }
     const hasLiveOwner = await reconcilePersistedRunOwner(run);
     reconcileRunState(run, hasLiveOwner);
     if (hasLiveOwner) return undefined;
     await recoverManagedWorkspacesForStartupV1(run, file);
-    if (run.status === "paused" && !run.tasks.some(taskOwnsExecution)) {
+    // A normal between-task pause retains pending work. Pending is resumable
+    // queue state, not evidence of a still-running executor; authorization and
+    // exact recovery-source replay have already succeeded above. A paused
+    // record that still claims active execution remains inactive.
+    if (run.status === "paused" && !run.tasks.some(taskOwnsActiveExecution)) {
       await persist(run);
       return run;
     }
@@ -2432,13 +2504,213 @@ export function outsideAllowedPaths(
   );
 }
 
+const QUEUE_AUTHORING_CONTRACT_V1 = Object.freeze({
+  contractType: "QueueAuthoringContractV1" as const,
+  contractVersion: "1.0" as const,
+});
+const RECOVERY_TASK_BINDING_V1 = Object.freeze({
+  contractType: "RecoveryTaskBindingV1" as const,
+  contractVersion: "1.0" as const,
+});
+const RECOVERY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const IMPACT_CATEGORY_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+
+function isExactQueueAuthoringContractV1(
+  value: unknown,
+): value is QueueAuthoringContractV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return Object.keys(candidate).length === 2 &&
+    candidate.contractType === QUEUE_AUTHORING_CONTRACT_V1.contractType &&
+    candidate.contractVersion === QUEUE_AUTHORING_CONTRACT_V1.contractVersion;
+}
+
+function isSafeRecoveryIdentifier(value: unknown): value is string {
+  return typeof value === "string" &&
+    RECOVERY_ID_PATTERN.test(value) &&
+    value !== "." &&
+    value !== "..";
+}
+
+function validateRecoveryTaskBindingV1(
+  value: unknown,
+  field: string,
+): RecoveryTaskBindingV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${field} must be an exact RecoveryTaskBindingV1.`);
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 4 ||
+    candidate.contractType !== RECOVERY_TASK_BINDING_V1.contractType ||
+    candidate.contractVersion !== RECOVERY_TASK_BINDING_V1.contractVersion ||
+    !isSafeRecoveryIdentifier(candidate.sourceRunId) ||
+    !isSafeRecoveryIdentifier(candidate.sourceTaskId)
+  )
+    throw new Error(`${field} must bind one exact source run ID and source task ID.`);
+  return {
+    contractType: RECOVERY_TASK_BINDING_V1.contractType,
+    contractVersion: RECOVERY_TASK_BINDING_V1.contractVersion,
+    sourceRunId: candidate.sourceRunId,
+    sourceTaskId: candidate.sourceTaskId,
+  };
+}
+
+function normalizeImpactPathV1(value: string) {
+  return value.trim().replace(/\\/g, "/");
+}
+
+export function validateImpactPathsV1(
+  value: unknown,
+  field = "impactPaths",
+): ImpactPathsV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${field} must be a non-empty ordered map of path lists.`);
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (!entries.length)
+    throw new Error(`${field} must be a non-empty ordered map of path lists.`);
+  const normalized: ImpactPathsV1 = {};
+  const seenPaths = new Set<string>();
+  for (const [category, paths] of entries) {
+    if (!IMPACT_CATEGORY_PATTERN.test(category) || !Array.isArray(paths) || !paths.length)
+      throw new Error(`${field} categories must use normalized names and non-empty path lists.`);
+    normalized[category] = paths.map((path) => {
+      if (typeof path !== "string")
+        throw new Error(`${field} entries must be normalized non-empty relative paths.`);
+      const candidate = normalizeImpactPathV1(path);
+      const segments = candidate.split("/");
+      if (
+        !candidate ||
+        candidate !== path ||
+        candidate.startsWith("/") ||
+        /^[A-Za-z]:\//.test(candidate) ||
+        candidate.includes("//") ||
+        segments.some((segment) => segment === "." || segment === "..") ||
+        candidate.endsWith("/") ||
+        seenPaths.has(candidate)
+      )
+        throw new Error(`${field} entries must be unique normalized non-empty relative paths.`);
+      seenPaths.add(candidate);
+      return candidate;
+    });
+  }
+  return normalized;
+}
+
+export function normalizeRuntimeConstraintsV1(
+  value: unknown,
+  field = "runtimeConstraints",
+  requireNonEmpty = false,
+) {
+  if (!Array.isArray(value) || (requireNonEmpty && !value.length))
+    throw new Error(`${field} must be a${requireNonEmpty ? " non-empty" : ""} list of non-empty strings.`);
+  const normalized = value.map((constraint) => {
+    if (typeof constraint !== "string")
+      throw new Error(`${field} must be a list of non-empty strings.`);
+    const candidate = constraint.normalize("NFC").trim().replace(/\s+/g, " ");
+    if (!candidate)
+      throw new Error(`${field} must be a list of non-empty strings.`);
+    return candidate;
+  });
+  if (new Set(normalized).size !== normalized.length)
+    throw new Error(`${field} must not contain duplicate normalized strings.`);
+  return normalized;
+}
+
+export function normalizeExternalReadRootsV1(
+  value: unknown,
+  projectPath: string,
+  field = "externalReadRoots",
+) {
+  if (!Array.isArray(value) || !value.length)
+    throw new Error(`${field} must be a non-empty list of absolute external directories.`);
+  const projectRoot = resolve(projectPath);
+  const roots = value.map((entry) => {
+    if (typeof entry !== "string" || !entry.trim())
+      throw new Error(`${field} must contain absolute external directories.`);
+    const root = resolve(entry.trim());
+    const relation = relative(projectRoot, root);
+    if (
+      root !== entry.trim() ||
+      !existsSync(root) ||
+      !statSync(root).isDirectory() ||
+      relation === "" ||
+      (!relation.startsWith("..") && !/^\.\.[\\/]/.test(relation))
+    )
+      throw new Error(`${field} must contain existing absolute directories outside project.path.`);
+    return root;
+  });
+  const identities = roots.map((root) =>
+    process.platform === "win32" ? root.toLowerCase() : root
+  );
+  if (new Set(identities).size !== roots.length)
+    throw new Error(`${field} must not contain duplicate directories.`);
+  return roots;
+}
+
+function flattenedImpactPathsV1(impactPaths: ImpactPathsV1) {
+  return Object.values(impactPaths).flat();
+}
+
 function authorizationScope(
-  task: Pick<TaskInput, "allowedPaths" | "preconditions" | "verificationCommands">,
+  task: Pick<
+    TaskInput,
+    | "allowedPaths"
+    | "externalReadRoots"
+    | "preconditions"
+    | "verificationCommands"
+    | "authoringContract"
+    | "impactPaths"
+    | "runtimeConstraints"
+    | "recovery"
+  >,
   project: ProjectSettings,
 ) {
   const preconditions = [...(task.preconditions ?? [])];
+  const externalReadRoots = task.externalReadRoots
+    ? normalizeExternalReadRootsV1(
+        task.externalReadRoots,
+        (project as ProjectSettings & { path?: string }).path ?? process.cwd(),
+        "Task externalReadRoots",
+      )
+    : undefined;
+  const authoringScope = task.authoringContract
+    ? (() => {
+        if (!isExactQueueAuthoringContractV1(task.authoringContract))
+          throw new Error("Task authoringContract is not an exact QueueAuthoringContractV1 envelope.");
+        const impactPaths = validateImpactPathsV1(task.impactPaths, "Task impactPaths");
+        const allowedPaths = task.allowedPaths ?? [];
+        if (
+          !allowedPaths.length ||
+          new Set(allowedPaths).size !== allowedPaths.length ||
+          allowedPaths.some((path) =>
+            normalizeImpactPathV1(path) !== path ||
+            !flattenedImpactPathsV1(impactPaths).includes(path)
+          )
+        )
+          throw new Error("Task impactPaths must contain every unique normalized allowedPaths entry.");
+        return {
+          authoringContract: { ...QUEUE_AUTHORING_CONTRACT_V1 },
+          impactPaths,
+          runtimeConstraints: normalizeRuntimeConstraintsV1(
+            task.runtimeConstraints,
+            "Task runtimeConstraints",
+            true,
+          ),
+          ...(task.recovery
+            ? {
+                recovery: validateRecoveryTaskBindingV1(
+                  task.recovery,
+                  "Task recovery",
+                ),
+              }
+            : {}),
+        };
+      })()
+    : undefined;
   return {
     allowedPaths: [...(task.allowedPaths ?? [])],
+    ...(externalReadRoots ? { externalReadRoots } : {}),
+    ...(authoringScope ?? {}),
     ...(preconditions.length ? { preconditions } : {}),
     verificationCommands: [...new Set([...(project.verificationCommands ?? []), ...(task.verificationCommands ?? [])])],
   };
@@ -2579,6 +2851,7 @@ export function verificationCommandViolations(
 
 function isLikelyPowerShellCommand(command: string) {
   return (
+    /^\s*&\s+(?:"[^"]+"|'[^']+'|[^\s;&|]+)(?:\s|$)/i.test(command) ||
     /^\s*(?:&\s*)?(?:"[^"]+\.ps1"|'[^']+\.ps1'|[^\s"';&|]+\.ps1)(?:\s|$)/i.test(
       command,
     ) ||
@@ -2702,7 +2975,12 @@ export function verificationCommandInvocation(command: string) {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        normalizedCommand,
+        [
+          "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)",
+          "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)",
+          "$OutputEncoding = [Console]::OutputEncoding",
+          normalizedCommand,
+        ].join("; "),
       ],
       shell: false,
     };
@@ -2743,6 +3021,11 @@ export function checkpointRequirementViolation(
 
 function scopeFingerprint(scope: {
   allowedPaths: string[];
+  externalReadRoots?: string[];
+  authoringContract?: QueueAuthoringContractV1;
+  impactPaths?: ImpactPathsV1;
+  runtimeConstraints?: string[];
+  recovery?: RecoveryTaskBindingV1;
   preconditions?: string[];
   verificationCommands: string[];
 }) {
@@ -2778,6 +3061,11 @@ function matchingApplyContract(
   authorization: TaskAuthorization,
   scope: {
     allowedPaths: string[];
+    externalReadRoots?: string[];
+    authoringContract?: QueueAuthoringContractV1;
+    impactPaths?: ImpactPathsV1;
+    runtimeConstraints?: string[];
+    recovery?: RecoveryTaskBindingV1;
     preconditions?: string[];
     verificationCommands: string[];
   },
@@ -2787,8 +3075,36 @@ function matchingApplyContract(
     (candidate) => candidate.approvalId === authorization.approvalId,
   );
   if (!contract) return undefined;
+  const contractBindsAuthoringV1 = contract.impactPaths !== undefined;
+  if (contractBindsAuthoringV1 !== Boolean(scope.authoringContract))
+    return undefined;
+  const taskApprovalScope = {
+    allowedPaths: scope.allowedPaths,
+    ...(scope.externalReadRoots
+      ? { externalReadRoots: scope.externalReadRoots }
+      : {}),
+    ...(scope.authoringContract
+      ? {
+          authoringContract: { ...scope.authoringContract },
+          impactPaths: structuredClone(scope.impactPaths),
+        }
+      : {}),
+    ...(scope.preconditions?.length
+      ? { preconditions: scope.preconditions }
+      : {}),
+    verificationCommands: scope.verificationCommands,
+  };
   const contractScope = {
     allowedPaths: contract.allowedPaths,
+    ...(contract.externalReadRoots
+      ? { externalReadRoots: contract.externalReadRoots }
+      : {}),
+    ...(scope.authoringContract
+      ? {
+          authoringContract: { ...scope.authoringContract },
+          impactPaths: structuredClone(contract.impactPaths),
+        }
+      : {}),
     ...(contract.preconditions?.length
       ? { preconditions: contract.preconditions }
       : {}),
@@ -2797,7 +3113,7 @@ function matchingApplyContract(
   return contract.intent === "apply" &&
     contract.technicalPermission === "reversible_local_write" &&
     contract.sideEffectRisk === "reversible_local_write" &&
-    scopeFingerprint(contractScope) === scopeFingerprint(scope)
+    scopeFingerprint(contractScope) === scopeFingerprint(taskApprovalScope)
     ? contract
     : undefined;
 }
@@ -2807,7 +3123,18 @@ function matchingApplyContract(
  * capability from the task prompt. All non-local or ambiguous effects fail closed.
  */
 export function authorizeTask(
-  task: Pick<TaskInput, "authorization" | "allowedPaths" | "preconditions" | "verificationCommands"> &
+  task: Pick<
+    TaskInput,
+    | "authorization"
+    | "allowedPaths"
+    | "externalReadRoots"
+    | "preconditions"
+    | "verificationCommands"
+    | "authoringContract"
+    | "impactPaths"
+    | "runtimeConstraints"
+    | "recovery"
+  > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
   branch = "",
@@ -2858,7 +3185,18 @@ export function authorizeTask(
 /** Replay only succeeds when current inputs and the configured approval reproduce stored evidence. */
 export function replayTaskAuthorization(
   evidence: TaskAuthorizationEvidence,
-  task: Pick<TaskInput, "authorization" | "allowedPaths" | "preconditions" | "verificationCommands"> &
+  task: Pick<
+    TaskInput,
+    | "authorization"
+    | "allowedPaths"
+    | "externalReadRoots"
+    | "preconditions"
+    | "verificationCommands"
+    | "authoringContract"
+    | "impactPaths"
+    | "runtimeConstraints"
+    | "recovery"
+  > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
   branch = evidence.branch,
@@ -2870,7 +3208,18 @@ export function replayTaskAuthorization(
 /** Verifies loaded evidence against the current task, contract, branch, and authority. */
 export function verifyStoredTaskAuthorization(
   evidence: TaskAuthorizationEvidence | undefined,
-  task: Pick<TaskInput, "authorization" | "allowedPaths" | "preconditions" | "verificationCommands"> &
+  task: Pick<
+    TaskInput,
+    | "authorization"
+    | "allowedPaths"
+    | "externalReadRoots"
+    | "preconditions"
+    | "verificationCommands"
+    | "authoringContract"
+    | "impactPaths"
+    | "runtimeConstraints"
+    | "recovery"
+  > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
   branch = evidence?.branch ?? "",
@@ -2896,6 +3245,10 @@ type ProviderRuntimeTaskV1 = Pick<
   | "title"
   | "prompt"
   | "allowedPaths"
+  | "authoringContract"
+  | "impactPaths"
+  | "runtimeConstraints"
+  | "recovery"
   | "verificationCommands"
   | "model"
   | "requestedModel"
@@ -3181,6 +3534,10 @@ export function validateQueue(value: unknown): {
     project.verificationCommands,
     "project.verificationCommands",
   );
+  assertWindowsCommandPolicy(
+    project.verificationCommands,
+    "project.verificationCommands",
+  );
   const projectInlineViolations = inlineCommandViolations(
     project.verificationCommands ?? [],
   );
@@ -3188,10 +3545,12 @@ export function validateQueue(value: unknown): {
     throw new Error(
       `project.verificationCommands: ${projectInlineViolations.join(" ")}`,
     );
+  let approvedApplyContracts: TaskApplyApprovalContract[] | undefined;
   if (project.approvedApplyContracts !== undefined) {
     if (!Array.isArray(project.approvedApplyContracts))
       throw new Error("project.approvedApplyContracts must be a list.");
     const approvalIds = new Set<string>();
+    approvedApplyContracts = [];
     for (const contract of project.approvedApplyContracts) {
       if (!contract || typeof contract !== "object" ||
         typeof contract.approvalId !== "string" || !contract.approvalId.trim() ||
@@ -3217,6 +3576,34 @@ export function validateQueue(value: unknown): {
         contract.verificationCommands,
         `project.approvedApplyContracts ${contract.approvalId}`,
       );
+      assertWindowsCommandPolicy(
+        contract.preconditions,
+        `project.approvedApplyContracts ${contract.approvalId} preconditions`,
+      );
+      assertWindowsCommandPolicy(
+        contract.verificationCommands,
+        `project.approvedApplyContracts ${contract.approvalId}`,
+      );
+      const hasAuthoringFields = contract.impactPaths !== undefined;
+      let impactPaths: ImpactPathsV1 | undefined;
+      const externalReadRoots = contract.externalReadRoots
+        ? normalizeExternalReadRootsV1(
+            contract.externalReadRoots,
+            projectPath,
+            `project.approvedApplyContracts ${contract.approvalId} externalReadRoots`,
+          )
+        : undefined;
+      if (hasAuthoringFields) {
+        impactPaths = validateImpactPathsV1(
+          contract.impactPaths,
+          `project.approvedApplyContracts ${contract.approvalId} impactPaths`,
+        );
+      }
+      approvedApplyContracts.push({
+        ...contract,
+        ...(externalReadRoots ? { externalReadRoots } : {}),
+        ...(impactPaths ? { impactPaths } : {}),
+      });
       approvalIds.add(contract.approvalId);
     }
   }
@@ -3350,6 +3737,7 @@ export function validateQueue(value: unknown): {
       throw new Error(`Task ${index + 1}: maxSources must be an integer from 1 to 50.`);
     for (const [field, value] of [
       ["allowedPaths", task.allowedPaths],
+      ["externalReadRoots", task.externalReadRoots],
       ["preconditions", task.preconditions],
       ["verificationCommands", task.verificationCommands],
       ["executionGuards", task.executionGuards],
@@ -3368,6 +3756,14 @@ export function validateQueue(value: unknown): {
     assertWindowsPytestVerificationCommands(
       task.verificationCommands,
       `Task ${index + 1} Windows pytest verification`,
+    );
+    assertWindowsCommandPolicy(
+      task.preconditions,
+      `Task ${index + 1} preconditions`,
+    );
+    assertWindowsCommandPolicy(
+      task.verificationCommands,
+      `Task ${index + 1} verificationCommands`,
     );
     const commandViolations = verificationCommandViolations(task, project);
     if (commandViolations.length)
@@ -3407,6 +3803,66 @@ export function validateQueue(value: unknown): {
       }
       if (authorization.approvalId !== undefined && (typeof authorization.approvalId !== "string" || !authorization.approvalId.trim()))
         throw new Error(`Task ${index + 1}: authorization.approvalId must be a non-empty string.`);
+    }
+    const hasAuthoringFields = task.impactPaths !== undefined ||
+      task.runtimeConstraints !== undefined ||
+      task.recovery !== undefined;
+    if (hasAuthoringFields && task.authoringContract === undefined)
+      throw new Error(
+        `Task ${index + 1}: impactPaths, runtimeConstraints, and recovery require QueueAuthoringContractV1 opt-in.`,
+      );
+    let impactPaths: ImpactPathsV1 | undefined;
+    let runtimeConstraints: string[] | undefined;
+    let recovery: RecoveryTaskBindingV1 | undefined;
+    const externalReadRoots = task.externalReadRoots
+      ? normalizeExternalReadRootsV1(
+          task.externalReadRoots,
+          projectPath,
+          `Task ${index + 1} externalReadRoots`,
+        )
+      : undefined;
+    if (task.authoringContract !== undefined) {
+      if (!isExactQueueAuthoringContractV1(task.authoringContract))
+        throw new Error(`Task ${index + 1}: authoringContract must be an exact QueueAuthoringContractV1 envelope.`);
+      if (
+        !authorization?.enabled ||
+        authorization.intent !== "apply" ||
+        authorization.technicalPermission !== "reversible_local_write" ||
+        authorization.sideEffectRisk !== "reversible_local_write"
+      )
+        throw new Error(`Task ${index + 1}: QueueAuthoringContractV1 requires an enabled reversible apply authorization.`);
+      if (!task.allowedPaths?.length)
+        throw new Error(`Task ${index + 1}: QueueAuthoringContractV1 requires non-empty allowedPaths.`);
+      const normalizedAllowedPaths = task.allowedPaths.map((path) =>
+        normalizeImpactPathV1(path)
+      );
+      if (
+        new Set(normalizedAllowedPaths).size !== normalizedAllowedPaths.length ||
+        normalizedAllowedPaths.some((path, pathIndex) => path !== task.allowedPaths![pathIndex])
+      )
+        throw new Error(`Task ${index + 1}: QueueAuthoringContractV1 allowedPaths must be unique normalized paths.`);
+      impactPaths = validateImpactPathsV1(
+        task.impactPaths,
+        `Task ${index + 1} impactPaths`,
+      );
+      const declaredImpactPaths = new Set(flattenedImpactPathsV1(impactPaths));
+      const missingAllowedPaths = task.allowedPaths.filter((path) =>
+        !declaredImpactPaths.has(path)
+      );
+      if (missingAllowedPaths.length)
+        throw new Error(
+          `Task ${index + 1}: impactPaths must contain every allowedPaths entry in normalized form.`,
+        );
+      runtimeConstraints = normalizeRuntimeConstraintsV1(
+        task.runtimeConstraints,
+        `Task ${index + 1} runtimeConstraints`,
+        true,
+      );
+      if (task.recovery !== undefined)
+        recovery = validateRecoveryTaskBindingV1(
+          task.recovery,
+          `Task ${index + 1} recovery`,
+        );
     }
     const workspace = task.workspace;
     if (workspace !== undefined) {
@@ -3501,6 +3957,13 @@ export function validateQueue(value: unknown): {
       minModel: task.minModel,
       effort,
       allowedPaths: task.allowedPaths,
+      externalReadRoots,
+      authoringContract: task.authoringContract
+        ? { ...QUEUE_AUTHORING_CONTRACT_V1 }
+        : undefined,
+      impactPaths,
+      runtimeConstraints,
+      recovery,
       preconditions: task.preconditions?.map((command) =>
         normalizeWindowsNpmCommand(command)
       ),
@@ -3603,7 +4066,7 @@ export function validateQueue(value: unknown): {
       defaultModel: project.defaultModel,
       defaultEffort: project.defaultEffort,
       allowedModels: project.allowedModels,
-      approvedApplyContracts: project.approvedApplyContracts,
+      approvedApplyContracts,
     },
     tasks,
     limits,
@@ -4063,9 +4526,183 @@ export function pipelineLaunchAuthorizationChecks(
   );
 }
 
+function hasCmdLiteralSingleQuotedArgument(command: string) {
+  let inDoubleQuotes = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (character === '"' && command[index - 1] !== "^") {
+      inDoubleQuotes = !inDoubleQuotes;
+      continue;
+    }
+    if (character !== "'" || inDoubleQuotes) continue;
+    const previous = index === 0 ? "" : command[index - 1];
+    if (index > 0 && !/[\s=,(]/.test(previous)) continue;
+    if (command.indexOf("'", index + 1) !== -1) return true;
+  }
+  return false;
+}
+
+export function windowsCommandPolicyViolation(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+) {
+  if (platform !== "win32" || isLikelyPowerShellCommand(command))
+    return undefined;
+  if (hasCmdLiteralSingleQuotedArgument(command))
+    return "Windows raw-shell commands run through cmd.exe, where single quotes are literal; use double quotes or prefix the command with '&' to select PowerShell.";
+  if (
+    /(?:^|[\r\n;&|]\s*)(?:python(?:3)?(?:\.exe)?|py(?:\.exe)?)(?=\s|$)/i.test(
+      command,
+    )
+  )
+    return "Windows Python commands must use '& $env:PYTHON_BIN ...' so preflight, executor, and verification share the managed interpreter.";
+  return undefined;
+}
+
+function assertWindowsCommandPolicy(
+  commands: string[] | undefined,
+  field: string,
+) {
+  if (!commands) return;
+  for (const command of commands) {
+    const violation = windowsCommandPolicyViolation(command);
+    if (violation) throw new Error(`${field}: ${violation}`);
+  }
+}
+
 export function assertPipelineLaunchAuthorized(pipeline: LoadedPipeline) {
   const denied = pipelineLaunchAuthorizationChecks(pipeline)
     .filter((check) => !check.ok);
+  if (denied.length)
+    throw new Error(denied.map((check) => check.detail).join(" "));
+}
+
+async function persistedRecoverySourceTaskV1(
+  binding: RecoveryTaskBindingV1,
+) {
+  const file = join(runsDirectory, binding.sourceRunId, "run.json");
+  if (!existsSync(file)) throw new Error("RECOVERY_SOURCE_RUN_MISSING");
+  let source: Run;
+  try {
+    source = JSON.parse(await readFile(file, "utf8")) as Run;
+  } catch {
+    throw new Error("RECOVERY_SOURCE_RUN_MALFORMED");
+  }
+  if (source?.id !== binding.sourceRunId || !Array.isArray(source.tasks))
+    throw new Error("RECOVERY_SOURCE_RUN_IDENTITY_MISMATCH");
+  const matchingTasks = source.tasks.filter((task) =>
+    task?.id === binding.sourceTaskId
+  );
+  if (matchingTasks.length !== 1)
+    throw new Error(
+      matchingTasks.length === 0
+        ? "RECOVERY_SOURCE_TASK_MISSING"
+        : "RECOVERY_SOURCE_TASK_AMBIGUOUS",
+    );
+  const sourceTask = matchingTasks[0];
+  if (!isExactQueueAuthoringContractV1(sourceTask.authoringContract))
+    throw new Error("RECOVERY_SOURCE_AUTHORING_EVIDENCE_MISSING");
+  const sourceImpactPaths = validateImpactPathsV1(
+    sourceTask.impactPaths,
+    "persisted source impactPaths",
+  );
+  if (
+    !sourceTask.allowedPaths?.length ||
+    sourceTask.allowedPaths.some((path) =>
+      !flattenedImpactPathsV1(sourceImpactPaths).includes(path)
+    )
+  )
+    throw new Error("RECOVERY_SOURCE_IMPACT_EVIDENCE_MALFORMED");
+  const sourceConstraints = normalizeRuntimeConstraintsV1(
+    sourceTask.runtimeConstraints,
+    "persisted source runtimeConstraints",
+    true,
+  );
+  if (JSON.stringify(sourceConstraints) !== JSON.stringify(sourceTask.runtimeConstraints))
+    throw new Error("RECOVERY_SOURCE_RUNTIME_EVIDENCE_NOT_NORMALIZED");
+  const evidence = sourceTask.authorizationEvidence;
+  if (
+    !evidence?.enabled ||
+    evidence.decision !== "authorized" ||
+    !evidence.authoringContract ||
+    JSON.stringify(evidence.runtimeConstraints) !== JSON.stringify(sourceConstraints) ||
+    !verifyStoredTaskAuthorization(
+      evidence,
+      sourceTask,
+      source.project,
+      evidence.branch,
+    )
+  )
+    throw new Error("RECOVERY_SOURCE_AUTHORIZATION_EVIDENCE_CHANGED");
+  return { sourceTask, sourceConstraints };
+}
+
+export async function queueRecoveryContractChecks(
+  queue: ReturnType<typeof validateQueue>,
+): Promise<LaunchAuthorizationCheck[]> {
+  return Promise.all(queue.tasks.flatMap((task, index) => {
+    if (!task.recovery) return [];
+    const label = launchAuthorizationTaskLabel(task, index);
+    return [(async (): Promise<LaunchAuthorizationCheck> => {
+      try {
+        const { sourceConstraints } = await persistedRecoverySourceTaskV1(
+          task.recovery!,
+        );
+        const recoveryConstraints = new Set(task.runtimeConstraints ?? []);
+        const missingConstraints = sourceConstraints.filter((constraint) =>
+          !recoveryConstraints.has(constraint)
+        );
+        if (missingConstraints.length)
+          throw new Error("RECOVERY_RUNTIME_CONSTRAINTS_NARROWED");
+        return {
+          name: `${label} recovery contract`,
+          ok: true,
+          detail: `${label} recovery contract: RECOVERY_SOURCE_EXACT_AND_RUNTIME_SUPERSET.`,
+        };
+      } catch (error) {
+        return {
+          name: `${label} recovery contract`,
+          ok: false,
+          detail: `${label} recovery contract denied: ${
+            error instanceof Error ? error.message : "RECOVERY_EVIDENCE_INVALID"
+          }.`,
+        };
+      }
+    })()];
+  }));
+}
+
+export async function assertQueueRecoveryContracts(
+  queue: ReturnType<typeof validateQueue>,
+) {
+  const denied = (await queueRecoveryContractChecks(queue)).filter((check) =>
+    !check.ok
+  );
+  if (denied.length)
+    throw new Error(denied.map((check) => check.detail).join(" "));
+}
+
+export async function pipelineRecoveryContractChecks(
+  pipeline: LoadedPipeline,
+): Promise<LaunchAuthorizationCheck[]> {
+  const checks = await Promise.all(pipeline.queues.map((entry) =>
+    queueRecoveryContractChecks(entry.queue)
+  ));
+  return checks.flatMap((queueChecks, index) =>
+    queueChecks.map((check) => ({
+      ...check,
+      name: `Pipeline queue ${index + 1} ${check.name}`,
+      detail: `Pipeline queue ${index + 1}: ${check.detail}`,
+    }))
+  );
+}
+
+export async function assertPipelineRecoveryContracts(
+  pipeline: LoadedPipeline,
+) {
+  const denied = (await pipelineRecoveryContractChecks(pipeline)).filter(
+    (check) => !check.ok,
+  );
   if (denied.length)
     throw new Error(denied.map((check) => check.detail).join(" "));
 }
@@ -4084,12 +4721,19 @@ export function taskWriteViolations(
   return outsideAllowedPaths(changedFiles, task.allowedPaths);
 }
 
+const preparedQueueProcessEnvironments = new WeakMap<
+  ReturnType<typeof validateQueue>,
+  NodeJS.ProcessEnv
+>();
+const runProcessEnvironments = new WeakMap<Run, NodeJS.ProcessEnv>();
+const taskProcessEnvironments = new WeakMap<Task, NodeJS.ProcessEnv>();
+
 export function createRun(
   queue: ReturnType<typeof validateQueue>,
   pipeline?: Run["pipeline"],
   contexts: Array<ContextProviderResult | undefined> = [],
 ): Run {
-  return {
+  const run: Run = {
     id: identifier(),
     project: queue.project,
     status: "idle",
@@ -4107,6 +4751,10 @@ export function createRun(
       executorOutcomeContractVersion: EXECUTOR_OUTCOME_CONTRACT_VERSION,
     })),
   };
+  const preparedEnvironment = preparedQueueProcessEnvironments.get(queue);
+  if (preparedEnvironment)
+    runProcessEnvironments.set(run, preparedEnvironment);
+  return run;
 }
 
 /** Make the durable launch response and append admission observe the same state. */
@@ -4132,6 +4780,11 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       minModel: task.minModel,
       effort: task.effort,
       allowedPaths: task.allowedPaths,
+      externalReadRoots: task.externalReadRoots,
+      authoringContract: task.authoringContract,
+      impactPaths: task.impactPaths,
+      runtimeConstraints: task.runtimeConstraints,
+      recovery: task.recovery,
       preconditions: task.preconditions,
       verificationCommands: task.verificationCommands,
       executionGuards: task.executionGuards,
@@ -4272,6 +4925,10 @@ async function appendPipelineQueue(source: string, filename: string) {
   }
   // Reject before turning an ordinary active run into a persisted pipeline.
   assertQueueLaunchAuthorized(queue);
+  await assertQueueRecoveryContracts(queue);
+  await assertQueueManagedPythonAvailable(queue);
+  await assertQueueCommandRuntimesAvailable(queue);
+  await assertQueueExternalReadRootsAvailable(queue);
   const requestedRun = activeRun;
   const requestedReadiness = appendReadiness(requestedRun, activePipeline);
   if (!requestedReadiness.ready) throw new AppendReadinessError(requestedReadiness);
@@ -4286,6 +4943,7 @@ async function appendPipelineQueue(source: string, filename: string) {
         retryAfterMs: 100,
         state: appendReadinessState(run, activePipeline),
       });
+    await assertQueueRecoveryContracts(queue);
     const pipeline = await activePipelineForAppend();
     assertPipelineLaunchAuthorized(pipeline);
     const safeName = basename(filename || "queue.yaml").replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -4556,6 +5214,55 @@ export function verificationProcessEnvironment(
   });
 }
 
+export function gitSafeDirectoryProcessEnvironment(
+  environment: NodeJS.ProcessEnv,
+  externalReadRoots: readonly string[] = [],
+) {
+  if (!externalReadRoots.length) return { ...environment };
+  const rawCount = environment.GIT_CONFIG_COUNT;
+  if (rawCount !== undefined && !/^\d+$/.test(rawCount))
+    throw new Error("Inherited GIT_CONFIG_COUNT must be a non-negative integer.");
+  const offset = Number(rawCount ?? "0");
+  if (!Number.isSafeInteger(offset) || offset + externalReadRoots.length > 10_000)
+    throw new Error("Inherited GIT_CONFIG_COUNT must be a bounded non-negative integer.");
+  const scoped = { ...environment };
+  externalReadRoots.forEach((root, index) => {
+    scoped[`GIT_CONFIG_KEY_${offset + index}`] = "safe.directory";
+    scoped[`GIT_CONFIG_VALUE_${offset + index}`] = root;
+  });
+  scoped.GIT_CONFIG_COUNT = String(offset + externalReadRoots.length);
+  return scoped;
+}
+
+export function codexProcessOptions(
+  cwd: string,
+  environment: NodeJS.ProcessEnv = process.env,
+  runtimeProjectPath = cwd,
+) {
+  return {
+    cwd,
+    env: verificationProcessEnvironment(runtimeProjectPath, environment),
+    shell: false as const,
+    stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+  };
+}
+
+function taskProcessEnvironment(run: Run, task: Task) {
+  const cached = taskProcessEnvironments.get(task);
+  if (cached) return cached;
+  let base = runProcessEnvironments.get(run);
+  if (!base) {
+    base = verificationProcessEnvironment(run.project.path);
+    runProcessEnvironments.set(run, base);
+  }
+  const scoped = gitSafeDirectoryProcessEnvironment(
+    base,
+    task.externalReadRoots,
+  );
+  taskProcessEnvironments.set(task, scoped);
+  return scoped;
+}
+
 export function processTreeTerminationInvocation(
   pid: number,
   platform: NodeJS.Platform = process.platform,
@@ -4614,12 +5321,19 @@ export async function waitForProcess(
   return { exitCode, timedOut };
 }
 
-async function commandSucceeds(command: string, args: string[], cwd?: string) {
+async function commandSucceeds(
+  command: string,
+  args: string[],
+  cwd?: string,
+  environment?: NodeJS.ProcessEnv,
+  timeoutMs?: number,
+) {
   return new Promise<boolean>((done) => {
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, {
         cwd,
+        ...(environment ? { env: environment } : {}),
         shell: false,
         stdio: ["ignore", "ignore", "ignore"],
       });
@@ -4627,8 +5341,23 @@ async function commandSucceeds(command: string, args: string[], cwd?: string) {
       done(false);
       return;
     }
-    child.on("close", (code) => done(code === 0));
-    child.on("error", () => done(false));
+    let settled = false;
+    const timer = timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill();
+          done(false);
+        }, timeoutMs);
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      done(ok);
+    };
+    child.on("close", (code) => finish(code === 0));
+    child.on("error", () => finish(false));
   });
 }
 
@@ -5616,7 +6345,7 @@ async function preparePipelineLaunchContexts(pipeline: LoadedPipeline) {
   );
 }
 
-export async function managedPythonPreflight(
+async function probeManagedPython(
   projectPath: string,
   commands: readonly string[],
   environment: NodeJS.ProcessEnv = process.env,
@@ -5625,13 +6354,300 @@ export async function managedPythonPreflight(
     /\$env:PYTHON_BIN\b/i.test(command),
   );
   if (!required)
-    return { required, ok: true, executable: undefined as string | undefined };
-  const executable = repositoryPythonExecutable(projectPath, environment);
+    return {
+      required,
+      ok: true,
+      executable: undefined as string | undefined,
+      processEnvironment: undefined as NodeJS.ProcessEnv | undefined,
+    };
+  // Resolve through the same constructor used by every task process. This is
+  // especially important for managed workspaces: their cwd may differ, but
+  // executor and verification must still receive the interpreter proved for
+  // the queue's project root.
+  const processEnvironment = verificationProcessEnvironment(
+    projectPath,
+    environment,
+  );
+  const executable = processEnvironment.PYTHON_BIN!;
   return {
     required,
-    ok: await commandSucceeds(executable, ["--version"], projectPath),
+    ok: await commandSucceeds(
+      executable,
+      ["--version"],
+      projectPath,
+      processEnvironment,
+      10_000,
+    ),
     executable,
+    processEnvironment,
   };
+}
+
+export async function managedPythonPreflight(
+  projectPath: string,
+  commands: readonly string[],
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const result = await probeManagedPython(projectPath, commands, environment);
+  return {
+    required: result.required,
+    ok: result.ok,
+    executable: result.executable,
+  };
+}
+
+function queueManagedPythonInputs(
+  queue: ReturnType<typeof validateQueue>,
+) {
+  return [
+    ...(queue.project.verificationCommands ?? []),
+    ...queue.tasks.flatMap((task) => [
+      task.prompt,
+      ...(task.preconditions ?? []),
+      ...(task.verificationCommands ?? []),
+    ]),
+  ];
+}
+
+function queueConfiguredCommands(queue: ReturnType<typeof validateQueue>) {
+  return [
+    ...(queue.project.verificationCommands ?? []),
+    ...queue.tasks.flatMap((task) => [
+      ...(task.preconditions ?? []),
+      ...(task.verificationCommands ?? []),
+    ]),
+  ];
+}
+
+type CommandRuntimeProbe = {
+  name: string;
+  executable: string;
+  args: string[];
+};
+
+export function commandRuntimeProbes(
+  commands: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const probes = new Map<string, CommandRuntimeProbe>();
+  const invokes = (name: string) =>
+    commands.some((command) =>
+      new RegExp(
+        `(?:^|[\\r\\n;&|]\\s*)(?:&\\s*)?${name}(?=\\s|$)`,
+        "i",
+      ).test(command)
+    );
+  if (commands.some(isLikelyPowerShellCommand))
+    probes.set("PowerShell", {
+      name: "PowerShell",
+      executable: platform === "win32" ? "powershell.exe" : "pwsh",
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+    });
+  if (invokes("node(?:\\.exe)?"))
+    probes.set("Node.js", { name: "Node.js", executable: "node", args: ["--version"] });
+  if (invokes("rg(?:\\.exe)?"))
+    probes.set("ripgrep", { name: "ripgrep", executable: "rg", args: ["--version"] });
+  if (invokes("npm(?:\\.cmd)?"))
+    probes.set("npm", platform === "win32"
+      ? {
+          name: "npm",
+          executable: environment.ComSpec || "cmd.exe",
+          args: ["/d", "/s", "/c", "npm.cmd --version"],
+        }
+      : { name: "npm", executable: "npm", args: ["--version"] });
+  if (invokes("pwsh(?:\\.exe)?"))
+    probes.set("PowerShell 7", {
+      name: "PowerShell 7",
+      executable: "pwsh",
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+    });
+  return [...probes.values()];
+}
+
+export async function queueCommandRuntimePreflightChecks(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const processEnvironment = verificationProcessEnvironment(
+    queue.project.path,
+    environment,
+  );
+  return await Promise.all(
+    commandRuntimeProbes(
+      queueConfiguredCommands(queue),
+      process.platform,
+      processEnvironment,
+    ).map(async (probe) => ({
+      name: `Command runtime: ${probe.name}`,
+      ok: await commandSucceeds(
+        probe.executable,
+        probe.args,
+        queue.project.path,
+        processEnvironment,
+        10_000,
+      ),
+      detail: probe.name,
+    })),
+  );
+}
+
+export async function assertQueueCommandRuntimesAvailable(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const checks = await queueCommandRuntimePreflightChecks(queue, environment);
+  const failed = checks.filter((check) => !check.ok);
+  if (failed.length)
+    throw new Error(
+      `Required command runtime unavailable: ${failed.map((check) => check.detail).join(", ")}.`,
+    );
+}
+
+export async function assertPipelineCommandRuntimesAvailable(
+  pipeline: LoadedPipeline,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const checks = await Promise.all(
+    pipeline.queues.map((entry) =>
+      queueCommandRuntimePreflightChecks(entry.queue, environment)
+    ),
+  );
+  const failed = checks.flatMap((queueChecks, index) =>
+    queueChecks
+      .filter((check) => !check.ok)
+      .map((check) => `queue ${index + 1} ${check.detail}`)
+  );
+  if (failed.length)
+    throw new Error(`Required command runtime unavailable: ${failed.join(", ")}.`);
+}
+
+export async function queueExternalReadRootPreflightChecks(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const base = verificationProcessEnvironment(queue.project.path, environment);
+  return await Promise.all(queue.tasks.flatMap((task, taskIndex) =>
+    (task.externalReadRoots ?? []).map(async (root, rootIndex) => ({
+      name: `Task ${taskIndex + 1} external read root ${rootIndex + 1}`,
+      ok: await commandSucceeds(
+        "git",
+        ["-C", root, "rev-parse", "--is-inside-work-tree"],
+        queue.project.path,
+        gitSafeDirectoryProcessEnvironment(base, [root]),
+        10_000,
+      ),
+      detail: root,
+    }))
+  ));
+}
+
+export async function assertQueueExternalReadRootsAvailable(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const denied = (await queueExternalReadRootPreflightChecks(queue, environment))
+    .filter((check) => !check.ok);
+  if (denied.length)
+    throw new Error(
+      `External read root unavailable: ${denied.map((check) => check.detail).join(", ")}.`,
+    );
+}
+
+export async function assertPipelineExternalReadRootsAvailable(
+  pipeline: LoadedPipeline,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const checks = await Promise.all(pipeline.queues.map((entry) =>
+    queueExternalReadRootPreflightChecks(entry.queue, environment)
+  ));
+  const denied = checks.flatMap((queueChecks, index) =>
+    queueChecks.filter((check) => !check.ok).map((check) =>
+      `queue ${index + 1} ${check.detail}`
+    )
+  );
+  if (denied.length)
+    throw new Error(`External read root unavailable: ${denied.join(", ")}.`);
+}
+
+const managedPythonUnavailableDetail =
+  "Managed Python runtime declared by queue is unavailable.";
+
+export async function queueManagedPythonPreflightCheck(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<LaunchAuthorizationCheck> {
+  const result = await managedPythonPreflight(
+    queue.project.path,
+    queueManagedPythonInputs(queue),
+    environment,
+  );
+  return {
+    name: "Managed Python",
+    ok: result.ok,
+    detail: !result.required
+      ? "Not required"
+      : result.ok
+        ? "Available"
+        : managedPythonUnavailableDetail,
+  };
+}
+
+export async function pipelineManagedPythonPreflightChecks(
+  pipeline: LoadedPipeline,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<LaunchAuthorizationCheck[]> {
+  const checks = await Promise.all(
+    pipeline.queues.map((entry) =>
+      queueManagedPythonPreflightCheck(entry.queue, environment)
+    ),
+  );
+  return checks.map((check, index) => ({
+    ...check,
+    name: `Pipeline queue ${index + 1} ${check.name}`,
+    detail: check.ok
+      ? check.detail
+      : `Pipeline queue ${index + 1}: ${check.detail}`,
+  }));
+}
+
+export async function assertQueueManagedPythonAvailable(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const result = await probeManagedPython(
+    queue.project.path,
+    queueManagedPythonInputs(queue),
+    environment,
+  );
+  if (!result.ok) throw new Error(managedPythonUnavailableDetail);
+  if (result.processEnvironment)
+    preparedQueueProcessEnvironments.set(queue, result.processEnvironment);
+}
+
+export async function assertPipelineManagedPythonAvailable(
+  pipeline: LoadedPipeline,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const results = await Promise.all(pipeline.queues.map((entry) =>
+    probeManagedPython(
+      entry.queue.project.path,
+      queueManagedPythonInputs(entry.queue),
+      environment,
+    )
+  ));
+  const failed = results.flatMap((result, index) => result.ok
+    ? []
+    : [`Pipeline queue ${index + 1}: ${managedPythonUnavailableDetail}`]);
+  if (failed.length)
+    throw new Error(failed.join(" "));
+  results.forEach((result, index) => {
+    if (result.processEnvironment)
+      preparedQueueProcessEnvironments.set(
+        pipeline.queues[index].queue,
+        result.processEnvironment,
+      );
+  });
 }
 
 async function preflight(value: unknown) {
@@ -5642,14 +6658,38 @@ async function preflight(value: unknown) {
   const authorizationChecks = pipeline
     ? pipelineLaunchAuthorizationChecks(pipeline)
     : queueLaunchAuthorizationChecks(queue);
+  const recoveryChecks = pipeline
+    ? await pipelineRecoveryContractChecks(pipeline)
+    : await queueRecoveryContractChecks(queue);
   const agentsPath = join(queue.project.path, "AGENTS.md");
   const packageFile = join(queue.project.path, "package.json");
-  const configuredCommands = queue.tasks.flatMap((task) => [
-    ...(queue.project.verificationCommands ?? []),
-    ...(task.preconditions ?? []),
-    ...(task.verificationCommands ?? []),
-  ]);
-  const [cli, git, scripts, managedPython] = await Promise.all([
+  const managedPythonChecks = pipeline
+    ? await pipelineManagedPythonPreflightChecks(pipeline)
+    : [await queueManagedPythonPreflightCheck(queue)];
+  const commandRuntimeChecks = pipeline
+    ? (await Promise.all(pipeline.queues.map(async (entry, index) =>
+        (await queueCommandRuntimePreflightChecks(entry.queue)).map((check) => ({
+          ...check,
+          name: `Pipeline queue ${index + 1} ${check.name}`,
+          detail: `Pipeline queue ${index + 1}: ${check.detail}`,
+        }))
+      ))).flat()
+    : await queueCommandRuntimePreflightChecks(queue);
+  const externalReadRootChecks = pipeline
+    ? (await Promise.all(pipeline.queues.map(async (entry, index) =>
+        (await queueExternalReadRootPreflightChecks(entry.queue)).map((check) => ({
+          ...check,
+          name: `Pipeline queue ${index + 1} ${check.name}`,
+          detail: `Pipeline queue ${index + 1}: ${check.detail}`,
+        }))
+      ))).flat()
+    : await queueExternalReadRootPreflightChecks(queue);
+  const runtimeChecks = [
+    ...managedPythonChecks,
+    ...commandRuntimeChecks,
+    ...externalReadRootChecks,
+  ];
+  const [cli, git, scripts] = await Promise.all([
     codexCliAvailable(),
     commandSucceeds(
       "git",
@@ -5662,7 +6702,6 @@ async function preflight(value: unknown) {
             (JSON.parse(source) as { scripts?: Record<string, string> }).scripts ?? {},
         )
       : Promise.resolve({}),
-    managedPythonPreflight(queue.project.path, configuredCommands),
   ]);
   const checks = (
     await Promise.all(queue.tasks.map(async (task, index) => {
@@ -5704,7 +6743,7 @@ async function preflight(value: unknown) {
       })))
     : [{ contexts: await resolveQueueContexts(queue), queue, queueIndex: undefined }];
   for (const entry of contextEntries)
-    if (entry.contexts.some(Boolean))
+    if (runtimeChecks.every((check) => check.ok) && entry.contexts.some(Boolean))
       cachePreflightContexts(entry.queue, entry.contexts);
   const contextChecks = contextEntries.flatMap((entry) =>
     queueRepositoryContextChecks(entry.queue, entry.contexts).map((check) =>
@@ -5718,20 +6757,15 @@ async function preflight(value: unknown) {
     ),
   );
   const result = {
-    ok: cli && git && managedPython.ok &&
+    ok: cli && git && runtimeChecks.every((check) => check.ok) &&
       checks.every((check) => check.ok) &&
       authorizationChecks.every((check) => check.ok) &&
+      recoveryChecks.every((check) => check.ok) &&
       contextChecks.every((check) => check.ok),
     checks: [
       { name: "Codex CLI", ok: cli, detail: codexBin() },
       { name: "Git repository", ok: git, detail: queue.project.path },
-      {
-        name: "Managed Python",
-        ok: managedPython.ok,
-        detail: managedPython.required
-          ? managedPython.executable ?? "Unavailable"
-          : "Not required",
-      },
+      ...runtimeChecks,
       {
         name: "AGENTS.md",
         ok: existsSync(agentsPath),
@@ -5749,6 +6783,7 @@ async function preflight(value: unknown) {
       },
       ...checks,
       ...authorizationChecks,
+      ...recoveryChecks,
       ...contextChecks,
       ...(pipeline
         ? [
@@ -5780,12 +6815,31 @@ async function preflight(value: unknown) {
 }
 
 export function buildPrompt(task: Task, project: ProjectSettings) {
-  return renderProductionLegacyPromptV1({
+  let prompt = renderProductionLegacyPromptV1({
     task,
     project,
     authorization:
       task.authorizationEvidence ?? authorizeTask(task, project),
   });
+  const additions: string[] = [];
+  if (task.authoringContract && task.runtimeConstraints?.length) {
+    const runtimeConstraints = task.runtimeConstraints
+      .map((constraint) => `- ${constraint}`)
+      .join("\n");
+    additions.push(
+      `Explicit runtime constraints (authorization-bound; do not infer substitutes from prose):\n${runtimeConstraints}`,
+    );
+  }
+  if (task.externalReadRoots?.length)
+    additions.push(
+      `External read-only roots (authorization-bound; never write or persist Git configuration):\n${task.externalReadRoots.map((root) => `- ${root}`).join("\n")}`,
+    );
+  if (additions.length)
+    prompt = prompt.replace(
+      "\n\nRequirements:",
+      `\n\n${additions.join("\n\n")}\n\nRequirements:`,
+    );
+  return prompt;
 }
 
 export function codexPromptInvocation(args: string[], prompt: string) {
@@ -5831,6 +6885,7 @@ function spawnCodexWithPrompt(
   args: string[],
   prompt: string,
   cwd: string,
+  environment: NodeJS.ProcessEnv,
 ) {
   const invocation = codexPromptInvocation(args, prompt);
   const testScript =
@@ -5840,12 +6895,11 @@ function spawnCodexWithPrompt(
   const child = spawn(
     codexBin(),
     [...(testScript ? [testScript] : []), ...invocation.args],
-    {
-    cwd,
-    env: runnerProcessEnvironment(),
-    shell: false,
-    stdio: ["pipe", "pipe", "pipe"],
-    },
+    // Executor, reviewer, correction, preconditions, and verification must
+    // inherit the same portable runtime contract. In particular, a task that
+    // must invoke a versioned Python generator cannot depend on a user-profile
+    // path that disappears inside the Codex sandbox.
+    codexProcessOptions(cwd, environment),
   );
   child.stdin?.on("error", () => undefined);
   child.stdin?.end(invocation.stdin, "utf8");
@@ -5987,6 +7041,7 @@ async function reviewTask(run: Run, task: Task) {
       ],
       prompt,
       executionPath,
+      taskProcessEnvironment(run, task),
     );
   } catch (error) {
     task.executionPhase = undefined;
@@ -6141,6 +7196,7 @@ async function correctTask(run: Run, task: Task) {
       ],
       prompt,
       executionPath,
+      taskProcessEnvironment(run, task),
     );
   } catch (error) {
     task.executionPhase = undefined;
@@ -6222,7 +7278,7 @@ async function runConfiguredTaskCommands(
       const invocation = verificationCommandInvocation(command);
       child = spawn(invocation.executable, invocation.args, {
         cwd: executionPath,
-        env: verificationProcessEnvironment(executionPath),
+        env: taskProcessEnvironment(run, task),
         shell: invocation.shell,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
@@ -6492,7 +7548,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
           task.model,
           task.effort,
         );
-        child = spawnCodexWithPrompt(args, prompt, executionPath);
+        child = spawnCodexWithPrompt(
+          args,
+          prompt,
+          executionPath,
+          taskProcessEnvironment(run, task),
+        );
       } catch (error) {
         task.exitCode = 1;
         task.log.push(
@@ -6769,6 +7830,8 @@ async function startPipelineQueue(pipeline: LoadedPipeline) {
   const contexts = pipelineLaunchContexts.get(pipeline)?.get(entry) ??
     await contextsForRun(entry.queue);
   assertQueueLaunchRepositoryContext(entry.queue, contexts);
+  // Re-read exact recovery evidence immediately before run and lock creation.
+  await assertQueueRecoveryContracts(entry.queue);
   const run = createRun(entry.queue, pipelineLink, contexts);
   await acquireProjectLock(run);
   pipeline.currentRunId = run.id;
@@ -8412,6 +9475,10 @@ app.post("/api/runs", async (request, response) => {
       if (isPipeline(value)) {
         const pipeline = await loadPipeline(value);
         assertPipelineLaunchAuthorized(pipeline);
+        await assertPipelineRecoveryContracts(pipeline);
+        await assertPipelineManagedPythonAvailable(pipeline);
+        await assertPipelineCommandRuntimesAvailable(pipeline);
+        await assertPipelineExternalReadRootsAvailable(pipeline);
         await preparePipelineLaunchContexts(pipeline);
         activePipeline = pipeline;
         try {
@@ -8422,11 +9489,16 @@ app.post("/api/runs", async (request, response) => {
           throw error;
         }
       }
-      activePipeline = undefined;
       const queue = validateTaskQueue(value);
       assertQueueLaunchAuthorized(queue);
+      await assertQueueRecoveryContracts(queue);
+      await assertQueueManagedPythonAvailable(queue);
+      await assertQueueCommandRuntimesAvailable(queue);
+      await assertQueueExternalReadRootsAvailable(queue);
       const contexts = await contextsForRun(queue);
       assertQueueLaunchRepositoryContext(queue, contexts);
+      // Fence source evidence again after asynchronous preflight work.
+      await assertQueueRecoveryContracts(queue);
       const run = createRun(queue, undefined, contexts);
       try {
         await acquireProjectLock(run);
@@ -8437,6 +9509,7 @@ app.post("/api/runs", async (request, response) => {
             error: error instanceof Error ? error.message : "Project is locked.",
           });
       }
+      activePipeline = undefined;
       activeRun = run;
       markRunReadyForLaunch(run);
       await persist(run);
@@ -8579,8 +9652,16 @@ app.post("/api/runs/:runId/tasks/:taskId/retry", async (request, response) => {
   );
   if (!source || !task)
     return response.status(404).json({ error: "Task not found." });
+  try {
+    await assertQueueRecoveryContracts(queueFromRun(source));
+  } catch (error) {
+    return response.status(409).json({
+      error: error instanceof Error ? error.message : "Recovery evidence is invalid.",
+    });
+  }
   const retry = retryRun(source, task);
   try {
+    await assertQueueRecoveryContracts(queueFromRun(retry));
     await acquireProjectLock(retry);
   } catch (error) {
     return response
@@ -8599,6 +9680,13 @@ app.post("/api/runs/:id/resume", async (request, response) => {
     return response.status(409).json({ error: "A run is already active." });
   const source = await loadRun(request.params.id);
   if (!source) return response.status(404).json({ error: "Run not found." });
+  try {
+    await assertQueueRecoveryContracts(queueFromRun(source));
+  } catch (error) {
+    return response.status(409).json({
+      error: error instanceof Error ? error.message : "Recovery evidence is invalid.",
+    });
+  }
   const resumed = resumeRun(source);
   if (!resumed)
     return response
@@ -8616,6 +9704,7 @@ app.post("/api/runs/:id/resume", async (request, response) => {
         total: pipeline.queues.length,
       };
     }
+    await assertQueueRecoveryContracts(queueFromRun(resumed));
     await acquireProjectLock(resumed);
   } catch (error) {
     return response
