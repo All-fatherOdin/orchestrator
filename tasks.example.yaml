@@ -13,13 +13,13 @@ project:
       intent: apply
       technicalPermission: reversible_local_write
       sideEffectRisk: reversible_local_write
-      allowedPaths: [src/notifications]
+      allowedPaths: [src/notifications/**]
       # Cross-repository reads require the exact same ordered, existing,
       # absolute roots here and on the task. Orchestrator supplies Git
       # safe.directory process-locally; never modify global Git config.
       # externalReadRoots: [D:\work\reference-repository]
       impactPaths:
-        production: [src/notifications]
+        production: [src/notifications/**]
       preconditions:
         - >-
           $status = @(git status --short);
@@ -32,17 +32,17 @@ project:
       intent: apply
       technicalPermission: reversible_local_write
       sideEffectRisk: reversible_local_write
-      allowedPaths: [src/websocket]
+      allowedPaths: [src/websocket/**]
       impactPaths:
-        production: [src/websocket]
+        production: [src/websocket/**]
       verificationCommands: [npm.cmd test -- websocket]
     - approvalId: integration-tests-v1
       intent: apply
       technicalPermission: reversible_local_write
       sideEffectRisk: reversible_local_write
-      allowedPaths: [tests/integration]
+      allowedPaths: [tests/integration/**]
       impactPaths:
-        tests: [tests/integration]
+        tests: [tests/integration/**]
       verificationCommands: [npm.cmd test -- integration]
   # Windows pytest example: use a fresh direct child of TEMP for every Codex
   # process. Reusing pytest's default pytest-of-user directory, or a fixed
@@ -78,16 +78,20 @@ tasks:
     # Optional per-task overrides:
     # timeoutMinutes: 45
     # maxRetries: 2
-    allowedPaths: [src/notifications]
+    allowedPaths: [src/notifications/**]
     # externalReadRoots: [D:\work\reference-repository]
     authoringContract:
       contractType: QueueAuthoringContractV1
       contractVersion: "1.0"
+    executionKind:
+      contractType: TaskExecutionKindV1
+      contractVersion: "1.0"
+      kind: ordinary
     # Category order and path order are authorization-bound. Every allowedPaths
     # entry must appear exactly in this normalized map. Extra impact entries do
     # not grant write access outside allowedPaths.
     impactPaths:
-      production: [src/notifications]
+      production: [src/notifications/**]
     runtimeConstraints:
       - Node.js and npm are available from the inherited process environment.
     # Machine-executed, read-only baseline checks belong in `preconditions`.
@@ -126,6 +130,10 @@ tasks:
       # - >-
       #   Get-Content -LiteralPath 'src/notifications/result.ts'
       #   -TotalCount 120
+      # Exact totals or equality across two or more artifacts need their own
+      # deterministic mismatch assertion. A reader, hash, or producer success
+      # is not enough; a versioned script is preferred:
+      # - node "scripts/assert-artifact-totals.mjs"
       # Ordinary `git diff --check -- <path>` does not inspect a new untracked
       # file. For such files, use a content-aware PowerShell check like this
       # (replace the example path). `git diff --no-index` normally exits 1
@@ -161,12 +169,16 @@ tasks:
     model: auto
     minModel: terra
     effort: medium
-    allowedPaths: [src/websocket]
+    allowedPaths: [src/websocket/**]
     authoringContract:
       contractType: QueueAuthoringContractV1
       contractVersion: "1.0"
+    executionKind:
+      contractType: TaskExecutionKindV1
+      contractVersion: "1.0"
+      kind: ordinary
     impactPaths:
-      production: [src/websocket]
+      production: [src/websocket/**]
     runtimeConstraints:
       - Node.js and npm are available from the inherited process environment.
     verificationCommands: [npm.cmd test -- websocket]
@@ -193,12 +205,16 @@ tasks:
     # requiresCheckpointsFrom: [typecheck-fixes, reconnect-logic]
     # Use `allowedPaths: []` for a read-only task; reviewer rejection then
     # fails closed without an automatic correction attempt.
-    allowedPaths: [tests/integration]
+    allowedPaths: [tests/integration/**]
     authoringContract:
       contractType: QueueAuthoringContractV1
       contractVersion: "1.0"
+    executionKind:
+      contractType: TaskExecutionKindV1
+      contractVersion: "1.0"
+      kind: ordinary
     impactPaths:
-      tests: [tests/integration]
+      tests: [tests/integration/**]
     runtimeConstraints:
       - Node.js and npm are available from the inherited process environment.
     verificationCommands: [npm.cmd test -- integration]
@@ -212,6 +228,9 @@ tasks:
       approvalId: integration-tests-v1
   - key: review-integration
     title: Review the completed integration result
+    # WholeChangeAcceptanceV1 appears exactly once, as the final task and unique
+    # dependency sink. Its direct predecessor list covers every writer anywhere
+    # in this queue, so every writer is an ancestor of this read-only review.
     # Dependencies order this source inspection after implementation, but do
     # not inject predecessor verification records into this executor. Its own
     # commands run after the executor and are supplied only to the independent
@@ -220,8 +239,12 @@ tasks:
     prompt: Inspect the completed integration source directly and report findings without edits; do not claim access to predecessor verification records.
     model: terra
     effort: medium
-    dependsOn: [integration-tests]
+    dependsOn: [typecheck-fixes, reconnect-logic, integration-tests]
     allowedPaths: []
+    wholeChangeAcceptance:
+      contractType: WholeChangeAcceptanceV1
+      contractVersion: "1.0"
+      predecessorTaskKeys: [typecheck-fixes, reconnect-logic, integration-tests]
     verificationCommands:
       - npm test -- integration
       # Whole-change whitespace verification must inspect tracked and untracked
@@ -263,9 +286,20 @@ tasks:
 # The IDs must be copied exactly from the persisted source run.json. The
 # recovery task's runtimeConstraints must include every persisted source
 # constraint (and may append newly discovered constraints); prose does not
-# supply or override them.
+# supply or override them. A failed authenticated recovery may be the exact
+# source of a later recovery only when the full persisted lineage is acyclic,
+# terminal/non-successful, authorization-replayable, and runtime-superset-safe.
 # recovery:
 #   contractType: RecoveryTaskBindingV1
 #   contractVersion: "1.0"
 #   sourceRunId: m2example-source-run
 #   sourceTaskId: m2example-source-task
+# executionKind:
+#   contractType: TaskExecutionKindV1
+#   contractVersion: "1.0"
+#   kind: recovery
+
+# Post-deployment live smoke boundary: after restarting a newly deployed
+# desktop bundle, launch one explicit read-only smoke task and retain its
+# canonical run.json receipt. This does not authorize rebuild, install, or
+# workspace mutation.

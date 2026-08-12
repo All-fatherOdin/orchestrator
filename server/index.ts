@@ -277,6 +277,16 @@ export type RecoveryTaskBindingV1 = {
   sourceRunId: string;
   sourceTaskId: string;
 };
+export type TaskExecutionKindV1 = {
+  contractType: "TaskExecutionKindV1";
+  contractVersion: "1.0";
+  kind: "ordinary" | "recovery";
+};
+export type WholeChangeAcceptanceV1 = {
+  contractType: "WholeChangeAcceptanceV1";
+  contractVersion: "1.0";
+  predecessorTaskKeys: string[];
+};
 export type TaskIntent = "answer" | "review" | "diagnose" | "apply";
 export type VerificationMode = "required" | "advisory";
 export type TechnicalPermission = "read_only" | "reversible_local_write";
@@ -321,6 +331,8 @@ export type TaskAuthorizationEvidence = {
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
   recovery?: RecoveryTaskBindingV1;
+  executionKind?: TaskExecutionKindV1;
+  wholeChangeAcceptance?: WholeChangeAcceptanceV1;
   preconditions?: string[];
   verificationCommands: string[];
   scopeFingerprint: string;
@@ -363,6 +375,10 @@ export type TaskInput = {
   runtimeConstraints?: string[];
   /** Exact persisted source task for a recovery task. */
   recovery?: RecoveryTaskBindingV1;
+  /** Required explicit execution identity for QueueAuthoringContractV1 tasks. */
+  executionKind?: TaskExecutionKindV1;
+  /** Closed read-only terminal review handoff for all earlier write scopes. */
+  wholeChangeAcceptance?: WholeChangeAcceptanceV1;
   /** Read-only commands executed by the orchestrator before the executor starts. */
   preconditions?: string[];
   /** Required commands are machine-executed; advisory commands are executor-owned and never acceptance evidence. */
@@ -887,6 +903,29 @@ type VerificationEvidence = {
   timedOut: boolean;
   output: string;
 };
+type WholeChangeContentEvidence = {
+  path: string;
+  kind: "tracked" | "untracked";
+  sha256?: string;
+  content?: string;
+  diff?: string;
+};
+type WholeChangeAcceptanceEvidenceV1 = {
+  contractType: "WholeChangeAcceptanceEvidenceV1";
+  contractVersion: "1.0";
+  predecessorTaskKeys: string[];
+  predecessorTaskIds: string[];
+  predecessorEvidence: Array<{
+    key: string;
+    id: string;
+    status: Status;
+    changedFiles: string[];
+    verificationEvidence: VerificationEvidence[];
+  }>;
+  aggregateChangedFiles: string[];
+  contentEvidence: WholeChangeContentEvidence[];
+  fingerprint: string;
+};
 const EXECUTOR_OUTCOME_CONTRACT_VERSION = 1 as const;
 const EXECUTOR_OUTCOME_MARKER = "ORCHESTRATOR_EXECUTOR_OUTCOME_V1";
 type ReviewSettings = {
@@ -917,6 +956,8 @@ type Task = ResolvedTask & {
   reviewWriteViolations?: string[];
   /** Exact Orchestrator-run verification evidence supplied to the read-only reviewer. */
   verificationEvidence?: VerificationEvidence[];
+  /** Closed predecessor handoff used only by WholeChangeAcceptanceV1 review. */
+  wholeChangeAcceptanceEvidence?: WholeChangeAcceptanceEvidenceV1;
   /** A subprocess is still responsible for this task even if an earlier phase succeeded. */
   executionPhase?: ExecutionPhase;
   attempts?: number;
@@ -2251,8 +2292,8 @@ export async function recoverPersistedRunForStartup(
     const run = await loadCanonicalRunRecordV1(file);
     const branch = await currentBranchIdentity(run.project.path);
     if (runRequiresReplayAuthorization(run)) {
-      assertStoredRunAuthorizations(run, branch);
-      await assertQueueRecoveryContracts(queueFromRun(run));
+      assertPersistedRunReplayContractsV1(run, branch);
+      await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
     }
     const hasLiveOwner = await reconcilePersistedRunOwner(run);
     reconcileRunState(run, hasLiveOwner);
@@ -2312,7 +2353,7 @@ export async function loadRun(id: string) {
   const run = await loadCanonicalRunRecordV1(file);
   const branch = await currentBranchIdentity(run.project.path);
   if (runRequiresReplayAuthorization(run))
-    assertStoredRunAuthorizations(run, branch);
+    assertPersistedRunReplayContractsV1(run, branch);
   const before = JSON.stringify(run);
   const hasLiveOwner = await reconcilePersistedRunOwner(run);
   reconcileRunState(run, hasLiveOwner);
@@ -2498,12 +2539,19 @@ export function outsideAllowedPaths(
   allowedPaths: string[] | undefined,
 ) {
   if (!allowedPaths?.length) return [];
-  const allowed = allowedPaths.map((path) =>
-    path.replace(/\\/g, "/").replace(/\/\*\*$/, "").replace(/\/$/, ""),
-  );
+  let allowed: string[];
+  try {
+    allowed = validateAllowedPathsV1(allowedPaths, "allowedPaths");
+  } catch {
+    return [...paths];
+  }
   return paths.filter(
     (path) =>
-      !allowed.some((root) => path === root || path.startsWith(`${root}/`)),
+      !allowed.some((scope) =>
+        scope.endsWith("/**")
+          ? path.startsWith(scope.slice(0, -2))
+          : path === scope,
+      ),
   );
 }
 
@@ -2513,6 +2561,14 @@ const QUEUE_AUTHORING_CONTRACT_V1 = Object.freeze({
 });
 const RECOVERY_TASK_BINDING_V1 = Object.freeze({
   contractType: "RecoveryTaskBindingV1" as const,
+  contractVersion: "1.0" as const,
+});
+const TASK_EXECUTION_KIND_V1 = Object.freeze({
+  contractType: "TaskExecutionKindV1" as const,
+  contractVersion: "1.0" as const,
+});
+const WHOLE_CHANGE_ACCEPTANCE_V1 = Object.freeze({
+  contractType: "WholeChangeAcceptanceV1" as const,
   contractVersion: "1.0" as const,
 });
 const RECOVERY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -2558,8 +2614,86 @@ function validateRecoveryTaskBindingV1(
   };
 }
 
+function validateTaskExecutionKindV1(
+  value: unknown,
+  field: string,
+): TaskExecutionKindV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${field} must be an exact TaskExecutionKindV1.`);
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 3 ||
+    candidate.contractType !== TASK_EXECUTION_KIND_V1.contractType ||
+    candidate.contractVersion !== TASK_EXECUTION_KIND_V1.contractVersion ||
+    (candidate.kind !== "ordinary" && candidate.kind !== "recovery")
+  ) throw new Error(`${field} must be an exact TaskExecutionKindV1 with kind ordinary or recovery.`);
+  return {
+    contractType: TASK_EXECUTION_KIND_V1.contractType,
+    contractVersion: TASK_EXECUTION_KIND_V1.contractVersion,
+    kind: candidate.kind,
+  };
+}
+
+function validateWholeChangeAcceptanceV1(
+  value: unknown,
+  field: string,
+): WholeChangeAcceptanceV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${field} must be an exact WholeChangeAcceptanceV1.`);
+  const candidate = value as Record<string, unknown>;
+  if (
+    Object.keys(candidate).length !== 3 ||
+    candidate.contractType !== WHOLE_CHANGE_ACCEPTANCE_V1.contractType ||
+    candidate.contractVersion !== WHOLE_CHANGE_ACCEPTANCE_V1.contractVersion ||
+    !Array.isArray(candidate.predecessorTaskKeys) ||
+    !candidate.predecessorTaskKeys.length ||
+    candidate.predecessorTaskKeys.some((key) =>
+      typeof key !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(key)
+    ) ||
+    new Set(candidate.predecessorTaskKeys).size !== candidate.predecessorTaskKeys.length
+  ) throw new Error(`${field} must name a non-empty ordered unique set of direct predecessor task keys.`);
+  return {
+    contractType: WHOLE_CHANGE_ACCEPTANCE_V1.contractType,
+    contractVersion: WHOLE_CHANGE_ACCEPTANCE_V1.contractVersion,
+    predecessorTaskKeys: [...candidate.predecessorTaskKeys],
+  };
+}
+
 function normalizeImpactPathV1(value: string) {
-  return value.trim().replace(/\\/g, "/");
+  return value;
+}
+
+/** One exact path, or a directory capability using the sole supported terminal glob `/**`. */
+export function normalizeAllowedPathScopeV1(value: unknown, field = "allowedPaths") {
+  if (typeof value !== "string" || !value)
+    throw new Error(`${field} entries must be normalized repository-relative paths or terminal directory capabilities ending in /**.`);
+  const candidate = value;
+  const capability = candidate.endsWith("/**");
+  const base = capability ? candidate.slice(0, -3) : candidate;
+  const segments = base.split("/");
+  if (
+    candidate.trim() !== candidate ||
+    candidate.includes("\\") ||
+    candidate.startsWith("/") ||
+    /^[A-Za-z]:\//.test(candidate) ||
+    candidate.includes("//") ||
+    !base ||
+    base.endsWith("/") ||
+    segments.some((segment) => !segment || segment === "." || segment === "..") ||
+    /[*?\[\]]/.test(base) ||
+    (!capability && /[*?\[\]]/.test(candidate)) ||
+    (capability && /[*?\[\]]/.test(candidate.slice(0, -3)))
+  ) throw new Error(`${field} entries support one normalized repository-relative path or exactly one terminal directory suffix /**; *, ?, [, and ] are otherwise rejected.`);
+  return candidate;
+}
+
+export function validateAllowedPathsV1(value: unknown, field = "allowedPaths") {
+  if (!Array.isArray(value))
+    throw new Error(`${field} must be a list of normalized repository-relative paths or terminal directory capabilities ending in **.`);
+  const normalized = value.map((entry) => normalizeAllowedPathScopeV1(entry, field));
+  if (new Set(normalized).size !== normalized.length)
+    throw new Error(`${field} must not contain duplicate normalized path scopes.`);
+  return normalized;
 }
 
 export function validateImpactPathsV1(
@@ -2579,18 +2713,8 @@ export function validateImpactPathsV1(
     normalized[category] = paths.map((path) => {
       if (typeof path !== "string")
         throw new Error(`${field} entries must be normalized non-empty relative paths.`);
-      const candidate = normalizeImpactPathV1(path);
-      const segments = candidate.split("/");
-      if (
-        !candidate ||
-        candidate !== path ||
-        candidate.startsWith("/") ||
-        /^[A-Za-z]:\//.test(candidate) ||
-        candidate.includes("//") ||
-        segments.some((segment) => segment === "." || segment === "..") ||
-        candidate.endsWith("/") ||
-        seenPaths.has(candidate)
-      )
+      const candidate = normalizeAllowedPathScopeV1(path, field);
+      if (seenPaths.has(candidate))
         throw new Error(`${field} entries must be unique normalized non-empty relative paths.`);
       seenPaths.add(candidate);
       return candidate;
@@ -2665,10 +2789,15 @@ function authorizationScope(
     | "impactPaths"
     | "runtimeConstraints"
     | "recovery"
+    | "executionKind"
+    | "wholeChangeAcceptance"
   >,
   project: ProjectSettings,
 ) {
   const preconditions = [...(task.preconditions ?? [])];
+  const allowedPaths = task.allowedPaths
+    ? validateAllowedPathsV1(task.allowedPaths, "Task allowedPaths")
+    : [];
   const externalReadRoots = task.externalReadRoots
     ? normalizeExternalReadRootsV1(
         task.externalReadRoots,
@@ -2681,7 +2810,6 @@ function authorizationScope(
         if (!isExactQueueAuthoringContractV1(task.authoringContract))
           throw new Error("Task authoringContract is not an exact QueueAuthoringContractV1 envelope.");
         const impactPaths = validateImpactPathsV1(task.impactPaths, "Task impactPaths");
-        const allowedPaths = task.allowedPaths ?? [];
         if (
           !allowedPaths.length ||
           new Set(allowedPaths).size !== allowedPaths.length ||
@@ -2707,13 +2835,17 @@ function authorizationScope(
                 ),
               }
             : {}),
+          executionKind: validateTaskExecutionKindV1(task.executionKind, "Task executionKind"),
         };
       })()
     : undefined;
   return {
-    allowedPaths: [...(task.allowedPaths ?? [])],
+    allowedPaths,
     ...(externalReadRoots ? { externalReadRoots } : {}),
     ...(authoringScope ?? {}),
+    ...(task.wholeChangeAcceptance
+      ? { wholeChangeAcceptance: validateWholeChangeAcceptanceV1(task.wholeChangeAcceptance, "Task wholeChangeAcceptance") }
+      : {}),
     ...(preconditions.length ? { preconditions } : {}),
     verificationCommands: [...new Set([...(project.verificationCommands ?? []), ...(task.verificationCommands ?? [])])],
   };
@@ -2764,10 +2896,64 @@ function exactLineEvidencePreflight(
       };
 }
 
+function exactAggregateAssertionPreflight(
+  task: Pick<TaskInput, "prompt" | "verificationCommands">,
+  project: ProjectSettings,
+) {
+  const requiresAssertion = [
+    /\bexact\s+(?:aggregate\s+)?totals?\b/i,
+    /\bexact\s+(?:aggregate\s+)?counts?\b/i,
+    /\b(?:total|sum|count)\b[^\r\n.]{0,100}\b(?:must|should|to)\s+equal\b/i,
+    /\b(?:total|sum|count)\b[^\r\n.]{0,100}\bequals?\b/i,
+    /\b(?:equal|agreement|match)\b[^\r\n.]{0,100}\b(?:across|between)\b[^\r\n.]{0,100}\b(?:artifacts?|files?)\b/i,
+  ].some((pattern) => pattern.test(task.prompt));
+  if (!requiresAssertion) return {
+    required: false,
+    ok: true,
+    detail: "No exact aggregate or cross-artifact assertion requirement detected.",
+  };
+  const namedArtifacts = [...new Set(
+    task.prompt
+      .split(/[\r\n]+/)
+      .filter((sentence) =>
+        /\b(?:exact\s+)?(?:aggregate\s+)?(?:total|sum|count)s?\b/i.test(sentence) &&
+        /\b(?:equal|equals|match|matches|agreement|same|across|between)\b/i.test(sentence)
+      )
+      .flatMap((sentence) =>
+        [...sentence.matchAll(/(?:^|[\s("'`])((?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]{1,12})(?=$|[\s,;:)."'`])/g)]
+          .map((match) => match[1])
+      ),
+  )];
+  const namedArtifactsAreBounded = namedArtifacts.length <= 16;
+  const commands = [
+    ...(project.verificationCommands ?? []),
+    ...(task.verificationCommands ?? []),
+  ];
+  const hasBoundMismatchAssertion = commands.some((command) =>
+    namedArtifacts.every((artifact) => command.includes(artifact)) &&
+    /\b(?:Get-Content|ReadAllText|readFile(?:Sync)?|Select-String)\b/i.test(command) &&
+    /\b(?:throw|exit\s+1|process\.exit\(1\)|assert\.)\b/i.test(command) &&
+    /(?:(?:^|[\s(])-(?:(?:c|i)?ne|not(?:like|match|contains|in))\b|!==?|\b(?:not\s+equal|mismatch|disagree)\b|\bassert\.(?:equal|strictEqual)\b)/i.test(command),
+  );
+  return namedArtifacts.length >= 2 && namedArtifactsAreBounded && hasBoundMismatchAssertion
+    ? {
+        required: true,
+        ok: true,
+        detail: "Exact aggregate claim has a named-artifact executable mismatch assertion.",
+      }
+    : {
+        required: true,
+        ok: false,
+        detail: "Exact aggregate or cross-artifact claims require one deterministic executable mismatch assertion that binds every named artifact and exits non-zero on disagreement.",
+      };
+}
+
 export function reviewerEvidencePreflight(
   task: Pick<TaskInput, "prompt" | "verificationCommands">,
   project: ProjectSettings,
 ) {
+  const exactAggregateAssertion = exactAggregateAssertionPreflight(task, project);
+  if (exactAggregateAssertion.required) return exactAggregateAssertion;
   const exactLineEvidence = exactLineEvidencePreflight(task, project);
   if (exactLineEvidence.required) return exactLineEvidence;
   const requiresContentInspection = [
@@ -3029,6 +3215,8 @@ function scopeFingerprint(scope: {
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
   recovery?: RecoveryTaskBindingV1;
+  executionKind?: TaskExecutionKindV1;
+  wholeChangeAcceptance?: WholeChangeAcceptanceV1;
   preconditions?: string[];
   verificationCommands: string[];
 }) {
@@ -3069,6 +3257,8 @@ function matchingApplyContract(
     impactPaths?: ImpactPathsV1;
     runtimeConstraints?: string[];
     recovery?: RecoveryTaskBindingV1;
+    executionKind?: TaskExecutionKindV1;
+    wholeChangeAcceptance?: WholeChangeAcceptanceV1;
     preconditions?: string[];
     verificationCommands: string[];
   },
@@ -3137,6 +3327,8 @@ export function authorizeTask(
     | "impactPaths"
     | "runtimeConstraints"
     | "recovery"
+    | "executionKind"
+    | "wholeChangeAcceptance"
   > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
@@ -3199,6 +3391,8 @@ export function replayTaskAuthorization(
     | "impactPaths"
     | "runtimeConstraints"
     | "recovery"
+    | "executionKind"
+    | "wholeChangeAcceptance"
   > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
@@ -3222,6 +3416,8 @@ export function verifyStoredTaskAuthorization(
     | "impactPaths"
     | "runtimeConstraints"
     | "recovery"
+    | "executionKind"
+    | "wholeChangeAcceptance"
   > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
@@ -3252,6 +3448,8 @@ type ProviderRuntimeTaskV1 = Pick<
   | "impactPaths"
   | "runtimeConstraints"
   | "recovery"
+  | "executionKind"
+  | "wholeChangeAcceptance"
   | "verificationCommands"
   | "model"
   | "requestedModel"
@@ -3571,6 +3769,10 @@ export function validateQueue(value: unknown): {
         throw new Error("project.approvedApplyContracts entries must declare one exact reversible local apply scope.");
       if (approvalIds.has(contract.approvalId))
         throw new Error("project.approvedApplyContracts approvalId values must be unique.");
+      const allowedPaths = validateAllowedPathsV1(
+        contract.allowedPaths,
+        `project.approvedApplyContracts ${contract.approvalId} allowedPaths`,
+      );
       assertWindowsPytestVerificationCommands(
         contract.preconditions,
         `project.approvedApplyContracts ${contract.approvalId} preconditions`,
@@ -3604,6 +3806,7 @@ export function validateQueue(value: unknown): {
       }
       approvedApplyContracts.push({
         ...contract,
+        allowedPaths,
         ...(externalReadRoots ? { externalReadRoots } : {}),
         ...(impactPaths ? { impactPaths } : {}),
       });
@@ -3815,6 +4018,9 @@ export function validateQueue(value: unknown): {
       if (authorization.approvalId !== undefined && (typeof authorization.approvalId !== "string" || !authorization.approvalId.trim()))
         throw new Error(`Task ${index + 1}: authorization.approvalId must be a non-empty string.`);
     }
+    const allowedPaths = task.allowedPaths === undefined
+      ? undefined
+      : validateAllowedPathsV1(task.allowedPaths, `Task ${index + 1} allowedPaths`);
     const combinedVerificationCommands = [
       ...(project.verificationCommands ?? []),
       ...(task.verificationCommands ?? []),
@@ -3829,7 +4035,8 @@ export function validateQueue(value: unknown): {
       );
     const hasAuthoringFields = task.impactPaths !== undefined ||
       task.runtimeConstraints !== undefined ||
-      task.recovery !== undefined;
+      task.recovery !== undefined ||
+      task.executionKind !== undefined;
     if (hasAuthoringFields && task.authoringContract === undefined)
       throw new Error(
         `Task ${index + 1}: impactPaths, runtimeConstraints, and recovery require QueueAuthoringContractV1 opt-in.`,
@@ -3837,6 +4044,8 @@ export function validateQueue(value: unknown): {
     let impactPaths: ImpactPathsV1 | undefined;
     let runtimeConstraints: string[] | undefined;
     let recovery: RecoveryTaskBindingV1 | undefined;
+    let executionKind: TaskExecutionKindV1 | undefined;
+    let wholeChangeAcceptance: WholeChangeAcceptanceV1 | undefined;
     const externalReadRoots = task.externalReadRoots
       ? normalizeExternalReadRootsV1(
           task.externalReadRoots,
@@ -3856,14 +4065,6 @@ export function validateQueue(value: unknown): {
         throw new Error(`Task ${index + 1}: QueueAuthoringContractV1 requires an enabled reversible apply authorization.`);
       if (!task.allowedPaths?.length)
         throw new Error(`Task ${index + 1}: QueueAuthoringContractV1 requires non-empty allowedPaths.`);
-      const normalizedAllowedPaths = task.allowedPaths.map((path) =>
-        normalizeImpactPathV1(path)
-      );
-      if (
-        new Set(normalizedAllowedPaths).size !== normalizedAllowedPaths.length ||
-        normalizedAllowedPaths.some((path, pathIndex) => path !== task.allowedPaths![pathIndex])
-      )
-        throw new Error(`Task ${index + 1}: QueueAuthoringContractV1 allowedPaths must be unique normalized paths.`);
       impactPaths = validateImpactPathsV1(
         task.impactPaths,
         `Task ${index + 1} impactPaths`,
@@ -3886,7 +4087,20 @@ export function validateQueue(value: unknown): {
           task.recovery,
           `Task ${index + 1} recovery`,
         );
+      executionKind = validateTaskExecutionKindV1(
+        task.executionKind,
+        `Task ${index + 1} executionKind`,
+      );
+      if (executionKind.kind === "ordinary" && recovery)
+        throw new Error(`Task ${index + 1}: ordinary TaskExecutionKindV1 rejects a recovery binding.`);
+      if (executionKind.kind === "recovery" && !recovery)
+        throw new Error(`Task ${index + 1}: recovery TaskExecutionKindV1 requires one exact RecoveryTaskBindingV1.`);
     }
+    if (task.wholeChangeAcceptance !== undefined)
+      wholeChangeAcceptance = validateWholeChangeAcceptanceV1(
+        task.wholeChangeAcceptance,
+        `Task ${index + 1} wholeChangeAcceptance`,
+      );
     const workspace = task.workspace;
     if (workspace !== undefined) {
       const identifiers = [
@@ -3979,7 +4193,7 @@ export function validateQueue(value: unknown): {
       model,
       minModel: task.minModel,
       effort,
-      allowedPaths: task.allowedPaths,
+      allowedPaths,
       externalReadRoots,
       authoringContract: task.authoringContract
         ? { ...QUEUE_AUTHORING_CONTRACT_V1 }
@@ -3987,6 +4201,8 @@ export function validateQueue(value: unknown): {
       impactPaths,
       runtimeConstraints,
       recovery,
+      executionKind,
+      wholeChangeAcceptance,
       preconditions: task.preconditions?.map((command) =>
         normalizeWindowsNpmCommand(command)
       ),
@@ -4035,6 +4251,45 @@ export function validateQueue(value: unknown): {
   const tasksByKey = new Map(
     tasks.flatMap((task) => task.key ? [[task.key, task] as const] : []),
   );
+  const acceptanceTasks = tasks.flatMap((task, index) =>
+    task.wholeChangeAcceptance ? [[task, index] as const] : [],
+  );
+  if (acceptanceTasks.length > 1)
+    throw new Error("WholeChangeAcceptanceV1 must appear exactly once when declared.");
+  acceptanceTasks.forEach(([task, index]) => {
+    const acceptance = task.wholeChangeAcceptance!;
+    if (!task.key)
+      throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 requires a task key.`);
+    if (
+      task.allowedPaths?.length !== 0 ||
+      !task.authorization?.enabled ||
+      task.authorization.intent !== "review" ||
+      task.authorization.technicalPermission !== "read_only" ||
+      task.authorization.sideEffectRisk !== "none"
+    ) throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 requires an enabled read-only review task with allowedPaths: [].`);
+    if (JSON.stringify(task.dependsOn ?? []) !== JSON.stringify(acceptance.predecessorTaskKeys))
+      throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 predecessorTaskKeys must exactly match ordered direct dependsOn entries.`);
+    if (index !== tasks.length - 1)
+      throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 must be the final queue task.`);
+    const missingWriters = tasks
+      .filter((candidate) => (candidate.allowedPaths?.length ?? 0) > 0)
+      .filter((candidate) => !candidate.key || !acceptance.predecessorTaskKeys.includes(candidate.key));
+    if (missingWriters.length)
+      throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 must cover every non-empty allowedPaths write task.`);
+    const isAncestor = (candidateKey: string, descendantKey: string, seen = new Set<string>()): boolean => {
+      if (seen.has(descendantKey)) return false;
+      seen.add(descendantKey);
+      const direct = dependencies.get(descendantKey) ?? [];
+      return direct.includes(candidateKey) || direct.some((key) => isAncestor(candidateKey, key, seen));
+    };
+    const nonAncestors = tasks
+      .filter((candidate) => (candidate.allowedPaths?.length ?? 0) > 0)
+      .filter((candidate) => !candidate.key || !isAncestor(candidate.key, task.key!));
+    if (nonAncestors.length)
+      throw new Error(`Task ${index + 1}: every covered writer must be an ancestor in the declared dependency graph.`);
+    if (tasks.some((candidate) => candidate.dependsOn?.includes(task.key!)))
+      throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 must be a terminal dependency sink.`);
+  });
   tasks.forEach((task, index) => {
     if (!task.requiresCheckpointsFrom?.length) return;
     if (!task.key)
@@ -4360,11 +4615,16 @@ async function taskOwnedFilesContainReplacementCharacter(
 }
 
 function pathsOverlap(left: string, right: string) {
-  return (
-    left === right ||
-    left.startsWith(`${right}/`) ||
-    right.startsWith(`${left}/`)
-  );
+  const leftDirectory = left.endsWith("/**");
+  const rightDirectory = right.endsWith("/**");
+  const leftRoot = leftDirectory ? left.slice(0, -2) : left;
+  const rightRoot = rightDirectory ? right.slice(0, -2) : right;
+  if (!leftDirectory && !rightDirectory) return left === right;
+  if (leftDirectory && rightDirectory)
+    return leftRoot.startsWith(rightRoot) || rightRoot.startsWith(leftRoot);
+  return leftDirectory
+    ? right === leftRoot.slice(0, -1) || right.startsWith(leftRoot)
+    : left === rightRoot.slice(0, -1) || left.startsWith(rightRoot);
 }
 
 export function tasksConflict(left: Task, right: Task) {
@@ -4372,9 +4632,15 @@ export function tasksConflict(left: Task, right: Task) {
   if ((right.resources ?? []).some((resource) => leftResources.has(resource)))
     return true;
   if (!left.allowedPaths?.length || !right.allowedPaths?.length) return true;
-  return left.allowedPaths.some((leftPath) =>
-    right.allowedPaths!.some((rightPath) => pathsOverlap(leftPath, rightPath)),
-  );
+  try {
+    const leftPaths = validateAllowedPathsV1(left.allowedPaths, "left allowedPaths");
+    const rightPaths = validateAllowedPathsV1(right.allowedPaths, "right allowedPaths");
+    return leftPaths.some((leftPath) =>
+      rightPaths.some((rightPath) => pathsOverlap(leftPath, rightPath)),
+    );
+  } catch {
+    return true;
+  }
 }
 
 export function blockTasksWithFailedDependencies(tasks: Task[]) {
@@ -4617,7 +4883,13 @@ export function assertPipelineLaunchAuthorized(pipeline: LoadedPipeline) {
 
 async function persistedRecoverySourceTaskV1(
   binding: RecoveryTaskBindingV1,
+  lineage = new Set<string>(),
 ) {
+  const lineageIdentity = `${binding.sourceRunId}/${binding.sourceTaskId}`;
+  if (lineage.has(lineageIdentity))
+    throw new Error("RECOVERY_SOURCE_LINEAGE_CYCLIC");
+  const nextLineage = new Set(lineage);
+  nextLineage.add(lineageIdentity);
   const file = join(runsDirectory, binding.sourceRunId, "run.json");
   if (!existsSync(file)) throw new Error("RECOVERY_SOURCE_RUN_MISSING");
   let source: Run;
@@ -4638,6 +4910,19 @@ async function persistedRecoverySourceTaskV1(
         : "RECOVERY_SOURCE_TASK_AMBIGUOUS",
     );
   const sourceTask = matchingTasks[0];
+  try {
+    rebuildPersistedQueueForReplayV1(source);
+  } catch {
+    throw new Error("RECOVERY_SOURCE_TOPOLOGY_INVALID");
+  }
+  if (![
+    "failed", "timed_out", "cancelled",
+  ].includes(source.status))
+    throw new Error("RECOVERY_SOURCE_RUN_NOT_TERMINAL_NON_SUCCESSFUL");
+  if (![
+    "failed", "timed_out", "cancelled", "skipped", "blocked",
+  ].includes(sourceTask.status))
+    throw new Error("RECOVERY_SOURCE_TASK_NOT_TERMINAL_NON_SUCCESSFUL");
   if (!isExactQueueAuthoringContractV1(sourceTask.authoringContract))
     throw new Error("RECOVERY_SOURCE_AUTHORING_EVIDENCE_MISSING");
   const sourceImpactPaths = validateImpactPathsV1(
@@ -4658,11 +4943,29 @@ async function persistedRecoverySourceTaskV1(
   );
   if (JSON.stringify(sourceConstraints) !== JSON.stringify(sourceTask.runtimeConstraints))
     throw new Error("RECOVERY_SOURCE_RUNTIME_EVIDENCE_NOT_NORMALIZED");
+  const sourceExecutionKind = validateTaskExecutionKindV1(
+    sourceTask.executionKind,
+    "persisted source executionKind",
+  );
+  if (sourceExecutionKind.kind === "recovery") {
+    if (!sourceTask.recovery)
+      throw new Error("RECOVERY_SOURCE_EXECUTION_KIND_INVALID");
+    const upstream = await persistedRecoverySourceTaskV1(
+      validateRecoveryTaskBindingV1(sourceTask.recovery, "persisted source recovery"),
+      nextLineage,
+    );
+    const missingUpstreamConstraints = upstream.sourceConstraints.filter(
+      (constraint) => !new Set(sourceConstraints).has(constraint),
+    );
+    if (missingUpstreamConstraints.length)
+      throw new Error("RECOVERY_SOURCE_RUNTIME_CONSTRAINTS_NARROWED");
+  }
   const evidence = sourceTask.authorizationEvidence;
   if (
     !evidence?.enabled ||
     evidence.decision !== "authorized" ||
     !evidence.authoringContract ||
+    JSON.stringify(evidence.executionKind) !== JSON.stringify(sourceExecutionKind) ||
     JSON.stringify(evidence.runtimeConstraints) !== JSON.stringify(sourceConstraints) ||
     !verifyStoredTaskAuthorization(
       evidence,
@@ -4823,6 +5126,8 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       impactPaths: task.impactPaths,
       runtimeConstraints: task.runtimeConstraints,
       recovery: task.recovery,
+      executionKind: task.executionKind,
+      wholeChangeAcceptance: task.wholeChangeAcceptance,
       preconditions: task.preconditions,
       verificationMode: task.verificationMode,
       verificationCommands: task.verificationCommands,
@@ -4840,6 +5145,22 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       modelSelectionReason: task.modelSelectionReason,
     })),
   };
+}
+
+/** Rebuild persisted task structure before any replay can reuse executor authority. */
+export function rebuildPersistedQueueForReplayV1(run: Run): ReturnType<typeof validateQueue> {
+  try {
+    return validateQueue(queueFromRun(run));
+  } catch (error) {
+    throw new Error(
+      `PERSISTED_RUN_STRUCTURE_INVALID: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function assertPersistedRunReplayContractsV1(run: Run, branch?: string) {
+  assertStoredRunAuthorizations(run, branch);
+  return rebuildPersistedQueueForReplayV1(run);
 }
 
 type AppendReadinessState = {
@@ -5053,8 +5374,8 @@ async function removePipelineQueue(index: number) {
 }
 
 export function recoverRun(run: Run, branch?: string) {
+  assertPersistedRunReplayContractsV1(run, branch);
   normalizeProviderRuntimePersistenceV1(run);
-  assertStoredRunAuthorizations(run, branch);
   if (
     (run.status === "cancelled" || run.status === "paused" || run.status === "idle") &&
     !run.tasks.some(taskOwnsExecution)
@@ -5113,6 +5434,7 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     reviewStatus: undefined,
     reviewOutput: undefined,
     reviewWriteViolations: undefined,
+    wholeChangeAcceptanceEvidence: undefined,
     attempts: undefined,
     executionAttempts: undefined,
     checkpoint: undefined,
@@ -5145,7 +5467,7 @@ function dependentTaskKeys(tasks: Task[], rootKey?: string) {
 }
 
 export function retryRun(source: Run, task: Task, branch?: string): Run {
-  assertStoredRunAuthorizations(source, branch);
+  assertPersistedRunReplayContractsV1(source, branch);
   const retryKeys = dependentTaskKeys(source.tasks, task.key);
   return {
     id: identifier(),
@@ -5155,6 +5477,7 @@ export function retryRun(source: Run, task: Task, branch?: string): Run {
     limits: source.limits ?? defaultLimits,
     git: source.git ?? defaultGitSettings,
     tasks: source.tasks.map((candidate) =>
+      Boolean(candidate.wholeChangeAcceptance) ||
       candidate.id === task.id || (candidate.key && retryKeys.has(candidate.key))
         ? resetTaskForRun(candidate, source.id)
         : {
@@ -5169,10 +5492,10 @@ export function retryRun(source: Run, task: Task, branch?: string): Run {
 }
 
 export function resumeRun(source: Run, branch?: string): Run | undefined {
-  assertStoredRunAuthorizations(source, branch);
+  assertPersistedRunReplayContractsV1(source, branch);
   if (source.tasks.every((task) => task.status === "completed")) return undefined;
   const remaining = source.tasks
-    .map((task) => task.status === "completed" ? {
+    .map((task) => task.status === "completed" && !task.wholeChangeAcceptance ? {
       ...task,
       id: identifier(),
       providerRuntimeState: task.providerRuntimeState
@@ -5196,6 +5519,7 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
       reviewStatus: undefined,
       reviewOutput: undefined,
       reviewWriteViolations: undefined,
+      wholeChangeAcceptanceEvidence: undefined,
       attempts: undefined,
       executionAttempts: undefined,
       checkpoint: undefined,
@@ -6945,17 +7269,153 @@ function spawnCodexWithPrompt(
   return child;
 }
 
+const WHOLE_CHANGE_MAX_FILES = 64;
+const WHOLE_CHANGE_MAX_FILE_BYTES = 16_384;
+const WHOLE_CHANGE_MAX_TOTAL_BYTES = 98_304;
+
+function wholeChangeAcceptanceIssue(
+  run: Run,
+  task: Task,
+): string | undefined {
+  const acceptance = task.wholeChangeAcceptance;
+  if (!acceptance) return undefined;
+  const evidence = task.wholeChangeAcceptanceEvidence;
+  if (!evidence || evidence.contractType !== "WholeChangeAcceptanceEvidenceV1" || evidence.contractVersion !== "1.0")
+    return "Whole-change acceptance evidence is missing.";
+  if (JSON.stringify(evidence.predecessorTaskKeys) !== JSON.stringify(acceptance.predecessorTaskKeys))
+    return "Whole-change acceptance predecessor evidence changed or was reordered.";
+  const predecessors = acceptance.predecessorTaskKeys.map((key) =>
+    run.tasks.filter((candidate) => candidate.key === key),
+  );
+  if (predecessors.some((matches) => matches.length !== 1))
+    return "Whole-change acceptance predecessor evidence is ambiguous or missing.";
+  const expected = predecessors.map((matches) => matches[0]);
+  if (JSON.stringify(evidence.predecessorTaskIds) !== JSON.stringify(expected.map((candidate) => candidate.id)))
+    return "Whole-change acceptance predecessor task IDs changed or were reordered.";
+  const expectedEvidence = expected.map((candidate) => ({
+    key: candidate.key!,
+    id: candidate.id,
+    status: candidate.status,
+    changedFiles: candidate.changedFiles ?? [],
+    verificationEvidence: candidate.verificationEvidence ?? [],
+  }));
+  if (JSON.stringify(evidence.predecessorEvidence) !== JSON.stringify(expectedEvidence))
+    return "Whole-change acceptance predecessor evidence changed, is incomplete, or was reordered.";
+  if (evidence.aggregateChangedFiles.length > WHOLE_CHANGE_MAX_FILES)
+    return "Whole-change acceptance aggregate change set is oversized.";
+  const expectedAggregate = [...new Set(expected.flatMap((candidate) => candidate.changedFiles ?? []))].sort();
+  if (JSON.stringify(evidence.aggregateChangedFiles) !== JSON.stringify(expectedAggregate))
+    return "Whole-change acceptance aggregate change set changed or is incomplete.";
+  const fingerprint = createHash("sha256").update(JSON.stringify({
+    predecessorTaskKeys: evidence.predecessorTaskKeys,
+    predecessorTaskIds: evidence.predecessorTaskIds,
+    predecessorEvidence: evidence.predecessorEvidence,
+    aggregateChangedFiles: evidence.aggregateChangedFiles,
+    contentEvidence: evidence.contentEvidence,
+  })).digest("hex");
+  if (fingerprint !== evidence.fingerprint)
+    return "Whole-change acceptance evidence fingerprint is invalid.";
+  return undefined;
+}
+
+export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task) {
+  const acceptance = task.wholeChangeAcceptance;
+  if (!acceptance) return undefined;
+  const predecessors = acceptance.predecessorTaskKeys.map((key) =>
+    run.tasks.filter((candidate) => candidate.key === key),
+  );
+  if (predecessors.some((matches) => matches.length !== 1))
+    throw new Error("WHOLE_CHANGE_ACCEPTANCE_PREDECESSOR_AMBIGUOUS_OR_MISSING");
+  const expected = predecessors.map((matches) => matches[0]);
+  for (const predecessor of expected) {
+    if (predecessor.status !== "completed" || predecessor.reviewStatus !== "approved")
+      throw new Error("WHOLE_CHANGE_ACCEPTANCE_PREDECESSOR_NOT_TERMINAL_APPROVED");
+    if (requiredVerificationEvidenceIssue(predecessor))
+      throw new Error("WHOLE_CHANGE_ACCEPTANCE_PREDECESSOR_VERIFICATION_INVALID");
+  }
+  const predecessorEvidence = expected.map((predecessor) => ({
+    key: predecessor.key!,
+    id: predecessor.id,
+    status: predecessor.status,
+    changedFiles: [...(predecessor.changedFiles ?? [])],
+    verificationEvidence: structuredClone(predecessor.verificationEvidence ?? []),
+  }));
+  const aggregateChangedFiles = [...new Set(
+    predecessorEvidence.flatMap((predecessor) => predecessor.changedFiles),
+  )].sort();
+  if (
+    aggregateChangedFiles.length > WHOLE_CHANGE_MAX_FILES ||
+    aggregateChangedFiles.some((path) => path.startsWith("<git-") || normalizeAllowedPathScopeV1(path, "Whole-change changedFiles") !== path)
+  ) throw new Error("WHOLE_CHANGE_ACCEPTANCE_AGGREGATE_INVALID_OR_OVERSIZED");
+  let remaining = WHOLE_CHANGE_MAX_TOTAL_BYTES;
+  const contentEvidence: WholeChangeContentEvidence[] = [];
+  for (const path of aggregateChangedFiles) {
+    const tracked = await runGit(run.project.path, ["ls-files", "--error-unmatch", "--", path]);
+    const kind: WholeChangeContentEvidence["kind"] = tracked.code === 0 ? "tracked" : "untracked";
+    const absolute = resolve(run.project.path, path);
+    const root = `${resolve(run.project.path)}${process.platform === "win32" ? "\\" : "/"}`;
+    if (!absolute.startsWith(root)) throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_PATH_INVALID");
+    try {
+      const content = await readFile(absolute);
+      if (content.length > WHOLE_CHANGE_MAX_FILE_BYTES || content.length > remaining)
+        throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED");
+      remaining -= content.length;
+      contentEvidence.push({
+        path,
+        kind,
+        sha256: createHash("sha256").update(content).digest("hex"),
+        content: content.toString("utf8"),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED") throw error;
+      if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_UNTRACKED_CONTENT_MISSING");
+      const diff = await readGitDiff(run.project.path, [path]);
+      if (!diff || Buffer.byteLength(diff, "utf8") > remaining)
+        throw new Error("WHOLE_CHANGE_ACCEPTANCE_TRACKED_CONTENT_MISSING_OR_OVERSIZED");
+      remaining -= Buffer.byteLength(diff, "utf8");
+      contentEvidence.push({ path, kind, diff });
+    }
+  }
+  const closed = {
+    contractType: "WholeChangeAcceptanceEvidenceV1" as const,
+    contractVersion: "1.0" as const,
+    predecessorTaskKeys: [...acceptance.predecessorTaskKeys],
+    predecessorTaskIds: expected.map((predecessor) => predecessor.id),
+    predecessorEvidence,
+    aggregateChangedFiles,
+    contentEvidence,
+  };
+  const evidence: WholeChangeAcceptanceEvidenceV1 = {
+    ...closed,
+    fingerprint: createHash("sha256").update(JSON.stringify(closed)).digest("hex"),
+  };
+  if (task.wholeChangeAcceptanceEvidence) {
+    if (
+      wholeChangeAcceptanceIssue(run, task) ||
+      JSON.stringify(task.wholeChangeAcceptanceEvidence) !== JSON.stringify(evidence)
+    ) throw new Error("WHOLE_CHANGE_ACCEPTANCE_PERSISTED_EVIDENCE_CHANGED");
+  } else task.wholeChangeAcceptanceEvidence = evidence;
+  return task.wholeChangeAcceptanceEvidence;
+}
+
 export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
   const verificationPolicy =
     task.authorizationEvidence ?? authorizeTask(task, project);
   const verificationCommands = orchestratorVerificationCommands(
     verificationPolicy,
   ).map((command) => normalizeWindowsNpmCommand(command));
-  const changedFiles = task.changedFiles ?? [];
+  const acceptanceEvidence = task.wholeChangeAcceptanceEvidence;
+  const changedFiles = acceptanceEvidence?.aggregateChangedFiles ?? task.changedFiles ?? [];
   const taskChangeSet = changedFiles.length
     ? changedFiles.map((path) => `- ${path}`).join("\n")
     : "- (no task-owned file changes detected)";
-  const taskDiff = task.diff?.trim() ||
+  const taskDiff = acceptanceEvidence
+    ? acceptanceEvidence.contentEvidence.map((item) => [
+      `PATH: ${item.path} (${item.kind})`,
+      item.sha256 ? `SHA256: ${item.sha256}` : "",
+      item.content !== undefined ? item.content : item.diff ?? "(content unavailable)",
+    ].filter(Boolean).join("\n")).join("\n\n")
+    : task.diff?.trim() ||
     "(No tracked diff is available. Inspect only the exact task-change paths listed above; a listed path may be newly untracked.)";
   const authorizedIntent = task.authorizationEvidence?.intent;
   const effectiveAllowedPaths =
@@ -7002,7 +7462,9 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
         ].join("\n")
       : "No verification commands are configured; do not invent substitute commands.";
   return [
-    "Review only the authoritative task change set below. Do not edit files.",
+    acceptanceEvidence
+      ? "Review only the authoritative whole-change acceptance handoff below. Do not edit files."
+      : "Review only the authoritative task change set below. Do not edit files.",
     "",
     `Task: ${task.title}`,
     `Scope: ${task.prompt}`,
@@ -7010,8 +7472,12 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
     "Task change set (authoritative):",
     taskChangeSet,
     "",
-    "Task-scoped tracked diff:",
+    acceptanceEvidence ? "Whole-change bounded content evidence:" : "Task-scoped tracked diff:",
     taskDiff,
+    ...(acceptanceEvidence ? [
+      "",
+      `Whole-change predecessor task IDs (ordered): ${acceptanceEvidence.predecessorTaskIds.join(", ")}`,
+    ] : []),
     "",
     "Executor result (authoritative task outcome):",
     executorResult,
@@ -7037,7 +7503,7 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
 }
 
 export function requiredVerificationEvidenceIssue(
-  task: Pick<Task, "verificationMode" | "verificationEvidence" | "authorizationEvidence">,
+  task: Pick<Task, "verificationMode" | "verificationEvidence" | "authorizationEvidence" | "finalOutput">,
 ) {
   if (task.verificationMode === "advisory") return undefined;
   const commands = task.authorizationEvidence
@@ -7047,6 +7513,10 @@ export function requiredVerificationEvidenceIssue(
     : [];
   if (!commands.length) return undefined;
   const evidence = task.verificationEvidence ?? [];
+  if (
+    /\b(?:verification|checks?|tests?)\b[^\r\n.]{0,80}\b(?:passed|succeeded|complete(?:d)?)\b/i.test(task.finalOutput ?? "") &&
+    evidence.length === 0
+  ) return "Executor claimed verification success before an Orchestrator receipt existed.";
   if (evidence.length !== commands.length)
     return "Required Orchestrator verification evidence is missing or incomplete.";
   for (let index = 0; index < commands.length; index += 1) {
@@ -7062,6 +7532,20 @@ export function requiredVerificationEvidenceIssue(
 }
 
 async function reviewTask(run: Run, task: Task) {
+  if (task.wholeChangeAcceptance) {
+    try {
+      await prepareWholeChangeAcceptanceEvidence(run, task);
+      const issue = wholeChangeAcceptanceIssue(run, task);
+      if (issue) throw new Error(issue);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "WHOLE_CHANGE_ACCEPTANCE_EVIDENCE_INVALID";
+      task.reviewStatus = "changes_requested";
+      task.reviewOutput = `VERDICT: CHANGES_REQUESTED\n\n${detail}`;
+      task.log.push(detail);
+      await persist(run);
+      return;
+    }
+  }
   const verificationIssue = requiredVerificationEvidenceIssue(task);
   if (verificationIssue) {
     task.reviewStatus = "changes_requested";
@@ -7070,6 +7554,12 @@ async function reviewTask(run: Run, task: Task) {
     return;
   }
   if (!run.review.enabled) {
+    if (task.wholeChangeAcceptance) {
+      task.reviewStatus = "changes_requested";
+      task.reviewOutput = "VERDICT: CHANGES_REQUESTED\n\nWhole-change acceptance requires independent reviewer approval.";
+      task.log.push("Whole-change acceptance requires independent reviewer approval.");
+      return;
+    }
     task.reviewStatus = "approved";
     task.log.push("Reviewer отключён в настройках");
     return;
@@ -7182,6 +7672,18 @@ async function reviewTask(run: Run, task: Task) {
     task.log.push(assessment.reason);
   }
   task.reviewStatus = assessment.status;
+  if (task.reviewStatus === "approved" && task.wholeChangeAcceptance) {
+    try {
+      await prepareWholeChangeAcceptanceEvidence(run, task);
+      const issue = wholeChangeAcceptanceIssue(run, task);
+      if (issue) throw new Error(issue);
+    } catch (error) {
+      task.reviewStatus = "changes_requested";
+      const detail = error instanceof Error ? error.message : "WHOLE_CHANGE_ACCEPTANCE_EVIDENCE_INVALID";
+      task.reviewOutput = `VERDICT: CHANGES_REQUESTED\n\nWhole-change acceptance approval prevented: ${detail}`;
+      task.log.push(`Whole-change acceptance approval prevented: ${detail}`);
+    }
+  }
   if (task.reviewStatus !== "approved") task.log.push(assessment.reason);
   if (diagnostics) task.log.push(`Reviewer diagnostics:\n${diagnostics}`);
   const reviewCurrent = await readWorkspaceSnapshot(executionPath);
@@ -7493,6 +7995,10 @@ export async function finalizeSettledTask(run: Run, task: Task) {
 
 async function executeTask(run: Run, task: Task): Promise<Status> {
     const branch = await currentBranchIdentity(run.project.path);
+    // Re-fence durable topology and recovery lineage after the branch read and
+    // immediately before this task can receive executor authority.
+    await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
+    assertPersistedRunReplayContractsV1(run, branch);
     const declaredVerification = [
       ...(run.project.verificationCommands ?? []),
       ...(task.verificationCommands ?? []),
@@ -7816,12 +8322,15 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
 }
 
 export async function executeQueue(run: Run) {
+  const replayQueue = rebuildPersistedQueueForReplayV1(run);
+  await assertQueueRecoveryContracts(replayQueue);
   const branch = await currentBranchIdentity(run.project.path);
+  await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
   for (const task of run.tasks) {
     if (!task.authorization?.enabled || task.authorizationEvidence) continue;
     task.authorizationEvidence = authorizeTask(task, run.project, branch);
   }
-  assertStoredRunAuthorizations(run, branch);
+  assertPersistedRunReplayContractsV1(run, branch);
   run.status = "running";
   run.startedAt ??= timestamp();
   run.pausedAt = undefined;
@@ -9750,7 +10259,7 @@ app.post("/api/runs/:runId/tasks/:taskId/retry", async (request, response) => {
   if (!source || !task)
     return response.status(404).json({ error: "Task not found." });
   try {
-    await assertQueueRecoveryContracts(queueFromRun(source));
+    await assertQueueRecoveryContracts(assertPersistedRunReplayContractsV1(source));
   } catch (error) {
     return response.status(409).json({
       error: error instanceof Error ? error.message : "Recovery evidence is invalid.",
@@ -9778,7 +10287,7 @@ app.post("/api/runs/:id/resume", async (request, response) => {
   const source = await loadRun(request.params.id);
   if (!source) return response.status(404).json({ error: "Run not found." });
   try {
-    await assertQueueRecoveryContracts(queueFromRun(source));
+    await assertQueueRecoveryContracts(assertPersistedRunReplayContractsV1(source));
   } catch (error) {
     return response.status(409).json({
       error: error instanceof Error ? error.message : "Recovery evidence is invalid.",

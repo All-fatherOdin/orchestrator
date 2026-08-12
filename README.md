@@ -511,6 +511,13 @@ the executor, verification runner, or reviewer, so PowerShell execution policy
 cannot select a blocked `npm.ps1`. Process output and reviewer evidence are
 decoded as streaming UTF-8; a rendered `�` is not a blocking finding unless
 direct UTF-8 inspection proves an actual U+FFFD in task-owned source evidence.
+Prompts that explicitly claim an exact aggregate total or equality across two
+or more named artifacts require one separate deterministic mismatch assertion:
+its command must bind every named artifact, read them, and exit non-zero on
+disagreement. A hash, a content reader, a successful producer command, prose,
+or a filename containing `assert`, `total`, `equal`, or `cross` is not proof.
+Use a bounded inline assertion; its ordered exit evidence is persisted for
+review.
 
 Windows command strings have an explicit shell boundary. A command beginning
 with `&` (or otherwise containing PowerShell syntax) runs under PowerShell;
@@ -587,6 +594,17 @@ authoringContract:
   contractVersion: "1.0"
 ```
 
+Every opted-in authoring task explicitly declares its execution kind; ordinary
+tasks cannot carry recovery evidence, and recovery tasks require one exact
+binding:
+
+```yaml
+executionKind:
+  contractType: TaskExecutionKindV1
+  contractVersion: "1.0"
+  kind: ordinary # or recovery, with RecoveryTaskBindingV1 below
+```
+
 An opted-in task must declare a non-empty ordered `impactPaths` map and a
 non-empty `runtimeConstraints` list. Paths use normalized repository-relative
 forward-slash form, categories and path order are significant, and every
@@ -597,17 +615,43 @@ authorization evidence and persisted task snapshot. The impact map is evidence,
 not write authority: additional map entries never expand `allowedPaths`.
 
 Recovery is optional and explicit. Task-level `RecoveryTaskBindingV1` contains
-exactly one persisted `sourceRunId` and `sourceTaskId`. Before preflight
-admission and again immediately before a run or project lock can be created,
-Orchestrator reads that source
-task from the existing `.orchestrator/runs/<run-id>/run.json` store. Its
-authorization evidence must still reproduce the persisted task, and the new
-task's normalized runtime constraints must be a superset of the source list.
-Missing runs or tasks, duplicate task IDs, malformed identities, narrowed
-constraints, and changed authorization evidence fail closed. No path,
-constraint, or recovery identity is discovered from prompts, execution guards,
-or documentation. Queues and historical run records without the v1 envelope
-remain readable and retain legacy behavior.
+exactly one persisted `sourceRunId` and `sourceTaskId`. Its source may itself
+be a failed authenticated recovery task. Before preflight admission, after
+asynchronous preflight boundaries, and again immediately before executor
+authority or a project lock, Orchestrator reconstructs the persisted queue,
+revalidates its schema/topology/execution-kind and authorization bindings, then
+reads the selected canonical `.orchestrator/runs/<run-id>/run.json` task. Every
+link must be terminal and non-successful, authorization-replayable, have an
+exact execution-kind/binding pair, retain a runtime-constraint superset, and
+form an acyclic lineage. Missing, stale, cyclic, malformed, narrowed, or
+changed evidence fails closed. No path, constraint, or recovery identity is
+discovered from prompts, execution guards, or documentation. Queues and
+historical run records without the v1 envelope remain readable and retain
+legacy behavior.
+
+Path scope syntax is closed: use an exact normalized repository-relative path
+(`server/index.ts`) or a directory capability with only the terminal suffix
+`/**` (`server/**`). Wildcards such as `*`, `?`, `[`, `]`, and pseudo-globs
+such as `docs/**/*.md` are rejected in task scopes, approvals, impact maps,
+conflict checks, and runtime enforcement.
+
+Use the exact `WholeChangeAcceptanceV1` envelope only once, on the final
+enabled read-only review task and unique terminal dependency sink. Its ordered
+`predecessorTaskKeys` exactly match direct dependencies, include every writer
+anywhere in the queue, and make every covered writer an ancestor in the
+declared dependency graph. Before independent review, the runner binds those
+keys to exact persisted task IDs, approved terminal status,
+changed-file ownership, and successful verification receipts, then supplies a
+bounded tracked-plus-untracked aggregate handoff. Unrelated pre-existing
+worktree changes never become task-owned. Missing, changed, incomplete,
+reordered, failed, timed-out, or oversized handoff evidence blocks approval.
+
+```yaml
+wholeChangeAcceptance:
+  contractType: WholeChangeAcceptanceV1
+  contractVersion: "1.0"
+  predecessorTaskKeys: [implementation, tests]
+```
 
 The packaged desktop application loads `resources/server.cjs` only when its
 owned server process starts. Rebuilding or replacing that bundle does not
@@ -615,12 +659,20 @@ change an already running process: quit and restart Orchestrator before
 launching an acceptance run against a newly deployed bundle. Failed runs are
 terminal; start a new run after restart.
 
-Restarting or retrying a failed run always reuses that run's persisted task,
-authorization, prompt, and command snapshot. It does not reload a modified YAML
-queue. After repairing queue definitions or deploying a new queue contract,
-launch the corrected YAML as a new run rather than retrying the stale snapshot;
-use restart only when the persisted snapshot is still intentionally
-authoritative.
+Post-deployment live smoke remains an owner-run boundary: after a newly
+deployed desktop bundle is restarted, launch one explicit read-only smoke run
+against the live application and retain its canonical `run.json` receipt. It
+does not authorize rebuilding, installation, mutation, or a substitute for
+the full verification gates.
+
+Restarting, retrying, or resuming a failed run always reuses that run's
+persisted task, authorization, prompt, and command snapshot only after the
+same deterministic queue schema, dependency, final-sink, writer-coverage,
+execution-kind, and authorization checks are rebuilt from that snapshot. It
+does not reload a modified YAML queue. After repairing queue definitions or
+deploying a new queue contract, launch the corrected YAML as a new run rather
+than retrying the stale snapshot; use restart only when the persisted snapshot
+is still intentionally authoritative.
 
 Machine-testable baseline conditions belong in task-level `preconditions`,
 not in post-change `verificationCommands` or prose-only `executionGuards`.

@@ -132,8 +132,11 @@ const {
   pipelineLaunchAuthorizationChecks,
   queueRecoveryContractChecks,
   assertQueueRecoveryContracts,
+  rebuildPersistedQueueForReplayV1,
   validateQueue,
   validateTaskQueue,
+  validateAllowedPathsV1,
+  prepareWholeChangeAcceptanceEvidence,
   persistRun,
   loadRun,
   loadRunSummary,
@@ -11631,6 +11634,11 @@ function queueAuthoringContractInput(
         impactPaths: structuredClone(impactPaths),
         runtimeConstraints: [...runtimeConstraints],
         ...(recovery ? { recovery: { ...recovery } } : {}),
+        executionKind: {
+          contractType: "TaskExecutionKindV1" as const,
+          contractVersion: "1.0" as const,
+          kind: recovery ? "recovery" as const : "ordinary" as const,
+        },
         verificationCommands: [...approval.verificationCommands],
         authorization: {
           enabled: true,
@@ -11707,7 +11715,7 @@ test("impact map is normalized, complete, ordered, approval-bound, and never exp
   nonNormalized.tasks[0].impactPaths.production = ["server\\index.ts"];
   assert.throws(
     () => validateTaskQueue(nonNormalized),
-    /unique normalized non-empty relative paths/,
+    /one normalized repository-relative path or exactly one terminal directory suffix \/\*\*/,
   );
   const emptyRuntime = queueAuthoringContractInput(process.cwd());
   emptyRuntime.tasks[0].runtimeConstraints = ["   "];
@@ -11715,6 +11723,253 @@ test("impact map is normalized, complete, ordered, approval-bound, and never exp
     () => validateTaskQueue(emptyRuntime),
     /runtimeConstraints must be a list of non-empty strings/,
   );
+});
+
+test("whole-change acceptance and cross-artifact admission, TaskExecutionKindV1, and allowedPaths grammar fail closed", () => {
+  assert.deepEqual(validateAllowedPathsV1(["server/index.ts", "server/**"]), [
+    "server/index.ts", "server/**",
+  ]);
+  for (const malformed of ["*", "docs/**/*.md", "docs/*.md", "docs/[a].md", "docs/?a.md", "docs\\x.ts"])
+    assert.throws(() => validateAllowedPathsV1([malformed]), /one normalized repository-relative path or exactly one terminal directory suffix \/\*\*/);
+
+  const base = queueAuthoringContractInput(process.cwd());
+  delete base.tasks[0].executionKind;
+  assert.throws(() => validateTaskQueue(base), /TaskExecutionKindV1/);
+  const ordinaryWithRecovery = queueAuthoringContractInput(process.cwd());
+  ordinaryWithRecovery.tasks[0].recovery = {
+    contractType: "RecoveryTaskBindingV1", contractVersion: "1.0", sourceRunId: "run", sourceTaskId: "task",
+  };
+  assert.throws(() => validateTaskQueue(ordinaryWithRecovery), /ordinary TaskExecutionKindV1 rejects/);
+
+  const acceptance = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "write", title: "Write", prompt: "Write.", allowedPaths: ["server/index.ts"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review all changes.", dependsOn: ["write"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["write"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  assert.equal(acceptance.tasks[1].wholeChangeAcceptance?.predecessorTaskKeys[0], "write");
+  for (const malformed of [
+    {
+      ...structuredClone(acceptance),
+      tasks: [
+        ...structuredClone(acceptance.tasks),
+        { key: "later", title: "Later", prompt: "Write.", allowedPaths: ["README.md"] },
+      ],
+    },
+    {
+      ...structuredClone(acceptance),
+      tasks: [
+        structuredClone(acceptance.tasks[0]),
+        { key: "independent", title: "Independent", prompt: "Write.", allowedPaths: ["README.md"] },
+        structuredClone(acceptance.tasks[1]),
+      ],
+    },
+    {
+      ...structuredClone(acceptance),
+      tasks: [
+        structuredClone(acceptance.tasks[0]),
+        structuredClone(acceptance.tasks[1]),
+        {
+          ...structuredClone(acceptance.tasks[1]),
+          key: "second-accept",
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["write"],
+          },
+        },
+      ],
+    },
+  ]) assert.throws(() => validateQueue(malformed), /WholeChangeAcceptanceV1.*(?:final|cover|exactly once)/i);
+
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "The exact count in a.json equals the exact count in b.json.",
+    verificationCommands: ["$a = Get-Content -Raw a.json; $b = Get-Content -Raw b.json; if ($a.Count -ne $b.Count) { exit 1 }; exit 0"],
+  }, {}).ok, true);
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "The exact count in a.json equals the exact count in b.json.",
+    verificationCommands: ["node scripts/assert-artifact-totals.mjs a.json b.json"],
+  }, {}).ok, false);
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "The exact count in a.json equals the exact count in b.json.",
+    verificationCommands: ["Get-Content -LiteralPath a.json; Get-Content -LiteralPath b.json"],
+  }, {}).ok, false);
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "Rename assert-total-helper.txt and continue the ordinary review.",
+    verificationCommands: ["Get-Content -LiteralPath assert-total-helper.txt"],
+  }, {}).required, false);
+});
+
+test("restart persisted replay rebuilds final-sink topology without mutating the historical record", () => {
+  const queue = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["server/index.ts"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  const persisted = createRun(queue);
+  persisted.tasks.push({ ...structuredClone(persisted.tasks[0]), id: "later-persisted", key: "later" });
+  const before = JSON.stringify(persisted);
+  assert.throws(() => rebuildPersistedQueueForReplayV1(persisted), /PERSISTED_RUN_STRUCTURE_INVALID.*final queue task/i);
+  assert.equal(JSON.stringify(persisted), before);
+});
+
+test("retry and resume reject persisted final-sink bypasses before reusing task state", () => {
+  const queue = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["server/index.ts"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  const persisted = createRun(queue);
+  persisted.status = "failed";
+  persisted.tasks[0].status = "failed";
+  persisted.tasks[1].status = "blocked";
+  persisted.tasks[1].authorizationEvidence = authorizeTask(persisted.tasks[1], persisted.project);
+  const independentWriter = { ...structuredClone(persisted.tasks[0]), id: "independent-writer", key: "independent" };
+  persisted.tasks.push(independentWriter);
+  const before = JSON.stringify(persisted);
+  assert.throws(() => retryRun(persisted, persisted.tasks[0]), /PERSISTED_RUN_STRUCTURE_INVALID/);
+  assert.throws(() => resumeRun(persisted), /PERSISTED_RUN_STRUCTURE_INVALID/);
+  assert.equal(JSON.stringify(persisted), before);
+});
+
+test("HTTP resume rejects malformed persisted topology before a project lock or source mutation", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-replay-http-"));
+  const queue = validateTaskQueue({
+    project: { path: project },
+    tasks: [
+      { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["result.txt"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  const persisted = createRun(queue);
+  persisted.status = "failed";
+  persisted.tasks[0].status = "failed";
+  persisted.tasks[1].status = "blocked";
+  persisted.tasks[1].authorizationEvidence = authorizeTask(persisted.tasks[1], persisted.project);
+  await persistRun(persisted);
+  const file = join(testDataDirectory, "runs", persisted.id, "run.json");
+  const malformed = JSON.parse(await readFile(file, "utf8"));
+  const lateHttpWriter = { ...structuredClone(malformed.tasks[0]), id: "late-http-writer", key: "late-http-writer" };
+  malformed.tasks.push(lateHttpWriter);
+  await writeFile(file, JSON.stringify(malformed, null, 2));
+  const before = await readFile(file, "utf8");
+  const locksBefore = await readdir(join(testDataDirectory, "project-locks")).catch((): string[] => []);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/runs/${persisted.id}/resume`, { method: "POST" });
+    assert.equal(response.status, 409);
+    assert.match(JSON.stringify(await response.json()), /PERSISTED_RUN_STRUCTURE_INVALID/);
+    assert.equal(await readFile(file, "utf8"), before);
+    const locksAfter = await readdir(join(testDataDirectory, "project-locks")).catch((): string[] => []);
+    assert.deepEqual(locksAfter, locksBefore);
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("restart leaves malformed persisted topology inactive without mutating its canonical record", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-replay-restart-"));
+  try {
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["result.txt"] },
+        {
+          key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+          },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+        },
+      ],
+    });
+    const persisted = createRun(queue);
+    persisted.status = "paused";
+    persisted.pausedAt = new Date().toISOString();
+    persisted.tasks[1].authorizationEvidence = authorizeTask(persisted.tasks[1], persisted.project);
+    await persistRun(persisted);
+    const file = join(testDataDirectory, "runs", persisted.id, "run.json");
+    const malformed = JSON.parse(await readFile(file, "utf8"));
+    const lateRestartWriter = { ...structuredClone(malformed.tasks[0]), id: "late-restart-writer", key: "late-restart-writer" };
+    malformed.tasks.push(lateRestartWriter);
+    await writeFile(file, JSON.stringify(malformed, null, 2));
+    const before = await readFile(file, "utf8");
+    const diagnostics: string[] = [];
+    assert.equal(await recoverPersistedRunForStartup(file, (message) => diagnostics.push(message)), undefined);
+    assert.match(diagnostics.join(" "), /PERSISTED_RUN_STRUCTURE_INVALID/);
+    assert.equal(await readFile(file, "utf8"), before);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("whole-change acceptance binds task-owned tracked and untracked evidence without adopting unrelated worktree files", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-whole-change-"));
+  try {
+    git(project, "init");
+    await writeFile(join(project, "tracked.txt"), "before\n");
+    git(project, "add", "tracked.txt");
+    await writeFile(join(project, "tracked.txt"), "after\n");
+    await writeFile(join(project, "untracked.txt"), "created\n");
+    await writeFile(join(project, "unrelated.txt"), "pre-existing\n");
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["tracked.txt", "untracked.txt"] },
+        {
+          key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+          },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+        },
+      ],
+    });
+    const run = createRun(queue);
+    run.tasks[0].status = "completed";
+    run.tasks[0].reviewStatus = "approved";
+    run.tasks[0].changedFiles = ["tracked.txt", "untracked.txt"];
+    const evidence = await prepareWholeChangeAcceptanceEvidence(run, run.tasks[1]);
+    assert.deepEqual(evidence?.aggregateChangedFiles, ["tracked.txt", "untracked.txt"]);
+    assert.deepEqual(evidence?.contentEvidence.map((entry) => entry.kind), ["tracked", "untracked"]);
+    assert.doesNotMatch(JSON.stringify(evidence), /unrelated\.txt/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("external read roots are normalized, approval-bound, persisted, and shown to the executor", async () => {
@@ -11847,7 +12102,7 @@ test("runtime constraints persist in task authorization evidence while legacy qu
   }
 });
 
-test("recovery contract requires exact persisted source evidence and a runtime constraints superset", async () => {
+test("recovery execution kind and recovery chain require exact persisted source evidence and a runtime constraints superset", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-recovery-contract-"));
   try {
     const sourceQueue = validateTaskQueue(queueAuthoringContractInput(project, [
@@ -11918,6 +12173,48 @@ test("recovery contract requires exact persisted source evidence and a runtime c
       /RECOVERY_SOURCE_TASK_AMBIGUOUS/,
     );
     await writeFile(sourceFile, original);
+
+    const failedRecovery = createRun(recoveryQueue);
+    failedRecovery.status = "failed";
+    failedRecovery.finishedAt = new Date().toISOString();
+    failedRecovery.tasks[0].status = "failed";
+    failedRecovery.tasks[0].finishedAt = failedRecovery.finishedAt;
+    failedRecovery.tasks[0].authorizationEvidence = authorizeTask(
+      failedRecovery.tasks[0],
+      failedRecovery.project,
+    );
+    failedRecovery.tasks[1].status = "skipped";
+    failedRecovery.tasks[1].finishedAt = failedRecovery.finishedAt;
+    await persistRun(failedRecovery);
+    const chainedRecovery = validateTaskQueue(queueAuthoringContractInput(
+      project,
+      [
+        "Node.js 22 is available.",
+        "PowerShell commands use project-root quoting.",
+        "Use a fresh task-specific temporary directory.",
+        "Retain the failed recovery lineage.",
+      ],
+      {
+        contractType: "RecoveryTaskBindingV1",
+        contractVersion: "1.0",
+        sourceRunId: failedRecovery.id,
+        sourceTaskId: failedRecovery.tasks[0].id,
+      },
+    ));
+    await assert.doesNotReject(() => assertQueueRecoveryContracts(chainedRecovery));
+    const failedRecoveryFile = join(testDataDirectory, "runs", failedRecovery.id, "run.json");
+    const cyclicRecovery = JSON.parse(await readFile(failedRecoveryFile, "utf8"));
+    cyclicRecovery.tasks[0].recovery = {
+      contractType: "RecoveryTaskBindingV1",
+      contractVersion: "1.0",
+      sourceRunId: failedRecovery.id,
+      sourceTaskId: failedRecovery.tasks[0].id,
+    };
+    await writeFile(failedRecoveryFile, JSON.stringify(cyclicRecovery, null, 2));
+    await assert.rejects(
+      () => assertQueueRecoveryContracts(chainedRecovery),
+      /RECOVERY_SOURCE_LINEAGE_CYCLIC/,
+    );
 
     const recoveryRun = createRun(recoveryQueue);
     recoveryRun.status = "paused";
@@ -17557,18 +17854,18 @@ test("schedules ready graph branches while respecting dependencies and conflicts
   const api = {
     ...task("api", "pending"),
     key: "api",
-    allowedPaths: ["src/api"],
+    allowedPaths: ["src/api/**"],
   };
   const web = {
     ...task("web", "pending"),
     key: "web",
-    allowedPaths: ["src/web"],
+    allowedPaths: ["src/web/**"],
   };
   const integration = {
     ...task("integration", "pending"),
     key: "integration",
     dependsOn: ["api", "web"],
-    allowedPaths: ["tests/integration"],
+    allowedPaths: ["tests/integration/**"],
   };
   assert.deepEqual(
     selectRunnableTasks([api, web, integration], 3).map((item) => item.key),
@@ -17583,12 +17880,12 @@ test("schedules ready graph branches while respecting dependencies and conflicts
 
   const migration = {
     ...task("migration", "pending"),
-    allowedPaths: ["db/migrations"],
+    allowedPaths: ["db/migrations/**"],
     resources: ["postgres-schema"],
   };
   const seed = {
     ...task("seed", "pending"),
-    allowedPaths: ["db/seeds"],
+    allowedPaths: ["db/seeds/**"],
     resources: ["postgres-schema"],
   };
   assert.deepEqual(
@@ -17614,9 +17911,9 @@ test("schedules ready graph branches while respecting dependencies and conflicts
 });
 
 test("scheduler enforces slot budgets and safe path conflicts", () => {
-  const first = { ...task("first", "pending"), allowedPaths: ["src/first"] };
-  const second = { ...task("second", "pending"), allowedPaths: ["src/second"] };
-  const third = { ...task("third", "pending"), allowedPaths: ["src/third"] };
+  const first = { ...task("first", "pending"), allowedPaths: ["src/first/**"] };
+  const second = { ...task("second", "pending"), allowedPaths: ["src/second/**"] };
+  const third = { ...task("third", "pending"), allowedPaths: ["src/third/**"] };
   assert.deepEqual(
     selectRunnableTasks([first, second, third], 2).map((item) => item.id),
     ["first", "second"],
@@ -17630,11 +17927,11 @@ test("scheduler enforces slot budgets and safe path conflicts", () => {
 
   const parentPath = {
     ...task("parent-path", "pending"),
-    allowedPaths: ["src/shared"],
+    allowedPaths: ["src/shared/**"],
   };
   const childPath = {
     ...task("child-path", "pending"),
-    allowedPaths: ["src/shared/components"],
+    allowedPaths: ["src/shared/components/**"],
   };
   assert.deepEqual(
     selectRunnableTasks([parentPath, childPath], 2).map((item) => item.id),
@@ -17643,11 +17940,11 @@ test("scheduler enforces slot budgets and safe path conflicts", () => {
 
   const active = {
     ...task("active", "running"),
-    allowedPaths: ["src/api"],
+    allowedPaths: ["src/api/**"],
   };
   const conflicting = {
     ...task("conflicting", "pending"),
-    allowedPaths: ["src/api/client"],
+    allowedPaths: ["src/api/client/**"],
   };
   assert.deepEqual(selectRunnableTasks([conflicting], 1, [active]), []);
 });
@@ -17782,7 +18079,7 @@ test("loading and serving an all-terminal running record reconciles it atomicall
 
 test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, and timeout states", () => {
   assert.deepEqual(
-    outsideAllowedPaths(["src/safe/a.ts", "README.md"], ["src/safe"]),
+    outsideAllowedPaths(["src/safe/a.ts", "README.md"], ["src/safe/**"]),
     ["README.md"],
   );
   assert.deepEqual(
@@ -17797,7 +18094,7 @@ test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, 
       { allowedPaths: ["src"] },
       ["src/a.ts"],
     ),
-    [],
+    ["src/a.ts"],
   );
   assert.equal(
     resolveTaskStatus({

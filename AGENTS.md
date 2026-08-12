@@ -83,6 +83,41 @@ constraints, source identity, or recovery authority from prompts,
 omit the v1 envelope retain their legacy behavior and are not required to
 synthesize these fields.
 
+Every `QueueAuthoringContractV1` task must also carry the exact
+`TaskExecutionKindV1` envelope: `ordinary` has no recovery binding, while
+`recovery` has exactly one `RecoveryTaskBindingV1`. Recovery identity comes
+only from the selected canonical persisted `run.json`; its source run and task
+must be unique, authorization-replayable, terminal, and non-successful. A
+formally authenticated failed recovery task may source a later recovery only
+when every exact execution-kind/binding, authorization, runtime-superset, and
+acyclic persisted-lineage check replays; never infer a chain from prose.
+
+Use `WholeChangeAcceptanceV1` only on an enabled read-only `review` task with
+`allowedPaths: []`. Its ordered `predecessorTaskKeys` must exactly equal its
+direct dependencies, cover every writing task anywhere in the queue, and make
+every covered writer an ancestor in the declared graph. It must be the final
+queue task and unique terminal dependency sink. Orchestrator supplies the independent
+reviewer the closed predecessor handoff (approved statuses, task IDs, exact
+verification receipts, and task-owned tracked plus untracked evidence); never
+claim or reconstruct that evidence in prose.
+
+Path scopes are either one normalized repository-relative path or a directory
+capability ending exactly in `/**` (for example `server/**`). `*`, `?`, `[`,
+and `]` are forbidden elsewhere, so extension-shaped pseudo-globs such as
+`docs/**/*.md` are invalid. Exact aggregate-total or cross-artifact claims
+need their own deterministic executable assertion that binds every named
+artifact, reads them, and exits non-zero on disagreement; a hash, content
+reader, producer success, status text, or suggestive assertion filename is not
+a receipt. Before restart, retry, or resume reuses persisted tasks, rebuild and
+revalidate the same schema, dependency, final-sink, writer-coverage,
+execution-kind, and authorization bindings; re-fence recovery evidence at each
+available asynchronous boundary before executor authority or project locks.
+
+After deployment, the required live smoke is one explicitly launched read-only
+run against the restarted installed application, with its canonical `run.json`
+receipt retained. This boundary never authorizes rebuilding, installation, or
+workspace mutation.
+
 The Orchestrator rejects ordinary queues with fewer than two tasks.
 
 ## Use a sequential queue plan
