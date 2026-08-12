@@ -467,8 +467,28 @@ On Windows, pytest verification should use a unique direct child of the
 authorized temp root for every Codex process, for example
 `--basetemp="$env:TEMP\orchestrator-pytest-$PID"`. Do not reuse a fixed
 basetemp between executor and reviewer sessions. Queue preflight rejects
-Windows pytest verification commands that omit this isolated basetemp. Also
-remember that ordinary
+Windows pytest verification commands that omit this isolated basetemp. Use
+`& $env:PYTHON_BIN -m pytest ...` instead of embedding `C:\Users\...` or
+deriving the bundled runtime from `$env:USERPROFILE`. Orchestrator resolves
+`PYTHON_BIN` and proves that the resolved executable accepts `--version` when
+any task prompt, task precondition, task verification command, or project
+verification command contains `$env:PYTHON_BIN` (case-insensitive). Queues that
+do not contain that declaration do not trigger the probe and do not require
+Python, preserving legacy queue behavior. The probe and executor, reviewer,
+correction, precondition, and verification processes all use the same
+project-root-based environment constructor and therefore receive the exact same
+resolved interpreter, including when a managed task runs in another worktree.
+
+The same managed-Python check is enforced by `/api/preflight`, ordinary launch,
+pipeline launch, and pipeline append. A pipeline checks every referenced queue,
+not only its first queue, before its plan, first run, or project lock can become
+durable. Append checks the candidate queue before an ordinary run can be
+promoted to a plan and before the YAML file or pipeline record is written. A
+failed probe returns only the deterministic message `Managed Python runtime
+declared by queue is unavailable.` (prefixed with the pipeline queue number
+when applicable); the executable path and process output stay private, and no
+run, plan, appended queue, or project lock is created. This keeps queue YAML
+independent of Windows profile names and encoding. Also remember that ordinary
 `git diff --check` does not inspect new untracked files. Use a read-only
 `git diff --no-index --check` wrapper that treats emitted whitespace
 diagnostics as failure, as shown in `tasks.example.yaml`; do not stage files
@@ -491,6 +511,168 @@ the executor, verification runner, or reviewer, so PowerShell execution policy
 cannot select a blocked `npm.ps1`. Process output and reviewer evidence are
 decoded as streaming UTF-8; a rendered `�` is not a blocking finding unless
 direct UTF-8 inspection proves an actual U+FFFD in task-owned source evidence.
+Prompts that explicitly claim an exact aggregate total or equality across two
+or more named artifacts require one separate deterministic mismatch assertion:
+its command must bind every named artifact, read them, and exit non-zero on
+disagreement. A hash, a content reader, a successful producer command, prose,
+or a filename containing `assert`, `total`, `equal`, or `cross` is not proof.
+Use a bounded inline assertion; its ordered exit evidence is persisted for
+review.
+
+Windows command strings have an explicit shell boundary. A command beginning
+with `&` (or otherwise containing PowerShell syntax) runs under PowerShell;
+Orchestrator sets its input and output encoding to UTF-8. Other raw commands
+run through `cmd.exe`, where single quotes are literal rather than quoting
+characters. Preflight rejects single-quoted arguments in that raw-shell form:
+write `node "scripts/check.mjs"`, `rg -n "term" "docs/spec.md"`, or prefix a
+command with `&` when PowerShell quoting is intended. It also rejects bare
+Windows `python`, `python3`, and `py` commands. Before preflight or launch is
+accepted, Orchestrator probes the Node.js, ripgrep, npm, and PowerShell
+runtimes actually referenced by configured commands in the same inherited
+task environment. Git and managed Python retain their existing dedicated
+checks.
+
+Every command starts in the task execution workspace. An absolute path to a
+script does not change that working directory. Scripts that inspect another
+repository should accept an explicit root parameter. When a legacy script
+derives its root from the process directory, use a bounded PowerShell wrapper
+with `Push-Location`/`Pop-Location` and preserve the native exit code.
+
+Cross-repository Git reads must also declare task-level `externalReadRoots` as
+an ordered list of existing absolute directories outside `project.path`. An
+authorized apply task's matching `approvedApplyContracts` entry must contain
+the exact same list. Preflight verifies each root with `git -C <root>
+rev-parse --is-inside-work-tree` in the task environment. Executor, reviewer,
+correction, and verification processes then receive those roots as
+process-local Git `safe.directory` entries through `GIT_CONFIG_COUNT`; no
+global or repository-local Git configuration is written. Missing, duplicate,
+in-project, non-Git, or approval-mismatched roots fail before execution.
+
+Verification commands are executed only for tasks with an enabled, authorized
+task contract. Authorized `apply`, `review`, `answer`, and `diagnose` tasks all
+retain their exact declared commands. The runner persists each command's exit
+code, timeout state, and bounded output before starting the independent
+reviewer; the reviewer consumes that evidence and does not rerun the commands.
+If task- or project-level `verificationCommands` exist, launch fails closed
+unless that task has enabled authorization. The only exception is an explicit
+task-level `verificationMode: advisory`: those commands remain executor-owned,
+Orchestrator never records them as machine evidence, and the reviewer is told
+not to infer a passing gate from executor claims. Advisory mode cannot be
+combined with enabled authorization. Disabled or denied authorization never
+silently turns declared commands into an acceptance gate.
+
+For required verification, the reviewer cannot start until the persisted
+evidence contains every exact normalized command in order with exit code zero
+and no timeout. Missing, partial, reordered, failed, or timed-out evidence
+forces `CHANGES_REQUESTED` even if an executor reports that checks passed. See
+`tasks.example.yaml` for matching writable apply contracts, explicit advisory
+syntax, and a complete read-only review task.
+
+An executor cannot consume verification evidence produced after that same
+executor finishes. Keep one useful implementation task together with its
+Orchestrator verification and independent read-only review: the reviewer can
+consume the recorded verification evidence because it starts afterward. Do not
+split implementation and its checks into artificial dependent tasks. Only when
+a write-based closure record is mandatory, use a separate later queue; its
+task must consume only fixed, already-recorded predecessor evidence and may not
+claim access to evidence its own later verification will create. Do not invent
+an evidence-handoff field for this purpose.
+
+For an enabled `apply` task, `authorization.approvalId` must resolve to one
+`approvedApplyContracts` entry whose approval ID, intent, technical permission,
+side-effect risk, allowed paths, preconditions, and verification commands
+exactly match the task. When `externalReadRoots` is present, its ordered list
+must also match exactly. A similar-looking or broader approval does not match.
+
+Queue impact mapping and recovery guidance in `AGENTS.md` is advisory for
+legacy queues. The optional machine gate is enabled per apply task with this
+exact envelope:
+
+```yaml
+authoringContract:
+  contractType: QueueAuthoringContractV1
+  contractVersion: "1.0"
+```
+
+Every opted-in authoring task explicitly declares its execution kind; ordinary
+tasks cannot carry recovery evidence, and recovery tasks require one exact
+binding:
+
+```yaml
+executionKind:
+  contractType: TaskExecutionKindV1
+  contractVersion: "1.0"
+  kind: ordinary # or recovery, with RecoveryTaskBindingV1 below
+```
+
+An opted-in task must declare a non-empty ordered `impactPaths` map and a
+non-empty `runtimeConstraints` list. Paths use normalized repository-relative
+forward-slash form, categories and path order are significant, and every
+`allowedPaths` entry must occur in the map. The matching
+`approvedApplyContracts` entry binds the exact ordered impact map. Runtime
+constraints and an optional recovery binding are instead included in the task's
+authorization evidence and persisted task snapshot. The impact map is evidence,
+not write authority: additional map entries never expand `allowedPaths`.
+
+Recovery is optional and explicit. Task-level `RecoveryTaskBindingV1` contains
+exactly one persisted `sourceRunId` and `sourceTaskId`. Its source may itself
+be a failed authenticated recovery task. Before preflight admission, after
+asynchronous preflight boundaries, and again immediately before executor
+authority or a project lock, Orchestrator reconstructs the persisted queue,
+revalidates its schema/topology/execution-kind and authorization bindings, then
+reads the selected canonical `.orchestrator/runs/<run-id>/run.json` task. Every
+link must be terminal and non-successful, authorization-replayable, have an
+exact execution-kind/binding pair, retain a runtime-constraint superset, and
+form an acyclic lineage. Missing, stale, cyclic, malformed, narrowed, or
+changed evidence fails closed. No path, constraint, or recovery identity is
+discovered from prompts, execution guards, or documentation. Queues and
+historical run records without the v1 envelope remain readable and retain
+legacy behavior.
+
+Path scope syntax is closed: use an exact normalized repository-relative path
+(`server/index.ts`) or a directory capability with only the terminal suffix
+`/**` (`server/**`). Wildcards such as `*`, `?`, `[`, `]`, and pseudo-globs
+such as `docs/**/*.md` are rejected in task scopes, approvals, impact maps,
+conflict checks, and runtime enforcement.
+
+Use the exact `WholeChangeAcceptanceV1` envelope only once, on the final
+enabled read-only review task and unique terminal dependency sink. Its ordered
+`predecessorTaskKeys` exactly match direct dependencies, include every writer
+anywhere in the queue, and make every covered writer an ancestor in the
+declared dependency graph. Before independent review, the runner binds those
+keys to exact persisted task IDs, approved terminal status,
+changed-file ownership, and successful verification receipts, then supplies a
+bounded tracked-plus-untracked aggregate handoff. Unrelated pre-existing
+worktree changes never become task-owned. Missing, changed, incomplete,
+reordered, failed, timed-out, or oversized handoff evidence blocks approval.
+
+```yaml
+wholeChangeAcceptance:
+  contractType: WholeChangeAcceptanceV1
+  contractVersion: "1.0"
+  predecessorTaskKeys: [implementation, tests]
+```
+
+The packaged desktop application loads `resources/server.cjs` only when its
+owned server process starts. Rebuilding or replacing that bundle does not
+change an already running process: quit and restart Orchestrator before
+launching an acceptance run against a newly deployed bundle. Failed runs are
+terminal; start a new run after restart.
+
+Post-deployment live smoke remains an owner-run boundary: after a newly
+deployed desktop bundle is restarted, launch one explicit read-only smoke run
+against the live application and retain its canonical `run.json` receipt. It
+does not authorize rebuilding, installation, mutation, or a substitute for
+the full verification gates.
+
+Restarting, retrying, or resuming a failed run always reuses that run's
+persisted task, authorization, prompt, and command snapshot only after the
+same deterministic queue schema, dependency, final-sink, writer-coverage,
+execution-kind, and authorization checks are rebuilt from that snapshot. It
+does not reload a modified YAML queue. After repairing queue definitions or
+deploying a new queue contract, launch the corrected YAML as a new run rather
+than retrying the stale snapshot; use restart only when the persisted snapshot
+is still intentionally authoritative.
 
 Machine-testable baseline conditions belong in task-level `preconditions`,
 not in post-change `verificationCommands` or prose-only `executionGuards`.
@@ -513,9 +695,16 @@ Set a task's `model` to `auto` to let the orchestrator choose before the run. It
 
 To opt a task into Context Contract v1, set `contextProfile` and optionally `maxSources` (default `12`, range `1`–`50`) in YAML or the visual task editor. Preflight launches the target repository's `scripts/ai_context_helper.py` as a separate process, previews the selected sources, reuses that exact bundle for execution, and stores its `ContextReceiptV1` in the run record. Python resolution prefers `PYTHON_BIN`, an active or project-local virtual environment, and the bundled Codex runtime on Windows before falling back to `python` on `PATH`. The adapter preserves the helper's truthful selected, omitted, and truncated metadata and checks it against the read set and `maxSources`; it does not reproduce helper selection logic. Missing helpers, timeouts, invalid JSON, schema failures, and contract mismatches use an observable fixed-entrypoint fallback limited to `AGENTS.md` and `README.md`; the fallback never scans the repository or reads secret-bearing/high-risk paths.
 
+The target repository's `scripts/ai_context_helper.py` validates the requested
+`contextProfile` for that repository and must produce a valid bundle; the
+Orchestrator adapter does not reinterpret profile selection. Its controlled
+fallback is intentionally fixed to `AGENTS.md` and `README.md`, with no
+repository scan or reads of secret-bearing/high-risk paths.
+
 Set `requireRepositoryContext: true` when that controlled fallback is not
 sufficient. In that mode, any helper fallback makes preflight fail instead of
-launching with reduced context.
+launching with reduced context; `false` (or an omitted field) permits only the
+fixed-entrypoint fallback described above.
 
 Generated `ContextRequestV1`, `ContextBundleV1`, and `ContextReceiptV1` values are runtime-validated with Ajv 8 and JSON Schema Draft 2020-12. Exact versioned schema snapshots and their source hashes are recorded in `server/context-contract-v1/schemas/PROVENANCE.md`.
 

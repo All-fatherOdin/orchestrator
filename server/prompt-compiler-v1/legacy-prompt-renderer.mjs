@@ -86,9 +86,9 @@ export function renderLegacyPromptV1(input) {
     : "";
   const authorization = input.authorization;
   const checks = authorization.enabled
-    ? authorization.intent === "apply" && authorization.verificationCommands.length
+    ? authorization.verificationCommands.length
       ? `\n- Do not run verification commands yourself. The orchestrator's verification phase may run only these declared commands:\n${authorization.verificationCommands.map((command) => `  - ${command}`).join("\n")}`
-      : "\n- Do not run mutating verification commands."
+      : "\n- No verification commands are authorized; do not invent or run substitutes."
     : input.verificationCommands.length
       ? `\n- Run these verification commands when relevant:\n${input.verificationCommands.map((command) => `  - ${command}`).join("\n")}`
       : "\n- Run relevant verification commands.";

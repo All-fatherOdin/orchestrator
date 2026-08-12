@@ -1,6 +1,6 @@
 {
   "name": "codex-orchestrator",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -65,6 +65,7 @@
       "signAndEditExecutable": false
     },
     "nsis": {
+      "artifactName": "${productName}-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,

@@ -64,7 +64,14 @@ import githubDeploymentConnectorV1Examples from "./github-deployment-connector-v
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
 process.env.ORCHESTRATOR_DATA_DIR = testDataDirectory;
-test.after(async () => rm(testDataDirectory, { recursive: true, force: true }));
+test.after(async () =>
+  rm(testDataDirectory, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === "win32" ? 8 : 0,
+    retryDelay: 50,
+  })
+);
 
 const {
   acquireProjectLock,
@@ -83,9 +90,17 @@ const {
   inlineCommandViolations,
   powershellVerificationSyntaxPreflight,
   verificationCommandInvocation,
+  windowsCommandPolicyViolation,
+  commandRuntimeProbes,
+  queueCommandRuntimePreflightChecks,
+  normalizeExternalReadRootsV1,
+  gitSafeDirectoryProcessEnvironment,
+  queueExternalReadRootPreflightChecks,
   normalizeWindowsNpmCommand,
   nodeUserInfoFallbackImportUrl,
   runnerProcessEnvironment,
+  verificationProcessEnvironment,
+  codexProcessOptions,
   processTreeTerminationInvocation,
   waitForProcess,
   checkpointRequirementViolation,
@@ -111,24 +126,41 @@ const {
   projectTaskMetrics,
   projectRunMetrics,
   loadPipeline,
+  appendReadiness,
+  serializePipelineAppend,
+  queueLaunchAuthorizationChecks,
+  pipelineLaunchAuthorizationChecks,
+  queueRecoveryContractChecks,
+  assertQueueRecoveryContracts,
+  rebuildPersistedQueueForReplayV1,
   validateQueue,
   validateTaskQueue,
+  validateAllowedPathsV1,
+  prepareWholeChangeAcceptanceEvidence,
   persistRun,
   loadRun,
   loadRunSummary,
   writeTextAtomically,
+  mkdirWithTransientWindowsRetry,
   renameWithTransientWindowsRetry,
   runInBackground,
   windowsPytestBasetempViolation,
+  portablePythonCommandViolation,
   app,
   changeControlStore,
   FallbackContextProvider,
   RepositoryContextHelperProvider,
   repositoryPythonExecutable,
+  managedPythonPreflight,
+  queueManagedPythonPreflightCheck,
+  pipelineManagedPythonPreflightChecks,
   resolveTaskContext,
+  queueRepositoryContextChecks,
+  safeContextFailureReasonCode,
   cachePreflightContexts,
   contextsForRun,
   createRun,
+  markRunReadyForLaunch,
   executeQueue,
   buildPrompt,
   createContextRequestV1,
@@ -151,6 +183,8 @@ const {
   codexExecCommandStartArgs,
   codexPromptInvocation,
   orchestratorVerificationCommands,
+  requiredVerificationEvidenceIssue,
+  runTaskVerification,
   changedProviderRuntimeIdentityV1,
   providerReasoningModeV1,
   recordProviderRuntimeStateV1,
@@ -11562,6 +11596,769 @@ test("enabled answer, review, and diagnose contracts are authorized only as non-
   }).reason, "NON_MUTATING_CONTRACT_REQUIRED");
 });
 
+function queueAuthoringContractInput(
+  projectPath: string,
+  runtimeConstraints = ["Node.js 22 is available."],
+  recovery?: {
+    contractType: "RecoveryTaskBindingV1";
+    contractVersion: "1.0";
+    sourceRunId: string;
+    sourceTaskId: string;
+  },
+): any {
+  const impactPaths = {
+    production: ["server/index.ts"],
+    tests: ["server/index.test.ts"],
+  };
+  const approval = {
+    approvalId: "authoring-v1-approval",
+    intent: "apply" as const,
+    technicalPermission: "reversible_local_write" as const,
+    sideEffectRisk: "reversible_local_write" as const,
+    allowedPaths: ["server/index.ts", "server/index.test.ts"],
+    impactPaths,
+    verificationCommands: ["git diff --check -- server/index.ts server/index.test.ts"],
+  };
+  return {
+    project: { path: projectPath, approvedApplyContracts: [approval] },
+    tasks: [
+      {
+        key: "authoring-v1-apply",
+        title: "Apply the authored change",
+        prompt: "Apply only the exact authored change.",
+        allowedPaths: [...approval.allowedPaths],
+        authoringContract: {
+          contractType: "QueueAuthoringContractV1" as const,
+          contractVersion: "1.0" as const,
+        },
+        impactPaths: structuredClone(impactPaths),
+        runtimeConstraints: [...runtimeConstraints],
+        ...(recovery ? { recovery: { ...recovery } } : {}),
+        executionKind: {
+          contractType: "TaskExecutionKindV1" as const,
+          contractVersion: "1.0" as const,
+          kind: recovery ? "recovery" as const : "ordinary" as const,
+        },
+        verificationCommands: [...approval.verificationCommands],
+        authorization: {
+          enabled: true,
+          intent: "apply" as const,
+          technicalPermission: "reversible_local_write" as const,
+          sideEffectRisk: "reversible_local_write" as const,
+          approvalId: approval.approvalId,
+        },
+      },
+      {
+        key: "authoring-v1-report",
+        title: "Report the result",
+        prompt: "Report the completed result without edits.",
+        allowedPaths: [],
+      },
+    ],
+  };
+}
+
+test("impact map is normalized, complete, ordered, approval-bound, and never expands allowedPaths", () => {
+  const input = queueAuthoringContractInput(process.cwd());
+  input.tasks[0].runtimeConstraints = ["  Node.js 22   is available.  "];
+  const queue = validateTaskQueue(input);
+  const task = queue.tasks[0];
+  assert.deepEqual(task.runtimeConstraints, ["Node.js 22 is available."]);
+  const evidence = authorizeTask(task, queue.project);
+  assert.equal(evidence.decision, "authorized");
+  assert.deepEqual(evidence.impactPaths, {
+    production: ["server/index.ts"],
+    tests: ["server/index.test.ts"],
+  });
+  assert.deepEqual(
+    authorizationWriteViolations(evidence, ["README.md"]),
+    ["README.md"],
+  );
+  const persistedTask = createRun(queue).tasks[0];
+  persistedTask.authorizationEvidence = authorizeTask(
+    persistedTask,
+    queue.project,
+  );
+  assert.match(
+    buildPrompt(persistedTask, queue.project),
+    /Explicit runtime constraints[\s\S]*Node\.js 22 is available\./,
+  );
+
+  const reorderedApproval = structuredClone(
+    queue.project.approvedApplyContracts![0],
+  );
+  reorderedApproval.impactPaths = {
+    tests: ["server/index.test.ts"],
+    production: ["server/index.ts"],
+  };
+  assert.equal(authorizeTask(task, {
+    ...queue.project,
+    approvedApplyContracts: [reorderedApproval],
+  }).reason, "APPROVAL_CONTRACT_MISMATCH");
+  assert.equal(authorizeTask({
+    ...task,
+    authoringContract: undefined,
+    impactPaths: undefined,
+    runtimeConstraints: undefined,
+    recovery: undefined,
+  }, queue.project).reason, "APPROVAL_CONTRACT_MISMATCH");
+
+  const incomplete = queueAuthoringContractInput(process.cwd());
+  incomplete.tasks[0].impactPaths = {
+    production: ["server/index.ts"],
+  } as any;
+  assert.throws(
+    () => validateTaskQueue(incomplete),
+    /impactPaths must contain every allowedPaths entry/,
+  );
+  const nonNormalized = queueAuthoringContractInput(process.cwd());
+  nonNormalized.tasks[0].impactPaths.production = ["server\\index.ts"];
+  assert.throws(
+    () => validateTaskQueue(nonNormalized),
+    /one normalized repository-relative path or exactly one terminal directory suffix \/\*\*/,
+  );
+  const emptyRuntime = queueAuthoringContractInput(process.cwd());
+  emptyRuntime.tasks[0].runtimeConstraints = ["   "];
+  assert.throws(
+    () => validateTaskQueue(emptyRuntime),
+    /runtimeConstraints must be a list of non-empty strings/,
+  );
+});
+
+test("whole-change acceptance and cross-artifact admission, TaskExecutionKindV1, and allowedPaths grammar fail closed", () => {
+  assert.deepEqual(validateAllowedPathsV1(["server/index.ts", "server/**"]), [
+    "server/index.ts", "server/**",
+  ]);
+  for (const malformed of ["*", "docs/**/*.md", "docs/*.md", "docs/[a].md", "docs/?a.md", "docs\\x.ts"])
+    assert.throws(() => validateAllowedPathsV1([malformed]), /one normalized repository-relative path or exactly one terminal directory suffix \/\*\*/);
+
+  const base = queueAuthoringContractInput(process.cwd());
+  delete base.tasks[0].executionKind;
+  assert.throws(() => validateTaskQueue(base), /TaskExecutionKindV1/);
+  const ordinaryWithRecovery = queueAuthoringContractInput(process.cwd());
+  ordinaryWithRecovery.tasks[0].recovery = {
+    contractType: "RecoveryTaskBindingV1", contractVersion: "1.0", sourceRunId: "run", sourceTaskId: "task",
+  };
+  assert.throws(() => validateTaskQueue(ordinaryWithRecovery), /ordinary TaskExecutionKindV1 rejects/);
+
+  const acceptance = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "write", title: "Write", prompt: "Write.", allowedPaths: ["server/index.ts"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review all changes.", dependsOn: ["write"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["write"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  assert.equal(acceptance.tasks[1].wholeChangeAcceptance?.predecessorTaskKeys[0], "write");
+  for (const malformed of [
+    {
+      ...structuredClone(acceptance),
+      tasks: [
+        ...structuredClone(acceptance.tasks),
+        { key: "later", title: "Later", prompt: "Write.", allowedPaths: ["README.md"] },
+      ],
+    },
+    {
+      ...structuredClone(acceptance),
+      tasks: [
+        structuredClone(acceptance.tasks[0]),
+        { key: "independent", title: "Independent", prompt: "Write.", allowedPaths: ["README.md"] },
+        structuredClone(acceptance.tasks[1]),
+      ],
+    },
+    {
+      ...structuredClone(acceptance),
+      tasks: [
+        structuredClone(acceptance.tasks[0]),
+        structuredClone(acceptance.tasks[1]),
+        {
+          ...structuredClone(acceptance.tasks[1]),
+          key: "second-accept",
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["write"],
+          },
+        },
+      ],
+    },
+  ]) assert.throws(() => validateQueue(malformed), /WholeChangeAcceptanceV1.*(?:final|cover|exactly once)/i);
+
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "The exact count in a.json equals the exact count in b.json.",
+    verificationCommands: ["$a = Get-Content -Raw a.json; $b = Get-Content -Raw b.json; if ($a.Count -ne $b.Count) { exit 1 }; exit 0"],
+  }, {}).ok, true);
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "The exact count in a.json equals the exact count in b.json.",
+    verificationCommands: ["node scripts/assert-artifact-totals.mjs a.json b.json"],
+  }, {}).ok, false);
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "The exact count in a.json equals the exact count in b.json.",
+    verificationCommands: ["Get-Content -LiteralPath a.json; Get-Content -LiteralPath b.json"],
+  }, {}).ok, false);
+  assert.equal(reviewerEvidencePreflight({
+    prompt: "Rename assert-total-helper.txt and continue the ordinary review.",
+    verificationCommands: ["Get-Content -LiteralPath assert-total-helper.txt"],
+  }, {}).required, false);
+});
+
+test("restart persisted replay rebuilds final-sink topology without mutating the historical record", () => {
+  const queue = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["server/index.ts"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  const persisted = createRun(queue);
+  persisted.tasks.push({ ...structuredClone(persisted.tasks[0]), id: "later-persisted", key: "later" });
+  const before = JSON.stringify(persisted);
+  assert.throws(() => rebuildPersistedQueueForReplayV1(persisted), /PERSISTED_RUN_STRUCTURE_INVALID.*final queue task/i);
+  assert.equal(JSON.stringify(persisted), before);
+});
+
+test("retry and resume reject persisted final-sink bypasses before reusing task state", () => {
+  const queue = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["server/index.ts"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  const persisted = createRun(queue);
+  persisted.status = "failed";
+  persisted.tasks[0].status = "failed";
+  persisted.tasks[1].status = "blocked";
+  persisted.tasks[1].authorizationEvidence = authorizeTask(persisted.tasks[1], persisted.project);
+  const independentWriter = { ...structuredClone(persisted.tasks[0]), id: "independent-writer", key: "independent" };
+  persisted.tasks.push(independentWriter);
+  const before = JSON.stringify(persisted);
+  assert.throws(() => retryRun(persisted, persisted.tasks[0]), /PERSISTED_RUN_STRUCTURE_INVALID/);
+  assert.throws(() => resumeRun(persisted), /PERSISTED_RUN_STRUCTURE_INVALID/);
+  assert.equal(JSON.stringify(persisted), before);
+});
+
+test("HTTP resume rejects malformed persisted topology before a project lock or source mutation", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-replay-http-"));
+  const queue = validateTaskQueue({
+    project: { path: project },
+    tasks: [
+      { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["result.txt"] },
+      {
+        key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+        },
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+      },
+    ],
+  });
+  const persisted = createRun(queue);
+  persisted.status = "failed";
+  persisted.tasks[0].status = "failed";
+  persisted.tasks[1].status = "blocked";
+  persisted.tasks[1].authorizationEvidence = authorizeTask(persisted.tasks[1], persisted.project);
+  await persistRun(persisted);
+  const file = join(testDataDirectory, "runs", persisted.id, "run.json");
+  const malformed = JSON.parse(await readFile(file, "utf8"));
+  const lateHttpWriter = { ...structuredClone(malformed.tasks[0]), id: "late-http-writer", key: "late-http-writer" };
+  malformed.tasks.push(lateHttpWriter);
+  await writeFile(file, JSON.stringify(malformed, null, 2));
+  const before = await readFile(file, "utf8");
+  const locksBefore = await readdir(join(testDataDirectory, "project-locks")).catch((): string[] => []);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/runs/${persisted.id}/resume`, { method: "POST" });
+    assert.equal(response.status, 409);
+    assert.match(JSON.stringify(await response.json()), /PERSISTED_RUN_STRUCTURE_INVALID/);
+    assert.equal(await readFile(file, "utf8"), before);
+    const locksAfter = await readdir(join(testDataDirectory, "project-locks")).catch((): string[] => []);
+    assert.deepEqual(locksAfter, locksBefore);
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("restart leaves malformed persisted topology inactive without mutating its canonical record", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-replay-restart-"));
+  try {
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["result.txt"] },
+        {
+          key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+          },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+        },
+      ],
+    });
+    const persisted = createRun(queue);
+    persisted.status = "paused";
+    persisted.pausedAt = new Date().toISOString();
+    persisted.tasks[1].authorizationEvidence = authorizeTask(persisted.tasks[1], persisted.project);
+    await persistRun(persisted);
+    const file = join(testDataDirectory, "runs", persisted.id, "run.json");
+    const malformed = JSON.parse(await readFile(file, "utf8"));
+    const lateRestartWriter = { ...structuredClone(malformed.tasks[0]), id: "late-restart-writer", key: "late-restart-writer" };
+    malformed.tasks.push(lateRestartWriter);
+    await writeFile(file, JSON.stringify(malformed, null, 2));
+    const before = await readFile(file, "utf8");
+    const diagnostics: string[] = [];
+    assert.equal(await recoverPersistedRunForStartup(file, (message) => diagnostics.push(message)), undefined);
+    assert.match(diagnostics.join(" "), /PERSISTED_RUN_STRUCTURE_INVALID/);
+    assert.equal(await readFile(file, "utf8"), before);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("whole-change acceptance binds task-owned tracked and untracked evidence without adopting unrelated worktree files", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-whole-change-"));
+  try {
+    git(project, "init");
+    await writeFile(join(project, "tracked.txt"), "before\n");
+    git(project, "add", "tracked.txt");
+    await writeFile(join(project, "tracked.txt"), "after\n");
+    await writeFile(join(project, "untracked.txt"), "created\n");
+    await writeFile(join(project, "unrelated.txt"), "pre-existing\n");
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["tracked.txt", "untracked.txt"] },
+        {
+          key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+          },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+        },
+      ],
+    });
+    const run = createRun(queue);
+    run.tasks[0].status = "completed";
+    run.tasks[0].reviewStatus = "approved";
+    run.tasks[0].changedFiles = ["tracked.txt", "untracked.txt"];
+    const evidence = await prepareWholeChangeAcceptanceEvidence(run, run.tasks[1]);
+    assert.deepEqual(evidence?.aggregateChangedFiles, ["tracked.txt", "untracked.txt"]);
+    assert.deepEqual(evidence?.contentEvidence.map((entry) => entry.kind), ["tracked", "untracked"]);
+    assert.doesNotMatch(JSON.stringify(evidence), /unrelated\.txt/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("external read roots are normalized, approval-bound, persisted, and shown to the executor", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-external-project-"));
+  const external = await mkdtemp(join(tmpdir(), "orchestrator-external-read-"));
+  try {
+    git(external, "init");
+    const input = queueAuthoringContractInput(project);
+    input.project.approvedApplyContracts[0].externalReadRoots = [external];
+    input.tasks[0].externalReadRoots = [external];
+    const queue = validateTaskQueue(input);
+    const evidence = authorizeTask(queue.tasks[0], queue.project);
+    const persistedTask = createRun(queue).tasks[0];
+
+    assert.equal(evidence.decision, "authorized");
+    assert.deepEqual(evidence.externalReadRoots, [external]);
+    assert.deepEqual(persistedTask.externalReadRoots, [external]);
+    assert.ok(buildPrompt(persistedTask, queue.project).includes(
+      `External read-only roots (authorization-bound; never write or persist Git configuration):\n- ${external}`,
+    ));
+
+    assert.equal(authorizeTask(
+      { ...queue.tasks[0], externalReadRoots: undefined },
+      queue.project,
+    ).reason, "APPROVAL_CONTRACT_MISMATCH");
+    assert.throws(
+      () => normalizeExternalReadRootsV1([project], project),
+      /outside project\.path/,
+    );
+    assert.throws(
+      () => normalizeExternalReadRootsV1([external, external], project),
+      /duplicate directories/,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("external Git roots use process-local safe.directory configuration and pass preflight", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-external-preflight-project-"));
+  const external = await mkdtemp(join(tmpdir(), "orchestrator-external-preflight-root-"));
+  try {
+    git(external, "init");
+    const environment = gitSafeDirectoryProcessEnvironment({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "Orchestrator Test",
+    }, [external]);
+    assert.equal(environment.GIT_CONFIG_COUNT, "2");
+    assert.equal(environment.GIT_CONFIG_KEY_0, "user.name");
+    assert.equal(environment.GIT_CONFIG_KEY_1, "safe.directory");
+    assert.equal(environment.GIT_CONFIG_VALUE_1, external);
+    assert.throws(
+      () => gitSafeDirectoryProcessEnvironment({ GIT_CONFIG_COUNT: "invalid" }, [external]),
+      /non-negative integer/,
+    );
+
+    const input = queueAuthoringContractInput(project);
+    input.project.approvedApplyContracts[0].externalReadRoots = [external];
+    input.tasks[0].externalReadRoots = [external];
+    const checks = await queueExternalReadRootPreflightChecks(
+      validateTaskQueue(input),
+      process.env,
+    );
+    assert.deepEqual(checks, [{
+      name: "Task 1 external read root 1",
+      ok: true,
+      detail: external,
+    }]);
+    assert.throws(
+      () => git(external, "config", "--local", "--get-all", "safe.directory"),
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+    await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("runtime constraints persist in task authorization evidence while legacy queues synthesize nothing", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-authoring-persist-"));
+  try {
+    const queue = validateTaskQueue(queueAuthoringContractInput(project));
+    const created = createRun(queue);
+    created.tasks[0].authorizationEvidence = authorizeTask(
+      created.tasks[0],
+      created.project,
+    );
+    created.status = "completed";
+    created.finishedAt = new Date().toISOString();
+    for (const task of created.tasks) {
+      task.status = "completed";
+      task.finishedAt = created.finishedAt;
+    }
+    await persistRun(created);
+    const stored = JSON.parse(await readFile(
+      join(testDataDirectory, "runs", created.id, "run.json"),
+      "utf8",
+    ));
+    assert.deepEqual(stored.tasks[0].runtimeConstraints, [
+      "Node.js 22 is available.",
+    ]);
+    assert.deepEqual(stored.tasks[0].authorizationEvidence.runtimeConstraints, [
+      "Node.js 22 is available.",
+    ]);
+    assert.equal(verifyStoredTaskAuthorization(
+      stored.tasks[0].authorizationEvidence,
+      {
+        ...queue.tasks[0],
+        runtimeConstraints: ["A changed runtime constraint."],
+      },
+      queue.project,
+    ), false);
+
+    const legacy = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "legacy-one", title: "Legacy one", prompt: "Do legacy work." },
+        { key: "legacy-two", title: "Legacy two", prompt: "Report legacy work." },
+      ],
+    });
+    const legacyRun = createRun(legacy);
+    assert.equal(legacyRun.tasks[0].authoringContract, undefined);
+    assert.equal(legacyRun.tasks[0].impactPaths, undefined);
+    assert.equal(legacyRun.tasks[0].runtimeConstraints, undefined);
+    assert.equal(legacyRun.tasks[0].recovery, undefined);
+    assert.equal(authorizeTask(legacy.tasks[0], legacy.project).decision, "disabled");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("recovery execution kind and recovery chain require exact persisted source evidence and a runtime constraints superset", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-recovery-contract-"));
+  try {
+    const sourceQueue = validateTaskQueue(queueAuthoringContractInput(project, [
+      "Node.js 22 is available.",
+      "PowerShell commands use project-root quoting.",
+    ]));
+    const source = createRun(sourceQueue);
+    source.status = "failed";
+    source.finishedAt = new Date().toISOString();
+    source.tasks[0].status = "failed";
+    source.tasks[0].finishedAt = source.finishedAt;
+    source.tasks[0].authorizationEvidence = authorizeTask(
+      source.tasks[0],
+      source.project,
+    );
+    source.tasks[1].status = "skipped";
+    source.tasks[1].finishedAt = source.finishedAt;
+    await persistRun(source);
+    const sourceTaskId = source.tasks[0].id;
+    const recovery = {
+      contractType: "RecoveryTaskBindingV1" as const,
+      contractVersion: "1.0" as const,
+      sourceRunId: source.id,
+      sourceTaskId,
+    };
+    const recoveryQueue = validateTaskQueue(queueAuthoringContractInput(
+      project,
+      [
+        "Node.js 22 is available.",
+        "PowerShell commands use project-root quoting.",
+        "Use a fresh task-specific temporary directory.",
+      ],
+      recovery,
+    ));
+    assert.deepEqual(await queueRecoveryContractChecks(recoveryQueue), [{
+      name: 'Task "authoring-v1-apply" recovery contract',
+      ok: true,
+      detail:
+        'Task "authoring-v1-apply" recovery contract: RECOVERY_SOURCE_EXACT_AND_RUNTIME_SUPERSET.',
+    }]);
+    await assert.doesNotReject(() => assertQueueRecoveryContracts(recoveryQueue));
+
+    const narrowed = validateTaskQueue(queueAuthoringContractInput(
+      project,
+      ["Node.js 22 is available."],
+      recovery,
+    ));
+    await assert.rejects(
+      () => assertQueueRecoveryContracts(narrowed),
+      /RECOVERY_RUNTIME_CONSTRAINTS_NARROWED/,
+    );
+
+    const sourceFile = join(testDataDirectory, "runs", source.id, "run.json");
+    const original = await readFile(sourceFile, "utf8");
+    const changed = JSON.parse(original);
+    changed.tasks[0].runtimeConstraints.push("A changed source constraint.");
+    await writeFile(sourceFile, JSON.stringify(changed, null, 2));
+    await assert.rejects(
+      () => assertQueueRecoveryContracts(recoveryQueue),
+      /RECOVERY_SOURCE_AUTHORIZATION_EVIDENCE_CHANGED/,
+    );
+
+    const ambiguous = JSON.parse(original);
+    ambiguous.tasks.push(structuredClone(ambiguous.tasks[0]));
+    await writeFile(sourceFile, JSON.stringify(ambiguous, null, 2));
+    await assert.rejects(
+      () => assertQueueRecoveryContracts(recoveryQueue),
+      /RECOVERY_SOURCE_TASK_AMBIGUOUS/,
+    );
+    await writeFile(sourceFile, original);
+
+    const failedRecovery = createRun(recoveryQueue);
+    failedRecovery.status = "failed";
+    failedRecovery.finishedAt = new Date().toISOString();
+    failedRecovery.tasks[0].status = "failed";
+    failedRecovery.tasks[0].finishedAt = failedRecovery.finishedAt;
+    failedRecovery.tasks[0].authorizationEvidence = authorizeTask(
+      failedRecovery.tasks[0],
+      failedRecovery.project,
+    );
+    failedRecovery.tasks[1].status = "skipped";
+    failedRecovery.tasks[1].finishedAt = failedRecovery.finishedAt;
+    await persistRun(failedRecovery);
+    const chainedRecovery = validateTaskQueue(queueAuthoringContractInput(
+      project,
+      [
+        "Node.js 22 is available.",
+        "PowerShell commands use project-root quoting.",
+        "Use a fresh task-specific temporary directory.",
+        "Retain the failed recovery lineage.",
+      ],
+      {
+        contractType: "RecoveryTaskBindingV1",
+        contractVersion: "1.0",
+        sourceRunId: failedRecovery.id,
+        sourceTaskId: failedRecovery.tasks[0].id,
+      },
+    ));
+    await assert.doesNotReject(() => assertQueueRecoveryContracts(chainedRecovery));
+    const failedRecoveryFile = join(testDataDirectory, "runs", failedRecovery.id, "run.json");
+    const cyclicRecovery = JSON.parse(await readFile(failedRecoveryFile, "utf8"));
+    cyclicRecovery.tasks[0].recovery = {
+      contractType: "RecoveryTaskBindingV1",
+      contractVersion: "1.0",
+      sourceRunId: failedRecovery.id,
+      sourceTaskId: failedRecovery.tasks[0].id,
+    };
+    await writeFile(failedRecoveryFile, JSON.stringify(cyclicRecovery, null, 2));
+    await assert.rejects(
+      () => assertQueueRecoveryContracts(chainedRecovery),
+      /RECOVERY_SOURCE_LINEAGE_CYCLIC/,
+    );
+
+    const recoveryRun = createRun(recoveryQueue);
+    recoveryRun.status = "paused";
+    recoveryRun.pausedAt = new Date().toISOString();
+    recoveryRun.tasks[0].authorizationEvidence = authorizeTask(
+      recoveryRun.tasks[0],
+      recoveryRun.project,
+    );
+    assert.equal(
+      verifyStoredTaskAuthorization(
+        recoveryRun.tasks[0].authorizationEvidence,
+        recoveryRun.tasks[0],
+        recoveryRun.project,
+      ),
+      true,
+      "the paused recovery task must replay its persisted authorization",
+    );
+    assert.equal(
+      recoveryRun.lock,
+      undefined,
+      "the paused recovery fixture must not claim a live owner",
+    );
+    await persistRun(recoveryRun);
+    const recoveryRunFile = join(
+      testDataDirectory,
+      "runs",
+      recoveryRun.id,
+      "run.json",
+    );
+    assert.deepEqual(
+      recoveryRun.tasks.map((task) => ({
+        status: task.status,
+        executionPhase: task.executionPhase,
+      })),
+      [
+        { status: "pending", executionPhase: undefined },
+        { status: "pending", executionPhase: undefined },
+      ],
+      "pending recovery work is quiescent paused state, not active execution",
+    );
+    const validRestartDiagnostics: string[] = [];
+    assert.equal(
+      (await recoverPersistedRunForStartup(
+        recoveryRunFile,
+        (message: string) => validRestartDiagnostics.push(message),
+      ))?.id,
+      recoveryRun.id,
+    );
+    assert.deepEqual(
+      validRestartDiagnostics,
+      [],
+      "exact recovery evidence must replay before a quiescent paused run is returned",
+    );
+    const changedRecovery = JSON.parse(await readFile(recoveryRunFile, "utf8"));
+    changedRecovery.tasks[0].recovery.sourceTaskId = "changed-source-task";
+    await writeFile(recoveryRunFile, JSON.stringify(changedRecovery, null, 2));
+    const restartDiagnostics: string[] = [];
+    assert.equal(
+      await recoverPersistedRunForStartup(
+        recoveryRunFile,
+        (message: string) => restartDiagnostics.push(message),
+      ),
+      undefined,
+    );
+    assert.match(restartDiagnostics.join(" "), /fresh contract|required|recovery/i);
+
+    const missingQueue = validateTaskQueue(queueAuthoringContractInput(
+      project,
+      ["Node.js 22 is available."],
+      { ...recovery, sourceRunId: "missing-source-run" },
+    ));
+    await assert.rejects(
+      () => assertQueueRecoveryContracts(missingQueue),
+      /RECOVERY_SOURCE_RUN_MISSING/,
+    );
+    const malformed = queueAuthoringContractInput(
+      project,
+      ["Node.js 22 is available."],
+      { ...recovery, sourceRunId: "../ambiguous" },
+    );
+    assert.throws(
+      () => validateTaskQueue(malformed),
+      /must bind one exact source run ID and source task ID/,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("recovery contract launch authorization fails before run or lock creation", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-recovery-launch-"));
+  const runsBefore = await readdir(join(testDataDirectory, "runs")).catch(
+    (): string[] => [],
+  );
+  const locksBefore = await readdir(join(testDataDirectory, "project-locks")).catch(
+    (): string[] => [],
+  );
+  const recovery = {
+    contractType: "RecoveryTaskBindingV1" as const,
+    contractVersion: "1.0" as const,
+    sourceRunId: "missing-launch-source",
+    sourceTaskId: "missing-launch-task",
+  };
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(queueAuthoringContractInput(
+        project,
+        ["Node.js 22 is available."],
+        recovery,
+      )),
+    });
+    assert.equal(response.status, 400);
+    assert.match(JSON.stringify(await response.json()), /RECOVERY_SOURCE_RUN_MISSING/);
+    const runsAfter = await readdir(join(testDataDirectory, "runs")).catch(
+      (): string[] => [],
+    );
+    assert.deepEqual(
+      runsAfter.filter((entry) => !runsBefore.includes(entry)),
+      [],
+      "a denied recovery launch must not create a run",
+    );
+    const locksAfter = await readdir(join(testDataDirectory, "project-locks")).catch(
+      (): string[] => [],
+    );
+    assert.deepEqual(
+      locksAfter.filter((entry) => !locksBefore.includes(entry)),
+      [],
+      "a denied recovery launch must not create a project lock",
+    );
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("one configured approved apply contract authorizes its exact reversible local scope and replays persisted run evidence", () => {
   const task = {
     allowedPaths: ["server/index.ts", "server/index.test.ts"],
@@ -11723,7 +12520,482 @@ test("exact changed-file and orchestrator verification boundaries fail closed", 
   ).reason, "APPROVAL_CONTRACT_MISMATCH");
 });
 
-test("disabled-by-default fallback does not invent approval or verification authority", () => {
+test("launch authorization checks replay exact apply approvals without narrowing read-only contracts", () => {
+  const approval = {
+    approvalId: "apply-server",
+    intent: "apply" as const,
+    technicalPermission: "reversible_local_write" as const,
+    sideEffectRisk: "reversible_local_write" as const,
+    allowedPaths: ["server/index.ts"],
+    preconditions: ["git rev-parse --verify HEAD"],
+    verificationCommands: ["npm.cmd run check", "git diff --check -- server/index.ts"],
+  };
+  const applyTask = {
+    key: "apply-server",
+    title: "Apply server gate",
+    prompt: "Implement the exact approved server change.",
+    allowedPaths: [...approval.allowedPaths],
+    preconditions: [...approval.preconditions],
+    verificationCommands: [...approval.verificationCommands],
+    authorization: {
+      enabled: true,
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      approvalId: approval.approvalId,
+    },
+  };
+  const makeQueue = (
+    overrides: Partial<typeof applyTask> = {},
+    contracts = [approval],
+    readOnlyIntent: "answer" | "review" | "diagnose" = "review",
+  ) => validateTaskQueue({
+    project: { path: process.cwd(), approvedApplyContracts: contracts },
+    tasks: [
+      { ...applyTask, ...overrides },
+      {
+        key: "review-result",
+        title: "Review result",
+        prompt: "Review without edits.",
+        allowedPaths: [],
+        authorization: {
+          enabled: true,
+          intent: readOnlyIntent,
+          technicalPermission: "read_only",
+          sideEffectRisk: "none",
+        },
+      },
+    ],
+  });
+  const reasonFor = (queue: ReturnType<typeof validateTaskQueue>) =>
+    queueLaunchAuthorizationChecks(queue).find((check) => !check.ok)?.detail;
+
+  const valid = makeQueue();
+  assert.deepEqual(queueLaunchAuthorizationChecks(valid), [
+    {
+      name: 'Task "apply-server" authorization',
+      ok: true,
+      detail: 'Task "apply-server" authorization: APPROVED_REVERSIBLE_LOCAL_APPLY.',
+    },
+    {
+      name: 'Task "review-result" authorization',
+      ok: true,
+      detail: 'Task "review-result" authorization: NON_MUTATING_AUTHORIZED.',
+    },
+  ]);
+  for (const intent of ["answer", "review", "diagnose"] as const)
+    assert.ok(queueLaunchAuthorizationChecks(makeQueue({}, [approval], intent)).every((check) => check.ok));
+
+  const alternateApproval = {
+    ...approval,
+    approvalId: "apply-other",
+    allowedPaths: ["server/other.ts"],
+  };
+  assert.equal(
+    reasonFor(makeQueue({ authorization: { ...applyTask.authorization, approvalId: "apply-other" } }, [approval, alternateApproval])),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+  const missingApprovalAuthorization = {
+    enabled: true,
+    intent: "apply" as const,
+    technicalPermission: "reversible_local_write" as const,
+    sideEffectRisk: "reversible_local_write" as const,
+    approvalId: "",
+  };
+  assert.throws(
+    () => makeQueue({ authorization: missingApprovalAuthorization }),
+    /authorization\.approvalId must be a non-empty string/,
+  );
+  assert.equal(
+    reasonFor(makeQueue({ allowedPaths: ["server/index.test.ts"] })),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+  assert.equal(
+    reasonFor(makeQueue({ preconditions: ["git rev-parse --verify main"] })),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+  assert.equal(
+    reasonFor(makeQueue({ verificationCommands: [] })),
+    'Task "apply-server" authorization denied: EXACT_SCOPE_REQUIRED.',
+  );
+  assert.equal(
+    reasonFor(makeQueue({ verificationCommands: [...approval.verificationCommands].reverse() })),
+    'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+  );
+});
+
+test("preflight and launch gates reject denied ordinary, pipeline, and appended queues before run or lock state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-launch-authorization-"));
+  const deniedQueue = {
+    project: { path: project },
+    tasks: [
+      {
+        key: "apply-server",
+        title: "Apply server gate",
+        prompt: "Implement a local change.",
+        allowedPaths: ["server/index.ts"],
+        verificationCommands: ["git diff --check -- server/index.ts"],
+        authorization: {
+          enabled: true,
+          intent: "apply",
+          technicalPermission: "reversible_local_write",
+          sideEffectRisk: "reversible_local_write",
+          approvalId: "missing-approval",
+        },
+      },
+      { key: "report", title: "Report", prompt: "Report the outcome." },
+    ],
+  };
+  const allowedQueue = {
+    project: { path: project },
+    tasks: [
+      { key: "first", title: "First", prompt: "Inspect only." },
+      { key: "second", title: "Second", prompt: "Report only." },
+    ],
+  };
+  const first = join(project, "first.yaml");
+  const second = join(project, "second.yaml");
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map((entry) => entry.toString()).sort();
+  try {
+    await writeFile(first, stringify(allowedQueue));
+    await writeFile(second, stringify(deniedQueue));
+    const pipeline = await loadPipeline({ queues: [{ file: first }, { file: second }] });
+    assert.deepEqual(pipelineLaunchAuthorizationChecks(pipeline), [{
+      name: 'Pipeline queue 2 Task "apply-server" authorization',
+      ok: false,
+      detail: 'Pipeline queue 2: Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+    }]);
+
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}`;
+      const runsBefore = await entries(join(testDataDirectory, "runs"));
+      const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+      const plansBefore = await entries(join(testDataDirectory, "plans"));
+
+      const preflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queues: [{ file: first }, { file: second }] }),
+      });
+      assert.equal(preflight.status, 200);
+      const preflightBody = await preflight.json() as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+      };
+      assert.equal(preflightBody.ok, false);
+      assert.deepEqual(
+        preflightBody.checks.find((check) => check.name === 'Pipeline queue 2 Task "apply-server" authorization'),
+        {
+          name: 'Pipeline queue 2 Task "apply-server" authorization',
+          ok: false,
+          detail: 'Pipeline queue 2: Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+        },
+      );
+
+      const launch = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(deniedQueue),
+      });
+      assert.equal(launch.status, 400);
+      assert.deepEqual(await launch.json(), {
+        error: 'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+      });
+      const pipelineLaunch = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queues: [{ file: first }, { file: second }] }),
+      });
+      assert.equal(pipelineLaunch.status, 400);
+      assert.deepEqual(await pipelineLaunch.json(), {
+        error: 'Pipeline queue 2: Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+      });
+      const append = await fetch(`${base}/api/pipeline/append`, {
+        method: "POST",
+        headers: { "Content-Type": "text/yaml", "X-Queue-Filename": "denied.yaml" },
+        body: stringify(deniedQueue),
+      });
+      assert.equal(append.status, 400);
+      assert.deepEqual(await append.json(), {
+        error: 'Task "apply-server" authorization denied: APPROVAL_CONTRACT_MISMATCH.',
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "plans")), plansBefore);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("ordinary launch runtime preflight fails closed for a private missing-runtime dependency", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-launch-runtime-"));
+  const missingRuntime = join(project, "private", "missing-python.exe");
+  const previousPythonBin = process.env.PYTHON_BIN;
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map((entry) => entry.toString()).sort();
+  const queue = {
+    project: { path: project },
+    tasks: [
+      {
+        title: "Runtime prompt",
+        prompt: "Use $env:PYTHON_BIN to inspect generated metadata.",
+      },
+      { title: "Report", prompt: "Report only." },
+    ],
+  };
+  const legacyQueue = {
+    project: { path: project },
+    tasks: [
+      { title: "Inspect", prompt: "Inspect only." },
+      { title: "Report", prompt: "Report only." },
+    ],
+  };
+  process.env.PYTHON_BIN = missingRuntime;
+  try {
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}`;
+      const runsBefore = await entries(join(testDataDirectory, "runs"));
+      const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+      const plansBefore = await entries(join(testDataDirectory, "plans"));
+
+      const preflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(queue),
+      });
+      assert.equal(preflight.status, 200);
+      const preflightBody = await preflight.json() as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+      };
+      assert.equal(preflightBody.ok, false);
+      assert.deepEqual(
+        preflightBody.checks.find((check) => check.name === "Managed Python"),
+        {
+          name: "Managed Python",
+          ok: false,
+          detail: "Managed Python runtime declared by queue is unavailable.",
+        },
+      );
+      assert.doesNotMatch(JSON.stringify(preflightBody), /missing-python/i);
+
+      const legacyPreflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(legacyQueue),
+      });
+      assert.equal(legacyPreflight.status, 200);
+      const legacyBody = await legacyPreflight.json() as {
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+      };
+      assert.deepEqual(
+        legacyBody.checks.find((check) => check.name === "Managed Python"),
+        { name: "Managed Python", ok: true, detail: "Not required" },
+      );
+
+      const launch = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(queue),
+      });
+      assert.equal(launch.status, 400);
+      assert.deepEqual(await launch.json(), {
+        error: "Managed Python runtime declared by queue is unavailable.",
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "plans")), plansBefore);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  } finally {
+    if (previousPythonBin === undefined) delete process.env.PYTHON_BIN;
+    else process.env.PYTHON_BIN = previousPythonBin;
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("pipeline launch and append runtime preflight checks every queue before plan state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-pipeline-runtime-"));
+  const missingRuntime = join(project, "private", "missing-python.exe");
+  const previousPythonBin = process.env.PYTHON_BIN;
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map((entry) => entry.toString()).sort();
+  const plainQueue = {
+    project: { path: project },
+    tasks: [
+      { title: "First", prompt: "Inspect only." },
+      { title: "First report", prompt: "Report only." },
+    ],
+  };
+  const pipelineRuntimeQueue = {
+    project: { path: project },
+    tasks: [
+      {
+        title: "Second",
+        prompt: "Inspect generated metadata.",
+        preconditions: ["& $env:PYTHON_BIN --version"],
+      },
+      { title: "Second report", prompt: "Report only." },
+    ],
+  };
+  const appendedRuntimeQueue = {
+    project: { path: project },
+    tasks: [
+      {
+        title: "Appended",
+        prompt: "Inspect only.",
+        verificationMode: "advisory",
+        verificationCommands: [
+          "& $env:PYTHON_BIN -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-runtime-$PID\"",
+        ],
+      },
+      { title: "Appended report", prompt: "Report only." },
+    ],
+  };
+  const first = join(project, "first.yaml");
+  const second = join(project, "second.yaml");
+  process.env.PYTHON_BIN = missingRuntime;
+  try {
+    await writeFile(first, stringify(plainQueue));
+    await writeFile(second, stringify(pipelineRuntimeQueue));
+    const loaded = await loadPipeline({
+      queues: [{ file: first }, { file: second }],
+    });
+    assert.deepEqual(await pipelineManagedPythonPreflightChecks(loaded), [
+      {
+        name: "Pipeline queue 1 Managed Python",
+        ok: true,
+        detail: "Not required",
+      },
+      {
+        name: "Pipeline queue 2 Managed Python",
+        ok: false,
+        detail: "Pipeline queue 2: Managed Python runtime declared by queue is unavailable.",
+      },
+    ]);
+
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}`;
+      const runsBefore = await entries(join(testDataDirectory, "runs"));
+      const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+      const plansBefore = await entries(join(testDataDirectory, "plans"));
+      const pipelineInput = { queues: [{ file: first }, { file: second }] };
+
+      const preflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pipelineInput),
+      });
+      assert.equal(preflight.status, 200);
+      const preflightBody = await preflight.json() as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+      };
+      assert.equal(preflightBody.ok, false);
+      assert.deepEqual(
+        preflightBody.checks.filter((check) => /Managed Python$/.test(check.name)),
+        await pipelineManagedPythonPreflightChecks(loaded),
+      );
+      assert.doesNotMatch(JSON.stringify(preflightBody), /missing-python/i);
+
+      const launch = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pipelineInput),
+      });
+      assert.equal(launch.status, 400);
+      assert.deepEqual(await launch.json(), {
+        error: "Pipeline queue 2: Managed Python runtime declared by queue is unavailable.",
+      });
+
+      const append = await fetch(`${base}/api/pipeline/append`, {
+        method: "POST",
+        headers: { "Content-Type": "text/yaml", "X-Queue-Filename": "runtime.yaml" },
+        body: stringify(appendedRuntimeQueue),
+      });
+      assert.equal(append.status, 400);
+      assert.deepEqual(await append.json(), {
+        error: "Managed Python runtime declared by queue is unavailable.",
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "plans")), plansBefore);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  } finally {
+    if (previousPythonBin === undefined) delete process.env.PYTHON_BIN;
+    else process.env.PYTHON_BIN = previousPythonBin;
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("all authorized task intents retain their declared verification commands", () => {
+  for (const intent of ["answer", "review", "diagnose"] as const) {
+    const evidence = authorizeTask({
+      verificationCommands: ["node static-review-check.mjs"],
+      authorization: {
+        enabled: true,
+        intent,
+        technicalPermission: "read_only",
+        sideEffectRisk: "none",
+      },
+    });
+    assert.equal(evidence.decision, "authorized");
+    assert.deepEqual(orchestratorVerificationCommands(evidence), [
+      "node static-review-check.mjs",
+    ]);
+  }
+});
+
+test("read-only executor delegates every declared verification command to Orchestrator", () => {
+  const command = "& $env:PYTHON_BIN -m pytest --basetemp=\"$env:TEMP\\review-$PID\"";
+  const reviewTask = {
+    ...task("read-only-verification-owner", "pending"),
+    allowedPaths: [],
+    verificationCommands: [command],
+    authorization: {
+      enabled: true,
+      intent: "review" as const,
+      technicalPermission: "read_only" as const,
+      sideEffectRisk: "none" as const,
+    },
+  };
+  const authorizationEvidence = authorizeTask(reviewTask);
+  const prompt = buildPrompt({ ...reviewTask, authorizationEvidence }, {});
+  assert.match(prompt, /Do not run verification commands yourself/);
+  assert.match(prompt, /orchestrator's verification phase may run only these declared commands/);
+  assert.match(prompt, /\$env:PYTHON_BIN/);
+  assert.doesNotMatch(prompt, /Run these verification commands when relevant/);
+});
+
+test("disabled-by-default fallback permits only explicit advisory verification", () => {
   const evidence = authorizeTask({});
   assert.equal(evidence.decision, "disabled");
   assert.equal(taskSandbox(evidence), "workspace-write");
@@ -11733,6 +13005,230 @@ test("disabled-by-default fallback does not invent approval or verification auth
   ]);
   assert.deepEqual(orchestratorVerificationCommands(evidence), []);
   assert.deepEqual(authorizationWriteViolations(evidence, ["legacy-change.ts"]), []);
+  const prompt = buildReviewerPrompt({
+    ...task("disabled-verification", "completed"),
+    verificationMode: "advisory",
+    verificationCommands: ["node must-not-run.mjs"],
+    authorizationEvidence: {
+      ...evidence,
+      verificationCommands: ["node must-not-run.mjs"],
+    },
+  }, {});
+  assert.match(prompt, /explicitly advisory and executor-owned/);
+  assert.match(prompt, /not machine acceptance evidence/);
+  assert.doesNotMatch(prompt, /EVIDENCE: MISSING/);
+});
+
+test("declared verification fails admission without authorization unless explicitly advisory", () => {
+  const base = {
+    project: { path: process.cwd() },
+    tasks: [
+      {
+        key: "implementation",
+        title: "Implementation",
+        prompt: "Implement the change.",
+        verificationCommands: ["node --version"],
+      },
+      { key: "report", title: "Report", prompt: "Report only." },
+    ],
+  };
+  const required = validateTaskQueue(base);
+  assert.deepEqual(queueLaunchAuthorizationChecks(required), [{
+    name: 'Task "implementation" verification authorization',
+    ok: false,
+    detail: 'Task "implementation" verification authorization denied: VERIFICATION_AUTHORIZATION_REQUIRED. Declare enabled authorization or mark the commands verificationMode: advisory.',
+  }]);
+  const advisory = validateTaskQueue({
+    ...base,
+    tasks: [
+      { ...base.tasks[0], verificationMode: "advisory" },
+      base.tasks[1],
+    ],
+  });
+  assert.deepEqual(queueLaunchAuthorizationChecks(advisory), []);
+  assert.throws(
+    () => validateTaskQueue({
+      ...base,
+      tasks: [
+        {
+          ...base.tasks[0],
+          verificationMode: "advisory",
+          authorization: {
+            enabled: true,
+            intent: "review",
+            technicalPermission: "read_only",
+            sideEffectRisk: "none",
+          },
+        },
+        base.tasks[1],
+      ],
+    }),
+    /advisory verification cannot be combined with enabled authorization/,
+  );
+});
+
+test("verification authorization denial is visible in preflight and creates no run or lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-verification-admission-"));
+  const queue = {
+    project: { path: project },
+    tasks: [
+      {
+        key: "implementation",
+        title: "Implementation",
+        prompt: "Implement the change.",
+        verificationCommands: ["node --version"],
+      },
+      { key: "report", title: "Report", prompt: "Report only." },
+    ],
+  };
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map(String).sort();
+  const runsBefore = await entries(join(testDataDirectory, "runs"));
+  const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("listening", resolveListen);
+    server.once("error", rejectListen);
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const base = `http://127.0.0.1:${address.port}`;
+    const preflight = await fetch(`${base}/api/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(queue),
+    });
+    assert.equal(preflight.status, 200);
+    const preflightBody = await preflight.json() as {
+      ok: boolean;
+      checks: Array<{ name: string; ok: boolean; detail: string }>;
+    };
+    assert.equal(preflightBody.ok, false);
+    assert.deepEqual(
+      preflightBody.checks.find((check) =>
+        check.name === 'Task "implementation" verification authorization'
+      ),
+      {
+        name: 'Task "implementation" verification authorization',
+        ok: false,
+        detail: 'Task "implementation" verification authorization denied: VERIFICATION_AUTHORIZATION_REQUIRED. Declare enabled authorization or mark the commands verificationMode: advisory.',
+      },
+    );
+    const launch = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(queue),
+    });
+    assert.equal(launch.status, 400);
+    assert.match(JSON.stringify(await launch.json()), /VERIFICATION_AUTHORIZATION_REQUIRED/);
+    assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+    assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+  } finally {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("required verification evidence must be exact and successful before review", () => {
+  const evidence = authorizeTask({
+    verificationCommands: ["node first.mjs", "node second.mjs"],
+    authorization: {
+      enabled: true,
+      intent: "review",
+      technicalPermission: "read_only",
+      sideEffectRisk: "none",
+    },
+  });
+  const subject = {
+    verificationMode: "required" as const,
+    authorizationEvidence: evidence,
+    verificationEvidence: [{
+      command: "node first.mjs",
+      exitCode: 0,
+      timedOut: false,
+      output: "ok",
+    }],
+  };
+  assert.match(
+    requiredVerificationEvidenceIssue(subject) ?? "",
+    /missing or incomplete/,
+  );
+  assert.match(
+    requiredVerificationEvidenceIssue({
+      ...subject,
+      verificationEvidence: [
+        ...subject.verificationEvidence,
+        {
+          command: "node second.mjs",
+          exitCode: 1,
+          timedOut: false,
+          output: "failed",
+        },
+      ],
+    }) ?? "",
+    /failed, timed out, or mismatched/,
+  );
+  assert.equal(requiredVerificationEvidenceIssue({
+    ...subject,
+    verificationEvidence: [
+      ...subject.verificationEvidence,
+      {
+        command: "node second.mjs",
+        exitCode: 0,
+        timedOut: false,
+        output: "ok",
+      },
+    ],
+  }), undefined);
+});
+
+test("verification runner persists exact evidence consumed by a read-only reviewer", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-review-evidence-"));
+  try {
+    const command = "Write-Output review-evidence-ok";
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        {
+          key: "review",
+          title: "Review",
+          prompt: "Review the result without edits.",
+          allowedPaths: [],
+          verificationCommands: [command],
+          authorization: {
+            enabled: true,
+            intent: "review",
+            technicalPermission: "read_only",
+            sideEffectRisk: "none",
+          },
+        },
+        { key: "report", title: "Report", prompt: "Report the result." },
+      ],
+    });
+    const run = createRun(queue);
+    const reviewTask = run.tasks[0];
+    reviewTask.authorizationEvidence = authorizeTask(reviewTask, run.project);
+
+    const result = await runTaskVerification(run, reviewTask);
+
+    assert.deepEqual(result, { code: 0, timedOut: false });
+    assert.deepEqual(reviewTask.verificationEvidence, [{
+      command,
+      exitCode: 0,
+      timedOut: false,
+      output: "review-evidence-ok",
+    }]);
+    const stored = await loadRun(run.id);
+    assert.deepEqual(stored?.tasks[0].verificationEvidence, reviewTask.verificationEvidence);
+    const prompt = buildReviewerPrompt(reviewTask, run.project);
+    assert.match(prompt, /COMMAND: Write-Output review-evidence-ok/);
+    assert.match(prompt, /EXIT_CODE: 0/);
+    assert.match(prompt, /review-evidence-ok/);
+    assert.doesNotMatch(prompt, /EVIDENCE: MISSING/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("external, destructive, costly, published, expanded, and ambiguous effects fail closed", () => {
@@ -14915,7 +16411,27 @@ test("versioned queue template keeps one production contract outcome in one cohe
   assert.match(template, /independently useful/i);
   const parsed = parse(template);
   parsed.project.path = process.cwd();
-  assert.doesNotThrow(() => validateTaskQueue(parsed));
+  const queue = validateTaskQueue(parsed);
+  const applyTasks = queue.tasks.filter((task) =>
+    task.authorization?.intent === "apply"
+  );
+  assert.ok(applyTasks.length > 0);
+  assert.ok(applyTasks.every((task) =>
+    task.authoringContract?.contractType === "QueueAuthoringContractV1" &&
+    Object.keys(task.impactPaths ?? {}).length > 0 &&
+    Boolean(task.runtimeConstraints?.length)
+  ));
+  assert.ok(queue.project.approvedApplyContracts?.every((contract) =>
+    Object.keys(contract.impactPaths ?? {}).length > 0
+  ));
+  assert.match(template, /RecoveryTaskBindingV1/);
+  assert.equal(queue.tasks.some((task) => task.recovery), false);
+  assert.ok(queueLaunchAuthorizationChecks(queue).every((check) => check.ok));
+  const readOnlyReview = queue.tasks.find((task) => task.key === "review-integration");
+  assert.deepEqual(readOnlyReview?.allowedPaths, []);
+  assert.equal(readOnlyReview?.authorization?.intent, "review");
+  assert.equal(readOnlyReview?.authorization?.technicalPermission, "read_only");
+  assert.ok(readOnlyReview?.verificationCommands?.length);
 });
 
 test("ordinary YAML queues contain only ordinary task fields", () => {
@@ -15373,14 +16889,28 @@ test("Windows pytest verification requires an isolated sandbox temp directory", 
     ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator\\review-$PID\" tests\\test_acceptance.py";
   const safe =
     ".\\.venv\\Scripts\\python.exe -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const managed =
+    "& $env:PYTHON_BIN -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const absoluteProfile =
+    "& 'C:\\Users\\Администратор\\.cache\\codex-runtimes\\runtime\\python\\python.exe' -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const corruptedProfile =
+    "& 'C:\\Users\\РђРґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ\\.cache\\codex-runtimes\\runtime\\python\\python.exe' -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
+  const derivedProfile =
+    "& (Join-Path $env:USERPROFILE '.cache\\codex-runtimes\\runtime\\python\\python.exe') -m pytest -q --basetemp=\"$env:TEMP\\orchestrator-review-$PID\" tests\\test_acceptance.py";
   try {
     assert.match(windowsPytestBasetempViolation(unsafe) ?? "", /--basetemp/);
     assert.match(windowsPytestBasetempViolation(workspaceTemp) ?? "", /\$env:TEMP/);
     assert.match(windowsPytestBasetempViolation(sharedTemp) ?? "", /\$PID/);
     assert.match(windowsPytestBasetempViolation(nestedTemp) ?? "", /direct child/);
     assert.equal(windowsPytestBasetempViolation(safe), undefined);
+    assert.equal(windowsPytestBasetempViolation(managed), undefined);
     assert.equal(windowsPytestBasetempViolation("git diff --check"), undefined);
     assert.equal(windowsPytestBasetempViolation("rg -n pytest README.md"), undefined);
+    assert.equal(portablePythonCommandViolation(managed, "win32"), undefined);
+    assert.match(portablePythonCommandViolation(absoluteProfile, "win32") ?? "", /PYTHON_BIN/);
+    assert.match(portablePythonCommandViolation(corruptedProfile, "win32") ?? "", /PYTHON_BIN/);
+    assert.match(portablePythonCommandViolation(derivedProfile, "win32") ?? "", /PYTHON_BIN/);
+    assert.equal(portablePythonCommandViolation(absoluteProfile, "linux"), undefined);
 
     const base = {
       project: { path: project },
@@ -15408,6 +16938,19 @@ test("Windows pytest verification requires an isolated sandbox temp directory", 
         tasks: [{ ...base.tasks[0], verificationCommands: [safe] }],
       })
     );
+    if (process.platform === "win32") {
+      assert.throws(
+        () => validateQueue({
+          ...base,
+          tasks: [{ ...base.tasks[0], verificationCommands: [corruptedProfile] }],
+        }),
+        /user-profile Python path.*PYTHON_BIN/,
+      );
+      assert.doesNotThrow(() => validateQueue({
+        ...base,
+        tasks: [{ ...base.tasks[0], verificationCommands: [managed] }],
+      }));
+    }
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -15486,12 +17029,12 @@ test("safe fallback selects only fixed root entrypoints and emits ContextReceipt
   }
 });
 
-test("Orchestrator consumes its own bounded secondary-memory profile through the repository helper", async () => {
+test("repository helper resolves the supported implementation profile through Context Contract v1", async () => {
   const result = await new RepositoryContextHelperProvider().provide({
     projectPath: process.cwd(),
-    requestId: "request-orchestrator-startup",
-    task: "Start a grounded Orchestrator repository task",
-    profile: "startup",
+    requestId: "request-orchestrator-implementation",
+    task: "Implement a grounded Orchestrator repository task",
+    profile: "implementation",
     maxSources: 8,
   });
   assert.equal(result.provider, "repository-helper");
@@ -15595,6 +17138,89 @@ test("helper timeout, invalid JSON, and contract mismatch use observable safe fa
   }
 });
 
+test("unknown repository context profiles use a stable redacted fallback reason", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-unknown-profile-"));
+  const secret = "do-not-expose-context-secret";
+  try {
+    await mkdir(join(project, "scripts"));
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    await writeFile(
+      join(project, "scripts", "unknown.cjs"),
+      `console.error(${JSON.stringify(`unknown context profile: unrecognized; ${secret}; ${project}`)}); process.exit(2);`,
+    );
+    const request = {
+      projectPath: project,
+      requestId: "request-unknown-profile",
+      task: "Review",
+      profile: "unrecognized",
+      maxSources: 2,
+    };
+    const provider = new RepositoryContextHelperProvider({
+      executable: testNodeExecutable,
+      helperRelativePath: "scripts/unknown.cjs",
+      timeoutMs: 1_000,
+    });
+    await assert.rejects(
+      () => provider.provide(request),
+      (error: Error & { reasonCode?: string }) => {
+        assert.equal(error.reasonCode, "CONTEXT_PROFILE_UNKNOWN");
+        assert.match(error.message, /did not complete successfully/);
+        assert.doesNotMatch(error.message, new RegExp(secret));
+        assert.equal(error.message.includes(project), false);
+        return true;
+      },
+    );
+    const result = await resolveTaskContext(request, provider, new FallbackContextProvider());
+    assert.equal(result.fallbackReason, "CONTEXT_PROFILE_UNKNOWN");
+    assert.deepEqual(result.receipt.reason_codes, ["CONTEXT_PROFILE_UNKNOWN"]);
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+    assert.equal(JSON.stringify(result).includes(project), false);
+    assert.equal(safeContextFailureReasonCode("not a safe helper error"), "HELPER_FAILED");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("repository context checks warn for optional fallback and reject required fallback", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-context-launch-checks-"));
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const context = await new FallbackContextProvider().provide({
+      projectPath: project,
+      requestId: "request-launch-checks",
+      task: "Review",
+      profile: "implementation",
+      maxSources: 2,
+    });
+    context.fallbackReason = "HELPER_TIMEOUT";
+    const optional = validateQueue({
+      project: { path: project },
+      tasks: [{ title: "Context", prompt: "Review", contextProfile: "implementation" }],
+    });
+    assert.deepEqual(queueRepositoryContextChecks(optional, [context]), [{
+      name: "Task 1 context",
+      ok: true,
+      detail: "Warning: controlled context fallback: HELPER_TIMEOUT",
+    }]);
+    const required = validateQueue({
+      project: { path: project },
+      tasks: [{
+        title: "Context",
+        prompt: "Review",
+        contextProfile: "implementation",
+        requireRepositoryContext: true,
+      }],
+    });
+    assert.deepEqual(queueRepositoryContextChecks(required, [context]), [{
+      name: "Task 1 context",
+      ok: false,
+      detail: "Repository context required; fallback rejected: HELPER_TIMEOUT",
+    }]);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("helper adapter preserves safety evidence and rejects divergent receipt selections", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-context-consistency-"));
   try {
@@ -15691,6 +17317,97 @@ test("preflight context is reused for prompt and serialized run receipt", async 
     const stored = JSON.parse(JSON.stringify(created));
     assert.equal(stored.contextReceipts[0].contract_type, "ContextReceiptV1");
     assert.equal(stored.contextReceipts[0].request_id, "request-reuse");
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("required repository context blocks direct launch and makes preflight fail before run state", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-required-context-launch-"));
+  const queue = {
+    project: { path: project },
+    tasks: [
+      {
+        title: "Grounded task",
+        prompt: "Review repository context.",
+        contextProfile: "implementation",
+        requireRepositoryContext: true,
+      },
+      { title: "Report", prompt: "Report the outcome." },
+    ],
+  };
+  const entries = async (directory: string) =>
+    (await readdir(directory).catch(() => [])).map((entry) => entry.toString()).sort();
+  try {
+    await writeFile(join(project, "AGENTS.md"), "safe");
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("listening", resolveListen);
+      server.once("error", rejectListen);
+    });
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const base = `http://127.0.0.1:${address.port}`;
+      const runsBefore = await entries(join(testDataDirectory, "runs"));
+      const locksBefore = await entries(join(testDataDirectory, "project-locks"));
+
+      const direct = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(queue),
+      });
+      assert.equal(direct.status, 400);
+      assert.deepEqual(await direct.json(), {
+        error: "Repository context required; fallback rejected: HELPER_UNAVAILABLE",
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+
+      const first = join(project, "first.yaml");
+      const requiredSecond = join(project, "required-second.yaml");
+      await writeFile(first, stringify({
+        project: { path: project },
+        tasks: [
+          { title: "First", prompt: "Inspect only." },
+          { title: "First report", prompt: "Report only." },
+        ],
+      }));
+      await writeFile(requiredSecond, stringify(queue));
+      const pipelineDirect = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queues: [{ file: first }, { file: requiredSecond }] }),
+      });
+      assert.equal(pipelineDirect.status, 400);
+      assert.deepEqual(await pipelineDirect.json(), {
+        error: "Repository context required; fallback rejected: HELPER_UNAVAILABLE",
+      });
+      assert.deepEqual(await entries(join(testDataDirectory, "runs")), runsBefore);
+      assert.deepEqual(await entries(join(testDataDirectory, "project-locks")), locksBefore);
+
+      const preflight = await fetch(`${base}/api/preflight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(queue),
+      });
+      assert.equal(preflight.status, 200);
+      const body = await preflight.json() as {
+        ok: boolean;
+        checks: Array<{ name: string; ok: boolean; detail: string }>;
+        contextPreviews: Array<{ fallbackReason?: string }>;
+      };
+      assert.equal(body.ok, false);
+      assert.deepEqual(body.checks.find((check) => check.name === "Task 1 context"), {
+        name: "Task 1 context",
+        ok: false,
+        detail: "Repository context required; fallback rejected: HELPER_UNAVAILABLE",
+      });
+      assert.equal(body.contextPreviews.length, 1);
+      assert.equal(body.contextPreviews[0].fallbackReason, "HELPER_UNAVAILABLE");
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -15923,6 +17640,79 @@ test("loads every queue in a sequential pipeline before it starts", async () => 
   }
 });
 
+test("append readiness is stable for idle/starting, running, paused, and terminal runs", () => {
+  assert.deepEqual(appendReadiness({ id: "starting-run", status: "idle" }, undefined), {
+    ready: false,
+    code: "RUN_NOT_READY",
+    retryable: true,
+    retryAfterMs: 100,
+    state: {
+      run: { id: "starting-run", status: "idle" },
+      pipeline: null,
+    },
+  });
+  for (const status of ["running", "paused"] as const)
+    assert.deepEqual(appendReadiness({ id: `${status}-run`, status }, undefined), {
+      ready: true,
+      state: {
+        run: { id: `${status}-run`, status },
+        pipeline: null,
+      },
+    });
+  for (const status of ["completed", "failed", "timed_out", "cancelled"] as const)
+    assert.deepEqual(appendReadiness({ id: `${status}-run`, status }, undefined), {
+      ready: false,
+      code: "RUN_NOT_APPENDABLE",
+      retryable: false,
+      state: {
+        run: { id: `${status}-run`, status },
+        pipeline: null,
+      },
+  });
+});
+
+test("launch records are append-ready before their response becomes visible", () => {
+  const run = markRunReadyForLaunch(createRun(validateQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { title: "Launch", prompt: "Start safely." },
+      { title: "Confirm", prompt: "Confirm readiness." },
+    ],
+  })));
+  assert.equal(run.status, "running");
+  assert.ok(run.startedAt);
+  assert.deepEqual(appendReadiness(run, undefined), {
+    ready: true,
+    state: {
+      run: { id: run.id, status: "running" },
+      pipeline: null,
+    },
+  });
+});
+
+test("concurrent append mutations serialize without dropping either accepted queue", async () => {
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  let firstEntered!: () => void;
+  const first = serializePipelineAppend(async () => {
+    order.push("first-start");
+    firstEntered();
+    await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    order.push("first-committed");
+    return "first";
+  });
+  await new Promise<void>((resolve) => { firstEntered = resolve; });
+  const second = serializePipelineAppend(async () => {
+    order.push("second-committed");
+    return "second";
+  });
+  await Promise.resolve();
+  assert.deepEqual(order, ["first-start"]);
+  releaseFirst();
+  assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+  assert.deepEqual(order, ["first-start", "first-committed", "second-committed"]);
+});
+
 test("routes everyday work to Terra and uses Sol only for an explicit quality-first minimum", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-routing-"));
   try {
@@ -16064,18 +17854,18 @@ test("schedules ready graph branches while respecting dependencies and conflicts
   const api = {
     ...task("api", "pending"),
     key: "api",
-    allowedPaths: ["src/api"],
+    allowedPaths: ["src/api/**"],
   };
   const web = {
     ...task("web", "pending"),
     key: "web",
-    allowedPaths: ["src/web"],
+    allowedPaths: ["src/web/**"],
   };
   const integration = {
     ...task("integration", "pending"),
     key: "integration",
     dependsOn: ["api", "web"],
-    allowedPaths: ["tests/integration"],
+    allowedPaths: ["tests/integration/**"],
   };
   assert.deepEqual(
     selectRunnableTasks([api, web, integration], 3).map((item) => item.key),
@@ -16090,12 +17880,12 @@ test("schedules ready graph branches while respecting dependencies and conflicts
 
   const migration = {
     ...task("migration", "pending"),
-    allowedPaths: ["db/migrations"],
+    allowedPaths: ["db/migrations/**"],
     resources: ["postgres-schema"],
   };
   const seed = {
     ...task("seed", "pending"),
-    allowedPaths: ["db/seeds"],
+    allowedPaths: ["db/seeds/**"],
     resources: ["postgres-schema"],
   };
   assert.deepEqual(
@@ -16121,9 +17911,9 @@ test("schedules ready graph branches while respecting dependencies and conflicts
 });
 
 test("scheduler enforces slot budgets and safe path conflicts", () => {
-  const first = { ...task("first", "pending"), allowedPaths: ["src/first"] };
-  const second = { ...task("second", "pending"), allowedPaths: ["src/second"] };
-  const third = { ...task("third", "pending"), allowedPaths: ["src/third"] };
+  const first = { ...task("first", "pending"), allowedPaths: ["src/first/**"] };
+  const second = { ...task("second", "pending"), allowedPaths: ["src/second/**"] };
+  const third = { ...task("third", "pending"), allowedPaths: ["src/third/**"] };
   assert.deepEqual(
     selectRunnableTasks([first, second, third], 2).map((item) => item.id),
     ["first", "second"],
@@ -16137,11 +17927,11 @@ test("scheduler enforces slot budgets and safe path conflicts", () => {
 
   const parentPath = {
     ...task("parent-path", "pending"),
-    allowedPaths: ["src/shared"],
+    allowedPaths: ["src/shared/**"],
   };
   const childPath = {
     ...task("child-path", "pending"),
-    allowedPaths: ["src/shared/components"],
+    allowedPaths: ["src/shared/components/**"],
   };
   assert.deepEqual(
     selectRunnableTasks([parentPath, childPath], 2).map((item) => item.id),
@@ -16150,11 +17940,11 @@ test("scheduler enforces slot budgets and safe path conflicts", () => {
 
   const active = {
     ...task("active", "running"),
-    allowedPaths: ["src/api"],
+    allowedPaths: ["src/api/**"],
   };
   const conflicting = {
     ...task("conflicting", "pending"),
-    allowedPaths: ["src/api/client"],
+    allowedPaths: ["src/api/client/**"],
   };
   assert.deepEqual(selectRunnableTasks([conflicting], 1, [active]), []);
 });
@@ -16289,7 +18079,7 @@ test("loading and serving an all-terminal running record reconciles it atomicall
 
 test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, and timeout states", () => {
   assert.deepEqual(
-    outsideAllowedPaths(["src/safe/a.ts", "README.md"], ["src/safe"]),
+    outsideAllowedPaths(["src/safe/a.ts", "README.md"], ["src/safe/**"]),
     ["README.md"],
   );
   assert.deepEqual(
@@ -16304,7 +18094,7 @@ test("enforces allowedPaths and resolves completed, skipped, cancelled, failed, 
       { allowedPaths: ["src"] },
       ["src/a.ts"],
     ),
-    [],
+    ["src/a.ts"],
   );
   assert.equal(
     resolveTaskStatus({
@@ -16583,9 +18373,9 @@ test("reviewer prompt consumes exact Orchestrator verification evidence without 
       prompt: "Review the retained implementation.",
       authorizationEvidence: {
         contractType: "TaskAuthorizationEvidenceV1",
-        enabled: false,
-        decision: "disabled",
-        reason: "NON_MUTATING_CONTRACT",
+        enabled: true,
+        decision: "authorized",
+        reason: "NON_MUTATING_AUTHORIZED",
         intent: "review",
         technicalPermission: "read_only",
         sideEffectRisk: "none",
@@ -16614,6 +18404,53 @@ test("reviewer prompt consumes exact Orchestrator verification evidence without 
   assert.doesNotMatch(prompt, /ignored fallback/);
 });
 
+test("managed Python preflight proves executable availability before task execution", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-managed-python-"));
+  try {
+    assert.deepEqual(
+      await managedPythonPreflight(project, ["git diff --check"], {}),
+      { required: false, ok: true, executable: undefined },
+    );
+    const available = await managedPythonPreflight(
+      project,
+      ["& $env:PYTHON_BIN -m pytest --basetemp=\"$env:TEMP\\test-$PID\""],
+      { PYTHON_BIN: process.execPath },
+    );
+    assert.deepEqual(available, {
+      required: true,
+      ok: true,
+      executable: process.execPath,
+    });
+    const missing = join(project, "missing-python.exe");
+    assert.deepEqual(
+      await managedPythonPreflight(
+        project,
+        ["& $env:PYTHON_BIN -m pytest --basetemp=\"$env:TEMP\\test-$PID\""],
+        { PYTHON_BIN: missing },
+      ),
+      { required: true, ok: false, executable: missing },
+    );
+    const promptQueue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        {
+          title: "Prompt runtime",
+          prompt: "Use $env:PYTHON_BIN to inspect generated metadata.",
+        },
+        { title: "Report", prompt: "Report only." },
+      ],
+    });
+    assert.deepEqual(
+      await queueManagedPythonPreflightCheck(promptQueue, {
+        PYTHON_BIN: process.execPath,
+      }),
+      { name: "Managed Python", ok: true, detail: "Available" },
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("read-only reviewer receives the Russian executor result and does not require a diff", () => {
   const prompt = buildReviewerPrompt(
     {
@@ -16623,9 +18460,9 @@ test("read-only reviewer receives the Russian executor result and does not requi
       finalOutput: "Все проверки пройдены. Русская строка сохранена.",
       authorizationEvidence: {
         contractType: "TaskAuthorizationEvidenceV1",
-        enabled: false,
-        decision: "disabled",
-        reason: "NON_MUTATING_CONTRACT",
+        enabled: true,
+        decision: "authorized",
+        reason: "NON_MUTATING_AUTHORIZED",
         intent: "review",
         technicalPermission: "read_only",
         sideEffectRisk: "none",
@@ -17007,6 +18844,8 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
     "-NoProfile",
     "-NonInteractive",
   ]);
+  assert.match(powershell.args[4], /Console\]::OutputEncoding/);
+  assert.match(powershell.args[4], /Test-Path -LiteralPath/);
   assert.equal(
     verificationCommandInvocation(
       'python -m pytest --basetemp="$env:TEMP\\orchestrator-pytest-$PID"',
@@ -17019,6 +18858,7 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
     "pwsh -File .\\scripts\\verify.ps1",
     "pwsh.exe -NoProfile -File .\\scripts\\verify.ps1",
     "powershell.exe -File .\\scripts\\verify.ps1",
+    "& node 'scripts/verify.mjs'",
   ]) {
     const invocation = verificationCommandInvocation(command);
     assert.equal(invocation.shell, false, command);
@@ -17028,6 +18868,85 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
   const ordinary = verificationCommandInvocation("npm test");
   assert.equal(ordinary.executable, "npm.cmd test");
   assert.equal(ordinary.shell, true);
+});
+
+test("Windows command policy rejects cmd single quotes and unmanaged Python", () => {
+  for (const command of [
+    "node 'scripts/check.mjs'",
+    "rg -n \"contract\" 'docs/spec.md'",
+    "git diff --check -- 'src/file.ts'",
+  ])
+    assert.match(
+      windowsCommandPolicyViolation(command, "win32") ?? "",
+      /single quotes are literal/,
+      command,
+    );
+  assert.match(
+    windowsCommandPolicyViolation("python scripts/check.py", "win32") ?? "",
+    /PYTHON_BIN/,
+  );
+  assert.equal(
+    windowsCommandPolicyViolation('node "scripts/check.mjs"', "win32"),
+    undefined,
+  );
+  assert.equal(
+    windowsCommandPolicyViolation("& node 'scripts/check.mjs'", "win32"),
+    undefined,
+  );
+  assert.equal(
+    windowsCommandPolicyViolation(
+      "& $env:PYTHON_BIN scripts/check.py",
+      "win32",
+    ),
+    undefined,
+  );
+  assert.equal(
+    windowsCommandPolicyViolation("node 'scripts/check.mjs'", "linux"),
+    undefined,
+  );
+});
+
+test("command runtime probes cover the exact Windows queue toolchain", () => {
+  const probes = commandRuntimeProbes([
+    "& node 'scripts/check.mjs'",
+    'rg -n "contract" "docs/spec.md"',
+    "npm.cmd test",
+  ], "win32", { ComSpec: "C:\\Windows\\System32\\cmd.exe" });
+  assert.deepEqual(
+    probes.map((probe: { name: string }) => probe.name),
+    ["PowerShell", "Node.js", "ripgrep", "npm"],
+  );
+  assert.deepEqual(probes.at(-1), {
+    name: "npm",
+    executable: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", "npm.cmd --version"],
+  });
+});
+
+test("command runtime preflight uses the inherited task environment and fails closed", async () => {
+  const checks = await queueCommandRuntimePreflightChecks(
+    {
+      project: { name: "Runtime", path: process.cwd() },
+      tasks: [{ preconditions: [], verificationCommands: ["node --version"] }],
+    } as never,
+    { PATH: "", Path: "" },
+  );
+  assert.equal(checks.length, 1);
+  assert.equal(checks[0].name, "Command runtime: Node.js");
+  assert.equal(checks[0].ok, false);
+});
+
+test("PowerShell verification emits UTF-8 diagnostics on Windows", (context) => {
+  if (process.platform !== "win32") {
+    context.skip("Windows PowerShell encoding contract");
+    return;
+  }
+  const invocation = verificationCommandInvocation("Write-Output 'Проверка UTF-8'");
+  const output = execFileSync(invocation.executable, invocation.args, {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  assert.equal(output.trim(), "Проверка UTF-8");
 });
 
 test("Windows verification normalizes bare npm without changing npm.cmd or non-Windows commands", () => {
@@ -17067,6 +18986,22 @@ test("runner environment installs one inherited os.userInfo fallback without rep
       stdio: "ignore",
     })
   );
+  const verification = verificationProcessEnvironment(process.cwd(), {
+    NODE_OPTIONS: "--trace-warnings",
+    PYTHON_BIN: "managed-python",
+  });
+  assert.equal(verification.PYTHON_BIN, "managed-python");
+  assert.match(verification.NODE_OPTIONS ?? "", /--trace-warnings --import=/);
+  const managedWorkspace = join(process.cwd(), ".orchestrator", "managed-workspace");
+  const codex = codexProcessOptions(managedWorkspace, {
+    NODE_OPTIONS: "--trace-warnings",
+    PYTHON_BIN: "managed-python",
+  }, process.cwd());
+  assert.equal(codex.cwd, managedWorkspace);
+  assert.equal(codex.env.PYTHON_BIN, "managed-python");
+  assert.equal(codex.env.PYTHON_BIN, verification.PYTHON_BIN);
+  assert.equal(codex.shell, false);
+  assert.deepEqual(codex.stdio, ["pipe", "pipe", "pipe"]);
 });
 
 test("Windows timeout cleanup targets the complete process tree", () => {
@@ -17341,6 +19276,57 @@ test("atomic write cleanup does not create a secondary unhandled rejection", asy
     assert.equal(unhandled, undefined);
   } finally {
     process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("atomic directory creation retries bounded transient Windows sharing failures", async () => {
+  const attempts: string[] = [];
+  const delays: number[] = [];
+  await mkdirWithTransientWindowsRetry("runs/example", {
+    platform: "win32",
+    mkdirDirectory: async () => {
+      attempts.push("mkdir");
+      if (attempts.length < 3)
+        throw Object.assign(new Error("temporarily locked"), { code: "EPERM" });
+    },
+    wait: async (delay) => { delays.push(delay); },
+  });
+  assert.equal(attempts.length, 3);
+  assert.deepEqual(delays, [25, 50]);
+
+  let exhaustedCalls = 0;
+  const exhaustedDelays: number[] = [];
+  await assert.rejects(
+    mkdirWithTransientWindowsRetry("runs/example", {
+      platform: "win32",
+      mkdirDirectory: async () => {
+        exhaustedCalls += 1;
+        throw Object.assign(new Error("still locked"), { code: "EBUSY" });
+      },
+      wait: async (delay) => { exhaustedDelays.push(delay); },
+    }),
+    { code: "EBUSY" },
+  );
+  assert.equal(exhaustedCalls, 9);
+  assert.deepEqual(
+    exhaustedDelays,
+    [25, 50, 100, 200, 400, 800, 1_600, 2_000],
+  );
+
+  for (const [platform, code] of [["linux", "EPERM"], ["win32", "ENOENT"]] as const) {
+    let calls = 0;
+    await assert.rejects(
+      mkdirWithTransientWindowsRetry("runs/example", {
+        platform,
+        mkdirDirectory: async () => {
+          calls += 1;
+          throw Object.assign(new Error("permanent failure"), { code });
+        },
+        wait: async () => undefined,
+      }),
+      { code },
+    );
+    assert.equal(calls, 1);
   }
 });
 

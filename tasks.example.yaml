@@ -1,20 +1,64 @@
 project:
   name: My project
   path: D:\\work\\my-project
+  # Every authorization-enabled apply task must reference one independently
+  # approved contract whose paths, preconditions, verification commands, and
+  # ordered Queue Authoring Contract v1 impactPaths exactly match the task, with
+  # approvalId, intent, technicalPermission, and sideEffectRisk. A broader or
+  # merely similar apply approval does not match. Read-only
+  # answer/review/diagnose tasks do not need an apply approval, but still need
+  # their explicit non-mutating authorization.
+  approvedApplyContracts:
+    - approvalId: typecheck-fixes-v1
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      allowedPaths: [src/notifications/**]
+      # Cross-repository reads require the exact same ordered, existing,
+      # absolute roots here and on the task. Orchestrator supplies Git
+      # safe.directory process-locally; never modify global Git config.
+      # externalReadRoots: [D:\work\reference-repository]
+      impactPaths:
+        production: [src/notifications/**]
+      preconditions:
+        - >-
+          $status = @(git status --short);
+          if ($status.Count -ne 0) {
+          Write-Error "Expected a clean baseline: $($status -join ', ')";
+          exit 1 };
+          exit 0
+      verificationCommands: [npm.cmd run typecheck]
+    - approvalId: reconnect-logic-v1
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      allowedPaths: [src/websocket/**]
+      impactPaths:
+        production: [src/websocket/**]
+      verificationCommands: [npm.cmd test -- websocket]
+    - approvalId: integration-tests-v1
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      allowedPaths: [tests/integration/**]
+      impactPaths:
+        tests: [tests/integration/**]
+      verificationCommands: [npm.cmd test -- integration]
   # Windows pytest example: use a fresh direct child of TEMP for every Codex
   # process. Reusing pytest's default pytest-of-user directory, or a fixed
   # basetemp across executor/reviewer sessions, can fail with WinError 5.
   # verificationCommands:
   #   - >-
-  #     .\.venv\Scripts\python.exe -m pytest -q
+  #     & $env:PYTHON_BIN -m pytest -q
   #     --basetemp="$env:TEMP\orchestrator-pytest-$PID"
 limits:
   taskTimeoutMinutes: 30
   reviewerTimeoutMinutes: 10
   maxTaskRetries: 1
-  # A dependency-aware scheduler may run up to this many safe tasks.
-  # Default 1 retains sequential execution.
-  maxParallelTasks: 3
+  # Ordinary tasks share the project worktree and therefore run sequentially,
+  # even when their allowedPaths do not overlap. Values above 1 provide real
+  # concurrency only for tasks with isolated managed-workspace bindings.
+  maxParallelTasks: 1
 git:
   # Creates a checkpoint commit after each reviewer-approved task.
   checkpointCommits: false
@@ -34,7 +78,30 @@ tasks:
     # Optional per-task overrides:
     # timeoutMinutes: 45
     # maxRetries: 2
-    allowedPaths: [src/notifications]
+    allowedPaths: [src/notifications/**]
+    # externalReadRoots: [D:\work\reference-repository]
+    authoringContract:
+      contractType: QueueAuthoringContractV1
+      contractVersion: "1.0"
+    executionKind:
+      contractType: TaskExecutionKindV1
+      contractVersion: "1.0"
+      kind: ordinary
+    # Category order and path order are authorization-bound. Every allowedPaths
+    # entry must appear exactly in this normalized map. Extra impact entries do
+    # not grant write access outside allowedPaths.
+    impactPaths:
+      production: [src/notifications/**]
+    runtimeConstraints:
+      - Node.js and npm are available from the inherited process environment.
+      # Name evidence files with exact repository-relative paths in prompts and
+      # constraints. Do not say only `state.yaml` when the actual file is, for
+      # example, `docs/goals/example/state.yaml`.
+      - Evidence files are read only through their exact normalized repository-relative paths.
+      # Declare and preflight rg only when it is truly mandatory. Otherwise an
+      # executor must use the built-in Windows PowerShell fallback rather than
+      # stop because rg is unavailable.
+      - Optional discovery tools may be replaced by bounded Get-ChildItem, Get-Content, and Select-String commands.
     # Machine-executed, read-only baseline checks belong in `preconditions`.
     # They run before Codex. A non-zero exit, timeout, or worktree mutation
     # blocks the task without starting the executor.
@@ -46,7 +113,15 @@ tasks:
         exit 1 };
         exit 0
     verificationCommands:
-      - npm run typecheck
+      - npm.cmd run typecheck
+      # On Windows, raw native commands use cmd.exe and therefore require
+      # double-quoted arguments. Single quotes are rejected by preflight.
+      # Prefix with `&` to select PowerShell explicitly. Use rg only when its
+      # runtime was declared and preflighted, for example:
+      # - >-
+      #   & rg -n 'contract|invariant|decision'
+      #   'src/notifications/result.ts'
+      # Never use bare python/python3/py; use `$env:PYTHON_BIN` as shown above.
       # Keep substantial logic in a versioned script. Preflight rejects long
       # inline `python -c` and PowerShell programs.
       # These commands run after the task changes. Do not require the whole
@@ -58,12 +133,16 @@ tasks:
       # identity/existence, not content correctness. Preflight parses detected
       # PowerShell commands and rejects syntax errors before execution.
       # - >-
-      #   rg -n "contract|invariant|decision"
-      #   'src/notifications/result.ts'
+      #   Select-String -LiteralPath "src/notifications/result.ts"
+      #   -Pattern "contract|invariant|decision"
       # For a bounded excerpt instead of a targeted search:
       # - >-
       #   Get-Content -LiteralPath 'src/notifications/result.ts'
       #   -TotalCount 120
+      # Exact totals or equality across two or more artifacts need their own
+      # deterministic mismatch assertion. A reader, hash, or producer success
+      # is not enough; a versioned script is preferred:
+      # - node "scripts/assert-artifact-totals.mjs"
       # Ordinary `git diff --check -- <path>` does not inspect a new untracked
       # file. For such files, use a content-aware PowerShell check like this
       # (replace the example path). `git diff --no-index` normally exits 1
@@ -74,15 +153,23 @@ tasks:
       #   if ($result) {
       #   $result | ForEach-Object { Write-Output $_ }; exit 1 };
       #   exit 0
-    # Optional Context Contract v1 selection through scripts/ai_context_helper.py.
+    # Optional Context Contract v1 selection. The target repository's helper
+    # validates this profile and supplies the exact execution bundle.
     contextProfile: review
     maxSources: 8
-    # Opt in when a controlled fallback would be too small for this task.
+    # Opt in when the fixed AGENTS.md/README.md controlled fallback would be
+    # too small; helper failure then blocks preflight instead of reduced context.
     requireRepositoryContext: true
     # Human-readable stop rules still belong in executionGuards. Put any
     # machine-testable baseline condition in `preconditions` above.
     executionGuards:
       - Stop if an allowed path has pre-existing user changes before work begins.
+    authorization:
+      enabled: true
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      approvalId: typecheck-fixes-v1
     # Named resources are exclusive across concurrently running tasks.
     resources: [typescript-check]
   - key: reconnect-logic
@@ -91,7 +178,27 @@ tasks:
     model: auto
     minModel: terra
     effort: medium
-    allowedPaths: [src/websocket]
+    allowedPaths: [src/websocket/**]
+    authoringContract:
+      contractType: QueueAuthoringContractV1
+      contractVersion: "1.0"
+    executionKind:
+      contractType: TaskExecutionKindV1
+      contractVersion: "1.0"
+      kind: ordinary
+    impactPaths:
+      production: [src/websocket/**]
+    runtimeConstraints:
+      - Node.js and npm are available from the inherited process environment.
+    verificationCommands: [npm.cmd test -- websocket]
+    executionGuards:
+      - Stop if the requested reconnect behavior requires edits outside the allowed path.
+    authorization:
+      enabled: true
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      approvalId: reconnect-logic-v1
     resources: [websocket-test-server]
   - key: integration-tests
     title: Add integration coverage
@@ -107,4 +214,101 @@ tasks:
     # requiresCheckpointsFrom: [typecheck-fixes, reconnect-logic]
     # Use `allowedPaths: []` for a read-only task; reviewer rejection then
     # fails closed without an automatic correction attempt.
-    allowedPaths: [tests/integration]
+    allowedPaths: [tests/integration/**]
+    authoringContract:
+      contractType: QueueAuthoringContractV1
+      contractVersion: "1.0"
+    executionKind:
+      contractType: TaskExecutionKindV1
+      contractVersion: "1.0"
+      kind: ordinary
+    impactPaths:
+      tests: [tests/integration/**]
+    runtimeConstraints:
+      - Node.js and npm are available from the inherited process environment.
+    verificationCommands: [npm.cmd test -- integration]
+    executionGuards:
+      - Stop if integration coverage requires production edits outside the declared predecessor tasks.
+    authorization:
+      enabled: true
+      intent: apply
+      technicalPermission: reversible_local_write
+      sideEffectRisk: reversible_local_write
+      approvalId: integration-tests-v1
+  - key: review-integration
+    title: Review the completed integration result
+    # WholeChangeAcceptanceV1 appears exactly once, as the final task and unique
+    # dependency sink. Its direct predecessor list covers every writer anywhere
+    # in this queue, so every writer is an ancestor of this read-only review.
+    # Dependencies order this source inspection after implementation, but do
+    # not inject predecessor verification records into this executor. Its own
+    # commands run after the executor and are supplied only to the independent
+    # reviewer. Use this task for direct read-only source inspection, not for a
+    # claim that it consumed evidence unavailable in its prompt.
+    prompt: Inspect the completed integration source directly and report findings without edits; do not claim access to predecessor verification records.
+    model: terra
+    effort: medium
+    dependsOn: [typecheck-fixes, reconnect-logic, integration-tests]
+    allowedPaths: []
+    wholeChangeAcceptance:
+      contractType: WholeChangeAcceptanceV1
+      contractVersion: "1.0"
+      predecessorTaskKeys: [typecheck-fixes, reconnect-logic, integration-tests]
+    verificationCommands:
+      - npm test -- integration
+      # Whole-change whitespace verification must inspect tracked and untracked
+      # files. Native `git diff --no-index` normally exits 1 for a difference,
+      # so emitted diagnostics, rather than that native exit code, are the
+      # failure signal for each untracked file.
+      - >-
+        $tracked = @(git diff --check 2>&1);
+        if ($LASTEXITCODE -ne 0 -or $tracked.Count -gt 0) {
+        $tracked | ForEach-Object { Write-Output $_ }; exit 1 };
+        $untracked = @(git ls-files --others --exclude-standard);
+        foreach ($path in $untracked) {
+        $result = @(git -c core.autocrlf=false -c core.safecrlf=false
+        diff --no-index --check -- NUL $path 2>&1);
+        if ($result.Count -gt 0) {
+        $result | ForEach-Object { Write-Output $_ }; exit 1 } };
+        exit 0
+    executionGuards:
+      - Read-only review only; do not edit, repair, commit, or push files.
+      - Treat missing, failed, or timed-out Orchestrator verification evidence as a finding.
+    authorization:
+      enabled: true
+      intent: review
+      technicalPermission: read_only
+      sideEffectRisk: none
+
+  # Advisory commands are an explicit legacy escape hatch. They may guide the
+  # executor, but Orchestrator does not execute them or accept them as machine
+  # verification evidence. Omit this mode for normal required verification.
+  # - key: advisory-investigation
+  #   title: Investigate a non-gating signal
+  #   prompt: Inspect the signal and report observations without claiming acceptance.
+  #   verificationMode: advisory
+  #   verificationCommands: [node "scripts/non-gating-observation.mjs"]
+
+# Recovery example (documentation only; this is not a live task): copy an apply
+# task, keep its impact map bound by the approvedApplyContracts entry, and add
+# this task-level source binding.
+# The IDs must be copied exactly from the persisted source run.json. The
+# recovery task's runtimeConstraints must include every persisted source
+# constraint (and may append newly discovered constraints); prose does not
+# supply or override them. A failed authenticated recovery may be the exact
+# source of a later recovery only when the full persisted lineage is acyclic,
+# terminal/non-successful, authorization-replayable, and runtime-superset-safe.
+# recovery:
+#   contractType: RecoveryTaskBindingV1
+#   contractVersion: "1.0"
+#   sourceRunId: m2example-source-run
+#   sourceTaskId: m2example-source-task
+# executionKind:
+#   contractType: TaskExecutionKindV1
+#   contractVersion: "1.0"
+#   kind: recovery
+
+# Post-deployment live smoke boundary: after restarting a newly deployed
+# desktop bundle, launch one explicit read-only smoke task and retain its
+# canonical run.json receipt. This does not authorize rebuild, install, or
+# workspace mutation.
