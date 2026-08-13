@@ -76,7 +76,8 @@ opaque Codex CLI internal tools. Verification passed 13/13 focused S4 tests,
 TypeScript, production build, context smoke 3/3, S2 baseline 10/10, diff checks,
 and 347/347 full Windows tests in 385.47 seconds. The separate completion
 review found no unresolved issue. The separately repaired Windows baseline is
-green and S5 is now implemented and completion-reviewed. S6 remains unauthorized.
+green and S5 is now implemented and completion-reviewed. S6 is separately
+accepted, implemented, and completion-reviewed.
 
 The accepted S5 Mocked Workflow Evals contract is recorded at
 `docs/architecture/change-control-plane/mocked-workflow-evals-contract-v1.md`.
@@ -91,7 +92,8 @@ build pass, context smoke passes 3/3, the S2 baseline passes 10/10, and the
 full Windows regression passes 348/348 in 403.3 seconds. It creates no
 API/UI/queue field, canonical registry, live request, credential use, external
 write, or automatic Phase 5 publication. The separate completion review found
-no unresolved acceptance issue; S6 remains unauthorized.
+no unresolved acceptance issue. S6 is separately accepted, implemented, and
+completion-reviewed.
 
 The post-merge S4 Windows workflow run `31687531004` exposed an unrelated
 Phase 3 Windows `EPERM` rename race. The bounded repair was published
@@ -101,6 +103,17 @@ The baseline repair preserves the general server writer and adds bounded
 transient atomic `rename` backoff only to the Phase 3 workspace-state writer.
 Its focused and full verification passed before merge; it is inherited S5
 baseline evidence rather than part of the S5 diff.
+
+The accepted S6 Progressive Disclosure contract is recorded at
+`docs/architecture/change-control-plane/progressive-disclosure-contract-v1.md`.
+It defines a stateless read-only TypeScript-family AST index and exact
+hash-bound excerpt boundary, plus line-range-only Python fallback. Existing
+helper commands, Context Contract, queues, runtime context, S2 baseline,
+source files, and Project Map remain unchanged. The exact accepted impact map
+is implemented and separately completion-reviewed with no unresolved issue.
+Focused S6 tests pass 11/11, TypeScript and production build pass, context
+smoke passes 3/3, S2 baseline passes 10/10, diff checks pass, and the full
+Windows regression passes 348/348 in 390.81 seconds.
 
 Reviewer infrastructure now supplies the read-only reviewer with the exact
 bounded evidence already produced by Orchestrator verification instead of

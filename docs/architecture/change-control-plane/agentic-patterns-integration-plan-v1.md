@@ -1,6 +1,6 @@
 # Agentic Patterns Integration Plan v1
 
-Status: active; S1-S5 completion-reviewed; S6 implementation not authorized
+Status: active; Stage 1 S1-S6 implemented and completion-reviewed
 
 Prepared: 2026-08-08
 
@@ -97,7 +97,7 @@ pins and proves that capability. Owner acceptance authorizes only the exact S3
 implementation impact map. S4 is now separately accepted and completion-reviewed.
 S5 was accepted and implemented after its separately repaired Windows CI
 baseline returned green; its completion review found no unresolved issue. S6
-remains unauthorized.
+is accepted, implemented, and completion-reviewed.
 
 S3 implementation and its separate completion review passed 14/14 focused
 tests, TypeScript, production build, context smoke 3/3, the S2 baseline 10/10,
@@ -105,8 +105,10 @@ diff checks, and the full Windows regression 337/337. No acceptance issue was
 deferred. S4 subsequently passed its own accepted contract and separate
 completion review. S5 implementation passes 14/14 focused tests, TypeScript,
 production build, context smoke 3/3, S2 baseline 10/10, and 348/348 full
-Windows tests. Its separate completion review found no unresolved issue; S6
-remains unauthorized.
+Windows tests. Its separate completion review found no unresolved issue. S6
+passes 11/11 focused groups, TypeScript, production build, context smoke 3/3,
+S2 baseline 10/10, diff checks, and 348/348 full Windows tests in 390.81
+seconds; its separate completion review found no unresolved issue.
 
 ## 5. S1 - Incident-to-Eval candidate
 
@@ -370,6 +372,9 @@ terminal state, and absence of prohibited side effects.
 
 ## 10. S6 - Progressive disclosure for large code and test files
 
+Status: contract accepted, implemented, and completion-reviewed on 2026-08-13.
+Contract: `progressive-disclosure-contract-v1.md`.
+
 ### Outcome
 
 Provide deterministic symbol/test indexes, bounded excerpts, and task-local
@@ -412,6 +417,14 @@ with summaries.
 - unsupported syntax is guessed rather than reported;
 - the generated index becomes always-loaded and consumes the saved budget;
 - token reduction is used as the sole quality or acceptance outcome.
+
+The proposed v1 contract fixes a separate stateless Node/MJS AST indexer for
+the JavaScript/TypeScript family and exact hash-bound line-range fallback for
+Python. It preserves the existing helper commands, Context Contract, queue
+fields, context profiles, S2 baseline semantics, source files, and Project Map.
+The exact contract was accepted before implementation. Its focused and legacy
+gates pass, and the separate completion review found no unresolved or deferred
+acceptance issue.
 
 ## 11. Patterns 10-11 - implemented status
 
