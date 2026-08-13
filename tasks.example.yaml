@@ -1,5 +1,18 @@
 project:
   name: My project
+  # Optional fail-closed documentation policy. Replace the example command
+  # with a versioned repository-owned delta assertion that exits non-zero when
+  # the current change introduces DOC-REACH-001. Every documentation writer
+  # must also include one navigation path in allowedPaths and
+  # impactPaths.documentation, run the exact command, and be covered by the
+  # final WholeChangeAcceptanceV1 task running that command again.
+  # documentationGovernance:
+  #   contractType: DocumentationGovernancePolicyV1
+  #   contractVersion: "1.0"
+  #   managedPaths: [docs/**]
+  #   navigationPaths: [docs/README.md, docs/documentation_lifecycle_registry.yaml]
+  #   verificationCommands:
+  #     - node scripts/assert-documentation-delta.mjs --forbid DOC-REACH-001
   path: D:\\work\\my-project
   # Every authorization-enabled apply task must reference one independently
   # approved contract whose paths, preconditions, verification commands, and

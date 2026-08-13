@@ -86,6 +86,15 @@ instead bound by the task authorization evidence and persisted task snapshot.
 `impactPaths` remains descriptive: only `allowedPaths` grants write scope,
 including when the impact map lists additional affected files.
 
+When a project opts into `DocumentationGovernancePolicyV1`, every task whose
+write scope intersects its `managedPaths` must use `QueueAuthoringContractV1`,
+include one configured navigation or lifecycle file in both `allowedPaths` and
+`impactPaths.documentation`, and run every exact required documentation delta
+command as a machine gate. The queue must end in the unique read-only
+`WholeChangeAcceptanceV1` task, which runs the same gates. The repository-owned
+commands, not Orchestrator prose or filename inference, must exit non-zero for
+new prohibited findings such as `DOC-REACH-001`.
+
 An opted-in recovery task may add an exact `RecoveryTaskBindingV1` source run
 ID and source task ID. Before any run or project lock is created, Orchestrator
 loads that persisted task and requires the recovery runtime constraints to be a

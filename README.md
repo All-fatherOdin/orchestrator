@@ -614,6 +614,41 @@ constraints and an optional recovery binding are instead included in the task's
 authorization evidence and persisted task snapshot. The impact map is evidence,
 not write authority: additional map entries never expand `allowedPaths`.
 
+Repositories that enforce documentation reachability can opt into the closed
+project-level `DocumentationGovernancePolicyV1`. Its `managedPaths` select the
+documentation boundary, `navigationPaths` name the exact repository-owned
+indexes or lifecycle registries, and `verificationCommands` name deterministic
+delta gates that exit non-zero when the change introduces a forbidden finding
+such as `DOC-REACH-001`. Orchestrator does not infer documentation semantics
+from filenames or command output.
+
+When the policy is present, every task whose write scope intersects
+`managedPaths` must use `QueueAuthoringContractV1`, enabled reversible-local
+apply authorization, required (not advisory) exact policy commands, and at
+least one configured navigation file in both `allowedPaths` and
+`impactPaths.documentation`. The queue must end in the unique
+`WholeChangeAcceptanceV1` task, and that final read-only task must run the same
+exact policy commands. Missing scope, commands, authorization, or final
+acceptance fails during queue validation. The matching apply approval therefore
+binds the navigation/lifecycle write capability and documentation gate as part
+of its ordinary exact scope.
+
+```yaml
+project:
+  documentationGovernance:
+    contractType: DocumentationGovernancePolicyV1
+    contractVersion: "1.0"
+    managedPaths: [docs/**]
+    navigationPaths: [docs/README.md, docs/documentation_lifecycle_registry.yaml]
+    verificationCommands:
+      - node scripts/assert-documentation-delta.mjs --forbid DOC-REACH-001
+```
+
+The repository-owned delta command is the semantic gate: it must compare the
+task or whole-change result with its authoritative baseline and fail only for
+new prohibited findings. A full-report command that always exits zero on
+warnings does not satisfy that contract merely because it prints the rule ID.
+
 Recovery is optional and explicit. Task-level `RecoveryTaskBindingV1` contains
 exactly one persisted `sourceRunId` and `sourceTaskId`. Its source may itself
 be a failed authenticated recovery task. Before preflight admission, after
