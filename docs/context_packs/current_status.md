@@ -317,7 +317,7 @@ adapter seams, replay validation, and a pure Phase 5 mapper. Focused tests pass
 14/14, TypeScript and production build pass, context smoke passes 3/3, the S2
 baseline passes 10/10, and the full Windows regression passes 348/348 in 403.3
 seconds. The separate completion review found no unresolved acceptance issue.
-S6 remains unauthorized.
+S6 is separately accepted, implemented, and completion-reviewed.
 
 Post-merge S4 Windows workflow run `31687531004` exposed an unrelated Phase 3
 Windows `EPERM` rename race. The bounded repair was published separately in
@@ -327,3 +327,12 @@ The baseline repair preserves the general server writer and adds bounded
 transient atomic `rename` backoff only to the Phase 3 workspace-state writer.
 Its focused and full verification passed before merge; it is inherited S5
 baseline evidence rather than part of the S5 diff.
+
+S6 Progressive Disclosure contract v1 is accepted, implemented, and
+completion-reviewed. It defines one stateless read-only TypeScript-family AST indexer,
+exact source-hash-bound entry excerpts, and Python line-range-only fallback.
+It preserves current helper commands, Context Contract, queues, runtime
+context, S2 semantics, source files, and Project Map. Focused tests pass 11/11,
+TypeScript and production build pass, context smoke passes 3/3, S2 baseline
+passes 10/10, diff checks pass, and the full Windows regression passes 348/348
+in 390.81 seconds. The separate completion review found no unresolved issue.

@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: Phase 1-12 and Agentic Stage 1 S1-S5 completion-reviewed; S6 implementation not authorized
+Status: Phase 1-12 and Agentic Stage 1 S1-S6 completion-reviewed
 Last reviewed: 2026-08-13
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -61,6 +61,9 @@ were observed.
 22. [mocked-workflow-evals-contract-v1.md](mocked-workflow-evals-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S5
     credential-free deterministic mocked-workflow eval boundary.
+23. [progressive-disclosure-contract-v1.md](progressive-disclosure-contract-v1.md)
+    records the accepted, implemented, and completion-reviewed S6 stateless
+    hash-bound source index and exact excerpt boundary.
 
 ## Current Boundary
 

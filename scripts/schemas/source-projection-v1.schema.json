@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/source-projection-v1.schema.json",
+  "title": "Source Projection v1",
+  "oneOf": [
+    { "$ref": "#/$defs/SourceIndexV1" },
+    { "$ref": "#/$defs/SourceExcerptV1" },
+    { "$ref": "#/$defs/SourceProjectionFailureV1" }
+  ],
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "language": { "enum": ["typescript", "tsx", "javascript", "python_line_range"] },
+    "reason": { "enum": ["SOURCE_PROJECTION_SCHEMA_INVALID", "SOURCE_PROJECTION_PATH_INVALID", "SOURCE_PROJECTION_PATH_OUTSIDE_ROOT", "SOURCE_PROJECTION_SOURCE_MISSING", "SOURCE_PROJECTION_SYMLINK_ESCAPE", "SOURCE_PROJECTION_EXTENSION_UNSUPPORTED", "SOURCE_PROJECTION_UTF8_INVALID", "SOURCE_PROJECTION_PARSE_FAILED", "SOURCE_PROJECTION_ENTRY_UNKNOWN", "SOURCE_PROJECTION_ENTRY_AMBIGUOUS", "SOURCE_PROJECTION_SOURCE_STALE", "SOURCE_PROJECTION_RANGE_INVALID", "SOURCE_PROJECTION_LIMIT_EXCEEDED", "SOURCE_PROJECTION_REPLAY_INVALID", "SOURCE_PROJECTION_INTERNAL_FAILURE"] },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxSourceBytes", "maxSourceLines", "maxEntries", "maxIndexBytes", "maxExcerptBytes", "maxExcerptLines"],
+      "properties": {
+        "maxSourceBytes": { "const": 1048576 }, "maxSourceLines": { "const": 30000 },
+        "maxEntries": { "const": 2000 }, "maxIndexBytes": { "const": 1048576 },
+        "maxExcerptBytes": { "const": 65536 }, "maxExcerptLines": { "const": 2000 }
+      }
+    },
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entryId", "kind", "qualifiedName", "occurrence", "exported", "startByte", "endByte", "startLine", "endLine", "byteCount", "lineCount"],
+      "properties": {
+        "entryId": { "type": "string", "pattern": "^source-entry:[a-f0-9]{64}$" },
+        "kind": { "enum": ["function", "class", "method", "accessor", "interface", "type_alias", "enum", "variable", "import", "export", "test"] },
+        "qualifiedName": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "occurrence": { "type": "integer", "minimum": 1, "maximum": 2000 },
+        "exported": { "type": "boolean" },
+        "parentEntryId": { "type": "string", "pattern": "^source-entry:[a-f0-9]{64}$" },
+        "startByte": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "endByte": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "startLine": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "endLine": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "byteCount": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "lineCount": { "type": "integer", "minimum": 1, "maximum": 30000 }
+      }
+    },
+    "SourceIndexV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "indexVersion", "sourcePath", "sourceHash", "sourceBytes", "sourceLines", "language", "parser", "parseState", "supportedOperation", "entries", "entryCount", "omittedEntryCount", "truncated", "limits", "indexHash"],
+      "properties": {
+        "contractType": { "const": "SourceIndexV1" }, "contractVersion": { "const": "1.0" }, "indexVersion": { "const": "1.0" },
+        "sourcePath": { "$ref": "#/$defs/path" }, "sourceHash": { "$ref": "#/$defs/hash" },
+        "sourceBytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }, "sourceLines": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "language": { "$ref": "#/$defs/language" },
+        "parser": { "type": "object", "additionalProperties": false, "required": ["parserId", "parserVersion"], "properties": { "parserId": { "enum": ["typescript", "python-line-range"] }, "parserVersion": { "type": "string", "minLength": 1, "maxLength": 32 } } },
+        "parseState": { "enum": ["parsed", "line_range_only"] }, "supportedOperation": { "enum": ["entry_excerpt", "line_range_excerpt"] },
+        "entries": { "type": "array", "maxItems": 2000, "items": { "$ref": "#/$defs/entry" } },
+        "entryCount": { "type": "integer", "minimum": 0, "maximum": 2000 }, "omittedEntryCount": { "const": 0 }, "truncated": { "const": false },
+        "limits": { "$ref": "#/$defs/limits" }, "indexHash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "SourceExcerptV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "indexVersion", "sourcePath", "sourceHash", "language", "parser", "selection", "startByte", "endByte", "startLine", "endLine", "excerptBytes", "excerptLines", "text", "truncated", "omitted", "excerptHash"],
+      "properties": {
+        "contractType": { "const": "SourceExcerptV1" }, "contractVersion": { "const": "1.0" }, "indexVersion": { "const": "1.0" },
+        "sourcePath": { "$ref": "#/$defs/path" }, "sourceHash": { "$ref": "#/$defs/hash" }, "language": { "$ref": "#/$defs/language" },
+        "parser": { "type": "object", "additionalProperties": false, "required": ["parserId", "parserVersion"], "properties": { "parserId": { "enum": ["typescript", "python-line-range"] }, "parserVersion": { "type": "string", "minLength": 1, "maxLength": 32 } } },
+        "selection": { "oneOf": [
+          { "type": "object", "additionalProperties": false, "required": ["kind", "entryId"], "properties": { "kind": { "const": "entry" }, "entryId": { "type": "string", "pattern": "^source-entry:[a-f0-9]{64}$" } } },
+          { "type": "object", "additionalProperties": false, "required": ["kind", "startLine", "endLine"], "properties": { "kind": { "const": "line_range" }, "startLine": { "type": "integer", "minimum": 1 }, "endLine": { "type": "integer", "minimum": 1 } } }
+        ] },
+        "startByte": { "type": "integer", "minimum": 0 }, "endByte": { "type": "integer", "minimum": 1 }, "startLine": { "type": "integer", "minimum": 1 }, "endLine": { "type": "integer", "minimum": 1 },
+        "excerptBytes": { "type": "integer", "minimum": 1, "maximum": 65536 }, "excerptLines": { "type": "integer", "minimum": 1, "maximum": 2000 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 65536 }, "truncated": { "const": false }, "omitted": { "const": false }, "excerptHash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "SourceProjectionFailureV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "reasonCode", "message"],
+      "properties": { "contractType": { "const": "SourceProjectionFailureV1" }, "contractVersion": { "const": "1.0" }, "reasonCode": { "$ref": "#/$defs/reason" }, "sourcePath": { "$ref": "#/$defs/path" }, "message": { "type": "string", "minLength": 1, "maxLength": 128 } }
+    }
+  }
+}
