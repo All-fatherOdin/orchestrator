@@ -48,7 +48,7 @@ were observed.
     records the final Phase 12 acceptance matrix, verification, rendered QA,
     and residual authority boundary.
 18. [agentic-patterns-integration-plan-v1.md](agentic-patterns-integration-plan-v1.md)
-    sequences the contract-first Stage 1 slices; S1-S4 are completion-reviewed.
+    sequences the contract-first Stage 1 slices; S1-S6 are completion-reviewed.
 19. [context-budget-baseline-contract-v1.md](context-budget-baseline-contract-v1.md)
     records the accepted, implemented, and completion-reviewed read-only S2
     context measurement boundary and baseline revision 1.

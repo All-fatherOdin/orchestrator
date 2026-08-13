@@ -15,12 +15,11 @@ implementation work until an owner-reviewed usefulness discussion establishes
 a concrete current problem, evidence of that problem, and a non-duplicating
 extension point.
 
-S1-S4 are completion-reviewed. The owner accepted each exact implementation
-contract through S4; each acceptance authorized only its bounded impact map.
-This plan does not authorize
-S5-S6 product code, schema, queue, ledger, Project Map, run-record,
-external-system, or provider mutations. Each remaining slice still requires
-its own accepted contract and exact scope.
+S1-S6 are implemented and completion-reviewed. The owner accepted each exact
+implementation contract; each acceptance authorized only its bounded impact
+map. This plan does not authorize Stage 2 product code, schema, queue, ledger,
+Project Map, run-record, external-system, or provider mutations. Stage 2 still
+requires its own accepted contract and exact scope.
 
 ## 2. Current-state correction gate
 
@@ -488,6 +487,12 @@ Stage 1 is complete only when:
 - progressive projections remain bounded, hash-fenced, and subordinate to code;
 - no new parallel ledger, scheduler, policy registry, eval registry, telemetry
   database, or persistent search system exists.
+
+The combined completion review is enforced by `npm run test:stage1`, which
+runs every focused S1-S6 suite as one Windows CI gate. Stage 2 remains
+unauthorized. The repaired review passes S1 23/23, S2 10/10, S3 14/14, S4
+13/13, S5 14/14, S6 11/11, TypeScript, production build, context smoke 3/3,
+diff checks, and the full Windows regression 350/350 in 448.41 seconds.
 
 ## 13. Stage 2 admission process
 
