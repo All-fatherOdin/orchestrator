@@ -7050,12 +7050,12 @@ export async function isManagedCheckpoint(run: Run, task: Task) {
   return isAncestor.code === 0;
 }
 
-async function readGitDiff(cwd: string, paths: string[]) {
+async function readGitDiff(cwd: string, paths: string[], base?: "HEAD") {
   if (!paths.length) return "";
   return new Promise<string>((done) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn("git", ["diff", "--no-ext-diff", "--", ...paths], {
+      child = spawn("git", ["diff", "--no-ext-diff", ...(base ? [base] : []), "--", ...paths], {
         cwd,
         shell: false,
         stdio: ["ignore", "pipe", "ignore"],
@@ -7771,6 +7771,8 @@ function wholeChangeAcceptanceIssue(
   if (JSON.stringify(evidence.aggregateChangedFiles) !== JSON.stringify(expectedAggregate))
     return "Whole-change acceptance aggregate change set changed or is incomplete.";
   const fingerprint = createHash("sha256").update(JSON.stringify({
+    contractType: evidence.contractType,
+    contractVersion: evidence.contractVersion,
     predecessorTaskKeys: evidence.predecessorTaskKeys,
     predecessorTaskIds: evidence.predecessorTaskIds,
     predecessorEvidence: evidence.predecessorEvidence,
@@ -7821,8 +7823,16 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
     if (!absolute.startsWith(root)) throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_PATH_INVALID");
     try {
       const content = await readFile(absolute);
-      if (content.length > WHOLE_CHANGE_MAX_FILE_BYTES || content.length > remaining)
-        throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED");
+      if (content.length > WHOLE_CHANGE_MAX_FILE_BYTES || content.length > remaining) {
+        if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED");
+        const diff = await readGitDiff(run.project.path, [path], "HEAD");
+        const diffBytes = Buffer.byteLength(diff, "utf8");
+        if (!diff || diffBytes > WHOLE_CHANGE_MAX_FILE_BYTES || diffBytes > remaining)
+          throw new Error("WHOLE_CHANGE_ACCEPTANCE_TRACKED_CONTENT_MISSING_OR_OVERSIZED");
+        remaining -= diffBytes;
+        contentEvidence.push({ path, kind, diff });
+        continue;
+      }
       remaining -= content.length;
       contentEvidence.push({
         path,
@@ -7833,10 +7843,11 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
     } catch (error) {
       if (error instanceof Error && error.message === "WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED") throw error;
       if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_UNTRACKED_CONTENT_MISSING");
-      const diff = await readGitDiff(run.project.path, [path]);
-      if (!diff || Buffer.byteLength(diff, "utf8") > remaining)
+      const diff = await readGitDiff(run.project.path, [path], "HEAD");
+      const diffBytes = Buffer.byteLength(diff, "utf8");
+      if (!diff || diffBytes > WHOLE_CHANGE_MAX_FILE_BYTES || diffBytes > remaining)
         throw new Error("WHOLE_CHANGE_ACCEPTANCE_TRACKED_CONTENT_MISSING_OR_OVERSIZED");
-      remaining -= Buffer.byteLength(diff, "utf8");
+      remaining -= diffBytes;
       contentEvidence.push({ path, kind, diff });
     }
   }
