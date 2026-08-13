@@ -50,8 +50,22 @@ a read-only CLI, and accepted versioned baseline revision 1. The separate
 completion review passed with no unresolved finding. Final verification passes
 10/10 focused S2 tests, TypeScript, production build, context smoke 3/3, diff
 checks, and the full Windows regression 323/323. S2 adds no automatic runtime
-gate or context removal. S3-S6 remain unauthorized; the next dependent step is
-an owner-reviewed S3 contract.
+gate or context removal.
+
+S3 Hard Execution Budgets contract revision 1 is implemented and
+completion-reviewed. Its contract and evidence are recorded at
+`docs/architecture/change-control-plane/hard-execution-budgets-contract-v1.md`.
+It provides explicit opt-in hard limits only for Orchestrator-owned provider
+process/attempt counts, conservative pre-spawn reservations, unchanged legacy
+queues and model routing, and fail-closed unsupported token enforcement for the
+current Codex CLI. Revision 1 preserves reservations only for process recovery
+of the same canonical run; user-initiated resume/retry retain their existing
+new-run behavior and receive a fresh bounded budget with the exact policy under
+all existing gates. Verification passed 14/14 focused tests, TypeScript,
+production build, context smoke 3/3, the S2 baseline 10/10, diff checks, and
+337/337 full Windows tests in 365.82 seconds. The separate completion review
+found no unresolved issue. S4-S6 remain unauthorized; the next possible step
+is an owner-reviewed S4 contract.
 
 Reviewer infrastructure now supplies the read-only reviewer with the exact
 bounded evidence already produced by Orchestrator verification instead of

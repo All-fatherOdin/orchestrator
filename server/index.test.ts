@@ -60,6 +60,10 @@ import operationalOutcomesV1Schema from "./operational-outcomes-v1/schemas/opera
 import operationalOutcomesV1Examples from "./operational-outcomes-v1/schemas/operational-outcomes-v1.examples.json";
 import githubDeploymentConnectorV1Schema from "./github-deployment-connector-v1/schemas/github-deployment-connector-v1.schema.json";
 import githubDeploymentConnectorV1Examples from "./github-deployment-connector-v1/schemas/github-deployment-connector-v1.examples.json";
+import {
+  createExecutionBudgetAdmissionV1,
+  type ExecutionBudgetPolicyV1,
+} from "./execution-budgets-v1/index.ts";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -16661,6 +16665,14 @@ test("reads machine-readable token usage from completed Codex turns", () => {
     usageFromEvent('{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":45,"cached_input_tokens":80}}'),
     { inputTokens: 120, outputTokens: 45, cachedInputTokens: 80, cacheWriteTokens: 0 },
   );
+  assert.deepEqual(
+    usageFromEvent('{"type":"turn.completed","usage":{"input_tokens":120,"output_tokens":45}}'),
+    { inputTokens: 120, outputTokens: 45, cachedInputTokens: 0, cacheWriteTokens: 0 },
+  );
+  assert.deepEqual(
+    usageFromEvent('{"type":"turn.completed","usage":{"input_tokens":-1,"output_tokens":45,"cached_input_tokens":0}}'),
+    { inputTokens: 0, outputTokens: 45, cachedInputTokens: 0, cacheWriteTokens: 0 },
+  );
   assert.equal(usageFromEvent('{"type":"turn.started"}'), undefined);
   assert.equal(usageFromEvent("not json"), undefined);
 });
@@ -20949,6 +20961,362 @@ test("MergeRequestV1 dead-owner mutex takeover preserves a live successor under 
     await Promise.all(
       [...liveChildren].map((child) => stopChild(child).catch(() => undefined)),
     );
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+const executionBudgetPolicyFixtureV1: ExecutionBudgetPolicyV1 = {
+  contractType: "ExecutionBudgetPolicyV1",
+  contractVersion: "1.0",
+  budgetId: "server-integration-budget-v1",
+  maxProviderInvocations: 2,
+  phaseCaps: { executor: 1, reviewer: 1, correction: 0 },
+};
+
+test("S3 queue opt-in is closed, authorization-bound, and legacy-compatible", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-s3-queue-"));
+  try {
+    const value = {
+      project: { path: root },
+      limits: {
+        taskTimeoutMinutes: 1,
+        reviewerTimeoutMinutes: 1,
+        maxTaskRetries: 0,
+        maxParallelTasks: 1,
+      },
+      tasks: [
+        {
+          key: "budgeted",
+          title: "Budgeted task",
+          prompt: "Use one executor and one reviewer.",
+          executionBudget: executionBudgetPolicyFixtureV1,
+        },
+        {
+          key: "legacy",
+          title: "Legacy task",
+          prompt: "Keep legacy behavior.",
+        },
+      ],
+    };
+    const queue = validateQueue(value);
+    assert.deepEqual(queue.tasks[0].executionBudget, executionBudgetPolicyFixtureV1);
+    assert.equal(queue.tasks[1].executionBudget, undefined);
+    assert.throws(
+      () =>
+        validateQueue({
+          ...value,
+          tasks: [
+            {
+              ...value.tasks[0],
+              executionBudget: {
+                ...executionBudgetPolicyFixtureV1,
+                maxOutputTokens: 100,
+              },
+            },
+            value.tasks[1],
+          ],
+        }),
+      /closed schema|execution budget policy/i,
+    );
+    assert.throws(
+      () =>
+        validateQueue({
+          ...value,
+          tasks: [
+            {
+              ...value.tasks[0],
+              executionBudget: {
+                ...executionBudgetPolicyFixtureV1,
+                phaseCaps: { executor: 2, reviewer: 1, correction: 0 },
+                maxProviderInvocations: 3,
+              },
+            },
+            value.tasks[1],
+          ],
+        }),
+      /existing executor or correction limit/i,
+    );
+    const unbudgetedEvidence = authorizeTask(value.tasks[1], {});
+    const budgetedEvidence = authorizeTask(value.tasks[0], {});
+    assert.notEqual(
+      budgetedEvidence.scopeFingerprint,
+      unbudgetedEvidence.scopeFingerprint,
+    );
+    const changed = {
+      ...value.tasks[0],
+      executionBudget: {
+        ...executionBudgetPolicyFixtureV1,
+        maxProviderInvocations: 3,
+        phaseCaps: { executor: 2, reviewer: 1, correction: 0 },
+      },
+    };
+    assert.equal(
+      replayTaskAuthorization(budgetedEvidence, changed, {}),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("S3 same-run recovery consumes an open reservation while retry and resume start fresh budgets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-s3-recovery-"));
+  try {
+    const queue = validateQueue({
+      project: { path: root },
+      limits: {
+        taskTimeoutMinutes: 1,
+        reviewerTimeoutMinutes: 1,
+        maxTaskRetries: 0,
+        maxParallelTasks: 1,
+      },
+      tasks: [
+        {
+          key: "budgeted",
+          title: "Budgeted task",
+          prompt: "Recover conservatively.",
+          executionBudget: executionBudgetPolicyFixtureV1,
+        },
+        { key: "sibling", title: "Sibling", prompt: "Remain pending." },
+      ],
+    });
+    const run = createRun(queue);
+    const task = run.tasks[0];
+    run.status = "running";
+    task.status = "running";
+    task.executionPhase = "executor";
+    const open = createExecutionBudgetAdmissionV1({
+      policy: executionBudgetPolicyFixtureV1,
+      runId: run.id,
+      taskId: task.id,
+      phase: "executor",
+      resolvedModel: task.model,
+      evidence: [],
+      recordedAt: new Date().toISOString(),
+    });
+    task.executionBudgetEvidence = [open];
+    recoverRun(run);
+    assert.equal(task.status, "failed");
+    assert.equal(task.executionBudgetEvidence.length, 2);
+    assert.equal(
+      task.executionBudgetEvidence[1].contractType ===
+        "ExecutionBudgetSettlementV1"
+        ? task.executionBudgetEvidence[1].status
+        : "wrong-kind",
+      "recovery_ambiguous",
+    );
+
+    const retried = retryRun(run, task);
+    const retriedTask = retried.tasks.find((candidate) => candidate.key === "budgeted")!;
+    assert.notEqual(retried.id, run.id);
+    assert.notEqual(retriedTask.id, task.id);
+    assert.deepEqual(retriedTask.executionBudget, task.executionBudget);
+    assert.equal(retriedTask.executionBudgetEvidence, undefined);
+
+    const resumed = resumeRun(run);
+    assert.ok(resumed);
+    const resumedTask = resumed.tasks.find((candidate) => candidate.key === "budgeted")!;
+    assert.notEqual(resumed.id, run.id);
+    assert.notEqual(resumedTask.id, task.id);
+    assert.deepEqual(resumedTask.executionBudget, task.executionBudget);
+    assert.equal(resumedTask.executionBudgetEvidence, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("S3 load rejects altered persisted budget evidence even for a terminal run", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-s3-persisted-"));
+  let runDirectory = "";
+  try {
+    const queue = validateQueue({
+      project: { path: root },
+      limits: {
+        taskTimeoutMinutes: 1,
+        reviewerTimeoutMinutes: 1,
+        maxTaskRetries: 0,
+        maxParallelTasks: 1,
+      },
+      tasks: [
+        {
+          key: "budgeted",
+          title: "Persisted budget",
+          prompt: "Reject altered evidence.",
+          executionBudget: executionBudgetPolicyFixtureV1,
+        },
+        { key: "sibling", title: "Sibling", prompt: "Remain terminal." },
+      ],
+    });
+    const run = createRun(queue);
+    const task = run.tasks[0];
+    const open = createExecutionBudgetAdmissionV1({
+      policy: executionBudgetPolicyFixtureV1,
+      runId: run.id,
+      taskId: task.id,
+      phase: "executor",
+      resolvedModel: task.model,
+      evidence: [],
+      recordedAt: new Date().toISOString(),
+    });
+    task.executionBudgetEvidence = [open];
+    run.status = "failed";
+    task.status = "failed";
+    run.tasks[1].status = "blocked";
+    await persistRun(run);
+    runDirectory = join(testDataDirectory, "runs", run.id);
+    const statePath = join(runDirectory, "run.json");
+    const record = JSON.parse(await readFile(statePath, "utf8"));
+    record.tasks[0].executionBudgetEvidence[0].taskInvocationOrdinal = 2;
+    await writeFile(statePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+    await assert.rejects(
+      () => loadRun(run.id),
+      /PERSISTED_EXECUTION_BUDGET_INVALID/,
+    );
+  } finally {
+    if (runDirectory) await rm(runDirectory, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("S3 runtime persists each reservation before the fake provider process and leaves legacy tasks untouched", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-s3-runtime-"));
+  const repository = join(root, "repository");
+  const fakeCodex = join(root, "fake-codex.cjs");
+  const trace = join(root, "trace.jsonl");
+  const previousCodexBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    await mkdir(repository);
+    execFileSync("git", ["init", "-q"], { cwd: repository });
+    await writeFile(
+      fakeCodex,
+      [
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "let prompt = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', chunk => prompt += chunk);",
+        "process.stdin.on('end', () => {",
+        "  const args = process.argv.slice(2);",
+        "  const output = args[args.indexOf('--output-last-message') + 1];",
+        "  const run = JSON.parse(fs.readFileSync(path.join(path.dirname(output), 'run.json'), 'utf8'));",
+        "  const task = run.tasks.find(candidate => output.includes(candidate.id));",
+        "  const reviewer = prompt.startsWith('Review only the authoritative task change set');",
+        "  const correction = prompt.includes('Reviewer found these issues:');",
+        "  const phase = reviewer ? 'reviewer' : correction ? 'correction' : 'executor';",
+        "  const reservations = (task.executionBudgetEvidence || []).filter(entry => entry.contractType === 'ExecutionBudgetAdmissionV1' && entry.disposition === 'allow' && entry.phase === phase);",
+        "  if (task.executionBudget && reservations.length === 0) process.exit(9);",
+        `  fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ phase, budgeted: !!task.executionBudget, reservations: reservations.length, args }) + '\\n');`,
+        "  const requestCorrection = reviewer && task.executionBudget && reservations.length === 1;",
+        "  fs.writeFileSync(output, reviewer ? (requestCorrection ? 'VERDICT: CHANGES_REQUESTED\\nApply the bounded correction.\\n' : 'VERDICT: APPROVED\\n') : 'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED\\n');",
+        "  const usage = task.executionBudget && reviewer && reservations.length === 2 ? { input_tokens: 10, output_tokens: 2 } : { input_tokens: 10, output_tokens: 2, cached_input_tokens: 3 };",
+        "  process.stdout.write(JSON.stringify({ type: 'turn.completed', usage }) + '\\n');",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = fakeCodex;
+    const queue = validateQueue({
+      project: { path: repository },
+      limits: {
+        taskTimeoutMinutes: 1,
+        reviewerTimeoutMinutes: 1,
+        maxTaskRetries: 0,
+        maxParallelTasks: 1,
+      },
+      tasks: [
+        {
+          key: "budgeted",
+          title: "Budgeted runtime task",
+          prompt: "Return a bounded result without file changes.",
+          model: "terra",
+          executionBudget: {
+            ...executionBudgetPolicyFixtureV1,
+            maxProviderInvocations: 4,
+            phaseCaps: { executor: 1, reviewer: 2, correction: 1 },
+          },
+        },
+        {
+          key: "legacy",
+          title: "Legacy runtime task",
+          prompt: "Return a legacy result without file changes.",
+          model: "terra",
+          dependsOn: ["budgeted"],
+        },
+      ],
+    });
+    const run = createRun(queue);
+    await executeQueue(run);
+    assert.equal(run.status, "completed", JSON.stringify(run.tasks, null, 2));
+    const budgeted = run.tasks.find((task) => task.key === "budgeted")!;
+    const legacy = run.tasks.find((task) => task.key === "legacy")!;
+    assert.equal(budgeted.executionBudgetEvidence?.length, 8);
+    assert.equal(legacy.executionBudgetEvidence, undefined);
+    const budgetSettlements = budgeted.executionBudgetEvidence?.filter(
+      (entry) => entry.contractType === "ExecutionBudgetSettlementV1",
+    );
+    assert.equal(budgetSettlements?.at(-1)?.usage.state, "missing");
+    assert.equal(legacy.usage?.every((record) => record.inputTokens === 10), true);
+    const events = (await readFile(trace, "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as { phase: string; budgeted: boolean; reservations: number; args: string[] });
+    assert.deepEqual(
+      events.map(({ phase, budgeted: hasBudget, reservations }) => ({ phase, hasBudget, reservations })),
+      [
+        { phase: "executor", hasBudget: true, reservations: 1 },
+        { phase: "reviewer", hasBudget: true, reservations: 1 },
+        { phase: "correction", hasBudget: true, reservations: 1 },
+        { phase: "reviewer", hasBudget: true, reservations: 2 },
+        { phase: "executor", hasBudget: false, reservations: 0 },
+        { phase: "reviewer", hasBudget: false, reservations: 0 },
+      ],
+    );
+    assert.equal(
+      events.some((event) =>
+        event.args.some((argument) => /token.?budget|max.?output.?tokens/i.test(argument)),
+      ),
+      false,
+    );
+
+    legacy.status = "failed";
+    run.status = "failed";
+    const retried = retryRun(run, legacy);
+    const retriedBudgeted = retried.tasks.find(
+      (task) => task.key === "budgeted",
+    )!;
+    assert.notEqual(retriedBudgeted.id, budgeted.id);
+    assert.equal(retriedBudgeted.executionBudgetEvidence, undefined);
+    assert.deepEqual(retriedBudgeted.executionBudgetCarriedCompletion, {
+      sourceRunId: run.id,
+      sourceTaskId: budgeted.id,
+    });
+    assert.doesNotThrow(() =>
+      retryRun(
+        retried,
+        retried.tasks.find((task) => task.key === "legacy")!,
+      ),
+    );
+
+    const resumed = resumeRun(run);
+    assert.ok(resumed);
+    const resumedBudgeted = resumed.tasks.find(
+      (task) => task.key === "budgeted",
+    )!;
+    assert.notEqual(resumedBudgeted.id, budgeted.id);
+    assert.equal(resumedBudgeted.executionBudgetEvidence, undefined);
+    assert.deepEqual(resumedBudgeted.executionBudgetCarriedCompletion, {
+      sourceRunId: run.id,
+      sourceTaskId: budgeted.id,
+    });
+    assert.doesNotThrow(() => resumeRun(resumed));
+  } finally {
+    if (previousCodexBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousCodexBin;
+    if (previousScript === undefined)
+      delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/execution-budgets-v1.schema.json",
+  "oneOf": [
+    { "$ref": "#/$defs/ExecutionBudgetPolicyV1" },
+    { "$ref": "#/$defs/ExecutionBudgetAdmissionV1" },
+    { "$ref": "#/$defs/ExecutionBudgetSettlementV1" }
+  ],
+  "$defs": {
+    "SafeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "Sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$"
+    },
+    "ExecutionPhaseV1": {
+      "enum": ["executor", "reviewer", "correction"]
+    },
+    "ExecutionBudgetPolicyV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "budgetId", "maxProviderInvocations", "phaseCaps"],
+      "properties": {
+        "contractType": { "const": "ExecutionBudgetPolicyV1" },
+        "contractVersion": { "const": "1.0" },
+        "budgetId": { "$ref": "#/$defs/SafeId" },
+        "maxProviderInvocations": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "phaseCaps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["executor", "reviewer", "correction"],
+          "properties": {
+            "executor": { "type": "integer", "minimum": 1, "maximum": 4 },
+            "reviewer": { "type": "integer", "minimum": 1, "maximum": 2 },
+            "correction": { "type": "integer", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    },
+    "OptionalIdentityV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "hash"],
+          "properties": {
+            "state": { "const": "bound" },
+            "hash": { "$ref": "#/$defs/Sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": { "state": { "const": "unsupported" } }
+        }
+      ]
+    },
+    "ExecutionBudgetAdmissionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "admissionId", "budgetHash", "runId", "taskId", "phase", "phaseOrdinal", "taskInvocationOrdinal", "resolvedModel", "providerRuntimeIdentity", "attemptBinding", "disposition", "reasonCode", "recordedAt"],
+      "properties": {
+        "contractType": { "const": "ExecutionBudgetAdmissionV1" },
+        "contractVersion": { "const": "1.0" },
+        "admissionId": { "$ref": "#/$defs/SafeId" },
+        "budgetHash": { "$ref": "#/$defs/Sha256" },
+        "runId": { "$ref": "#/$defs/SafeId" },
+        "taskId": { "$ref": "#/$defs/SafeId" },
+        "phase": { "$ref": "#/$defs/ExecutionPhaseV1" },
+        "phaseOrdinal": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "taskInvocationOrdinal": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "resolvedModel": { "enum": ["luna", "terra", "sol"] },
+        "providerRuntimeIdentity": { "$ref": "#/$defs/OptionalIdentityV1" },
+        "attemptBinding": { "$ref": "#/$defs/OptionalIdentityV1" },
+        "disposition": { "enum": ["allow", "reject", "defer", "human-decision-required"] },
+        "reasonCode": {
+          "enum": [
+            "EXECUTION_BUDGET_ADMITTED",
+            "EXECUTION_BUDGET_POLICY_INVALID",
+            "EXECUTION_BUDGET_TOTAL_EXHAUSTED",
+            "EXECUTION_BUDGET_PHASE_EXHAUSTED",
+            "EXECUTION_BUDGET_REQUIRED_REVIEW_BLOCKED",
+            "EXECUTION_BUDGET_RESERVATION_CONFLICT",
+            "EXECUTION_BUDGET_DEFERRED_TO_LIVE_RESERVATION"
+          ]
+        },
+        "recordedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "MeasuredUsageV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens"],
+          "properties": {
+            "state": { "const": "measured" },
+            "inputTokens": { "type": "integer", "minimum": 0 },
+            "outputTokens": { "type": "integer", "minimum": 0 },
+            "cachedInputTokens": { "type": "integer", "minimum": 0 },
+            "cacheWriteTokens": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": { "state": { "enum": ["unsupported", "missing", "conflicting"] } }
+        }
+      ]
+    },
+    "ExecutionBudgetSettlementV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "settlementId", "admissionId", "budgetHash", "runId", "taskId", "status", "usage", "settledAt"],
+      "properties": {
+        "contractType": { "const": "ExecutionBudgetSettlementV1" },
+        "contractVersion": { "const": "1.0" },
+        "settlementId": { "$ref": "#/$defs/SafeId" },
+        "admissionId": { "$ref": "#/$defs/SafeId" },
+        "budgetHash": { "$ref": "#/$defs/Sha256" },
+        "runId": { "$ref": "#/$defs/SafeId" },
+        "taskId": { "$ref": "#/$defs/SafeId" },
+        "status": { "enum": ["completed", "failed", "timed_out", "cancelled", "not_started_after_reservation", "recovery_ambiguous"] },
+        "usage": { "$ref": "#/$defs/MeasuredUsageV1" },
+        "settledAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    }
+  }
+}
