@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: Phase 1-12 and Agentic Stage 1 S1-S4 completion-reviewed
+Status: Phase 1-12 and Agentic Stage 1 S1-S4 completion-reviewed; S5 contract accepted, implementation baseline-blocked
 Last reviewed: 2026-08-13
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -58,6 +58,9 @@ were observed.
 21. [tool-capability-chain-gate-contract-v1.md](tool-capability-chain-gate-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S4 observable-tool
     manifest and deterministic chain-gate boundary.
+22. [mocked-workflow-evals-contract-v1.md](mocked-workflow-evals-contract-v1.md)
+    records the accepted S5 credential-free deterministic mocked-workflow eval
+    boundary; implementation is blocked until the Windows CI baseline is green.
 
 ## Current Boundary
 

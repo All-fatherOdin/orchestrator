@@ -75,8 +75,37 @@ read path as the sole initial accepted high-risk path, and `unsupported` for
 opaque Codex CLI internal tools. Verification passed 13/13 focused S4 tests,
 TypeScript, production build, context smoke 3/3, S2 baseline 10/10, diff checks,
 and 347/347 full Windows tests in 385.47 seconds. The separate completion
-review found no unresolved issue. S5-S6 remain unauthorized; an owner-reviewed
-S5 contract is the next possible slice.
+review found no unresolved issue. The S5 contract is accepted but its
+implementation is baseline-blocked; S6 remains unauthorized.
+
+The accepted S5 Mocked Workflow Evals contract is recorded at
+`docs/architecture/change-control-plane/mocked-workflow-evals-contract-v1.md`.
+It recommends one deterministic in-memory adapter over the existing Phase 5
+lineage, with three immutable credential-free fixture families: the complete
+mocked GitHub intake workflow, the local PTC chain, and an S4 pre-effect denial.
+Only executable assertions may block; model grading is unsupported. Acceptance
+authorizes only its exact impact map after the baseline gate is green and
+creates no API/UI/queue field, canonical registry, live request, credential
+use, external write, or automatic Phase 5 publication. S6 remains
+unauthorized.
+
+The post-merge S4 Windows workflow run `31687531004` is red on one unrelated
+pre-existing Phase 3 target-fencing stress test: three isolated attempts hit
+Windows `EPERM` while atomically renaming temporary `run.json`. The local S4
+full regression remains 347/347, but S5 implementation must not begin until a
+separate bounded fix or clean authoritative rerun restores a green `main`
+baseline. That fix is outside the accepted S5 impact map.
+
+A separate bounded baseline-fix candidate now preserves the existing general
+server writer and adds bounded transient atomic `rename` backoff only to the
+Phase 3 workspace-state writer that produced the CI failure. Its 14.675-second
+window remains inside the 20-second target-fencing loser timeout, and final
+failure cleans the temporary file. The exact atomic helper tests pass 3/3, the
+production target-fencing stress passes its focused run, TypeScript and diff
+checks pass, and the final full Windows regression passes 348/348 in 580.06
+seconds. This is local candidate
+evidence only; the S5 baseline gate remains closed until the fix is published
+separately and GitHub Windows CI passes.
 
 Reviewer infrastructure now supplies the read-only reviewer with the exact
 bounded evidence already produced by Orchestrator verification instead of
