@@ -15,6 +15,7 @@
     "test:context-budget": "tsx --test server/context-budget-v1/index.test.ts",
     "test:execution-budgets": "tsx --test server/execution-budgets-v1/index.test.ts && tsx --test --test-name-pattern \"S3\" server/index.test.ts",
     "test:tool-capabilities": "tsx --test server/tool-capabilities-v1/index.test.ts && tsx --test --test-name-pattern \"S4\" server/index.test.ts",
+    "test:workflow-evals": "tsx --test server/workflow-evals-v1/index.test.ts",
     "context-budget:report": "tsx scripts/context_budget_report.ts"
   },
   "dependencies": {

@@ -1,0 +1,9 @@
+{
+  "contractType": "WorkflowEvalFixtureV1", "contractVersion": "1.0", "fixtureId": "s4-capability-denial-v1", "fixtureVersion": 1,
+  "workflowFamily": "s4_capability_denial", "privacyClassification": "public_fixture", "input": { "requestId": "denial-public" },
+  "toolIds": ["operator.dispatch-wave-v1", "connector.github-deployment-read-v1"], "requiredS4Disposition": "reject", "requiredS4ReasonCodes": ["TOOL_CAPABILITY_DIRECT_ONLY"],
+  "expectedCalls": [], "forbiddenOperationIds": ["github.fetch-deployment", "operator.dispatch-wave", "phase10.execute-confirmed"], "orderEdges": [],
+  "expectedTerminalState": "rejected", "expectedDisposition": "passed", "expectedReasonCodes": ["WORKFLOW_EVAL_PASSED"], "evidenceRefs": ["fixture:s4-capability-denial-v1"],
+  "expectedEffects": { "mockInteractions": 0, "liveNetworkRequests": 0, "providerCalls": 0, "credentialReads": 0, "externalWrites": 0, "uncontrolledFilesystemWrites": 0, "canonicalLedgerWrites": 0 },
+  "limits": { "maxCalls": 0, "maxTraceBytes": 65536, "maxPublicSummaryBytes": 256, "maxVirtualSteps": 128 }
+}

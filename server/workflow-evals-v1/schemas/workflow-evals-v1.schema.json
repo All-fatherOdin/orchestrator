@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/workflow-evals-v1.schema.json",
+  "title": "Workflow Evals v1",
+  "oneOf": [
+    { "$ref": "#/$defs/WorkflowEvalManifestV1" },
+    { "$ref": "#/$defs/WorkflowEvalFixtureV1" },
+    { "$ref": "#/$defs/WorkflowEvalTraceV1" },
+    { "$ref": "#/$defs/WorkflowEvalResultV1" }
+  ],
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "family": { "enum": ["github_deployment_intake", "context_ptc_reduction", "s4_capability_denial"] },
+    "disposition": { "enum": ["passed", "failed", "unsupported"] },
+    "terminal": { "enum": ["completed", "rejected", "direct_fallback", "unsupported"] },
+    "reason": { "enum": ["WORKFLOW_EVAL_PASSED", "WORKFLOW_EVAL_SCHEMA_INVALID", "WORKFLOW_EVAL_MANIFEST_CHANGED", "WORKFLOW_EVAL_FIXTURE_CHANGED", "WORKFLOW_EVAL_S4_IDENTITY_CHANGED", "WORKFLOW_EVAL_ADAPTER_MISMATCH", "WORKFLOW_EVAL_UNDECLARED_CALL", "WORKFLOW_EVAL_EXPECTED_CALL_MISSING", "WORKFLOW_EVAL_FORBIDDEN_CALL", "WORKFLOW_EVAL_ARGUMENT_MISMATCH", "WORKFLOW_EVAL_OUTCOME_MISMATCH", "WORKFLOW_EVAL_ORDER_VIOLATION", "WORKFLOW_EVAL_FAILURE_INJECTION_MISMATCH", "WORKFLOW_EVAL_TERMINAL_STATE_MISMATCH", "WORKFLOW_EVAL_PROHIBITED_EFFECT", "WORKFLOW_EVAL_LIMIT_EXCEEDED", "WORKFLOW_EVAL_PRIVACY_REJECTED", "WORKFLOW_EVAL_REPLAY_INVALID", "WORKFLOW_EVAL_MODEL_GRADING_UNSUPPORTED"] },
+    "reasons": { "type": "array", "minItems": 1, "maxItems": 19, "uniqueItems": true, "items": { "$ref": "#/$defs/reason" } },
+    "ids": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+    "EffectsV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mockInteractions", "liveNetworkRequests", "providerCalls", "credentialReads", "externalWrites", "uncontrolledFilesystemWrites", "canonicalLedgerWrites"],
+      "properties": {
+        "mockInteractions": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "liveNetworkRequests": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "providerCalls": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "credentialReads": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "externalWrites": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "uncontrolledFilesystemWrites": { "type": "integer", "minimum": 0, "maximum": 0 },
+        "canonicalLedgerWrites": { "type": "integer", "minimum": 0, "maximum": 0 }
+      }
+    },
+    "ExpectedCallV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["callId", "operationId", "occurrence", "argumentHash", "outcomeKind", "outcomeHash", "publicSummary"],
+      "properties": {
+        "callId": { "$ref": "#/$defs/id" }, "operationId": { "$ref": "#/$defs/id" },
+        "occurrence": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "argumentHash": { "$ref": "#/$defs/hash" }, "outcomeKind": { "enum": ["returned", "rejected"] },
+        "outcomeHash": { "$ref": "#/$defs/hash" }, "publicSummary": { "$ref": "#/$defs/summary" }
+      }
+    },
+    "OrderEdgeV1": {
+      "type": "object", "additionalProperties": false, "required": ["beforeCallId", "afterCallId"],
+      "properties": { "beforeCallId": { "$ref": "#/$defs/id" }, "afterCallId": { "$ref": "#/$defs/id" } }
+    },
+    "FailureInjectionV1": {
+      "type": "object", "additionalProperties": false, "required": ["callId", "phase", "errorCode", "retryExpectation"],
+      "properties": { "callId": { "$ref": "#/$defs/id" }, "phase": { "enum": ["before", "instead"] }, "errorCode": { "$ref": "#/$defs/id" }, "retryExpectation": { "enum": ["none", "one_retry", "direct_fallback"] } }
+    },
+    "LimitsV1": {
+      "type": "object", "additionalProperties": false, "required": ["maxCalls", "maxTraceBytes", "maxPublicSummaryBytes", "maxVirtualSteps"],
+      "properties": { "maxCalls": { "type": "integer", "minimum": 0, "maximum": 64 }, "maxTraceBytes": { "type": "integer", "minimum": 1, "maximum": 65536 }, "maxPublicSummaryBytes": { "type": "integer", "minimum": 1, "maximum": 256 }, "maxVirtualSteps": { "type": "integer", "minimum": 1, "maximum": 128 } }
+    },
+    "WorkflowEvalFixtureV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "fixtureId", "fixtureVersion", "workflowFamily", "privacyClassification", "input", "toolIds", "requiredS4Disposition", "requiredS4ReasonCodes", "expectedCalls", "forbiddenOperationIds", "orderEdges", "expectedTerminalState", "expectedDisposition", "expectedReasonCodes", "evidenceRefs", "expectedEffects", "limits"],
+      "properties": {
+        "contractType": { "const": "WorkflowEvalFixtureV1" }, "contractVersion": { "const": "1.0" },
+        "fixtureId": { "$ref": "#/$defs/id" }, "fixtureVersion": { "type": "integer", "minimum": 1 }, "workflowFamily": { "$ref": "#/$defs/family" }, "privacyClassification": { "const": "public_fixture" },
+        "input": { "type": "object", "maxProperties": 16, "additionalProperties": { "anyOf": [{ "type": "string" }, { "type": "integer" }, { "type": "boolean" }] } },
+        "toolIds": { "$ref": "#/$defs/ids" }, "requiredS4Disposition": { "enum": ["allow", "reject", "unsupported"] }, "requiredS4ReasonCodes": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } },
+        "expectedCalls": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/ExpectedCallV1" } }, "forbiddenOperationIds": { "$ref": "#/$defs/ids" }, "orderEdges": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/OrderEdgeV1" } },
+        "failureInjection": { "$ref": "#/$defs/FailureInjectionV1" }, "expectedTerminalState": { "$ref": "#/$defs/terminal" }, "expectedDisposition": { "$ref": "#/$defs/disposition" }, "expectedReasonCodes": { "$ref": "#/$defs/reasons" }, "evidenceRefs": { "$ref": "#/$defs/ids" }, "expectedEffects": { "$ref": "#/$defs/EffectsV1" }, "limits": { "$ref": "#/$defs/LimitsV1" }
+      }
+    },
+    "FixtureManifestEntryV1": {
+      "type": "object", "additionalProperties": false, "required": ["fixtureId", "workflowFamily", "fixtureVersion", "fixtureHash", "toolIds", "runnerAdapterId", "runnerAdapterVersion"],
+      "properties": { "fixtureId": { "$ref": "#/$defs/id" }, "workflowFamily": { "$ref": "#/$defs/family" }, "fixtureVersion": { "type": "integer", "minimum": 1 }, "fixtureHash": { "$ref": "#/$defs/hash" }, "toolIds": { "$ref": "#/$defs/ids" }, "runnerAdapterId": { "$ref": "#/$defs/id" }, "runnerAdapterVersion": { "$ref": "#/$defs/id" } }
+    },
+    "OperationV1": { "type": "object", "additionalProperties": false, "required": ["operationId", "workflowFamily"], "properties": { "operationId": { "$ref": "#/$defs/id" }, "workflowFamily": { "$ref": "#/$defs/family" } } },
+    "WorkflowEvalManifestV1": {
+      "type": "object", "additionalProperties": false, "required": ["contractType", "contractVersion", "manifestId", "manifestVersion", "s4ManifestId", "s4ManifestVersion", "s4ManifestHash", "fixtures", "operations"],
+      "properties": { "contractType": { "const": "WorkflowEvalManifestV1" }, "contractVersion": { "const": "1.0" }, "manifestId": { "$ref": "#/$defs/id" }, "manifestVersion": { "type": "integer", "minimum": 1 }, "s4ManifestId": { "$ref": "#/$defs/id" }, "s4ManifestVersion": { "type": "integer", "minimum": 1 }, "s4ManifestHash": { "$ref": "#/$defs/hash" }, "fixtures": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/FixtureManifestEntryV1" } }, "operations": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/OperationV1" } } }
+    },
+    "TraceCallV1": {
+      "type": "object", "additionalProperties": false,
+      "required": ["callId", "operationId", "occurrence", "argumentHash", "outcomeKind", "outcomeHash", "publicSummary", "virtualStep"],
+      "properties": {
+        "callId": { "$ref": "#/$defs/id" }, "operationId": { "$ref": "#/$defs/id" },
+        "occurrence": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "argumentHash": { "$ref": "#/$defs/hash" }, "outcomeKind": { "enum": ["returned", "rejected"] },
+        "outcomeHash": { "$ref": "#/$defs/hash" }, "publicSummary": { "$ref": "#/$defs/summary" },
+        "virtualStep": { "type": "integer", "minimum": 1, "maximum": 128 }
+      }
+    },
+    "WorkflowEvalTraceV1": {
+      "type": "object", "additionalProperties": false, "required": ["contractType", "contractVersion", "manifestId", "manifestVersion", "fixtureId", "fixtureVersion", "fixtureHash", "runnerAdapterId", "runnerAdapterVersion", "s4ManifestHash", "calls", "s4DecisionIds", "terminalState", "effects", "traceHash"],
+      "properties": { "contractType": { "const": "WorkflowEvalTraceV1" }, "contractVersion": { "const": "1.0" }, "manifestId": { "$ref": "#/$defs/id" }, "manifestVersion": { "type": "integer", "minimum": 1 }, "fixtureId": { "$ref": "#/$defs/id" }, "fixtureVersion": { "type": "integer", "minimum": 1 }, "fixtureHash": { "$ref": "#/$defs/hash" }, "runnerAdapterId": { "$ref": "#/$defs/id" }, "runnerAdapterVersion": { "$ref": "#/$defs/id" }, "s4ManifestHash": { "$ref": "#/$defs/hash" }, "calls": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/TraceCallV1" } }, "s4DecisionIds": { "$ref": "#/$defs/ids" }, "terminalState": { "$ref": "#/$defs/terminal" }, "effects": { "$ref": "#/$defs/EffectsV1" }, "traceHash": { "$ref": "#/$defs/hash" } }
+    },
+    "OracleV1": { "type": "object", "additionalProperties": false, "required": ["oracleId", "status", "evidenceRefs"], "properties": { "oracleId": { "$ref": "#/$defs/id" }, "status": { "enum": ["pass", "fail", "unsupported"] }, "evidenceRefs": { "$ref": "#/$defs/ids" } } },
+    "WorkflowEvalResultV1": {
+      "type": "object", "additionalProperties": false, "required": ["contractType", "contractVersion", "manifestId", "manifestVersion", "fixtureId", "fixtureVersion", "fixtureHash", "traceHash", "runnerAdapterId", "runnerAdapterVersion", "s4ManifestHash", "disposition", "reasonCodes", "oracles", "evidenceRefs", "resultHash"],
+      "properties": { "contractType": { "const": "WorkflowEvalResultV1" }, "contractVersion": { "const": "1.0" }, "manifestId": { "$ref": "#/$defs/id" }, "manifestVersion": { "type": "integer", "minimum": 1 }, "fixtureId": { "$ref": "#/$defs/id" }, "fixtureVersion": { "type": "integer", "minimum": 1 }, "fixtureHash": { "$ref": "#/$defs/hash" }, "traceHash": { "$ref": "#/$defs/hash" }, "runnerAdapterId": { "$ref": "#/$defs/id" }, "runnerAdapterVersion": { "$ref": "#/$defs/id" }, "s4ManifestHash": { "$ref": "#/$defs/hash" }, "disposition": { "$ref": "#/$defs/disposition" }, "reasonCodes": { "$ref": "#/$defs/reasons" }, "oracles": { "type": "array", "minItems": 1, "maxItems": 32, "items": { "$ref": "#/$defs/OracleV1" } }, "evidenceRefs": { "$ref": "#/$defs/ids" }, "resultHash": { "$ref": "#/$defs/hash" } }
+    }
+  }
+}

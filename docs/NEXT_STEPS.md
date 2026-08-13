@@ -75,37 +75,32 @@ read path as the sole initial accepted high-risk path, and `unsupported` for
 opaque Codex CLI internal tools. Verification passed 13/13 focused S4 tests,
 TypeScript, production build, context smoke 3/3, S2 baseline 10/10, diff checks,
 and 347/347 full Windows tests in 385.47 seconds. The separate completion
-review found no unresolved issue. The S5 contract is accepted but its
-implementation is baseline-blocked; S6 remains unauthorized.
+review found no unresolved issue. The separately repaired Windows baseline is
+green and S5 is now implemented and completion-reviewed. S6 remains unauthorized.
 
 The accepted S5 Mocked Workflow Evals contract is recorded at
 `docs/architecture/change-control-plane/mocked-workflow-evals-contract-v1.md`.
 It recommends one deterministic in-memory adapter over the existing Phase 5
 lineage, with three immutable credential-free fixture families: the complete
 mocked GitHub intake workflow, the local PTC chain, and an S4 pre-effect denial.
-Only executable assertions may block; model grading is unsupported. Acceptance
-authorizes only its exact impact map after the baseline gate is green and
-creates no API/UI/queue field, canonical registry, live request, credential
-use, external write, or automatic Phase 5 publication. S6 remains
-unauthorized.
+Only executable assertions may block; model grading is unsupported. The exact
+accepted impact map is implemented with closed schemas, immutable fixtures,
+thirteen deterministic oracles, typed GitHub/PTC seams, replay validation, and
+a pure Phase 5 mapper. Focused tests pass 14/14, TypeScript and production
+build pass, context smoke passes 3/3, the S2 baseline passes 10/10, and the
+full Windows regression passes 348/348 in 403.3 seconds. It creates no
+API/UI/queue field, canonical registry, live request, credential use, external
+write, or automatic Phase 5 publication. The separate completion review found
+no unresolved acceptance issue; S6 remains unauthorized.
 
-The post-merge S4 Windows workflow run `31687531004` is red on one unrelated
-pre-existing Phase 3 target-fencing stress test: three isolated attempts hit
-Windows `EPERM` while atomically renaming temporary `run.json`. The local S4
-full regression remains 347/347, but S5 implementation must not begin until a
-separate bounded fix or clean authoritative rerun restores a green `main`
-baseline. That fix is outside the accepted S5 impact map.
+The post-merge S4 Windows workflow run `31687531004` exposed an unrelated
+Phase 3 Windows `EPERM` rename race. The bounded repair was published
+separately in PR #26 and restored green Windows CI before S5 implementation.
 
-A separate bounded baseline-fix candidate now preserves the existing general
-server writer and adds bounded transient atomic `rename` backoff only to the
-Phase 3 workspace-state writer that produced the CI failure. Its 14.675-second
-window remains inside the 20-second target-fencing loser timeout, and final
-failure cleans the temporary file. The exact atomic helper tests pass 3/3, the
-production target-fencing stress passes its focused run, TypeScript and diff
-checks pass, and the final full Windows regression passes 348/348 in 580.06
-seconds. This is local candidate
-evidence only; the S5 baseline gate remains closed until the fix is published
-separately and GitHub Windows CI passes.
+The baseline repair preserves the general server writer and adds bounded
+transient atomic `rename` backoff only to the Phase 3 workspace-state writer.
+Its focused and full verification passed before merge; it is inherited S5
+baseline evidence rather than part of the S5 diff.
 
 Reviewer infrastructure now supplies the read-only reviewer with the exact
 bounded evidence already produced by Orchestrator verification instead of
