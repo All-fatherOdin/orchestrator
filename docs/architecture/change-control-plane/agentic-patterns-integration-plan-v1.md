@@ -1,6 +1,6 @@
 # Agentic Patterns Integration Plan v1
 
-Status: active; S1 implemented and completion-reviewed; S2-S6 not authorized
+Status: active; S1-S2 completion-reviewed; S3-S6 not authorized
 
 Prepared: 2026-08-08
 
@@ -15,10 +15,12 @@ implementation work until an owner-reviewed usefulness discussion establishes
 a concrete current problem, evidence of that problem, and a non-duplicating
 extension point.
 
-Only S1 received a separate accepted implementation contract and is now
-completion-reviewed. This plan does not authorize S2-S6 product code, schema,
-queue, ledger, Project Map, run-record, external-system, or provider mutations.
-Each remaining slice still requires its own accepted contract and exact scope.
+S1 is completion-reviewed. The owner accepted the exact S2 contract
+`context-budget-baseline-contract-v1.md` on 2026-08-13, authorizing only its
+bounded read-only implementation impact map. This plan does not authorize
+S3-S6 product code, schema, queue, ledger, Project Map, run-record,
+external-system, or provider mutations. Each remaining slice still requires
+its own accepted contract and exact scope.
 
 ## 2. Current-state correction gate
 
@@ -152,6 +154,10 @@ runtime action.
 - no objective oracle or explicit human-oracle requirement can be stated.
 
 ## 6. S2 - Context budget baseline
+
+Status: implemented and completion-reviewed on 2026-08-13 after exact owner
+acceptance of baseline revision 1. Evidence is recorded in
+`context-budget-baseline-contract-v1.md`.
 
 ### Outcome
 

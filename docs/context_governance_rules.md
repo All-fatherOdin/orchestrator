@@ -43,3 +43,21 @@ Session discoveries enter durable project memory only as reviewed candidates.
 Facts require evidence; decisions require owner or accepted-spec authority;
 stale or superseded records remain auditable but must not appear as current
 truth.
+
+## Context Budget Baseline v1
+
+The accepted S2 boundary measures only exact observable repository sources and
+the production stable prompt prefix. `docs/context-budget-baseline-v1.json` is
+the versioned comparison baseline. Its report command is read-only and never
+changes retrieval, `maxSources`, queue launch, dispatch, or source authority.
+
+Exact UTF-8 bytes and source counts may use accepted hard envelopes only in an
+explicitly invoked report. Token evidence is measured only with a pinned
+deterministic tokenizer; otherwise the closed
+`utf8-bytes-div-4-ceil-v1` estimator is explicit and advisory. Token growth is
+never blocking in v1. Host-owned system/developer/owner instructions and skill
+or opaque tool descriptions remain `unsupported`, not zero or guessed.
+
+An envelope breach reports the evidence; it never silently removes, truncates,
+reorders, or replaces an authoritative source. Baseline changes require an
+ordinary reviewed repository change and never rewrite historical reports.

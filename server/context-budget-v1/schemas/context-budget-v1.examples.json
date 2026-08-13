@@ -1,0 +1,29 @@
+{
+  "validBaseline": {
+    "contractType": "ContextBudgetBaselineV1",
+    "contractVersion": "1.0",
+    "baselineId": "orchestrator-context-v1",
+    "revision": 1,
+    "measurementPolicyId": "context-budget-measurement-v1",
+    "profiles": [{ "profile": "review", "maxSources": 4, "expectedPaths": ["AGENTS.md"] }],
+    "sources": [{
+      "sourceClass": "repository_instructions",
+      "identity": "AGENTS.md",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "byteCount": 100,
+      "tokenEvidence": { "state": "estimated", "identity": "utf8-bytes-div-4-ceil-v1", "count": 25 },
+      "envelope": { "maxSourceCount": 1, "maxBytes": 120, "maxTokens": 30, "mode": "hard" }
+    }],
+    "unsupportedSources": [
+      { "sourceClass": "host_owner_instructions", "state": "unsupported", "reasonCode": "CONTEXT_BUDGET_HOST_SOURCE_UNSUPPORTED" },
+      { "sourceClass": "host_skill_tool_descriptions", "state": "unsupported", "reasonCode": "CONTEXT_BUDGET_HOST_SOURCE_UNSUPPORTED" }
+    ],
+    "sourceSetHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "baselineHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "invalidUnknownField": {
+    "contractType": "ContextBudgetBaselineV1",
+    "contractVersion": "1.0",
+    "unexpected": true
+  }
+}

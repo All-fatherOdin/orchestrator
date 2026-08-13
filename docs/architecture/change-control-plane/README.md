@@ -1,7 +1,7 @@
 # Change Control Plane
 
-Status: Phase 1-11 completion-reviewed; Phase 12 Slices 1-2 implemented
-Last reviewed: 2026-08-07
+Status: Phase 1-12 and Agentic Stage 1 S1-S2 completion-reviewed
+Last reviewed: 2026-08-13
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -42,7 +42,16 @@ were observed.
     implemented and completion-reviewed.
 16. [github-deployment-connector-contract-v1.md](github-deployment-connector-contract-v1.md)
     defines the accepted and reviewed Phase 12 boundary for one manually
-    triggered read-only GitHub deployment adapter; Slices 1-2 are implemented.
+    triggered read-only GitHub deployment adapter; Slices 1-2 are implemented
+    and completion-reviewed.
+17. [github-deployment-connector-completion-review-v1.md](github-deployment-connector-completion-review-v1.md)
+    records the final Phase 12 acceptance matrix, verification, rendered QA,
+    and residual authority boundary.
+18. [agentic-patterns-integration-plan-v1.md](agentic-patterns-integration-plan-v1.md)
+    sequences the contract-first Stage 1 slices; S1 is completion-reviewed.
+19. [context-budget-baseline-contract-v1.md](context-budget-baseline-contract-v1.md)
+    records the accepted, implemented, and completion-reviewed read-only S2
+    context measurement boundary and baseline revision 1.
 
 ## Current Boundary
 
@@ -132,22 +141,23 @@ The formal completion review passed on 2026-08-07 with all 13 acceptance
 clauses evidenced and no unresolved or deferred finding. Phase 11 is closed;
 there is no Slice 3, and any subsequent phase requires its own contract.
 
-Phase 12 GitHub Deployment Connector Contract v1 is now accepted and formally
-reviewed. It authorizes only one exact production deployment/status fetch from
-a server-configured GitHub repository, sanitized deterministic mapping to the
-existing Phase 10 deployment observation, preview with no canonical mutation,
-and explicit-confirmation execute after an exact refetch. Credentials remain
-server-only; all remote calls are read-only and bounded. Slice 1 server schemas,
-adapter, routes, Phase 10
+Phase 12 GitHub Deployment Connector Contract v1 is accepted, implemented, and
+completion-reviewed. It authorizes only one exact production deployment/status
+fetch from a server-configured GitHub repository, sanitized deterministic
+mapping to the existing Phase 10 deployment observation, preview with no
+canonical mutation, and explicit-confirmation execute after an exact refetch.
+Credentials remain server-only; all remote calls are read-only and bounded.
+Slice 1 server schemas, adapter, routes, Phase 10
 delegation, privacy/freshness/idempotency gates, and mocked-network tests are
 implemented and verified. Slice 2 adds the bounded Russian preview,
 explicit-confirmation, immutable-receipt, reconciliation, and exact-retry
 workflow in the existing Phase 11 intake section. Both desktop and 390 px
 rendered interaction checks pass. Three focused Slice 2 tests, the combined
 Phase 12 run 8/8, TypeScript, production build, context smoke 3/3, diff checks,
-and the full Windows regression 273/273 with zero failures/skips pass. The
-formal Phase 12 completion review is the only next boundary; there is no
-authorized Slice 3.
+and the fresh full Windows regression 313/313 with zero failures/skips pass.
+The formal completion review passed on 2026-08-13 with no unresolved finding.
+There is no authorized Slice 3 or Phase 13; any next product phase requires a
+separately reviewed and accepted contract.
 
 ## Authority
 

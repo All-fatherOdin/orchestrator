@@ -11,7 +11,9 @@
     "desktop:dist": "npm run desktop:bundle && electron-builder --win",
     "start": "npm run build && tsx server/index.ts",
     "check": "tsc -b --pretty false",
-    "test": "tsx --test server/index.test.ts electron/lifecycle.test.cjs"
+    "test": "tsx --test server/index.test.ts server/context-budget-v1/index.test.ts electron/lifecycle.test.cjs",
+    "test:context-budget": "tsx --test server/context-budget-v1/index.test.ts",
+    "context-budget:report": "tsx scripts/context_budget_report.ts"
   },
   "dependencies": {
     "ajv8": "npm:ajv@^8.17.1",

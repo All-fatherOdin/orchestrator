@@ -184,13 +184,13 @@ accepted contract; the contract below now satisfies that prerequisite.
 
 Accepted and formally reviewed contract:
 `docs/architecture/change-control-plane/github-deployment-connector-contract-v1.md`.
-Slices 1-2 are implemented and verified. Phase 12 is limited to one manually triggered,
-read-only adapter for one exact GitHub production deployment and terminal
-status. It maps only `success`, `failure`, and `error` into the existing Phase
-10 deployment observation, uses fixed server-side repository configuration and
-least-privilege credentials, performs a no-mutation preview, refetches the same
-remote snapshot for explicit-confirmation execute, and delegates the only
-canonical mutation to Phase 10.
+Slices 1-2 are implemented and completion-reviewed. Phase 12 is limited to one
+manually triggered, read-only adapter for one exact GitHub production deployment
+and terminal status. It maps only `success`, `failure`, and `error` into the
+existing Phase 10 deployment observation, uses fixed server-side repository
+configuration and least-privilege credentials, performs a no-mutation preview,
+refetches the same remote snapshot for explicit-confirmation execute, and
+delegates the only canonical mutation to Phase 10.
 
 Slice 1 provides closed runtime config, three bounded GitHub GETs,
 deterministic sanitized mapping, two connector POST routes, Phase 10 delegation,
@@ -200,8 +200,9 @@ TypeScript, production build, context smoke, diff checks, and the full 270/270
 Windows regression pass. Slice 2 adds only the confirmed Russian operator
 workflow: compatible-source selection, sanitized preview, explicit
 confirmation, immutable receipt, reconciliation, exact retry, and responsive
-desktop/390 px states. The formal Phase 12 completion review is now the next
-boundary; there is no authorized Slice 3. Enumeration, webhooks,
+desktop/390 px states. The formal Phase 12 completion review passed on
+2026-08-13 with no unresolved or deferred finding; there is no authorized
+Slice 3 or Phase 13. Enumeration, webhooks,
 polling, background work, remote writes, other providers/evidence families,
 and inferred rollback/hotfix/rework remain outside Phase 12.
 
@@ -210,3 +211,11 @@ Phase 12 run 8/8, TypeScript, production build, context smoke 3/3, diff checks,
 the full 273/273 Windows regression with zero failures/skips, and local mocked
 browser interaction at desktop and 390 px with a clean console and preserved
 immutable receipt.
+
+Completion verification on 2026-08-13 passed the focused Phase 12 run 8/8,
+TypeScript, production build, context smoke 3/3, diff checks, and the full
+Windows regression 313/313 with zero failures/skips in 571.18 seconds. Fresh
+in-app Chromium checks at 1280 px and 390 px confirmed meaningful Russian
+content, working navigation, a clean console, and no page-level overflow. The
+durable decision is recorded in
+`docs/architecture/change-control-plane/github-deployment-connector-completion-review-v1.md`.
