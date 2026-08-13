@@ -1,6 +1,6 @@
 # Change Control Plane
 
-Status: Phase 1-12 and Agentic Stage 1 S1-S3 completion-reviewed
+Status: Phase 1-12 and Agentic Stage 1 S1-S4 completion-reviewed
 Last reviewed: 2026-08-13
 
 This package turns the Telegram evidence about Nikolay's system into an
@@ -48,13 +48,16 @@ were observed.
     records the final Phase 12 acceptance matrix, verification, rendered QA,
     and residual authority boundary.
 18. [agentic-patterns-integration-plan-v1.md](agentic-patterns-integration-plan-v1.md)
-    sequences the contract-first Stage 1 slices; S1-S3 are completion-reviewed.
+    sequences the contract-first Stage 1 slices; S1-S4 are completion-reviewed.
 19. [context-budget-baseline-contract-v1.md](context-budget-baseline-contract-v1.md)
     records the accepted, implemented, and completion-reviewed read-only S2
     context measurement boundary and baseline revision 1.
 20. [hard-execution-budgets-contract-v1.md](hard-execution-budgets-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S3 revision 1
     execution-budget boundary.
+21. [tool-capability-chain-gate-contract-v1.md](tool-capability-chain-gate-contract-v1.md)
+    records the accepted, implemented, and completion-reviewed S4 observable-tool
+    manifest and deterministic chain-gate boundary.
 
 ## Current Boundary
 

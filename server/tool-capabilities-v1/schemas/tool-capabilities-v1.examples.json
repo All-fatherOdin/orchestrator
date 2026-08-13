@@ -1,0 +1,37 @@
+{
+  "manifest": {
+    "contractType": "ToolCapabilityManifestV1",
+    "contractVersion": "1.0",
+    "manifestId": "orchestrator-tool-capabilities-v1",
+    "manifestVersion": 1,
+    "entries": [
+      { "toolId": "context-ptc.filter-v1", "owner": "context-router", "boundary": "in_process", "privateDataAccess": "bounded_local", "untrustedInput": "bounded_local", "externalCommunication": "none", "mutation": "none", "credentialUse": "none", "isolation": "in_process_validated", "chainMode": "composable", "owningGate": "context-direct-validation" }
+    ],
+    "acceptedPaths": []
+  },
+  "request": {
+    "contractType": "ToolChainRequestV1",
+    "contractVersion": "1.0",
+    "requestId": "tool-request:example",
+    "manifestId": "orchestrator-tool-capabilities-v1",
+    "manifestVersion": 1,
+    "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "toolIds": ["context-ptc.filter-v1"],
+    "owningEvidenceRefs": ["context:example"]
+  },
+  "decision": {
+    "contractType": "ToolCapabilityDecisionV1",
+    "contractVersion": "1.0",
+    "decisionId": "tool-decision:example",
+    "requestId": "tool-request:example",
+    "requestHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "manifestId": "orchestrator-tool-capabilities-v1",
+    "manifestVersion": 1,
+    "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "toolIds": ["context-ptc.filter-v1"],
+    "capabilityUnion": { "privateData": true, "untrustedInput": true, "externalCommunication": false, "mutation": false, "credentialUse": false, "unsupportedBoundary": false },
+    "disposition": "allow",
+    "reasonCodes": ["TOOL_CAPABILITY_ALLOWED"],
+    "owningEvidenceRefs": ["context:example"]
+  }
+}

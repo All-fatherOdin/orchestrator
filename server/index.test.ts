@@ -64,6 +64,11 @@ import {
   createExecutionBudgetAdmissionV1,
   type ExecutionBudgetPolicyV1,
 } from "./execution-budgets-v1/index.ts";
+import {
+  TOOL_CAPABILITY_MANIFEST_HASH_V1,
+  TOOL_CAPABILITY_MANIFEST_V1,
+  assertToolCapabilityDecisionV1,
+} from "./tool-capabilities-v1/index.ts";
 
 process.env.ORCHESTRATOR_TEST = "1";
 const testDataDirectory = await mkdtemp(join(tmpdir(), "orchestrator-test-data-"));
@@ -172,6 +177,7 @@ const {
   contextPtcEnabled,
   ContextPtcFailure,
   LocalDeterministicContextPtcExecutor,
+  productionDoctorToolDecisionV1,
   bindBeforeRecovery,
   runHasLiveOwner,
   codexReasoningEffort,
@@ -692,7 +698,7 @@ test("git status reads untracked paths with spaces without Git quoting", async (
   }
 });
 
-test("Phase 12 Slice 1 preview performs exactly three bounded GETs and no mutation", async () => {
+test("S4 Phase 12 Slice 1 preview gates exactly three bounded GETs without mutation", async () => {
   const remote = mockGitHubFetchV1(githubDeploymentResponsesV1());
   const fixture = await githubDeploymentConnectorFixtureV1(remote.fetcher);
   try {
@@ -708,6 +714,14 @@ test("Phase 12 Slice 1 preview performs exactly three bounded GETs and no mutati
     assert.equal(preview.observation.treeSha, "2".repeat(40));
     assert.equal(preview.remoteSnapshotHash.length, 64);
     assert.equal(preview.contentHash.length, 64);
+    assert.equal(preview.toolCapabilityDecision.disposition, "allow");
+    assert.equal(
+      preview.toolCapabilityDecision.executionPathId,
+      "github-deployment-read-v1",
+    );
+    assert.doesNotThrow(() =>
+      assertToolCapabilityDecisionV1(preview.toolCapabilityDecision),
+    );
     assert.equal(await readFile(ledgerPath, "utf8"), before);
     assert.equal(remote.calls.length, 3);
     assert.deepEqual(remote.calls.map((call) => call.method), ["GET", "GET", "GET"]);
@@ -764,6 +778,11 @@ test("Phase 12 Slice 1 execute refetches exact evidence and imports once with re
       fixture.changeId,
     );
     assert.equal(projection.observations.length, 1);
+    assert.ok(
+      projection.observations[0].evidenceRefs.includes(
+        preview.toolCapabilityDecision.decisionId,
+      ),
+    );
     assert.equal(projection.receipts.filter((item) =>
       item.operationKind === "import-observations").length, 1);
     const replayed = await new ChangeControlStore(fixture.root)
@@ -4665,6 +4684,83 @@ test("Doctor executes every closed typed recipe with exact idempotency and immut
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("S4 maps every production Doctor recipe to one direct-only allowed identity", () => {
+  for (const recipe of WARDEN_REPAIR_RECIPES_V1) {
+    const decision = productionDoctorToolDecisionV1(recipe.recipeId, {
+      projectId: "planning-project",
+      changeId: "planning-change",
+      incidentId: "incident-s4",
+      haltId: "halt-s4",
+      verdictId: `verdict-s4-${recipe.recipeId}`,
+      idempotencyKey: `doctor-s4:${recipe.recipeId}`,
+      leaseId: `lease-s4-${recipe.recipeId}`,
+      leaseEpoch: 1,
+      attemptOrdinal: 1,
+      attemptTimeoutMs: 1_000,
+      assertLiveFence: async () => undefined,
+    });
+    assert.equal(decision.disposition, "allow", recipe.recipeId);
+    assert.deepEqual(decision.toolIds, [`doctor.${recipe.recipeId}`]);
+    assert.doesNotThrow(() => assertToolCapabilityDecisionV1(decision));
+  }
+});
+
+test("S4 production manifest inventory matches every closed source-owned family", () => {
+  const ids = new Set(
+    TOOL_CAPABILITY_MANIFEST_V1.entries.map((entry) => entry.toolId),
+  );
+  for (const operation of [
+    "filter",
+    "join",
+    "rank",
+    "deduplicate",
+    "aggregate",
+    "schema-validate",
+  ])
+    assert.equal(ids.has(`context-ptc.${operation}-v1`), true, operation);
+  for (const recipe of WARDEN_REPAIR_RECIPES_V1)
+    assert.equal(ids.has(`doctor.${recipe.recipeId}`), true, recipe.recipeId);
+  for (const actionKind of OPERATOR_ACTION_KINDS_V1)
+    assert.equal(ids.has(`operator.${actionKind}-v1`), true, actionKind);
+  assert.equal(ids.has("connector.github-deployment-read-v1"), true);
+  assert.equal(ids.has("codex-cli.opaque-local-tools-v1"), true);
+  assert.equal(ids.size, 18);
+  for (const domainSchema of [
+    wardenV1Schema,
+    operatorActionsV1Schema,
+    githubDeploymentConnectorV1Schema,
+  ]) {
+    const decisionDefinition = (domainSchema as any).$defs
+      .ToolCapabilityDecisionV1;
+    assert.equal(
+      decisionDefinition.properties.manifestHash.const,
+      TOOL_CAPABILITY_MANIFEST_HASH_V1,
+      domainSchema.$id,
+    );
+    assert.deepEqual(
+      decisionDefinition.properties.reasonCodes.items.enum,
+      [
+        "TOOL_CAPABILITY_ALLOWED",
+        "TOOL_CAPABILITY_MANIFEST_INVALID",
+        "TOOL_CAPABILITY_MANIFEST_CHANGED",
+        "TOOL_CAPABILITY_UNKNOWN_HIGH_RISK",
+        "TOOL_CAPABILITY_UNSUPPORTED_BOUNDARY",
+        "TOOL_CAPABILITY_DIRECT_ONLY",
+        "TOOL_CAPABILITY_CHAIN_TOO_LARGE",
+        "TOOL_CAPABILITY_LETHAL_TRIFECTA",
+        "TOOL_CAPABILITY_EXTERNAL_WRITE_DENIED",
+        "TOOL_CAPABILITY_WRITE_CREDENTIAL_DENIED",
+        "TOOL_CAPABILITY_MUTATION_COMPOSITION_DENIED",
+        "TOOL_CAPABILITY_ACCEPTED_PATH_REQUIRED",
+        "TOOL_CAPABILITY_ACCEPTED_PATH_MISMATCH",
+        "TOOL_CAPABILITY_OWNING_EVIDENCE_MISSING",
+        "TOOL_CAPABILITY_REPLAY_INVALID",
+      ],
+      domainSchema.$id,
+    );
   }
 });
 
@@ -8674,7 +8770,7 @@ test("Phase 7 Slice 1 previews and atomically executes all five closed actions t
   }
 });
 
-test("operator action HTTP preview, execute, and receipt routes integrate all five action kinds with bounded private errors", async () => {
+test("S4 operator action HTTP routes gate all five direct-only action kinds", async () => {
   for (const actionKind of OPERATOR_ACTION_KINDS_V1) {
     const root = await mkdtemp(join(tmpdir(), `orchestrator-operator-http-${actionKind}-`));
     let server: ReturnType<express.Express["listen"]> | undefined;
@@ -8699,6 +8795,11 @@ test("operator action HTTP preview, execute, and receipt routes integrate all fi
       assert.equal(previewResponse.status, 200, actionKind);
       const preview = await previewResponse.json() as any;
       assert.equal(preview.allowed, true, `${actionKind}: ${preview.reasonCodes}`);
+      assert.equal(preview.request.toolCapabilityDecision.disposition, "allow");
+      assert.equal(
+        preview.request.toolCapabilityDecision.manifestHash,
+        TOOL_CAPABILITY_MANIFEST_HASH_V1,
+      );
       const executeResponse = await fetch(`${base}/execute`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8711,6 +8812,10 @@ test("operator action HTTP preview, execute, and receipt routes integrate all fi
       assert.equal(executeResponse.status, 200, actionKind);
       const receipt = await executeResponse.json() as any;
       assert.equal(receipt.actionKind, actionKind);
+      assert.deepEqual(
+        receipt.request.toolCapabilityDecision,
+        preview.request.toolCapabilityDecision,
+      );
       const getResponse = await fetch(`${base}/receipts/${receipt.receiptId}`);
       assert.equal(getResponse.status, 200, actionKind);
       assert.deepEqual(await getResponse.json(), receipt, actionKind);
@@ -8733,6 +8838,19 @@ test("operator action HTTP preview, execute, and receipt routes integrate all fi
         });
         assert.equal(unknownResponse.status, 400);
         assert.equal((await unknownResponse.json() as any).code, "UNKNOWN_ACTION");
+        const forgedDecisionResponse = await fetch(`${base}/preview`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...preview.request,
+            toolCapabilityDecision: {
+              ...preview.request.toolCapabilityDecision,
+              disposition: "reject",
+              reasonCodes: ["TOOL_CAPABILITY_DIRECT_ONLY"],
+            },
+          }),
+        });
+        assert.equal(forgedDecisionResponse.status, 400);
       }
     } finally {
       if (server)
@@ -17442,7 +17560,7 @@ test("programmatic context reduction is disabled by default and preserves the di
   }
 });
 
-test("local programmatic adapter reduces only the existing router bundle and preserves linkage and evidence", async () => {
+test("S4 local programmatic adapter gates the exact deterministic PTC chain", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-context-ptc-local-"));
   try {
     await writeFile(join(project, "AGENTS.md"), "safe");
@@ -17473,6 +17591,19 @@ test("local programmatic adapter reduces only the existing router bundle and pre
       truncated: true,
     });
     assert.equal(resolved.programmaticReduction?.state, "applied");
+    assert.equal(
+      resolved.programmaticReduction?.tool_capability_decision.disposition,
+      "allow",
+    );
+    assert.equal(
+      resolved.programmaticReduction?.tool_capability_decision.manifestHash,
+      TOOL_CAPABILITY_MANIFEST_HASH_V1,
+    );
+    assert.doesNotThrow(() =>
+      assertToolCapabilityDecisionV1(
+        resolved.programmaticReduction?.tool_capability_decision,
+      ),
+    );
     assert.equal(resolved.programmaticReduction?.requires_direct_final_validation, true);
     assert.deepEqual(resolved.programmaticReduction?.retained_evidence_refs, [
       "evidence-agents",

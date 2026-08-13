@@ -64,8 +64,19 @@ new-run behavior and receive a fresh bounded budget with the exact policy under
 all existing gates. Verification passed 14/14 focused tests, TypeScript,
 production build, context smoke 3/3, the S2 baseline 10/10, diff checks, and
 337/337 full Windows tests in 365.82 seconds. The separate completion review
-found no unresolved issue. S4-S6 remain unauthorized; the next possible step
-is an owner-reviewed S4 contract.
+found no unresolved issue.
+
+The accepted S4 Tool Capability Manifest and Chain Gate contract is recorded at
+`docs/architecture/change-control-plane/tool-capability-chain-gate-contract-v1.md`.
+It implements a closed immutable manifest only for code-owned observable
+operations, union-based chain evaluation, fail-closed unknown metadata,
+`direct_only` Doctor/operator operations, the exact existing Phase 12 GitHub
+read path as the sole initial accepted high-risk path, and `unsupported` for
+opaque Codex CLI internal tools. Verification passed 13/13 focused S4 tests,
+TypeScript, production build, context smoke 3/3, S2 baseline 10/10, diff checks,
+and 347/347 full Windows tests in 385.47 seconds. The separate completion
+review found no unresolved issue. S5-S6 remain unauthorized; an owner-reviewed
+S5 contract is the next possible slice.
 
 Reviewer infrastructure now supplies the read-only reviewer with the exact
 bounded evidence already produced by Orchestrator verification instead of

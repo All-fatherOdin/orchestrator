@@ -23,6 +23,38 @@
         "hash": { "oneOf": [{ "$ref": "#/$defs/Sha256" }, { "type": "null" }] }
       }
     },
+    "ToolCapabilityDecisionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "decisionId", "requestId", "requestHash", "manifestId", "manifestVersion", "manifestHash", "toolIds", "capabilityUnion", "executionPathId", "disposition", "reasonCodes", "owningEvidenceRefs"],
+      "properties": {
+        "contractType": { "const": "ToolCapabilityDecisionV1" },
+        "contractVersion": { "const": "1.0" },
+        "decisionId": { "$ref": "#/$defs/Identifier" },
+        "requestId": { "$ref": "#/$defs/Identifier" },
+        "requestHash": { "$ref": "#/$defs/Sha256" },
+        "manifestId": { "const": "orchestrator-tool-capabilities-v1" },
+        "manifestVersion": { "const": 1 },
+        "manifestHash": { "const": "46d4e3b8905c94070996478c0027de8bfbfcb0f888a7fcb539857b86bf476b9f" },
+        "toolIds": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/Identifier" } },
+        "capabilityUnion": {
+          "type": "object", "additionalProperties": false,
+          "required": ["privateData", "untrustedInput", "externalCommunication", "mutation", "credentialUse", "unsupportedBoundary"],
+          "properties": {
+            "privateData": { "type": "boolean" },
+            "untrustedInput": { "type": "boolean" },
+            "externalCommunication": { "type": "boolean" },
+            "mutation": { "type": "boolean" },
+            "credentialUse": { "type": "boolean" },
+            "unsupportedBoundary": { "type": "boolean" }
+          }
+        },
+        "executionPathId": { "const": "github-deployment-read-v1" },
+        "disposition": { "const": "allow" },
+        "reasonCodes": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "enum": ["TOOL_CAPABILITY_ALLOWED", "TOOL_CAPABILITY_MANIFEST_INVALID", "TOOL_CAPABILITY_MANIFEST_CHANGED", "TOOL_CAPABILITY_UNKNOWN_HIGH_RISK", "TOOL_CAPABILITY_UNSUPPORTED_BOUNDARY", "TOOL_CAPABILITY_DIRECT_ONLY", "TOOL_CAPABILITY_CHAIN_TOO_LARGE", "TOOL_CAPABILITY_LETHAL_TRIFECTA", "TOOL_CAPABILITY_EXTERNAL_WRITE_DENIED", "TOOL_CAPABILITY_WRITE_CREDENTIAL_DENIED", "TOOL_CAPABILITY_MUTATION_COMPOSITION_DENIED", "TOOL_CAPABILITY_ACCEPTED_PATH_REQUIRED", "TOOL_CAPABILITY_ACCEPTED_PATH_MISMATCH", "TOOL_CAPABILITY_OWNING_EVIDENCE_MISSING", "TOOL_CAPABILITY_REPLAY_INVALID"] } },
+        "owningEvidenceRefs": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } }
+      }
+    },
     "BaseRequest": {
       "type": "object",
       "required": ["contractVersion", "requestId", "idempotencyKey", "projectId", "changeId", "actor", "observedProject", "sourceId", "deploymentId", "deploymentStatusId"],
@@ -123,7 +155,7 @@
     "PreviewV1": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contractType", "contractVersion", "requestId", "allowed", "reasonCodes", "remoteSnapshotHash", "contentHash", "sourceWatermark", "observationCount", "wouldMutate", "observation"],
+      "required": ["contractType", "contractVersion", "requestId", "allowed", "reasonCodes", "remoteSnapshotHash", "contentHash", "sourceWatermark", "observationCount", "wouldMutate", "observation", "toolCapabilityDecision"],
       "properties": {
         "contractType": { "const": "GitHubDeploymentConnectorPreviewV1" },
         "contractVersion": { "const": "1.0" },
@@ -135,7 +167,8 @@
         "sourceWatermark": { "$ref": "#/$defs/Watermark" },
         "observationCount": { "const": 1 },
         "wouldMutate": { "const": false },
-        "observation": { "$ref": "#/$defs/ObservationSummaryV1" }
+        "observation": { "$ref": "#/$defs/ObservationSummaryV1" },
+        "toolCapabilityDecision": { "$ref": "#/$defs/ToolCapabilityDecisionV1" }
       }
     }
   }

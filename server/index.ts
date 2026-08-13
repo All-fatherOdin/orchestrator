@@ -114,6 +114,7 @@ import {
   type DoctorAdapterObservationContextV1,
   type DoctorAdapterRegistryV1,
   type DoctorObservationV1,
+  type DoctorRecipeInputV1,
   type MergeSafeAbortResumeInputV1,
   type OwnedCleanupRetryInputV1,
   type ProviderReadRetryInputV1,
@@ -167,6 +168,9 @@ import {
   type ExecutionBudgetPolicyV1,
   type ExecutionBudgetSettlementStatusV1,
 } from "./execution-budgets-v1/index.ts";
+import {
+  allowRegisteredToolV1,
+} from "./tool-capabilities-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -1325,6 +1329,20 @@ async function productionDoctorRunV1(runId: string) {
   return { run, fields, statePath };
 }
 
+export function productionDoctorToolDecisionV1(
+  recipeId: DoctorRecipeInputV1["recipeId"],
+  context: DoctorAdapterContextV1,
+) {
+  return allowRegisteredToolV1({
+    requestId: `doctor:${context.verdictId}:${recipeId}`,
+    toolId: `doctor.${recipeId}`,
+    owningEvidenceRefs: [
+      `warden-verdict:${context.verdictId}`,
+      `repair-lease:${context.leaseId}:${context.leaseEpoch}`,
+    ],
+  });
+}
+
 function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
   const providerRead = {
     observe: async (
@@ -1353,12 +1371,17 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
       context: DoctorAdapterContextV1,
     ) => {
       await context.assertLiveFence();
+      const toolCapabilityDecision = productionDoctorToolDecisionV1(
+        "provider-read-retry-v1",
+        context,
+      );
       await resolvePersistedProjectSnapshot(context.projectId);
       doctorReadSuccesses.add(context.idempotencyKey);
       return {
         outcome: "completed" as const,
         outcomeCode: "provider-read-completed",
         evidenceRefs: ["doctor:provider-read:" + context.projectId],
+        toolCapabilityDecision,
       };
     },
   };
@@ -1393,12 +1416,17 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
       context: DoctorAdapterContextV1,
     ) => {
       await context.assertLiveFence();
+      const toolCapabilityDecision = productionDoctorToolDecisionV1(
+        "registered-process-retry-v1",
+        context,
+      );
       await resolvePersistedProjectSnapshot(context.projectId);
       doctorReadSuccesses.add(context.idempotencyKey);
       return {
         outcome: "completed" as const,
         outcomeCode: "registered-process-completed",
         evidenceRefs: ["doctor:registered-process:" + context.projectId],
+        toolCapabilityDecision,
       };
     },
   };
@@ -1433,6 +1461,10 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
       context: DoctorAdapterContextV1,
     ) => {
       await context.assertLiveFence();
+      const toolCapabilityDecision = productionDoctorToolDecisionV1(
+        "workspace-reconcile-v1",
+        context,
+      );
       const found = await productionDoctorRunV1(input.runId);
       if (!found) throw new Error("Registered run was not found.");
       const attempt = await recoverOwnedWorkspaceAttemptV1(
@@ -1447,6 +1479,7 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
             : ("completed" as const),
         outcomeCode: "workspace-reconcile-" + attempt.state.replaceAll("_", "-"),
         evidenceRefs: attempt.evidenceRefs,
+        toolCapabilityDecision,
       };
     },
   };
@@ -1485,6 +1518,10 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
       context: DoctorAdapterContextV1,
     ) => {
       await context.assertLiveFence();
+      const toolCapabilityDecision = productionDoctorToolDecisionV1(
+        "merge-safe-abort-resume-v1",
+        context,
+      );
       const found = await productionDoctorRunV1(input.runId);
       const request = found?.fields.mergeRequests.find(
         (candidate) =>
@@ -1515,6 +1552,7 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
               : ("completed" as const),
         outcomeCode: "merge-recovery-" + receipt.result.replaceAll("_", "-"),
         evidenceRefs: receipt.evidenceRefs,
+        toolCapabilityDecision,
       };
     },
   };
@@ -1556,6 +1594,10 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
       context: DoctorAdapterContextV1,
     ) => {
       await context.assertLiveFence();
+      const toolCapabilityDecision = productionDoctorToolDecisionV1(
+        "owned-cleanup-retry-v1",
+        context,
+      );
       const found = await productionDoctorRunV1(input.runId);
       if (!found) throw new Error("Registered cleanup run was not found.");
       const attempt = await cleanupOwnedWorkspaceAttemptV1(
@@ -1572,6 +1614,7 @@ function productionDoctorAdaptersV1(): DoctorAdapterRegistryV1 {
               : ("terminal_failure" as const),
         outcomeCode: "owned-cleanup-" + attempt.state.replaceAll("_", "-"),
         evidenceRefs: attempt.evidenceRefs,
+        toolCapabilityDecision,
       };
     },
   };
