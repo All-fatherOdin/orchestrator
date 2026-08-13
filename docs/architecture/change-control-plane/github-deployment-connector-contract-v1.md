@@ -1,9 +1,10 @@
 # GitHub Deployment Connector Contract v1
 
-Status: accepted and formally reviewed; Slice 1 implemented
+Status: implemented and completion-reviewed
 Accepted: 2026-08-07
 Reviewed: 2026-08-07
 Slice 1 implemented: 2026-08-07
+Completion reviewed: 2026-08-13
 
 ## Outcome
 
@@ -329,7 +330,11 @@ implement Phase 12 or authorize another provider or evidence family.
 
 ## Acceptance
 
-Phase 12 is complete only when both slices and tests prove:
+Phase 12 completion review passed on 2026-08-13 with all conditions below
+evidenced and no unresolved or deferred finding. The durable review record is
+`github-deployment-connector-completion-review-v1.md`.
+
+Both slices and tests prove:
 
 - request schemas reject unknown fields, caller URLs/repositories, raw remote
   objects, secrets, and non-exact identities;

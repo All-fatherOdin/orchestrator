@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-08
+Last updated: 2026-08-13
 
 ## Current Priority
 
@@ -38,13 +38,27 @@ runtime authority. Final verification passed 23/23 focused S1 tests, the
 production HTTP regression, TypeScript, production build, context smoke 3/3,
 diff checks, and the full Windows regression 279/279 with zero failures/skips.
 
+The owner accepted S2 Context Budget Baseline v1 on 2026-08-13 with a
+versioned baseline, exact count/byte envelopes, pinned-tokenizer measurement
+only when available, explicit estimation otherwise, and advisory token growth.
+The exact contract is
+`docs/architecture/change-control-plane/context-budget-baseline-contract-v1.md`.
+The bounded implementation provides closed baseline/report schemas, exact
+source and stable-prefix measurement, deterministic identities and deltas,
+hard count/byte and advisory token semantics, private fail-closed diagnostics,
+a read-only CLI, and accepted versioned baseline revision 1. The separate
+completion review passed with no unresolved finding. Final verification passes
+10/10 focused S2 tests, TypeScript, production build, context smoke 3/3, diff
+checks, and the full Windows regression 323/323. S2 adds no automatic runtime
+gate or context removal. S3-S6 remain unauthorized; the next dependent step is
+an owner-reviewed S3 contract.
+
 Reviewer infrastructure now supplies the read-only reviewer with the exact
 bounded evidence already produced by Orchestrator verification instead of
 asking it to rerun write-producing build/test commands in a read-only sandbox.
 The existing no-network and no-workspace-mutation boundary remains unchanged;
 `Select-String`/`Get-Content` are the declared read-only fallback when `rg` is
-unavailable. The next Stage 1 step is an owner-reviewed S2 contract; S2-S6 are
-not authorized by the integration plan alone.
+unavailable.
 
 The AMK v5 read-only integration is implemented and completion-reviewed through
 Slice 6. Exact server-discovered run and opaque queue selectors produce only
@@ -137,8 +151,8 @@ clauses evidenced and no unresolved or deferred finding. Phase 1-11 are now
 completion-reviewed. There is no Phase 11 Slice 3; every subsequent phase
 requires its own separately reviewed and accepted contract.
 
-Phase 12 GitHub Deployment Connector has a separately accepted and formally
-reviewed contract, and Slices 1-2 are implemented and verified. Its minimal scope
+Phase 12 GitHub Deployment Connector has a separately accepted contract and is
+implemented and completion-reviewed through Slices 1-2. Its minimal scope
 is one manually triggered, read-only fetch of one exact GitHub production
 deployment and exact terminal status, mapped only to the existing Phase 10
 `DeploymentObservationV1`. The repository and API origin are server-fixed,
@@ -150,8 +164,14 @@ other evidence family is authorized. Slice 2 adds the confirmed Russian
 operator workflow over the existing Slice 1 API: exact compatible-source
 selection, sanitized preview, explicit confirmation, immutable receipt,
 receipt reconciliation, exact retry, and responsive desktop/390 px states.
-The next safe step is the formal Phase 12 completion review; there is no
-authorized Slice 3.
+The formal completion review passed on 2026-08-13 with all 13 acceptance areas
+evidenced and no unresolved or deferred finding. A fresh review run passed the
+8/8 focused Phase 12 tests, TypeScript, production build, context smoke 3/3,
+diff checks, and the full Windows regression 313/313 in 571.18 seconds.
+In-app Chromium at 1280 px and 390 px confirmed the Russian unavailable state,
+working Control Plane navigation, a clean console, and no page-level overflow.
+There is no authorized Slice 3 or Phase 13; the next product phase requires a
+separately owner-reviewed and accepted contract.
 
 Slice 1 verification passes five focused connector tests, the combined Phase
 10/12 focused run (11/11), TypeScript, production build, context smoke 3/3,
@@ -196,12 +216,16 @@ no live GitHub credential or external request was used.
   `docs/architecture/change-control-plane/operational-outcome-evidence-contract-v1.md`.
 - Accepted Phase 11 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/operational-evidence-intake-contract-v1.md`.
-- Accepted and reviewed Phase 12 contract; Slices 1-2 implemented and verified:
+- Accepted Phase 12 contract; Slices 1-2 implemented and completion-reviewed:
   `docs/architecture/change-control-plane/github-deployment-connector-contract-v1.md`.
+- Phase 12 completion evidence:
+  `docs/architecture/change-control-plane/github-deployment-connector-completion-review-v1.md`.
 - Implemented and completion-reviewed Agentic Patterns Stage 1 S1 contract:
   `docs/architecture/change-control-plane/incident-to-eval-candidate-contract-v1.md`.
 - S1 completion evidence:
   `docs/architecture/change-control-plane/incident-to-eval-candidate-completion-review-v1.md`.
+- Implemented and completion-reviewed Stage 1 S2 contract:
+  `docs/architecture/change-control-plane/context-budget-baseline-contract-v1.md`.
 - Phase 11 product evidence: current code and `server/index.test.ts`.
 - Phase 10 product evidence: current code and `server/index.test.ts`.
 - Phase 2-9 product evidence: current code and `server/index.test.ts`.
