@@ -12228,6 +12228,50 @@ test("whole-change acceptance binds task-owned tracked and untracked evidence wi
   }
 });
 
+test("whole-change acceptance uses a bounded HEAD diff for a partially staged large tracked file", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-whole-change-large-tracked-"));
+  try {
+    git(project, "init");
+    const baselineBody = "baseline\n".repeat(2_100);
+    await writeFile(join(project, "large.md"), `header\n${baselineBody}tail\n`);
+    git(project, "add", "large.md");
+    git(project, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "baseline");
+    await writeFile(join(project, "large.md"), `staged header\n${baselineBody}tail\n`);
+    git(project, "add", "large.md");
+    await writeFile(join(project, "large.md"), `staged header\n${baselineBody}unstaged tail\n`);
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["large.md"] },
+        {
+          key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["writer"], allowedPaths: [],
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"],
+          },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+        },
+      ],
+    });
+    const run = createRun(queue);
+    run.tasks[0].status = "completed";
+    run.tasks[0].reviewStatus = "approved";
+    run.tasks[0].changedFiles = ["large.md"];
+
+    const evidence = await prepareWholeChangeAcceptanceEvidence(run, run.tasks[1]);
+
+    assert.equal(evidence?.contentEvidence[0].content, undefined);
+    assert.match(evidence?.contentEvidence[0].diff ?? "", /staged header/);
+    assert.match(evidence?.contentEvidence[0].diff ?? "", /unstaged tail/);
+    assert.ok(Buffer.byteLength(evidence?.contentEvidence[0].diff ?? "", "utf8") < 16_384);
+    assert.deepEqual(
+      await prepareWholeChangeAcceptanceEvidence(run, run.tasks[1]),
+      evidence,
+    );
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("external read roots are normalized, approval-bound, persisted, and shown to the executor", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-external-project-"));
   const external = await mkdtemp(join(tmpdir(), "orchestrator-external-read-"));
