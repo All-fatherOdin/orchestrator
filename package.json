@@ -12,6 +12,8 @@
     "start": "npm run build && tsx server/index.ts",
     "check": "tsc -b --pretty false",
     "test": "tsx --test server/index.test.ts server/context-budget-v1/index.test.ts server/execution-budgets-v1/index.test.ts server/tool-capabilities-v1/index.test.ts electron/lifecycle.test.cjs",
+    "test:incident-eval-candidates": "tsx --test server/incident-eval-candidates-v1/index.test.ts server/incident-eval-candidates-v1/integration.test.ts",
+    "test:stage1": "npm run test:incident-eval-candidates && npm run test:context-budget && npm run test:execution-budgets && npm run test:tool-capabilities && npm run test:workflow-evals && npm run test:source-projection",
     "test:context-budget": "tsx --test server/context-budget-v1/index.test.ts",
     "test:execution-budgets": "tsx --test server/execution-budgets-v1/index.test.ts && tsx --test --test-name-pattern \"S3\" server/index.test.ts",
     "test:tool-capabilities": "tsx --test server/tool-capabilities-v1/index.test.ts && tsx --test --test-name-pattern \"S4\" server/index.test.ts",

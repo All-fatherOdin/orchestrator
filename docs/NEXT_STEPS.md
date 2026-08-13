@@ -5,8 +5,8 @@ Last updated: 2026-08-13
 
 ## Current Priority
 
-The repo-centric secondary-memory foundation and the event-backed change/wave
-foundation are verified and merged into `main`. Phase 2 Planning and Drift is
+The repo-centric secondary-memory and event-backed change/wave foundations are
+verified and merged into `main`. Phase 2 Planning and Drift is
 implemented and verified, including immutable plan publication, authorization,
 deterministic replan lineage, trusted Git-state assessment, and fail-closed
 dispatch gating. Phase 3 Workspace and Merge is implemented and verified on
@@ -27,7 +27,7 @@ authority-gated champion decisions share the canonical hash chain.
 
 ## Current Safe Step
 
-Stage 1 S1 Incident-to-Eval is implemented and completion-reviewed. Two exact
+Stage 1 S1 Incident-to-Eval is implemented and completion-reviewed. Two
 POST routes provide deterministic no-mutation preview and explicit-confirmation
 recording of one immutable, privacy-bounded eval candidate in the existing
 project ledger. Exact Phase 4/5 identity, invocation-local evidence fencing,
@@ -115,10 +115,9 @@ Focused S6 tests pass 11/11, TypeScript and production build pass, context
 smoke passes 3/3, S2 baseline passes 10/10, diff checks pass, and the full
 Windows regression passes 348/348 in 390.81 seconds.
 
-Reviewer infrastructure now supplies the read-only reviewer with the exact
-bounded evidence already produced by Orchestrator verification instead of
-asking it to rerun write-producing build/test commands in a read-only sandbox.
-The existing no-network and no-workspace-mutation boundary remains unchanged;
+Reviewer infrastructure gives the read-only reviewer bounded evidence from
+Orchestrator verification; it does not rerun write-producing build/test
+commands. The no-network and no-workspace-mutation boundary remains unchanged;
 `Select-String`/`Get-Content` are the declared read-only fallback when `rg` is
 unavailable.
 

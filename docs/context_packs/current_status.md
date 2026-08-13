@@ -275,7 +275,7 @@ tests without changing the existing helper, Context Contract schemas,
 1 and the separate completion review passed with no unresolved finding. Final
 verification passes 10/10 focused S2 tests, TypeScript, production build,
 context smoke 3/3, diff checks, and the full Windows regression 323/323. S2
-adds no automatic runtime gate or context removal. S3-S6 remain unauthorized.
+adds no automatic runtime gate or context removal.
 
 S3 Hard Execution Budgets contract v1 revision 1 is implemented and
 completion-reviewed. The contract is

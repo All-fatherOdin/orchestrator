@@ -37,6 +37,8 @@ jobs:
         run: npm ci
       - name: Проверка типов
         run: npm run check
+      - name: Agentic Stage 1 focused tests
+        run: npm run test:stage1
       - name: Основные испытания
         run: >-
           npm exec tsx -- --test
