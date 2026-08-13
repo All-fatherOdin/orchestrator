@@ -276,3 +276,18 @@ tests without changing the existing helper, Context Contract schemas,
 verification passes 10/10 focused S2 tests, TypeScript, production build,
 context smoke 3/3, diff checks, and the full Windows regression 323/323. S2
 adds no automatic runtime gate or context removal. S3-S6 remain unauthorized.
+
+S3 Hard Execution Budgets contract v1 revision 1 is implemented and
+completion-reviewed. The contract is
+explicit opt-in, preserves legacy behavior and current model
+routing, and hard-enforces only Orchestrator-owned provider-process/attempt
+counts through conservative pre-spawn reservations. Local `codex-cli 0.146.0`
+does not expose an accepted provider-enforced output-token limit, so token hard
+enforcement is explicitly unsupported and any such declaration would fail
+closed. Revision 1 preserves reservations during recovery of the same canonical
+run while user-initiated resume/retry retain existing new-run semantics with a
+fresh bounded budget and unchanged policy. Only the exact S3 impact map is
+implemented. Focused verification passed 14/14, context smoke 3/3, S2 baseline
+10/10, and the full Windows regression 337/337 in 365.82 seconds. The separate
+completion review found no unresolved acceptance issue. S4-S6 remain
+unauthorized; an owner-reviewed S4 contract is the next possible slice.

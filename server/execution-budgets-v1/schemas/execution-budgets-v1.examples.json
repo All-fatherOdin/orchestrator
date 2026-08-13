@@ -1,0 +1,40 @@
+{
+  "valid": {
+    "ExecutionBudgetPolicyV1": {
+      "contractType": "ExecutionBudgetPolicyV1",
+      "contractVersion": "1.0",
+      "budgetId": "task-budget-v1",
+      "maxProviderInvocations": 4,
+      "phaseCaps": { "executor": 1, "reviewer": 2, "correction": 1 }
+    },
+    "ExecutionBudgetAdmissionV1": {
+      "contractType": "ExecutionBudgetAdmissionV1",
+      "contractVersion": "1.0",
+      "admissionId": "budget-admission:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "budgetHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "runId": "run-one",
+      "taskId": "task-one",
+      "phase": "executor",
+      "phaseOrdinal": 1,
+      "taskInvocationOrdinal": 1,
+      "resolvedModel": "terra",
+      "providerRuntimeIdentity": { "state": "unsupported" },
+      "attemptBinding": { "state": "unsupported" },
+      "disposition": "allow",
+      "reasonCode": "EXECUTION_BUDGET_ADMITTED",
+      "recordedAt": "2026-08-13T00:00:00.000Z"
+    },
+    "ExecutionBudgetSettlementV1": {
+      "contractType": "ExecutionBudgetSettlementV1",
+      "contractVersion": "1.0",
+      "settlementId": "budget-settlement:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "admissionId": "budget-admission:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "budgetHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "runId": "run-one",
+      "taskId": "task-one",
+      "status": "completed",
+      "usage": { "state": "measured", "inputTokens": 120, "outputTokens": 30, "cachedInputTokens": 40, "cacheWriteTokens": 0 },
+      "settledAt": "2026-08-13T00:01:00.000Z"
+    }
+  }
+}

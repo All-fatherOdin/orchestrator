@@ -153,6 +153,20 @@ import {
   captureIncidentEvalCandidateJsonBodyByteLengthV1,
   installIncidentEvalCandidateRoutesV1,
 } from "./incident-eval-candidates-v1/http.ts";
+import {
+  assertExecutionBudgetEvidenceV1,
+  assertExecutionBudgetPolicyV1,
+  createExecutionBudgetAdmissionV1,
+  createExecutionBudgetSettlementV1,
+  executionBudgetProjectionV1,
+  executionBudgetSha256V1,
+  normalizeExecutionBudgetUsageV1,
+  type ExecutionBudgetAdmissionV1,
+  type ExecutionBudgetEvidenceV1,
+  type ExecutionBudgetPhaseV1,
+  type ExecutionBudgetPolicyV1,
+  type ExecutionBudgetSettlementStatusV1,
+} from "./execution-budgets-v1/index.ts";
 export {
   canonicalWorkspaceRunFieldsV1,
   checkpointWorkspaceAttemptV1,
@@ -333,6 +347,7 @@ export type TaskAuthorizationEvidence = {
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
   wholeChangeAcceptance?: WholeChangeAcceptanceV1;
+  executionBudget?: ExecutionBudgetPolicyV1;
   preconditions?: string[];
   verificationCommands: string[];
   scopeFingerprint: string;
@@ -389,6 +404,8 @@ export type TaskInput = {
   requiresCheckpointsFrom?: string[];
   timeoutMinutes?: number;
   maxRetries?: number;
+  /** Explicit opt-in to S3 hard Orchestrator-owned invocation budgets. */
+  executionBudget?: ExecutionBudgetPolicyV1;
   /** Opts the task into Context Contract v1 selection. */
   contextProfile?: string;
   /** Maximum number of context sources selected for this task. */
@@ -965,6 +982,13 @@ type Task = ResolvedTask & {
   checkpoint?: Checkpoint;
   /** Machine-readable accounting emitted by Codex CLI JSON events. */
   usage?: UsageRecord[];
+  /** Canonical bounded S3 pre-spawn admissions and post-process settlements. */
+  executionBudgetEvidence?: ExecutionBudgetEvidenceV1[];
+  /** New-run reference for a completed S3 predecessor; evidence stays in the source run. */
+  executionBudgetCarriedCompletion?: {
+    sourceRunId: string;
+    sourceTaskId: string;
+  };
   context?: ContextProviderResult;
   authorizationEvidence?: TaskAuthorizationEvidence;
   /** Absent on historical records created before the executor outcome contract. */
@@ -2290,6 +2314,7 @@ export async function recoverPersistedRunForStartup(
 ): Promise<Run | undefined> {
   try {
     const run = await loadCanonicalRunRecordV1(file);
+    assertRunExecutionBudgetsV1(run);
     const branch = await currentBranchIdentity(run.project.path);
     if (runRequiresReplayAuthorization(run)) {
       assertPersistedRunReplayContractsV1(run, branch);
@@ -2351,6 +2376,7 @@ export async function loadRun(id: string) {
   const file = join(runsDirectory, id, "run.json");
   if (!existsSync(file)) return undefined;
   const run = await loadCanonicalRunRecordV1(file);
+  assertRunExecutionBudgetsV1(run);
   const branch = await currentBranchIdentity(run.project.path);
   if (runRequiresReplayAuthorization(run))
     assertPersistedRunReplayContractsV1(run, branch);
@@ -2437,7 +2463,47 @@ export function usageFromEvent(line: string): Omit<UsageRecord, "phase" | "attem
       inputTokens: value("input_tokens"),
       outputTokens: value("output_tokens"),
       cachedInputTokens: value("cached_input_tokens"),
-      cacheWriteTokens: value("cache_write_tokens") || value("cache_creation_input_tokens"),
+      cacheWriteTokens:
+        value("cache_write_tokens") || value("cache_creation_input_tokens"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function strictExecutionBudgetUsageFromEventV1(
+  line: string,
+): Omit<UsageRecord, "phase" | "attempt" | "recordedAt"> | undefined {
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>;
+    if (event.type !== "turn.completed") return undefined;
+    const usage = event.usage as Record<string, unknown> | undefined;
+    if (!usage) return undefined;
+    const required = [
+      usage.input_tokens,
+      usage.output_tokens,
+      usage.cached_input_tokens,
+    ];
+    if (
+      required.some(
+        (value) =>
+          typeof value !== "number" || !Number.isFinite(value) || value < 0,
+      )
+    )
+      return undefined;
+    const cacheWrite =
+      usage.cache_write_tokens ?? usage.cache_creation_input_tokens ?? 0;
+    if (
+      typeof cacheWrite !== "number" ||
+      !Number.isFinite(cacheWrite) ||
+      cacheWrite < 0
+    )
+      return undefined;
+    return {
+      inputTokens: Math.trunc(required[0] as number),
+      outputTokens: Math.trunc(required[1] as number),
+      cachedInputTokens: Math.trunc(required[2] as number),
+      cacheWriteTokens: Math.trunc(cacheWrite),
     };
   } catch {
     return undefined;
@@ -2445,7 +2511,9 @@ export function usageFromEvent(line: string): Omit<UsageRecord, "phase" | "attem
 }
 
 function recordUsage(task: Task, line: string, phase: UsageRecord["phase"], attempt: number) {
-  const usage = usageFromEvent(line);
+  const usage = task.executionBudget
+    ? strictExecutionBudgetUsageFromEventV1(line)
+    : usageFromEvent(line);
   if (!usage) return;
   task.usage ??= [];
   task.usage.push({ ...usage, phase, attempt, recordedAt: timestamp() });
@@ -2517,6 +2585,17 @@ function markdownReport(run: Run) {
         `Provider runtime: ${task.providerRuntimeDecision
           ? `${task.providerRuntimeDecision.strategy} (${task.providerRuntimeDecision.reason}; invalidated: ${task.providerRuntimeDecision.invalidatedBy.join(", ") || "none"})`
           : "—"}`,
+        ...(task.executionBudget
+          ? [
+              `Execution budget: ${(() => {
+                const budget = executionBudgetProjectionV1(
+                  task.executionBudget,
+                  task.executionBudgetEvidence ?? [],
+                );
+                return `${budget.consumedProviderInvocations}/${budget.maxProviderInvocations} consumed; ${budget.remainingProviderInvocations} remaining; token enforcement ${budget.tokenEnforcement}`;
+              })()}`,
+            ]
+          : []),
         `Usage: ${usage.input} input / ${usage.output} output / ${usage.cached} cached tokens`,
       ].join("\n");
       const logs = task.log.length
@@ -2791,6 +2870,7 @@ function authorizationScope(
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
+    | "executionBudget"
   >,
   project: ProjectSettings,
 ) {
@@ -2845,6 +2925,14 @@ function authorizationScope(
     ...(authoringScope ?? {}),
     ...(task.wholeChangeAcceptance
       ? { wholeChangeAcceptance: validateWholeChangeAcceptanceV1(task.wholeChangeAcceptance, "Task wholeChangeAcceptance") }
+      : {}),
+    ...(task.executionBudget
+      ? {
+          executionBudget: (() => {
+            assertExecutionBudgetPolicyV1(task.executionBudget);
+            return structuredClone(task.executionBudget);
+          })(),
+        }
       : {}),
     ...(preconditions.length ? { preconditions } : {}),
     verificationCommands: [...new Set([...(project.verificationCommands ?? []), ...(task.verificationCommands ?? [])])],
@@ -3217,6 +3305,7 @@ function scopeFingerprint(scope: {
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
   wholeChangeAcceptance?: WholeChangeAcceptanceV1;
+  executionBudget?: ExecutionBudgetPolicyV1;
   preconditions?: string[];
   verificationCommands: string[];
 }) {
@@ -3329,6 +3418,7 @@ export function authorizeTask(
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
+    | "executionBudget"
   > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
@@ -3393,6 +3483,7 @@ export function replayTaskAuthorization(
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
+    | "executionBudget"
   > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
@@ -3418,6 +3509,7 @@ export function verifyStoredTaskAuthorization(
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
+    | "executionBudget"
   > &
     Partial<Pick<TaskInput, "key" | "title" | "prompt">>,
   project: ProjectSettings = {},
@@ -3450,6 +3542,7 @@ type ProviderRuntimeTaskV1 = Pick<
   | "recovery"
   | "executionKind"
   | "wholeChangeAcceptance"
+  | "executionBudget"
   | "verificationCommands"
   | "model"
   | "requestedModel"
@@ -3915,6 +4008,25 @@ export function validateQueue(value: unknown): {
       throw new Error(
         `Task ${index + 1}: maxRetries must be an integer from 0 to 3.`,
       );
+    let executionBudget: ExecutionBudgetPolicyV1 | undefined;
+    if (task.executionBudget !== undefined) {
+      try {
+        assertExecutionBudgetPolicyV1(task.executionBudget, {
+          maxExecutorInvocations:
+            (task.maxRetries ?? limits.maxTaskRetries) + 1,
+          maxCorrections: defaultReviewSettings.maxCorrections,
+        });
+        executionBudget = structuredClone(task.executionBudget);
+      } catch (error) {
+        throw new Error(
+          `Task ${index + 1}: ${
+            error instanceof Error
+              ? error.message
+              : "executionBudget is invalid."
+          }`,
+        );
+      }
+    }
     if (
       task.contextProfile !== undefined &&
       (typeof task.contextProfile !== "string" ||
@@ -4214,6 +4326,7 @@ export function validateQueue(value: unknown): {
       requiresCheckpointsFrom: task.requiresCheckpointsFrom,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
+      executionBudget,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
       requireRepositoryContext: task.requireRepositoryContext,
@@ -5135,6 +5248,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       requiresCheckpointsFrom: task.requiresCheckpointsFrom,
       timeoutMinutes: task.timeoutMinutes,
       maxRetries: task.maxRetries,
+      executionBudget: task.executionBudget,
       contextProfile: task.contextProfile,
       maxSources: task.maxSources,
       requireRepositoryContext: task.requireRepositoryContext,
@@ -5158,9 +5272,101 @@ export function rebuildPersistedQueueForReplayV1(run: Run): ReturnType<typeof va
   }
 }
 
+function assertRunExecutionBudgetsV1(run: Run) {
+  for (const task of run.tasks) {
+    if (!task.executionBudget) {
+      if (
+        task.executionBudgetEvidence?.length ||
+        task.executionBudgetCarriedCompletion
+      )
+        throw new Error(
+          "PERSISTED_EXECUTION_BUDGET_INVALID: legacy task has S3 evidence without an opted-in policy.",
+        );
+      continue;
+    }
+    try {
+      if (!run.review.enabled)
+        throw new Error(
+          "S3 opted-in tasks require the existing independent reviewer.",
+        );
+      assertExecutionBudgetPolicyV1(task.executionBudget, {
+        maxExecutorInvocations:
+          (task.maxRetries ?? run.limits.maxTaskRetries) + 1,
+        maxCorrections: run.review.maxCorrections,
+      });
+      assertExecutionBudgetEvidenceV1(
+        task.executionBudget,
+        run.id,
+        task.id,
+        task.executionBudgetEvidence ?? [],
+      );
+      if (task.executionBudgetCarriedCompletion) {
+        const carried = task.executionBudgetCarriedCompletion;
+        if (
+          task.status !== "completed" ||
+          task.executionBudgetEvidence?.length ||
+          carried.sourceRunId === run.id ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(carried.sourceRunId) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(carried.sourceTaskId)
+        )
+          throw new Error(
+            "S3 carried completion reference is invalid or contains copied evidence.",
+          );
+        continue;
+      }
+      const allowed = (task.executionBudgetEvidence ?? []).filter(
+        (entry): entry is ExecutionBudgetAdmissionV1 =>
+          entry.contractType === "ExecutionBudgetAdmissionV1" &&
+          entry.disposition === "allow",
+      );
+      const settled = new Set(
+        (task.executionBudgetEvidence ?? [])
+          .filter(
+            (entry) => entry.contractType === "ExecutionBudgetSettlementV1",
+          )
+          .map((entry) =>
+            entry.contractType === "ExecutionBudgetSettlementV1"
+              ? entry.admissionId
+              : "",
+          ),
+      );
+      const executorCount = allowed.filter(
+        (entry) => entry.phase === "executor",
+      ).length;
+      const reviewerCount = allowed.filter(
+        (entry) => entry.phase === "reviewer",
+      ).length;
+      if (
+        task.executionAttempts !== undefined &&
+        executorCount > task.executionAttempts
+      )
+        throw new Error(
+          "S3 executor reservations exceed the persisted executor attempt count.",
+        );
+      if (
+        task.status === "completed" &&
+        (executorCount < 1 ||
+          reviewerCount < 1 ||
+          allowed.some((entry) => !settled.has(entry.admissionId)))
+      )
+        throw new Error(
+          "A completed S3 task lacks settled executor/reviewer evidence.",
+        );
+    } catch (error) {
+      throw new Error(
+        `PERSISTED_EXECUTION_BUDGET_INVALID: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+}
+
 function assertPersistedRunReplayContractsV1(run: Run, branch?: string) {
   assertStoredRunAuthorizations(run, branch);
-  return rebuildPersistedQueueForReplayV1(run);
+  const queue = rebuildPersistedQueueForReplayV1(run);
+  assertRunExecutionBudgetsV1(run);
+  return queue;
 }
 
 type AppendReadinessState = {
@@ -5386,6 +5592,39 @@ export function recoverRun(run: Run, branch?: string) {
   );
   if (run.status !== "running" && !runningTasks.length) return run;
   for (const task of runningTasks) {
+    if (task.executionBudget) {
+      const settlements = new Set(
+        (task.executionBudgetEvidence ?? [])
+          .filter(
+            (entry) => entry.contractType === "ExecutionBudgetSettlementV1",
+          )
+          .map((entry) =>
+            entry.contractType === "ExecutionBudgetSettlementV1"
+              ? entry.admissionId
+              : "",
+          ),
+      );
+      const openAdmission = [...(task.executionBudgetEvidence ?? [])]
+        .reverse()
+        .find(
+          (entry): entry is ExecutionBudgetAdmissionV1 =>
+            entry.contractType === "ExecutionBudgetAdmissionV1" &&
+            entry.disposition === "allow" &&
+            !settlements.has(entry.admissionId),
+        );
+      if (openAdmission) {
+        task.executionBudgetEvidence ??= [];
+        task.executionBudgetEvidence.push(
+          createExecutionBudgetSettlementV1({
+            policy: task.executionBudget,
+            admission: openAdmission,
+            status: "recovery_ambiguous",
+            usage: executionBudgetUsageForAdmissionV1(task, openAdmission),
+            settledAt: timestamp(),
+          }),
+        );
+      }
+    }
     task.status = "failed";
     task.executionPhase = undefined;
     task.finishedAt = timestamp();
@@ -5437,6 +5676,9 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     wholeChangeAcceptanceEvidence: undefined,
     attempts: undefined,
     executionAttempts: undefined,
+    usage: task.executionBudget ? undefined : task.usage,
+    executionBudgetEvidence: undefined,
+    executionBudgetCarriedCompletion: undefined,
     checkpoint: undefined,
     workspaceAttemptId: undefined,
     workspacePath: undefined,
@@ -5483,6 +5725,14 @@ export function retryRun(source: Run, task: Task, branch?: string): Run {
         : {
             ...candidate,
             id: identifier(),
+            executionBudgetEvidence:
+              candidate.executionBudget && candidate.status === "completed"
+                ? undefined
+                : candidate.executionBudgetEvidence,
+            executionBudgetCarriedCompletion:
+              candidate.executionBudget && candidate.status === "completed"
+                ? { sourceRunId: source.id, sourceTaskId: candidate.id }
+                : undefined,
             providerRuntimeState: candidate.providerRuntimeState
               ? validateProviderRuntimeStateV1(candidate.providerRuntimeState)
               : undefined,
@@ -5498,6 +5748,10 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
     .map((task) => task.status === "completed" && !task.wholeChangeAcceptance ? {
       ...task,
       id: identifier(),
+      executionBudgetEvidence: undefined,
+      executionBudgetCarriedCompletion: task.executionBudget
+        ? { sourceRunId: source.id, sourceTaskId: task.id }
+        : undefined,
       providerRuntimeState: task.providerRuntimeState
         ? validateProviderRuntimeStateV1(task.providerRuntimeState)
         : undefined,
@@ -5522,6 +5776,9 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
       wholeChangeAcceptanceEvidence: undefined,
       attempts: undefined,
       executionAttempts: undefined,
+      usage: task.executionBudget ? undefined : task.usage,
+      executionBudgetEvidence: undefined,
+      executionBudgetCarriedCompletion: undefined,
       checkpoint: undefined,
       workspaceAttemptId: undefined,
       workspacePath: undefined,
@@ -7531,6 +7788,136 @@ export function requiredVerificationEvidenceIssue(
   return undefined;
 }
 
+function executionBudgetSettlementForV1(
+  task: Task,
+  admissionId: string,
+) {
+  return (task.executionBudgetEvidence ?? []).find(
+    (entry) =>
+      entry.contractType === "ExecutionBudgetSettlementV1" &&
+      entry.admissionId === admissionId,
+  );
+}
+
+async function reserveExecutionBudgetInvocationV1(
+  run: Run,
+  task: Task,
+  phase: ExecutionBudgetPhaseV1,
+  resolvedModel: Model,
+) {
+  if (!task.executionBudget) return undefined;
+  assertExecutionBudgetEvidenceV1(
+    task.executionBudget,
+    run.id,
+    task.id,
+    task.executionBudgetEvidence ?? [],
+  );
+  const providerRuntimeIdentity =
+    phase === "reviewer"
+      ? ({ state: "unsupported" } as const)
+      : {
+          state: "bound" as const,
+          hash: executionBudgetSha256V1(
+            providerRuntimeIdentityForTaskV1(
+              task,
+              run.project,
+              await currentBranchIdentity(await taskExecutionPathV1(run, task)),
+            ),
+          ),
+        };
+  const admission = createExecutionBudgetAdmissionV1({
+    policy: task.executionBudget,
+    runId: run.id,
+    taskId: task.id,
+    phase,
+    resolvedModel,
+    providerRuntimeIdentity,
+    evidence: task.executionBudgetEvidence ?? [],
+    recordedAt: timestamp(),
+  });
+  task.executionBudgetEvidence ??= [];
+  if (
+    !task.executionBudgetEvidence.some(
+      (entry) =>
+        entry.contractType === "ExecutionBudgetAdmissionV1" &&
+        entry.admissionId === admission.admissionId,
+    )
+  ) {
+    task.executionBudgetEvidence.push(admission);
+    await persist(run);
+    publish("run", run);
+  }
+  const persistedRun = JSON.parse(
+    await readFile(runStatePath(run.id), "utf8"),
+  ) as Run;
+  assertRunExecutionBudgetsV1(persistedRun);
+  const persistedTask = persistedRun.tasks.find(
+    (candidate) => candidate.id === task.id,
+  );
+  const persistedAdmission = persistedTask?.executionBudgetEvidence?.find(
+    (entry): entry is ExecutionBudgetAdmissionV1 =>
+      entry.contractType === "ExecutionBudgetAdmissionV1" &&
+      entry.admissionId === admission.admissionId,
+  );
+  if (
+    !persistedAdmission ||
+    executionBudgetSha256V1(persistedAdmission) !==
+      executionBudgetSha256V1(admission)
+  )
+    throw new Error(
+      "EXECUTION_BUDGET_RESERVATION_CONFLICT: persisted admission is not current.",
+    );
+  task.log.push(
+    `Execution budget ${phase}: ${admission.disposition} (${admission.reasonCode}; ${admission.taskInvocationOrdinal}/${task.executionBudget.maxProviderInvocations}).`,
+  );
+  return admission;
+}
+
+function executionBudgetUsageForAdmissionV1(
+  task: Task,
+  admission: ExecutionBudgetAdmissionV1,
+) {
+  return normalizeExecutionBudgetUsageV1(
+    (task.usage ?? []).filter(
+      (entry) =>
+        entry.phase === admission.phase &&
+        entry.attempt === admission.phaseOrdinal,
+    ),
+  );
+}
+
+async function settleExecutionBudgetInvocationV1(
+  run: Run,
+  task: Task,
+  admission: ExecutionBudgetAdmissionV1 | undefined,
+  status: ExecutionBudgetSettlementStatusV1,
+) {
+  if (!task.executionBudget || !admission || admission.disposition !== "allow")
+    return;
+  if (executionBudgetSettlementForV1(task, admission.admissionId)) return;
+  const settlement = createExecutionBudgetSettlementV1({
+    policy: task.executionBudget,
+    admission,
+    status,
+    usage: executionBudgetUsageForAdmissionV1(task, admission),
+    settledAt: timestamp(),
+  });
+  task.executionBudgetEvidence ??= [];
+  task.executionBudgetEvidence.push(settlement);
+  await persist(run);
+  publish("run", run);
+}
+
+function executionBudgetProcessStatusV1(
+  run: Run,
+  exitCode: number,
+  timedOut: boolean,
+): ExecutionBudgetSettlementStatusV1 {
+  if (isCancelled(run)) return "cancelled";
+  if (timedOut) return "timed_out";
+  return exitCode === 0 ? "completed" : "failed";
+}
+
 async function reviewTask(run: Run, task: Task) {
   if (task.wholeChangeAcceptance) {
     try {
@@ -7578,6 +7965,20 @@ async function reviewTask(run: Run, task: Task) {
     `${task.id}-review-${task.attempts ?? 1}.md`,
   );
   const prompt = buildReviewerPrompt(task, run.project);
+  const budgetAdmission = await reserveExecutionBudgetInvocationV1(
+    run,
+    task,
+    "reviewer",
+    run.review.model,
+  );
+  if (budgetAdmission && budgetAdmission.disposition !== "allow") {
+    task.executionPhase = undefined;
+    task.reviewStatus = "unavailable";
+    task.reviewOutput = `Reviewer was not started: ${budgetAdmission.reasonCode}`;
+    await persist(run);
+    publish("run", run);
+    return;
+  }
   let child: ReturnType<typeof spawn>;
   try {
     await preparePromptModelExecutionV1(
@@ -7611,6 +8012,12 @@ async function reviewTask(run: Run, task: Task) {
       taskProcessEnvironment(run, task),
     );
   } catch (error) {
+    await settleExecutionBudgetInvocationV1(
+      run,
+      task,
+      budgetAdmission,
+      "not_started_after_reservation",
+    );
     task.executionPhase = undefined;
     task.reviewStatus = "unavailable";
     task.log.push(
@@ -7623,7 +8030,7 @@ async function reviewTask(run: Run, task: Task) {
   let diagnostics = "";
   const stdoutDecoder = createUtf8LineDecoder((line) => {
       const trimmed = line.trim();
-      recordUsage(task, trimmed, "reviewer", 1);
+      recordUsage(task, trimmed, "reviewer", budgetAdmission?.phaseOrdinal ?? 1);
       const readable = trimmed && taskEvent(trimmed);
       if (readable)
         diagnostics = boundedReviewerDiagnostics(`${diagnostics}\n${readable}`);
@@ -7631,7 +8038,7 @@ async function reviewTask(run: Run, task: Task) {
   const stderrDecoder = createUtf8StreamDecoder((text) => {
     diagnostics = boundedReviewerDiagnostics(`${diagnostics}${text}`);
     for (const line of text.split(/\r?\n/))
-      recordUsage(task, line.trim(), "reviewer", 1);
+      recordUsage(task, line.trim(), "reviewer", budgetAdmission?.phaseOrdinal ?? 1);
   });
   child.stdout?.on("data", stdoutDecoder.write);
   child.stderr?.on("data", stderrDecoder.write);
@@ -7646,6 +8053,12 @@ async function reviewTask(run: Run, task: Task) {
   );
   stdoutDecoder.end();
   stderrDecoder.end();
+  await settleExecutionBudgetInvocationV1(
+    run,
+    task,
+    budgetAdmission,
+    executionBudgetProcessStatusV1(run, exitCode, timedOut),
+  );
   const report = existsSync(outputFile)
     ? (await readFile(outputFile, "utf8")).slice(0, 24_000)
     : undefined;
@@ -7744,9 +8157,25 @@ async function correctTask(run: Run, task: Task) {
   );
   const prompt = `${buildPrompt(task, run.project)}\n\nReviewer found these issues:\n${task.reviewOutput ?? "No report available."}\n\nFix only the reviewer findings. Do not create a git commit.`;
   const executionPath = await taskExecutionPathV1(run, task);
-  await prepareExecutorProviderRuntime(run, task, "correction");
+  const budgetAdmission = await reserveExecutionBudgetInvocationV1(
+    run,
+    task,
+    "correction",
+    task.model,
+  );
+  if (budgetAdmission && budgetAdmission.disposition !== "allow") {
+    task.executionPhase = undefined;
+    task.log.push(`Автоисправление не запущено: ${budgetAdmission.reasonCode}`);
+    await persist(run);
+    publish("run", run);
+    return { code: 1, timedOut: false };
+  }
+  if (!budgetAdmission)
+    await prepareExecutorProviderRuntime(run, task, "correction");
   let child: ReturnType<typeof spawn>;
   try {
+    if (budgetAdmission)
+      await prepareExecutorProviderRuntime(run, task, "correction");
     await preparePromptModelExecutionV1(
       run,
       task,
@@ -7778,6 +8207,12 @@ async function correctTask(run: Run, task: Task) {
       taskProcessEnvironment(run, task),
     );
   } catch (error) {
+    await settleExecutionBudgetInvocationV1(
+      run,
+      task,
+      budgetAdmission,
+      "not_started_after_reservation",
+    );
     task.executionPhase = undefined;
     task.log.push(
       `Автоисправление не запущено: ${error instanceof Error ? error.message : String(error)}`,
@@ -7788,10 +8223,20 @@ async function correctTask(run: Run, task: Task) {
   }
   activeProcesses.set(task.id, child);
   const stdoutDecoder = createUtf8LineDecoder((line) =>
-    recordUsage(task, line.trim(), "correction", task.attempts ?? 1)
+    recordUsage(
+      task,
+      line.trim(),
+      "correction",
+      budgetAdmission?.phaseOrdinal ?? task.attempts ?? 1,
+    )
   );
   const stderrDecoder = createUtf8LineDecoder((line) =>
-    recordUsage(task, line.trim(), "correction", task.attempts ?? 1)
+    recordUsage(
+      task,
+      line.trim(),
+      "correction",
+      budgetAdmission?.phaseOrdinal ?? task.attempts ?? 1,
+    )
   );
   child.stdout?.on("data", stdoutDecoder.write);
   child.stderr?.on("data", stderrDecoder.write);
@@ -7805,6 +8250,12 @@ async function correctTask(run: Run, task: Task) {
   );
   stdoutDecoder.end();
   stderrDecoder.end();
+  await settleExecutionBudgetInvocationV1(
+    run,
+    task,
+    budgetAdmission,
+    executionBudgetProcessStatusV1(run, code, timedOut),
+  );
   activeProcesses.delete(task.id);
   task.executionPhase = undefined;
   if (existsSync(outputFile))
@@ -8133,9 +8584,23 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       task.log.push(
         `Запуск исполнителя ${attempt}/${maxRetries + 1} · лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин.`,
       );
-      await prepareExecutorProviderRuntime(run, task, "executor");
+      const budgetAdmission = await reserveExecutionBudgetInvocationV1(
+        run,
+        task,
+        "executor",
+        task.model,
+      );
+      if (budgetAdmission && budgetAdmission.disposition !== "allow") {
+        task.exitCode = 1;
+        task.log.push(`Executor was not started: ${budgetAdmission.reasonCode}`);
+        break;
+      }
+      if (!budgetAdmission)
+        await prepareExecutorProviderRuntime(run, task, "executor");
       let child: ReturnType<typeof spawn>;
       try {
+        if (budgetAdmission)
+          await prepareExecutorProviderRuntime(run, task, "executor");
         if (task.workspaceAttemptId)
           await workspaceMutationContextV1(
             runStatePath(run.id),
@@ -8158,6 +8623,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
           taskProcessEnvironment(run, task),
         );
       } catch (error) {
+        await settleExecutionBudgetInvocationV1(
+          run,
+          task,
+          budgetAdmission,
+          "not_started_after_reservation",
+        );
         task.exitCode = 1;
         task.log.push(
           `Could not start Codex CLI: ${error instanceof Error ? error.message : String(error)}`,
@@ -8166,7 +8637,12 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       }
       activeProcesses.set(task.id, child);
       const consumeLine = (line: string) => {
-          recordUsage(task, line.trim(), "executor", attempt);
+          recordUsage(
+            task,
+            line.trim(),
+            "executor",
+            budgetAdmission?.phaseOrdinal ?? attempt,
+          );
           const readable = line.trim() && taskEvent(line.trim());
           if (readable) task.log.push(readable.slice(0, 1600));
         publish("log", {
@@ -8189,6 +8665,16 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       );
       stdoutDecoder.end();
       stderrDecoder.end();
+      await settleExecutionBudgetInvocationV1(
+        run,
+        task,
+        budgetAdmission,
+        executionBudgetProcessStatusV1(
+          run,
+          result.exitCode,
+          result.timedOut,
+        ),
+      );
       activeProcesses.delete(task.id);
       task.exitCode = result.exitCode;
       task.timedOut ||= result.timedOut;

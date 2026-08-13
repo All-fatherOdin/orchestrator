@@ -75,6 +75,18 @@ tasks:
     # The orchestrator resolves Auto before the run and records the result.
     model: auto
     effort: medium
+    # Optional S3 hard limit for Orchestrator-owned Codex child processes.
+    # It does not cap opaque provider-internal calls or tokens. The current
+    # Codex CLI has no accepted provider-enforced output-token limit.
+    executionBudget:
+      contractType: ExecutionBudgetPolicyV1
+      contractVersion: "1.0"
+      budgetId: typecheck-execution-budget-v1
+      maxProviderInvocations: 4
+      phaseCaps:
+        executor: 1
+        reviewer: 2
+        correction: 1
     # Optional per-task overrides:
     # timeoutMinutes: 45
     # maxRetries: 2

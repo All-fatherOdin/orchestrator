@@ -1,6 +1,6 @@
 # Agentic Patterns Integration Plan v1
 
-Status: active; S1-S2 completion-reviewed; S3-S6 not authorized
+Status: active; S1-S3 completion-reviewed; S4-S6 not authorized
 
 Prepared: 2026-08-08
 
@@ -15,10 +15,10 @@ implementation work until an owner-reviewed usefulness discussion establishes
 a concrete current problem, evidence of that problem, and a non-duplicating
 extension point.
 
-S1 is completion-reviewed. The owner accepted the exact S2 contract
+S1-S3 are completion-reviewed. The owner accepted the exact S2 contract
 `context-budget-baseline-contract-v1.md` on 2026-08-13, authorizing only its
 bounded read-only implementation impact map. This plan does not authorize
-S3-S6 product code, schema, queue, ledger, Project Map, run-record,
+S4-S6 product code, schema, queue, ledger, Project Map, run-record,
 external-system, or provider mutations. Each remaining slice still requires
 its own accepted contract and exact scope.
 
@@ -87,6 +87,20 @@ Current-state correction
 S2 supplies measurement for S3 and S6. S4 supplies enforceable capability
 semantics that S5 must test. S1 is independent and goes first because Phase 4
 incident identity and Phase 5 `EvalCaseV1` already provide its two endpoints.
+
+The accepted S3 revision 1 boundary is recorded in
+`hard-execution-budgets-contract-v1.md`. It deliberately hard-enforces only
+Orchestrator-owned provider-process/attempt counts in v1. The current Codex CLI
+does not expose an accepted provider-enforced output-token limit, so token hard
+enforcement remains explicitly unsupported unless a later contract revision
+pins and proves that capability. Owner acceptance authorizes only the exact S3
+implementation impact map; S4-S6 remain unauthorized.
+
+S3 implementation and its separate completion review passed 14/14 focused
+tests, TypeScript, production build, context smoke 3/3, the S2 baseline 10/10,
+diff checks, and the full Windows regression 337/337. No acceptance issue was
+deferred. The next possible slice is an owner-reviewed S4 contract; this plan
+does not authorize its implementation.
 
 ## 5. S1 - Incident-to-Eval candidate
 
@@ -203,6 +217,9 @@ quality.
 - a cap can silently remove a required authoritative source.
 
 ## 7. S3 - Hard execution budgets and bounded routing
+
+Status: implemented and completion-reviewed on 2026-08-13. Evidence:
+`hard-execution-budgets-contract-v1.md`, Implementation and completion evidence.
 
 ### Outcome
 
