@@ -1,0 +1,26 @@
+{
+  "manifest": {
+    "contractType": "WorkflowEvalManifestV1", "contractVersion": "1.0", "manifestId": "workflow-evals-example", "manifestVersion": 1,
+    "s4ManifestId": "s4-example", "s4ManifestVersion": 1, "s4ManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "fixtures": [
+      { "fixtureId": "fixture-a", "workflowFamily": "context_ptc_reduction", "fixtureVersion": 1, "fixtureHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "toolIds": [], "runnerAdapterId": "adapter-a", "runnerAdapterVersion": "1.0" },
+      { "fixtureId": "fixture-b", "workflowFamily": "github_deployment_intake", "fixtureVersion": 1, "fixtureHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "toolIds": [], "runnerAdapterId": "adapter-b", "runnerAdapterVersion": "1.0" },
+      { "fixtureId": "fixture-c", "workflowFamily": "s4_capability_denial", "fixtureVersion": 1, "fixtureHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "toolIds": [], "runnerAdapterId": "adapter-c", "runnerAdapterVersion": "1.0" }
+    ],
+    "operations": [{ "operationId": "operation-a", "workflowFamily": "github_deployment_intake" }]
+  },
+  "fixture": {
+    "contractType": "WorkflowEvalFixtureV1", "contractVersion": "1.0", "fixtureId": "fixture-b", "fixtureVersion": 1, "workflowFamily": "github_deployment_intake", "privacyClassification": "public_fixture", "input": { "scenario": "preview" },
+    "toolIds": [], "requiredS4Disposition": "allow", "requiredS4ReasonCodes": ["TOOL_CAPABILITY_ALLOWED"], "expectedCalls": [], "forbiddenOperationIds": [], "orderEdges": [],
+    "expectedTerminalState": "completed", "expectedDisposition": "passed", "expectedReasonCodes": ["WORKFLOW_EVAL_PASSED"], "evidenceRefs": [],
+    "expectedEffects": { "mockInteractions": 0, "liveNetworkRequests": 0, "providerCalls": 0, "credentialReads": 0, "externalWrites": 0, "uncontrolledFilesystemWrites": 0, "canonicalLedgerWrites": 0 },
+    "limits": { "maxCalls": 0, "maxTraceBytes": 65536, "maxPublicSummaryBytes": 256, "maxVirtualSteps": 128 }
+  },
+  "trace": {
+    "contractType": "WorkflowEvalTraceV1", "contractVersion": "1.0", "manifestId": "workflow-evals-example", "manifestVersion": 1, "fixtureId": "fixture-b", "fixtureVersion": 1, "fixtureHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "runnerAdapterId": "adapter-b", "runnerAdapterVersion": "1.0", "s4ManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "calls": [], "s4DecisionIds": [], "terminalState": "completed",
+    "effects": { "mockInteractions": 0, "liveNetworkRequests": 0, "providerCalls": 0, "credentialReads": 0, "externalWrites": 0, "uncontrolledFilesystemWrites": 0, "canonicalLedgerWrites": 0 }, "traceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "result": {
+    "contractType": "WorkflowEvalResultV1", "contractVersion": "1.0", "manifestId": "workflow-evals-example", "manifestVersion": 1, "fixtureId": "fixture-b", "fixtureVersion": 1, "fixtureHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "traceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "runnerAdapterId": "adapter-b", "runnerAdapterVersion": "1.0", "s4ManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "disposition": "passed", "reasonCodes": ["WORKFLOW_EVAL_PASSED"], "oracles": [{ "oracleId": "schema", "status": "pass", "evidenceRefs": [] }], "evidenceRefs": [], "resultHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

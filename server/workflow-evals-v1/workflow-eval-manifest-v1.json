@@ -1,0 +1,15 @@
+{
+  "contractType": "WorkflowEvalManifestV1", "contractVersion": "1.0", "manifestId": "orchestrator-workflow-evals-v1", "manifestVersion": 1,
+  "s4ManifestId": "orchestrator-tool-capabilities-v1", "s4ManifestVersion": 1, "s4ManifestHash": "46d4e3b8905c94070996478c0027de8bfbfcb0f888a7fcb539857b86bf476b9f",
+  "fixtures": [
+    { "fixtureId": "context-ptc-reduction-v1", "workflowFamily": "context_ptc_reduction", "fixtureVersion": 1, "fixtureHash": "1eb5e37387e35de2916d73ba1f41f7abd9892b1f18c8e07031ddbf99b6c43e94", "toolIds": ["context-ptc.filter-v1", "context-ptc.join-v1", "context-ptc.rank-v1", "context-ptc.deduplicate-v1", "context-ptc.aggregate-v1", "context-ptc.schema-validate-v1"], "runnerAdapterId": "context-ptc-adapter-v1", "runnerAdapterVersion": "1.0" },
+    { "fixtureId": "github-deployment-intake-v1", "workflowFamily": "github_deployment_intake", "fixtureVersion": 1, "fixtureHash": "28c643e24b065c32a5460a329984b10d0cad07a652c3d9c28ee3bb246566b2fc", "toolIds": ["connector.github-deployment-read-v1"], "runnerAdapterId": "github-deployment-adapter-v1", "runnerAdapterVersion": "1.0" },
+    { "fixtureId": "s4-capability-denial-v1", "workflowFamily": "s4_capability_denial", "fixtureVersion": 1, "fixtureHash": "30a2731bbc7a4532b131704d3fce709a18cad80d5df9d89543ff8b35894cb836", "toolIds": ["operator.dispatch-wave-v1", "connector.github-deployment-read-v1"], "runnerAdapterId": "s4-denial-adapter-v1", "runnerAdapterVersion": "1.0" }
+  ],
+  "operations": [
+    { "operationId": "github.fetch-deployment", "workflowFamily": "github_deployment_intake" }, { "operationId": "github.fetch-status", "workflowFamily": "github_deployment_intake" }, { "operationId": "github.fetch-target", "workflowFamily": "github_deployment_intake" }, { "operationId": "github.remote-write", "workflowFamily": "github_deployment_intake" },
+    { "operationId": "operator.dispatch-wave", "workflowFamily": "s4_capability_denial" },
+    { "operationId": "phase10.execute-confirmed", "workflowFamily": "github_deployment_intake" }, { "operationId": "phase10.execute-unconfirmed", "workflowFamily": "github_deployment_intake" },
+    { "operationId": "ptc.aggregate", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.deduplicate", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.external-write", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.filter", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.join", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.provider-call", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.rank", "workflowFamily": "context_ptc_reduction" }, { "operationId": "ptc.schema-validate", "workflowFamily": "context_ptc_reduction" }
+  ]
+}

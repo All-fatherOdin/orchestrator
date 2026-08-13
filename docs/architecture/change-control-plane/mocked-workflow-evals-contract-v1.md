@@ -1,10 +1,20 @@
 # Mocked Workflow Evals Contract v1
 
-Status: accepted; implementation authorized only after the baseline gate is green
+Status: accepted, implemented, and completion-reviewed
 
 Prepared: 2026-08-13
 
 Accepted: 2026-08-13 (`принимаю S5 contract v1`)
+
+Implemented: 2026-08-13 after the separately merged baseline repair restored
+green Windows CI. The bounded implementation adds closed schemas, three
+immutable fixture families, thirteen executable oracles, pre-effect call
+fencing, failure injection, typed GitHub/PTC adapter seams, deterministic
+replay, explicit unsupported model grading, and a pure Phase 5 mapper. Focused
+tests pass 14/14, TypeScript and production build pass, context smoke passes
+3/3, the S2 baseline passes 10/10, and the full Windows regression passes
+348/348 in 403.3 seconds. A separate read-only completion review found no
+unresolved acceptance issue. No runtime or external authority was added.
 
 Integration plan: `agentic-patterns-integration-plan-v1.md`, Stage 1 S5
 

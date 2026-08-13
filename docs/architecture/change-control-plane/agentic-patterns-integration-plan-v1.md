@@ -1,6 +1,6 @@
 # Agentic Patterns Integration Plan v1
 
-Status: active; S1-S4 completion-reviewed; S5 contract accepted and baseline-blocked; S6 implementation not authorized
+Status: active; S1-S5 completion-reviewed; S6 implementation not authorized
 
 Prepared: 2026-08-08
 
@@ -94,15 +94,19 @@ Orchestrator-owned provider-process/attempt counts in v1. The current Codex CLI
 does not expose an accepted provider-enforced output-token limit, so token hard
 enforcement remains explicitly unsupported unless a later contract revision
 pins and proves that capability. Owner acceptance authorizes only the exact S3
-implementation impact map. S4 is now separately accepted and completion-reviewed;
-S5-S6 remain unauthorized.
+implementation impact map. S4 is now separately accepted and completion-reviewed.
+S5 was accepted and implemented after its separately repaired Windows CI
+baseline returned green; its completion review found no unresolved issue. S6
+remains unauthorized.
 
 S3 implementation and its separate completion review passed 14/14 focused
 tests, TypeScript, production build, context smoke 3/3, the S2 baseline 10/10,
 diff checks, and the full Windows regression 337/337. No acceptance issue was
 deferred. S4 subsequently passed its own accepted contract and separate
-completion review. The next possible slice is an owner-reviewed S5 contract;
-this plan does not authorize its implementation.
+completion review. S5 implementation passes 14/14 focused tests, TypeScript,
+production build, context smoke 3/3, S2 baseline 10/10, and 348/348 full
+Windows tests. Its separate completion review found no unresolved issue; S6
+remains unauthorized.
 
 ## 5. S1 - Incident-to-Eval candidate
 

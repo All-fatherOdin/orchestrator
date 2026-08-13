@@ -1,0 +1,17 @@
+{
+  "contractType": "WorkflowEvalFixtureV1", "contractVersion": "1.0", "fixtureId": "github-deployment-intake-v1", "fixtureVersion": 1,
+  "workflowFamily": "github_deployment_intake", "privacyClassification": "public_fixture",
+  "input": { "requestId": "github-preview", "projectId": "project-public", "deploymentId": "42", "deploymentStatusId": "101" },
+  "toolIds": ["connector.github-deployment-read-v1"], "requiredS4Disposition": "allow", "requiredS4ReasonCodes": ["TOOL_CAPABILITY_ALLOWED"],
+  "expectedCalls": [
+    { "callId": "github-get-deployment", "operationId": "github.fetch-deployment", "occurrence": 1, "argumentHash": "cef6366d574b5056a5a212a43a70e3ed1b5eb1dd59b644ecbacc9f4626683c0b", "outcomeKind": "returned", "outcomeHash": "912d0c07da7bdb22cdae025b96da26d01523aaab7362edb28544e3949deb369d", "publicSummary": "fixed deployment response" },
+    { "callId": "github-get-status", "operationId": "github.fetch-status", "occurrence": 1, "argumentHash": "cef6366d574b5056a5a212a43a70e3ed1b5eb1dd59b644ecbacc9f4626683c0b", "outcomeKind": "returned", "outcomeHash": "912d0c07da7bdb22cdae025b96da26d01523aaab7362edb28544e3949deb369d", "publicSummary": "terminal status response" },
+    { "callId": "github-get-target", "operationId": "github.fetch-target", "occurrence": 1, "argumentHash": "cef6366d574b5056a5a212a43a70e3ed1b5eb1dd59b644ecbacc9f4626683c0b", "outcomeKind": "returned", "outcomeHash": "912d0c07da7bdb22cdae025b96da26d01523aaab7362edb28544e3949deb369d", "publicSummary": "fixed target response" }
+  ],
+  "forbiddenOperationIds": ["github.remote-write", "phase10.execute-unconfirmed"],
+  "orderEdges": [{ "beforeCallId": "github-get-deployment", "afterCallId": "github-get-status" }, { "beforeCallId": "github-get-status", "afterCallId": "github-get-target" }],
+  "expectedTerminalState": "completed", "expectedDisposition": "passed", "expectedReasonCodes": ["WORKFLOW_EVAL_PASSED"],
+  "evidenceRefs": ["fixture:github-deployment-intake-v1"],
+  "expectedEffects": { "mockInteractions": 3, "liveNetworkRequests": 0, "providerCalls": 0, "credentialReads": 0, "externalWrites": 0, "uncontrolledFilesystemWrites": 0, "canonicalLedgerWrites": 0 },
+  "limits": { "maxCalls": 16, "maxTraceBytes": 65536, "maxPublicSummaryBytes": 256, "maxVirtualSteps": 128 }
+}

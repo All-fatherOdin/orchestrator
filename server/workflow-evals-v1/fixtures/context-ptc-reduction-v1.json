@@ -1,0 +1,21 @@
+{
+  "contractType": "WorkflowEvalFixtureV1", "contractVersion": "1.0", "fixtureId": "context-ptc-reduction-v1", "fixtureVersion": 1,
+  "workflowFamily": "context_ptc_reduction", "privacyClassification": "public_fixture", "input": { "requestId": "context-public" },
+  "toolIds": ["context-ptc.filter-v1", "context-ptc.join-v1", "context-ptc.rank-v1", "context-ptc.deduplicate-v1", "context-ptc.aggregate-v1", "context-ptc.schema-validate-v1"],
+  "requiredS4Disposition": "allow", "requiredS4ReasonCodes": ["TOOL_CAPABILITY_ALLOWED"],
+  "expectedCalls": [
+    { "callId": "ptc-filter", "operationId": "ptc.filter", "occurrence": 1, "argumentHash": "0833929a331eefe6b4ae679a7e6a7bdecd6f9dd2b8961a7cc3ae37f26f0eecc4", "outcomeKind": "rejected", "outcomeHash": "ee1d2ee15e13972b00839744d45d6779de09105551f45cd1e79597c38b2e921b", "publicSummary": "retryable filter rejection" },
+    { "callId": "ptc-filter-retry", "operationId": "ptc.filter", "occurrence": 2, "argumentHash": "0833929a331eefe6b4ae679a7e6a7bdecd6f9dd2b8961a7cc3ae37f26f0eecc4", "outcomeKind": "returned", "outcomeHash": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "publicSummary": "filter retry result" },
+    { "callId": "ptc-join", "operationId": "ptc.join", "occurrence": 1, "argumentHash": "46e84bad90497b2553445f4685fed3d6dc6b51be6c43fcf87d32a451e4e7f7ad", "outcomeKind": "returned", "outcomeHash": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "publicSummary": "join result" },
+    { "callId": "ptc-rank", "operationId": "ptc.rank", "occurrence": 1, "argumentHash": "5d7a12e7a33893751760c740c01eb411d2db3f9e5a4334789232a934e3e003ff", "outcomeKind": "returned", "outcomeHash": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "publicSummary": "rank result" },
+    { "callId": "ptc-deduplicate", "operationId": "ptc.deduplicate", "occurrence": 1, "argumentHash": "698621d4fedeb42850ad5fa43bbdc74f7b795a390d3ab745b9412290984f7be7", "outcomeKind": "returned", "outcomeHash": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "publicSummary": "deduplicate result" },
+    { "callId": "ptc-aggregate", "operationId": "ptc.aggregate", "occurrence": 1, "argumentHash": "a94cd568299f400a20877e8f10d3879209833e78348159e5ed25177d77b9c7a9", "outcomeKind": "returned", "outcomeHash": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "publicSummary": "aggregate result" },
+    { "callId": "ptc-schema-validate", "operationId": "ptc.schema-validate", "occurrence": 1, "argumentHash": "f943cb3d9a2bca95cf99007b6ff4b768a4d13e0f0fa291d5ff8ef1a9ccbf18ff", "outcomeKind": "returned", "outcomeHash": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93", "publicSummary": "schema validation result" }
+  ],
+  "forbiddenOperationIds": ["ptc.provider-call", "ptc.external-write"],
+  "orderEdges": [{ "beforeCallId": "ptc-filter", "afterCallId": "ptc-filter-retry" }, { "beforeCallId": "ptc-filter-retry", "afterCallId": "ptc-join" }, { "beforeCallId": "ptc-join", "afterCallId": "ptc-rank" }, { "beforeCallId": "ptc-rank", "afterCallId": "ptc-deduplicate" }, { "beforeCallId": "ptc-deduplicate", "afterCallId": "ptc-aggregate" }, { "beforeCallId": "ptc-aggregate", "afterCallId": "ptc-schema-validate" }],
+  "failureInjection": { "callId": "ptc-filter", "phase": "instead", "errorCode": "PTC_RETRYABLE", "retryExpectation": "one_retry" },
+  "expectedTerminalState": "completed", "expectedDisposition": "passed", "expectedReasonCodes": ["WORKFLOW_EVAL_PASSED"], "evidenceRefs": ["fixture:context-ptc-reduction-v1"],
+  "expectedEffects": { "mockInteractions": 7, "liveNetworkRequests": 0, "providerCalls": 0, "credentialReads": 0, "externalWrites": 0, "uncontrolledFilesystemWrites": 0, "canonicalLedgerWrites": 0 },
+  "limits": { "maxCalls": 16, "maxTraceBytes": 65536, "maxPublicSummaryBytes": 256, "maxVirtualSteps": 128 }
+}
