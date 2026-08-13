@@ -11847,6 +11847,140 @@ test("impact map is normalized, complete, ordered, approval-bound, and never exp
   );
 });
 
+function documentationGovernanceQueue(projectPath: string): any {
+  const verificationCommand = "node scripts/check-documentation-delta.mjs --forbid DOC-REACH-001";
+  const allowedPaths = ["docs/topic.md", "docs/README.md"];
+  const impactPaths = { documentation: [...allowedPaths] };
+  const approval = {
+    approvalId: "documentation-governance-v1",
+    intent: "apply",
+    technicalPermission: "reversible_local_write",
+    sideEffectRisk: "reversible_local_write",
+    allowedPaths: [...allowedPaths],
+    impactPaths: structuredClone(impactPaths),
+    verificationCommands: [verificationCommand],
+  };
+  return {
+    project: {
+      path: projectPath,
+      documentationGovernance: {
+        contractType: "DocumentationGovernancePolicyV1",
+        contractVersion: "1.0",
+        managedPaths: ["docs/**"],
+        navigationPaths: ["docs/README.md", "docs/documentation_lifecycle_registry.yaml"],
+        verificationCommands: [verificationCommand],
+      },
+      approvedApplyContracts: [approval],
+    },
+    tasks: [
+      {
+        key: "write-docs",
+        title: "Write governed documentation",
+        prompt: "Create the document and add a meaningful navigation or lifecycle entry.",
+        allowedPaths: [...allowedPaths],
+        authoringContract: { contractType: "QueueAuthoringContractV1", contractVersion: "1.0" },
+        executionKind: { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "ordinary" },
+        impactPaths: structuredClone(impactPaths),
+        runtimeConstraints: ["The repository documentation delta checker is available."],
+        verificationCommands: [verificationCommand],
+        authorization: {
+          enabled: true,
+          intent: "apply",
+          technicalPermission: "reversible_local_write",
+          sideEffectRisk: "reversible_local_write",
+          approvalId: approval.approvalId,
+        },
+      },
+      {
+        key: "accept-docs",
+        title: "Accept the complete documentation change",
+        prompt: "Review the complete documentation change without edits.",
+        dependsOn: ["write-docs"],
+        allowedPaths: [],
+        wholeChangeAcceptance: {
+          contractType: "WholeChangeAcceptanceV1",
+          contractVersion: "1.0",
+          predecessorTaskKeys: ["write-docs"],
+        },
+        verificationCommands: [verificationCommand],
+        authorization: {
+          enabled: true,
+          intent: "review",
+          technicalPermission: "read_only",
+          sideEffectRisk: "none",
+        },
+      },
+    ],
+  };
+}
+
+test("documentation governance binds navigation scope, delta gates, and final whole-change acceptance", () => {
+  const valid = documentationGovernanceQueue(process.cwd());
+  const queue = validateTaskQueue(valid);
+  assert.equal(queue.project.documentationGovernance?.contractType, "DocumentationGovernancePolicyV1");
+  assert.deepEqual(queue.project.documentationGovernance?.managedPaths, ["docs/**"]);
+  assert.equal(queue.tasks[0].impactPaths?.documentation.includes("docs/README.md"), true);
+  const persisted = createRun(queue);
+  assert.doesNotThrow(() => rebuildPersistedQueueForReplayV1(persisted));
+  persisted.project.documentationGovernance!.navigationPaths = ["README.md"];
+  assert.throws(
+    () => rebuildPersistedQueueForReplayV1(persisted),
+    /PERSISTED_RUN_STRUCTURE_INVALID.*navigationPaths must be inside managedPaths/,
+  );
+
+  const missingNavigation = documentationGovernanceQueue(process.cwd());
+  missingNavigation.tasks[0].allowedPaths = ["docs/topic.md"];
+  missingNavigation.tasks[0].impactPaths = { documentation: ["docs/topic.md"] };
+  missingNavigation.project.approvedApplyContracts[0].allowedPaths = ["docs/topic.md"];
+  missingNavigation.project.approvedApplyContracts[0].impactPaths = { documentation: ["docs/topic.md"] };
+  assert.throws(
+    () => validateTaskQueue(missingNavigation),
+    /requires one navigationPaths file in allowedPaths and impactPaths\.documentation/,
+  );
+
+  const missingDeltaGate = documentationGovernanceQueue(process.cwd());
+  missingDeltaGate.tasks[0].verificationCommands = ["node scripts/other-check.mjs"];
+  assert.throws(
+    () => validateTaskQueue(missingDeltaGate),
+    /requires every exact documentation verification command/,
+  );
+
+  const missingAcceptance = documentationGovernanceQueue(process.cwd());
+  missingAcceptance.tasks[1] = {
+    key: "report-docs", title: "Report", prompt: "Report.", dependsOn: ["write-docs"], allowedPaths: [],
+  };
+  assert.throws(
+    () => validateTaskQueue(missingAcceptance),
+    /requires one final WholeChangeAcceptanceV1 task/,
+  );
+
+  const acceptanceWithoutGate = documentationGovernanceQueue(process.cwd());
+  acceptanceWithoutGate.tasks[1].verificationCommands = ["node scripts/other-check.mjs"];
+  assert.throws(
+    () => validateTaskQueue(acceptanceWithoutGate),
+    /requires every exact documentation verification command on WholeChangeAcceptanceV1/,
+  );
+});
+
+test("documentation governance is explicit and leaves non-documentation queues unchanged", () => {
+  const governed = documentationGovernanceQueue(process.cwd());
+  governed.project.documentationGovernance.navigationPaths = ["README.md"];
+  assert.throws(
+    () => validateTaskQueue(governed),
+    /navigationPaths must be inside managedPaths/,
+  );
+
+  const nonDocumentation = documentationGovernanceQueue(process.cwd());
+  nonDocumentation.tasks[0].allowedPaths = ["server/index.ts"];
+  nonDocumentation.tasks[0].impactPaths = { production: ["server/index.ts"] };
+  nonDocumentation.tasks[0].verificationCommands = ["node scripts/other-check.mjs"];
+  nonDocumentation.project.approvedApplyContracts[0].allowedPaths = ["server/index.ts"];
+  nonDocumentation.project.approvedApplyContracts[0].impactPaths = { production: ["server/index.ts"] };
+  nonDocumentation.project.approvedApplyContracts[0].verificationCommands = ["node scripts/other-check.mjs"];
+  nonDocumentation.tasks[1].verificationCommands = undefined;
+  assert.doesNotThrow(() => validateTaskQueue(nonDocumentation));
+});
+
 test("whole-change acceptance and cross-artifact admission, TaskExecutionKindV1, and allowedPaths grammar fail closed", () => {
   assert.deepEqual(validateAllowedPathsV1(["server/index.ts", "server/**"]), [
     "server/index.ts", "server/**",

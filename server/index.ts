@@ -283,6 +283,18 @@ type ProjectSettings = {
   allowedModels?: Model[];
   /** Explicit, independently configured approvals for exact local apply scopes. */
   approvedApplyContracts?: TaskApplyApprovalContract[];
+  /** Explicit repository-owned policy for preventing orphaned active documentation. */
+  documentationGovernance?: DocumentationGovernancePolicyV1;
+};
+export type DocumentationGovernancePolicyV1 = {
+  contractType: "DocumentationGovernancePolicyV1";
+  contractVersion: "1.0";
+  /** Documentation scopes whose write tasks require the policy gates. */
+  managedPaths: string[];
+  /** Repository-owned indexes or lifecycle registries that a task may update. */
+  navigationPaths: string[];
+  /** Exact commands that must fail when the task introduces a documentation finding. */
+  verificationCommands: string[];
 };
 export type QueueAuthoringContractV1 = {
   contractType: "QueueAuthoringContractV1";
@@ -2693,6 +2705,10 @@ const WHOLE_CHANGE_ACCEPTANCE_V1 = Object.freeze({
   contractType: "WholeChangeAcceptanceV1" as const,
   contractVersion: "1.0" as const,
 });
+const DOCUMENTATION_GOVERNANCE_POLICY_V1 = Object.freeze({
+  contractType: "DocumentationGovernancePolicyV1" as const,
+  contractVersion: "1.0" as const,
+});
 const RECOVERY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const IMPACT_CATEGORY_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
@@ -2816,6 +2832,24 @@ export function validateAllowedPathsV1(value: unknown, field = "allowedPaths") {
   if (new Set(normalized).size !== normalized.length)
     throw new Error(`${field} must not contain duplicate normalized path scopes.`);
   return normalized;
+}
+
+function pathScopeCoversPathV1(scope: string, path: string) {
+  return scope.endsWith("/**")
+    ? path === scope.slice(0, -3) || path.startsWith(`${scope.slice(0, -3)}/`)
+    : path === scope;
+}
+
+function pathScopesIntersectV1(left: string, right: string) {
+  if (left.endsWith("/**")) {
+    const base = left.slice(0, -3);
+    if (right.endsWith("/**")) {
+      const other = right.slice(0, -3);
+      return base === other || base.startsWith(`${other}/`) || other.startsWith(`${base}/`);
+    }
+    return pathScopeCoversPathV1(left, right);
+  }
+  return right.endsWith("/**") ? pathScopeCoversPathV1(right, left) : left === right;
 }
 
 export function validateImpactPathsV1(
@@ -3882,6 +3916,74 @@ export function validateQueue(value: unknown): {
     throw new Error(
       `project.verificationCommands: ${projectInlineViolations.join(" ")}`,
     );
+  let documentationGovernance: DocumentationGovernancePolicyV1 | undefined;
+  if (project.documentationGovernance !== undefined) {
+    const policy = project.documentationGovernance as unknown as Record<string, unknown>;
+    if (
+      !policy ||
+      typeof policy !== "object" ||
+      Array.isArray(policy) ||
+      Object.keys(policy).length !== 5 ||
+      policy.contractType !== DOCUMENTATION_GOVERNANCE_POLICY_V1.contractType ||
+      policy.contractVersion !== DOCUMENTATION_GOVERNANCE_POLICY_V1.contractVersion
+    ) throw new Error(
+      "project.documentationGovernance must be an exact DocumentationGovernancePolicyV1 envelope.",
+    );
+    const managedPaths = validateAllowedPathsV1(
+      policy.managedPaths,
+      "project.documentationGovernance managedPaths",
+    );
+    const navigationPaths = validateAllowedPathsV1(
+      policy.navigationPaths,
+      "project.documentationGovernance navigationPaths",
+    );
+    if (!managedPaths.length || !navigationPaths.length)
+      throw new Error(
+        "project.documentationGovernance requires non-empty managedPaths and navigationPaths.",
+      );
+    if (navigationPaths.some((path) => path.endsWith("/**")))
+      throw new Error(
+        "project.documentationGovernance navigationPaths must be exact repository-relative files.",
+      );
+    if (navigationPaths.some((path) => !managedPaths.some((scope) => pathScopeCoversPathV1(scope, path))))
+      throw new Error(
+        "project.documentationGovernance navigationPaths must be inside managedPaths.",
+      );
+    if (
+      !Array.isArray(policy.verificationCommands) ||
+      !policy.verificationCommands.length ||
+      policy.verificationCommands.some((command) => typeof command !== "string" || !command.trim())
+    ) throw new Error(
+      "project.documentationGovernance verificationCommands must be a non-empty list of exact machine gates.",
+    );
+    const verificationCommands = (policy.verificationCommands as string[]).map((command) =>
+      normalizeWindowsNpmCommand(command)
+    );
+    if (new Set(verificationCommands).size !== verificationCommands.length)
+      throw new Error(
+        "project.documentationGovernance verificationCommands must not contain duplicates.",
+      );
+    assertWindowsPytestVerificationCommands(
+      verificationCommands,
+      "project.documentationGovernance verificationCommands",
+    );
+    assertWindowsCommandPolicy(
+      verificationCommands,
+      "project.documentationGovernance verificationCommands",
+    );
+    const policyInlineViolations = inlineCommandViolations(verificationCommands);
+    if (policyInlineViolations.length)
+      throw new Error(
+        `project.documentationGovernance verificationCommands: ${policyInlineViolations.join(" ")}`,
+      );
+    documentationGovernance = {
+      contractType: DOCUMENTATION_GOVERNANCE_POLICY_V1.contractType,
+      contractVersion: DOCUMENTATION_GOVERNANCE_POLICY_V1.contractVersion,
+      managedPaths,
+      navigationPaths,
+      verificationCommands,
+    };
+  }
   let approvedApplyContracts: TaskApplyApprovalContract[] | undefined;
   if (project.approvedApplyContracts !== undefined) {
     if (!Array.isArray(project.approvedApplyContracts))
@@ -4446,6 +4548,67 @@ export function validateQueue(value: unknown): {
     if (tasks.some((candidate) => candidate.dependsOn?.includes(task.key!)))
       throw new Error(`Task ${index + 1}: WholeChangeAcceptanceV1 must be a terminal dependency sink.`);
   });
+  if (documentationGovernance) {
+    const documentWriters = tasks.flatMap((task, index) =>
+      task.allowedPaths?.some((path) =>
+        documentationGovernance.managedPaths.some((managed) =>
+          pathScopesIntersectV1(path, managed)
+        )
+      ) ? [[task, index] as const] : [],
+    );
+    for (const [task, index] of documentWriters) {
+      if (!task.authoringContract)
+        throw new Error(
+          `Task ${index + 1}: DocumentationGovernancePolicyV1 requires QueueAuthoringContractV1 for documentation writes.`,
+        );
+      if (
+        !task.authorization?.enabled ||
+        task.authorization.intent !== "apply" ||
+        task.authorization.technicalPermission !== "reversible_local_write" ||
+        task.authorization.sideEffectRisk !== "reversible_local_write"
+      ) throw new Error(
+        `Task ${index + 1}: DocumentationGovernancePolicyV1 requires enabled reversible-local-write apply authorization.`,
+      );
+      if (task.verificationMode === "advisory")
+        throw new Error(
+          `Task ${index + 1}: DocumentationGovernancePolicyV1 verification must be required, not advisory.`,
+        );
+      const taskCommands = task.verificationCommands ?? [];
+      const missingCommands = documentationGovernance.verificationCommands.filter(
+        (command) => !taskCommands.includes(command),
+      );
+      if (missingCommands.length)
+        throw new Error(
+          `Task ${index + 1}: DocumentationGovernancePolicyV1 requires every exact documentation verification command.`,
+        );
+      const documentationImpact = task.impactPaths?.documentation ?? [];
+      const hasGovernedNavigationPath = documentationGovernance.navigationPaths.some(
+        (navigationPath) =>
+          (task.allowedPaths ?? []).some((scope) => pathScopeCoversPathV1(scope, navigationPath)) &&
+          documentationImpact.some((scope) => pathScopeCoversPathV1(scope, navigationPath)),
+      );
+      if (!hasGovernedNavigationPath)
+        throw new Error(
+          `Task ${index + 1}: DocumentationGovernancePolicyV1 requires one navigationPaths file in allowedPaths and impactPaths.documentation.`,
+        );
+    }
+    if (documentWriters.length) {
+      if (acceptanceTasks.length !== 1)
+        throw new Error(
+          "DocumentationGovernancePolicyV1 requires one final WholeChangeAcceptanceV1 task for documentation writes.",
+        );
+      const [acceptance, acceptanceIndex] = acceptanceTasks[0]!;
+      if (acceptance.verificationMode === "advisory")
+        throw new Error(
+          `Task ${acceptanceIndex + 1}: DocumentationGovernancePolicyV1 final verification must be required, not advisory.`,
+        );
+      const acceptanceCommands = acceptance.verificationCommands ?? [];
+      if (documentationGovernance.verificationCommands.some((command) => !acceptanceCommands.includes(command)))
+        throw new Error(
+          `Task ${acceptanceIndex + 1}: DocumentationGovernancePolicyV1 requires every exact documentation verification command on WholeChangeAcceptanceV1.`,
+        );
+    }
+  }
   tasks.forEach((task, index) => {
     if (!task.requiresCheckpointsFrom?.length) return;
     if (!task.key)
@@ -4502,6 +4665,7 @@ export function validateQueue(value: unknown): {
       defaultEffort: project.defaultEffort,
       allowedModels: project.allowedModels,
       approvedApplyContracts,
+      documentationGovernance,
     },
     tasks,
     limits,
