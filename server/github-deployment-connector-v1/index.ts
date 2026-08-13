@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import Ajv2020 from "ajv8/dist/2020.js";
 import connectorSchema from "./schemas/github-deployment-connector-v1.schema.json";
 import {
+  allowRegisteredToolV1,
+  type ToolCapabilityDecisionV1,
+} from "../tool-capabilities-v1/index.ts";
+import {
   OperationalOutcomeErrorV1,
   type DeploymentObservationV1,
   type OperationalOutcomeImportRequestV1,
@@ -196,6 +200,7 @@ export type GitHubDeploymentConnectorPreviewV1 = Readonly<{
   observationCount: 1;
   wouldMutate: false;
   observation: GitHubDeploymentObservationSummaryV1;
+  toolCapabilityDecision: ToolCapabilityDecisionV1;
 }>;
 
 const validator = new Ajv2020({ allErrors: true, strict: true }).compile(
@@ -782,10 +787,23 @@ export class GitHubDeploymentConnectorServiceV1 {
     return { config, projection, ...exactTargetDetails(details) };
   }
 
+  private toolCapabilityDecision(request: BaseRequestV1) {
+    return allowRegisteredToolV1({
+      requestId: `github-tool:${request.requestId}`,
+      toolId: "connector.github-deployment-read-v1",
+      executionPathId: "github-deployment-read-v1",
+      owningEvidenceRefs: [
+        `github-deployment:${request.deploymentId}`,
+        `github-deployment-status:${request.deploymentStatusId}`,
+      ],
+    });
+  }
+
   private importRequest(
     request: BaseRequestV1,
     observation: DeploymentObservationV1,
     confirm: boolean,
+    toolCapabilityDecision: ToolCapabilityDecisionV1,
   ): OperationalOutcomeImportRequestV1 {
     return {
       contractType: "OperationalOutcomeImportRequestV1",
@@ -797,13 +815,24 @@ export class GitHubDeploymentConnectorServiceV1 {
       actor: request.actor,
       observedProject: { ...request.observedProject },
       sourceId: request.sourceId,
-      observations: [observation],
+      observations: [
+        {
+          ...observation,
+          evidenceRefs: [
+            ...new Set([
+              ...observation.evidenceRefs,
+              toolCapabilityDecision.decisionId,
+            ]),
+          ].sort(),
+        },
+      ],
       confirm,
     };
   }
 
   async preview(value: unknown): Promise<GitHubDeploymentConnectorPreviewV1> {
     const request = parseGitHubDeploymentConnectorPreviewRequestV1(value);
+    const toolCapabilityDecision = this.toolCapabilityDecision(request);
     const { config, targetCommitSha, targetTreeSha } = await this.preflight(request);
     const snapshot = await fetchSnapshotV1(
       this.fetcher,
@@ -815,7 +844,12 @@ export class GitHubDeploymentConnectorServiceV1 {
     let preview: OperationalOutcomePreviewV1;
     try {
       preview = await this.authority.previewOperationalOutcomeImportV1(
-        this.importRequest(request, snapshot.observation, false),
+        this.importRequest(
+          request,
+          snapshot.observation,
+          false,
+          toolCapabilityDecision,
+        ),
       );
     } catch (error) {
       return mapPhase10Error(error);
@@ -832,11 +866,13 @@ export class GitHubDeploymentConnectorServiceV1 {
       observationCount: 1,
       wouldMutate: false,
       observation: snapshot.summary,
+      toolCapabilityDecision,
     });
   }
 
   async execute(value: unknown): Promise<OperationalOutcomeMutationReceiptV1> {
     const request = parseGitHubDeploymentConnectorExecuteRequestV1(value);
+    const toolCapabilityDecision = this.toolCapabilityDecision(request);
     const config = this.configuration();
     if (request.sourceId !== config.sourceId)
       throw new GitHubDeploymentConnectorErrorV1(
@@ -908,7 +944,12 @@ export class GitHubDeploymentConnectorServiceV1 {
         "GitHub deployment snapshot changed after preview.",
         409,
       );
-    const importRequest = this.importRequest(request, snapshot.observation, true);
+    const importRequest = this.importRequest(
+      request,
+      snapshot.observation,
+      true,
+      toolCapabilityDecision,
+    );
     let preview: OperationalOutcomePreviewV1;
     try {
       preview = await this.authority.previewOperationalOutcomeImportV1(importRequest);

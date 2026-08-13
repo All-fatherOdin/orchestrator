@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ToolCapabilityDecisionV1 } from "../tool-capabilities-v1/index.ts";
 import Ajv2020 from "ajv8/dist/2020.js";
 import haltsIncidentsV1Schema from "./schemas/halts-incidents-v1.schema.json";
 import wardenV1Schema from "./schemas/warden-v1.schema.json";
@@ -600,6 +601,7 @@ export type DoctorAdapterAttemptOutcomeV1 = Readonly<{
   outcome: "completed" | "retryable_failure" | "terminal_failure" | "ambiguous";
   outcomeCode: string;
   evidenceRefs: readonly string[];
+  toolCapabilityDecision?: ToolCapabilityDecisionV1;
 }>;
 
 export type DoctorAdapterObservationContextV1 = Readonly<{

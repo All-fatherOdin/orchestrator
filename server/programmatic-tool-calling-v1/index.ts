@@ -4,6 +4,11 @@ import type {
   ContextReceiptV1,
   ContextSourceV1,
 } from "../index.ts";
+import {
+  createToolChainRequestV1,
+  evaluateToolCapabilityChainV1,
+  type ToolCapabilityDecisionV1,
+} from "../tool-capabilities-v1/index.ts";
 
 export const CONTEXT_PTC_OPERATIONS = [
   "filter",
@@ -58,6 +63,7 @@ export type ContextProgrammaticReductionV1 = {
   state: "applied" | "direct_fallback";
   reason_codes: string[];
   call_receipts: ContextPtcCallReceiptV1[];
+  tool_capability_decision: ToolCapabilityDecisionV1;
   input_source_paths: string[];
   retained_evidence_refs: string[];
   requires_direct_final_validation: true;
@@ -207,6 +213,9 @@ export class LocalDeterministicContextPtcExecutor implements ContextPtcExecutor 
 }
 
 const pipeline = [...CONTEXT_PTC_OPERATIONS];
+const capabilityToolIds = pipeline.map(
+  (operation) => `context-ptc.${operation.replaceAll("_", "-")}-v1`,
+);
 
 export async function applyContextProgrammaticReductionV1(
   routed: ContextProviderResult,
@@ -226,8 +235,20 @@ export async function applyContextProgrammaticReductionV1(
   const caller: ContextPtcCallerV1 = { type: "context_router", request_id: routed.bundle.request_id };
   const receipts: ContextPtcCallReceiptV1[] = [];
   const deterministicReference = new LocalDeterministicContextPtcExecutor();
+  const toolCapabilityDecision = evaluateToolCapabilityChainV1(
+    createToolChainRequestV1({
+      requestId: `ptc-chain:${routed.bundle.request_id}`,
+      toolIds: capabilityToolIds,
+      owningEvidenceRefs: [`context-router:${routed.bundle.request_id}`],
+    }),
+  );
 
   try {
+    if (toolCapabilityDecision.disposition !== "allow")
+      throw new ContextPtcFailure(
+        "PTC_TOOL_DENIED",
+        `S4 denied the context tool chain: ${toolCapabilityDecision.reasonCodes.join(",")}.`,
+      );
     ensureDirectHandoffComplete(routed, validate);
     for (const operation of pipeline) {
       const descriptor = executor.describe(operation);
@@ -291,6 +312,7 @@ export async function applyContextProgrammaticReductionV1(
         state: "applied",
         reason_codes: ["PTC_APPLIED"],
         call_receipts: receipts,
+        tool_capability_decision: toolCapabilityDecision,
         input_source_paths: inputSourcePaths,
         retained_evidence_refs: retainedEvidenceRefs,
         requires_direct_final_validation: true,
@@ -305,6 +327,7 @@ export async function applyContextProgrammaticReductionV1(
         state: "direct_fallback",
         reason_codes: [reasonCode],
         call_receipts: receipts,
+        tool_capability_decision: toolCapabilityDecision,
         input_source_paths: inputSourcePaths,
         retained_evidence_refs: retainedEvidenceRefs,
         requires_direct_final_validation: true,

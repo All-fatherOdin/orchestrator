@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import Ajv2020 from "ajv8/dist/2020.js";
 import schema from "./schemas/operator-actions-v1.schema.json";
+import {
+  allowRegisteredToolV1,
+  assertToolCapabilityDecisionV1,
+  canonicalToolCapabilityJsonV1,
+  ToolCapabilityErrorV1,
+  type ToolCapabilityDecisionV1,
+} from "../tool-capabilities-v1/index.ts";
 
 export const OPERATOR_ACTION_KINDS_V1 = [
   "dispatch-wave",
@@ -199,6 +206,7 @@ type RequestBaseV1<
   expectedProjectSequence: number;
   expectedProjectHash: HashV1 | null;
   idempotencyKey: string;
+  toolCapabilityDecision?: ToolCapabilityDecisionV1;
 }>;
 
 export type DispatchWaveRequestV1 = RequestBaseV1<
@@ -660,7 +668,49 @@ export function parseOperatorActionRequestV1(value: unknown): OperatorActionRequ
   const request = normalizedRequest(structuredClone(value) as OperatorActionRequestV1);
   if (!requestValidator(request)) throwSchemaError(requestValidator, "INVALID_REQUEST", "Normalized OperatorActionRequestV1");
   assertRequestSemantics(request);
+  if (request.toolCapabilityDecision) {
+    try {
+      assertToolCapabilityDecisionV1(request.toolCapabilityDecision);
+    } catch (error) {
+      if (error instanceof ToolCapabilityErrorV1)
+        throw new OperatorActionContractErrorV1(
+          "INVALID_REQUEST",
+          "Operator action S4 decision failed closed replay validation.",
+        );
+      throw error;
+    }
+    const expected = operatorActionToolCapabilityDecisionV1(request);
+    if (
+      canonicalToolCapabilityJsonV1(request.toolCapabilityDecision) !==
+      canonicalToolCapabilityJsonV1(expected)
+    )
+      throw new OperatorActionContractErrorV1(
+        "INVALID_REQUEST",
+        "Operator action S4 decision does not bind the exact request.",
+      );
+  }
   return deepFreeze(structuredClone(request));
+}
+
+function operatorActionToolCapabilityDecisionV1(
+  request: Pick<OperatorActionRequestV1, "requestId" | "actionKind">,
+) {
+  return allowRegisteredToolV1({
+    requestId: `operator-tool:${request.requestId}`,
+    toolId: `operator.${request.actionKind}-v1`,
+    owningEvidenceRefs: [`operator-request:${request.requestId}`],
+  });
+}
+
+function bindOperatorActionToolCapabilityV1(
+  value: unknown,
+): OperatorActionRequestV1 {
+  const request = parseOperatorActionRequestV1(value);
+  const toolCapabilityDecision = operatorActionToolCapabilityDecisionV1(request);
+  return parseOperatorActionRequestV1({
+    ...request,
+    toolCapabilityDecision,
+  });
 }
 
 export const normalizeOperatorActionRequestV1 = parseOperatorActionRequestV1;
@@ -1024,11 +1074,17 @@ export class OperatorActionServiceV1 {
   constructor(private readonly store: OperatorActionStoreV1) {}
 
   preview(value: unknown): Promise<OperatorActionPreviewV1> {
-    return this.store.previewOperatorActionV1(value);
+    return this.store.previewOperatorActionV1(
+      bindOperatorActionToolCapabilityV1(value),
+    );
   }
 
   execute(value: unknown): Promise<OperatorActionReceiptV1> {
-    return this.store.executeOperatorActionV1(value);
+    const executeRequest = parseOperatorActionExecuteRequestV1(value);
+    return this.store.executeOperatorActionV1({
+      ...executeRequest,
+      request: bindOperatorActionToolCapabilityV1(executeRequest.request),
+    });
   }
 
   receipt(receiptId: string): Promise<OperatorActionReceiptV1> {

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orchestrator.local/schemas/tool-capabilities-v1.schema.json",
+  "title": "Tool Capabilities v1",
+  "oneOf": [
+    { "$ref": "#/$defs/ToolCapabilityManifestV1" },
+    { "$ref": "#/$defs/ToolChainRequestV1" },
+    { "$ref": "#/$defs/ToolCapabilityDecisionV1" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "ToolCapabilityEntryV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolId", "owner", "boundary", "privateDataAccess", "untrustedInput", "externalCommunication", "mutation", "credentialUse", "isolation", "chainMode", "owningGate"],
+      "properties": {
+        "toolId": { "$ref": "#/$defs/identifier" },
+        "owner": { "enum": ["context-router", "warden-doctor", "operator-actions", "github-deployment-connector", "codex-cli"] },
+        "boundary": { "enum": ["in_process", "child_process", "remote_http", "opaque_child_internal"] },
+        "privateDataAccess": { "enum": ["none", "bounded_local", "credential_or_private"] },
+        "untrustedInput": { "enum": ["none", "bounded_local", "bounded_external"] },
+        "externalCommunication": { "enum": ["none", "read_only", "write"] },
+        "mutation": { "enum": ["none", "reversible_owned_local", "destructive_owned_local", "canonical_local", "external"] },
+        "credentialUse": { "enum": ["none", "server_read_only", "write_capable"] },
+        "isolation": { "enum": ["in_process_validated", "read_only_subprocess", "owned_workspace", "fixed_remote_read", "unsupported"] },
+        "chainMode": { "enum": ["composable", "direct_only", "unsupported"] },
+        "owningGate": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "AcceptedToolExecutionPathV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pathId", "contractRef", "allowedToolIds", "requiredIsolation", "requiredOwningGate"],
+      "properties": {
+        "pathId": { "$ref": "#/$defs/identifier" },
+        "contractRef": { "$ref": "#/$defs/identifier" },
+        "allowedToolIds": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/identifier" } },
+        "requiredIsolation": { "enum": ["in_process_validated", "read_only_subprocess", "owned_workspace", "fixed_remote_read"] },
+        "requiredOwningGate": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "ToolCapabilityManifestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "manifestId", "manifestVersion", "entries", "acceptedPaths"],
+      "properties": {
+        "contractType": { "const": "ToolCapabilityManifestV1" },
+        "contractVersion": { "const": "1.0" },
+        "manifestId": { "const": "orchestrator-tool-capabilities-v1" },
+        "manifestVersion": { "const": 1 },
+        "entries": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "$ref": "#/$defs/ToolCapabilityEntryV1" } },
+        "acceptedPaths": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/AcceptedToolExecutionPathV1" } }
+      }
+    },
+    "ToolChainRequestV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "requestId", "manifestId", "manifestVersion", "manifestHash", "toolIds", "owningEvidenceRefs"],
+      "properties": {
+        "contractType": { "const": "ToolChainRequestV1" },
+        "contractVersion": { "const": "1.0" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "manifestId": { "const": "orchestrator-tool-capabilities-v1" },
+        "manifestVersion": { "const": 1 },
+        "manifestHash": { "$ref": "#/$defs/hash" },
+        "toolIds": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/identifier" } },
+        "executionPathId": { "$ref": "#/$defs/identifier" },
+        "owningEvidenceRefs": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/identifier" } }
+      }
+    },
+    "CapabilityUnionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["privateData", "untrustedInput", "externalCommunication", "mutation", "credentialUse", "unsupportedBoundary"],
+      "properties": {
+        "privateData": { "type": "boolean" },
+        "untrustedInput": { "type": "boolean" },
+        "externalCommunication": { "type": "boolean" },
+        "mutation": { "type": "boolean" },
+        "credentialUse": { "type": "boolean" },
+        "unsupportedBoundary": { "type": "boolean" }
+      }
+    },
+    "ToolCapabilityDecisionV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractType", "contractVersion", "decisionId", "requestId", "requestHash", "manifestId", "manifestVersion", "manifestHash", "toolIds", "capabilityUnion", "disposition", "reasonCodes", "owningEvidenceRefs"],
+      "properties": {
+        "contractType": { "const": "ToolCapabilityDecisionV1" },
+        "contractVersion": { "const": "1.0" },
+        "decisionId": { "$ref": "#/$defs/identifier" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "requestHash": { "$ref": "#/$defs/hash" },
+        "manifestId": { "const": "orchestrator-tool-capabilities-v1" },
+        "manifestVersion": { "const": 1 },
+        "manifestHash": { "$ref": "#/$defs/hash" },
+        "toolIds": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/identifier" } },
+        "capabilityUnion": { "$ref": "#/$defs/CapabilityUnionV1" },
+        "executionPathId": { "$ref": "#/$defs/identifier" },
+        "disposition": { "enum": ["allow", "reject", "unsupported"] },
+        "reasonCodes": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "enum": ["TOOL_CAPABILITY_ALLOWED", "TOOL_CAPABILITY_MANIFEST_INVALID", "TOOL_CAPABILITY_MANIFEST_CHANGED", "TOOL_CAPABILITY_UNKNOWN_HIGH_RISK", "TOOL_CAPABILITY_UNSUPPORTED_BOUNDARY", "TOOL_CAPABILITY_DIRECT_ONLY", "TOOL_CAPABILITY_CHAIN_TOO_LARGE", "TOOL_CAPABILITY_LETHAL_TRIFECTA", "TOOL_CAPABILITY_EXTERNAL_WRITE_DENIED", "TOOL_CAPABILITY_WRITE_CREDENTIAL_DENIED", "TOOL_CAPABILITY_MUTATION_COMPOSITION_DENIED", "TOOL_CAPABILITY_ACCEPTED_PATH_REQUIRED", "TOOL_CAPABILITY_ACCEPTED_PATH_MISMATCH", "TOOL_CAPABILITY_OWNING_EVIDENCE_MISSING", "TOOL_CAPABILITY_REPLAY_INVALID"] } },
+        "owningEvidenceRefs": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/identifier" } }
+      }
+    }
+  }
+}

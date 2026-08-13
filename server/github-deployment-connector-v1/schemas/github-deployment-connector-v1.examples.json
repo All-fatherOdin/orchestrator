@@ -40,6 +40,22 @@
     "sourceWatermark": { "sequence": 3, "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     "observationCount": 1,
     "wouldMutate": false,
+    "toolCapabilityDecision": {
+      "contractType": "ToolCapabilityDecisionV1",
+      "contractVersion": "1.0",
+      "decisionId": "tool-decision:dddddddddddddddddddddddddddddddddddddddd",
+      "requestId": "github-tool:github-deployment-preview",
+      "requestHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "manifestId": "orchestrator-tool-capabilities-v1",
+      "manifestVersion": 1,
+      "manifestHash": "46d4e3b8905c94070996478c0027de8bfbfcb0f888a7fcb539857b86bf476b9f",
+      "toolIds": ["connector.github-deployment-read-v1"],
+      "capabilityUnion": { "privateData": true, "untrustedInput": true, "externalCommunication": true, "mutation": false, "credentialUse": true, "unsupportedBoundary": false },
+      "executionPathId": "github-deployment-read-v1",
+      "disposition": "allow",
+      "reasonCodes": ["TOOL_CAPABILITY_ALLOWED"],
+      "owningEvidenceRefs": ["github-deployment:42", "github-deployment-status:101"]
+    },
     "observation": {
       "observationId": "ghdo:dddddddddddddddddddddddddddddddd",
       "sourceRecordId": "ghd:eeeeeeeeeeeeeeee:42:101",

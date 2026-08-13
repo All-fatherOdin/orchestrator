@@ -289,5 +289,16 @@ run while user-initiated resume/retry retain existing new-run semantics with a
 fresh bounded budget and unchanged policy. Only the exact S3 impact map is
 implemented. Focused verification passed 14/14, context smoke 3/3, S2 baseline
 10/10, and the full Windows regression 337/337 in 365.82 seconds. The separate
-completion review found no unresolved acceptance issue. S4-S6 remain
-unauthorized; an owner-reviewed S4 contract is the next possible slice.
+completion review found no unresolved acceptance issue.
+
+S4 Tool Capability Manifest and Chain Gate contract v1 is accepted,
+implemented, and completion-reviewed. It
+classifies only stable code-owned operation boundaries, rejects missing
+metadata as unknown-high-risk, evaluates the capability union of an ordered
+chain, keeps Doctor adapters and operator actions direct-only, recognizes only
+the already accepted fixed Phase 12 GitHub read path, and marks opaque Codex
+CLI internal tool calls unsupported. Verification passed 13/13 focused S4
+tests, TypeScript, production build, context smoke 3/3, S2 baseline 10/10, diff
+checks, and 347/347 full Windows tests in 385.47 seconds. The separate
+completion review found no unresolved issue. S5-S6 remain unauthorized; an
+owner-reviewed S5 contract is the next possible slice.

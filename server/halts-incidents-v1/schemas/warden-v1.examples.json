@@ -186,7 +186,22 @@
         "attemptOrdinal": 1,
         "outcome": "completed",
         "outcomeCode": "provider-read-completed",
-        "evidenceRefs": ["provider-read:attempt:001"]
+        "evidenceRefs": ["provider-read:attempt:001"],
+        "toolCapabilityDecision": {
+          "contractType": "ToolCapabilityDecisionV1",
+          "contractVersion": "1.0",
+          "decisionId": "tool-decision:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "requestId": "doctor:verdict-example:provider-read-retry-v1",
+          "requestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "manifestId": "orchestrator-tool-capabilities-v1",
+          "manifestVersion": 1,
+          "manifestHash": "46d4e3b8905c94070996478c0027de8bfbfcb0f888a7fcb539857b86bf476b9f",
+          "toolIds": ["doctor.provider-read-retry-v1"],
+          "capabilityUnion": { "privateData": true, "untrustedInput": true, "externalCommunication": false, "mutation": false, "credentialUse": false, "unsupportedBoundary": false },
+          "disposition": "allow",
+          "reasonCodes": ["TOOL_CAPABILITY_ALLOWED"],
+          "owningEvidenceRefs": ["repair-lease:lease-example:1", "warden-verdict:verdict-example"]
+        }
       }
     ],
     "successOracle": {
