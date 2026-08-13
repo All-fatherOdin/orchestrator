@@ -1,6 +1,6 @@
 # Agentic Patterns Integration Plan v1
 
-Status: active; S1-S4 completion-reviewed; S5-S6 implementation not authorized
+Status: active; S1-S4 completion-reviewed; S5 contract accepted and baseline-blocked; S6 implementation not authorized
 
 Prepared: 2026-08-08
 
@@ -317,6 +317,10 @@ Reject an unauthorized execution path that recreates the lethal trifecta.
 - the feature duplicates action authorization or provider route registries.
 
 ## 9. S5 - Workflow evals with mocked tools
+
+Status: contract accepted on 2026-08-13; implementation is authorized only
+after the contract's pre-implementation Windows CI baseline gate is green.
+Contract: `mocked-workflow-evals-contract-v1.md`.
 
 ### Outcome
 

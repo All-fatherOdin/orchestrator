@@ -19521,6 +19521,92 @@ test("atomic rename retries only bounded transient Windows sharing failures", as
   }
 });
 
+test("workspace state atomic rename retries bounded Windows scanner contention", async () => {
+  const { renameWorkspaceStateWithTransientWindowsRetryV1 } = await import(
+    "./workspace-merge-v1/index.ts"
+  );
+  const delays: number[] = [];
+  let attempts = 0;
+  await renameWorkspaceStateWithTransientWindowsRetryV1(
+    "workspace-state.tmp",
+    "run.json",
+    {
+      platform: "win32",
+      renameFile: async () => {
+        attempts += 1;
+        if (attempts < 4)
+          throw Object.assign(new Error("scanner holds destination"), {
+            code: "EPERM",
+          });
+      },
+      wait: async (delay) => {
+        delays.push(delay);
+      },
+    },
+  );
+  assert.equal(attempts, 4);
+  assert.deepEqual(delays, [25, 50, 100]);
+
+  const exhaustedDelays: number[] = [];
+  let exhaustedAttempts = 0;
+  await assert.rejects(
+    renameWorkspaceStateWithTransientWindowsRetryV1(
+      "workspace-state.tmp",
+      "run.json",
+      {
+        platform: "win32",
+        renameFile: async () => {
+          exhaustedAttempts += 1;
+          throw Object.assign(new Error("destination remains locked"), {
+            code: "EBUSY",
+          });
+        },
+        wait: async (delay) => {
+          exhaustedDelays.push(delay);
+        },
+      },
+    ),
+    { code: "EBUSY" },
+  );
+  assert.equal(exhaustedAttempts, 12);
+  assert.deepEqual(exhaustedDelays, [
+    25,
+    50,
+    100,
+    200,
+    400,
+    800,
+    1_600,
+    2_000,
+    2_500,
+    3_000,
+    4_000,
+  ]);
+
+  for (const [platform, code] of [
+    ["linux", "EPERM"],
+    ["win32", "ENOENT"],
+  ] as const) {
+    let calls = 0;
+    await assert.rejects(
+      renameWorkspaceStateWithTransientWindowsRetryV1(
+        "workspace-state.tmp",
+        "run.json",
+        {
+          platform,
+          renameFile: async () => {
+            calls += 1;
+            throw Object.assign(new Error("permanent failure"), { code });
+          },
+          wait: async () => assert.fail("permanent failures must not wait"),
+        },
+      ),
+      { code },
+    );
+    assert.equal(calls, 1);
+  }
+});
+
 test("background run failures are observed instead of becoming unhandled rejections", async () => {
   const expected = new Error("persist failed");
   let reported: unknown;

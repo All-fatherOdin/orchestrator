@@ -376,11 +376,65 @@ async function gitValue(cwd: string, args: readonly string[], label: string) {
   return result.output.trim();
 }
 
+const TRANSIENT_WINDOWS_STATE_RENAME_CODES_V1 = new Set([
+  "EACCES",
+  "EBUSY",
+  "EPERM",
+]);
+const WINDOWS_STATE_RENAME_RETRY_DELAYS_MS_V1 = [
+  25,
+  50,
+  100,
+  200,
+  400,
+  800,
+  1_600,
+  2_000,
+  2_500,
+  3_000,
+  4_000,
+] as const;
+
+export async function renameWorkspaceStateWithTransientWindowsRetryV1(
+  source: string,
+  destination: string,
+  options: {
+    platform?: NodeJS.Platform;
+    renameFile?: (source: string, destination: string) => Promise<void>;
+    wait?: (delayMs: number) => Promise<void>;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const renameFile = options.renameFile ?? rename;
+  const wait = options.wait ?? ((delayMs: number) =>
+    new Promise<void>((resolveWait) => setTimeout(resolveWait, delayMs)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await renameFile(source, destination);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (
+        platform !== "win32" ||
+        !code ||
+        !TRANSIENT_WINDOWS_STATE_RENAME_CODES_V1.has(code) ||
+        attempt >= WINDOWS_STATE_RENAME_RETRY_DELAYS_MS_V1.length
+      ) throw error;
+      await wait(WINDOWS_STATE_RENAME_RETRY_DELAYS_MS_V1[attempt]);
+    }
+  }
+}
+
 async function writeJsonAtomically(path: string, value: unknown) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" });
-  await rename(temporary, path);
+  try {
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" });
+    await renameWorkspaceStateWithTransientWindowsRetryV1(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readRunRecord(path: string): Promise<WorkspaceRunRecordV1> {
