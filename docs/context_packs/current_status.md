@@ -301,8 +301,8 @@ CLI internal tool calls unsupported. Verification passed 13/13 focused S4
 tests, TypeScript, production build, context smoke 3/3, S2 baseline 10/10, diff
 checks, and 347/347 full Windows tests in 385.47 seconds. The separate
 completion review found no unresolved issue. The separately repaired Windows
-baseline is green and S5 is now implemented and completion-reviewed. S6
-remains unauthorized.
+baseline is green and S5 is now implemented and completion-reviewed. S6 is
+separately accepted, implemented, and completion-reviewed.
 
 S5 Mocked Workflow Evals contract v1 is accepted. It defines a closed,
 deterministic, credential-free in-memory adapter over existing Phase 5 using

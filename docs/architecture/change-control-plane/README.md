@@ -1,7 +1,7 @@
 # Change Control Plane
 
 Status: Phase 1-12 and Agentic Stage 1 S1-S6 completion-reviewed
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-14
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -68,6 +68,10 @@ were observed.
     accepted, implemented, and completion-reviewed documentation-only Pattern
     14 boundary. [plan-challenge-checklist-v1.md](plan-challenge-checklist-v1.md)
     is the reusable procedural template.
+25. [feature-list-harness-usefulness-review-v1.md](feature-list-harness-usefulness-review-v1.md)
+    records the Stage 2 Pattern 16 admission evidence, owner-accepted `defer`
+    decision, and reconsideration triggers. It authorizes no contract or
+    implementation.
 
 ## Current Boundary
 

@@ -633,6 +633,14 @@ Preliminary view: consider only a derived read model. Acceptance claims,
 verification receipts, review evidence, and regressions already provide the
 underlying truth. A mutable canonical feature registry is rejected.
 
+Usefulness review prepared on 2026-08-14:
+`feature-list-harness-usefulness-review-v1.md`. It finds one bounded
+documentation-reconciliation problem but no measured recurring operator or
+release decision that justifies a new feature. Existing receipts also lack the
+stable capability/current-revision joins needed for a trustworthy derived
+status. The owner accepted `defer` on 2026-08-14. Pattern 16 remains deferred;
+the decision authorizes no contract or implementation.
+
 Required questions:
 
 - Which operator decision needs a capability-level view?
