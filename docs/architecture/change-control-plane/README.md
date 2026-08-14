@@ -64,6 +64,10 @@ were observed.
 23. [progressive-disclosure-contract-v1.md](progressive-disclosure-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S6 stateless
     hash-bound source index and exact excerpt boundary.
+24. [plan-challenge-contract-v1.md](plan-challenge-contract-v1.md) records the
+    accepted, implemented, and completion-reviewed documentation-only Pattern
+    14 boundary. [plan-challenge-checklist-v1.md](plan-challenge-checklist-v1.md)
+    is the reusable procedural template.
 
 ## Current Boundary
 

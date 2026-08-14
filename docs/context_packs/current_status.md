@@ -319,15 +319,6 @@ baseline passes 10/10, and the full Windows regression passes 348/348 in 403.3
 seconds. The separate completion review found no unresolved acceptance issue.
 S6 is separately accepted, implemented, and completion-reviewed.
 
-Post-merge S4 Windows workflow run `31687531004` exposed an unrelated Phase 3
-Windows `EPERM` rename race. The bounded repair was published separately in
-PR #26 and restored green Windows CI before S5 implementation.
-
-The baseline repair preserves the general server writer and adds bounded
-transient atomic `rename` backoff only to the Phase 3 workspace-state writer.
-Its focused and full verification passed before merge; it is inherited S5
-baseline evidence rather than part of the S5 diff.
-
 S6 Progressive Disclosure contract v1 is accepted, implemented, and
 completion-reviewed. It defines one stateless read-only TypeScript-family AST indexer,
 exact source-hash-bound entry excerpts, and Python line-range-only fallback.
@@ -336,3 +327,10 @@ context, S2 semantics, source files, and Project Map. Focused tests pass 11/11,
 TypeScript and production build pass, context smoke passes 3/3, S2 baseline
 passes 10/10, diff checks pass, and the full Windows regression passes 348/348
 in 390.81 seconds. The separate completion review found no unresolved issue.
+
+Pattern 14 Contract v1 is implemented and completion-reviewed inside its exact
+documentation-only impact map. Its deterministic R1-R6 classification, bounded
+10+5 questions, two-round limit, fail-closed blocker disposition, and separate
+owner acceptance add no runtime, schema, persistence, or automatic authority.
+S2 passes 10/10, Stage 1 focused suites pass 85/85, and the full regression
+passes 351/351.

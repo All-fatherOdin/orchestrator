@@ -95,15 +95,6 @@ write, or automatic Phase 5 publication. The separate completion review found
 no unresolved acceptance issue. S6 is separately accepted, implemented, and
 completion-reviewed.
 
-The post-merge S4 Windows workflow run `31687531004` exposed an unrelated
-Phase 3 Windows `EPERM` rename race. The bounded repair was published
-separately in PR #26 and restored green Windows CI before S5 implementation.
-
-The baseline repair preserves the general server writer and adds bounded
-transient atomic `rename` backoff only to the Phase 3 workspace-state writer.
-Its focused and full verification passed before merge; it is inherited S5
-baseline evidence rather than part of the S5 diff.
-
 The accepted S6 Progressive Disclosure contract is recorded at
 `docs/architecture/change-control-plane/progressive-disclosure-contract-v1.md`.
 It defines a stateless read-only TypeScript-family AST index and exact
@@ -114,6 +105,13 @@ is implemented and separately completion-reviewed with no unresolved issue.
 Focused S6 tests pass 11/11, TypeScript and production build pass, context
 smoke passes 3/3, S2 baseline passes 10/10, diff checks pass, and the full
 Windows regression passes 348/348 in 390.81 seconds.
+
+Pattern 14 Contract v1 is implemented and completion-reviewed inside its exact
+documentation-only impact map. The reusable checklist classifies six high-risk
+classes, permits at most 10+5 questions over two rounds, and keeps owner
+acceptance separate. It adds no runtime, schema, persistence, or automatic
+authority. S2 passes 10/10, Stage 1 focused suites pass 85/85, and the full
+regression passes 351/351.
 
 Reviewer infrastructure gives the read-only reviewer bounded evidence from
 Orchestrator verification; it does not rerun write-producing build/test

@@ -591,9 +591,19 @@ Required questions:
 
 ### Pattern 14: Grilling / Plan Challenge
 
-Preliminary view: useful as an owner-review procedure for high-risk contracts,
-not as a default runtime subsystem. It may be adopted earlier as a template
-without implementing `PlanChallengeV1` persistence.
+Status: contract accepted, implemented, and completion-reviewed on 2026-08-13.
+Contract: `plan-challenge-contract-v1.md`; template:
+`plan-challenge-checklist-v1.md`.
+
+Owner decision: adapt as a procedural checklist v1 with no runtime, schema,
+persistence, or automatic authority. The proposed contract uses deterministic
+high-risk classes, one in-contract record, at most two bounded question rounds,
+and a separate explicit owner acceptance boundary.
+
+The completion review passed with no unresolved finding. Verification passed
+the structural assertions, S2 baseline 10/10, Stage 1 focused suites 85/85,
+TypeScript, build, context smoke 3/3, diff/path checks, and full regression
+351/351. No other Stage 2 pattern is authorized.
 
 Required questions:
 
