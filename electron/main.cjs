@@ -119,7 +119,7 @@ function startServer() {
   const logs = createServerLogHandles(dataDirectory);
   serverStderrPath = logs.stderrPath;
   try {
-    return spawn(process.execPath, [serverPath], {
+    serverProcess = spawn(process.execPath, [serverPath], {
       cwd: app.getPath("userData"),
       env: {
         ...process.env,
@@ -134,6 +134,8 @@ function startServer() {
       stdio: logs.stdio,
       windowsHide: true,
     });
+    ownsServer = true;
+    return serverProcess;
   } finally {
     logs.close();
   }
@@ -156,17 +158,25 @@ function stopServer() {
   if (ownsServer) stopServerProcess(serverProcess);
 }
 
-function createWindow() {
+async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 1024,
     minHeight: 700,
     autoHideMenuBar: true,
+    backgroundColor: "#f4f1eb",
     icon: appIconPath(),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  mainWindow.loadURL(url);
+  mainWindow.once("closed", () => { mainWindow = undefined; });
+  await mainWindow.loadFile(path.join(__dirname, "loading.html"));
+}
+
+async function loadApplicationWindow() {
+  if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return false;
+  await mainWindow.loadURL(url);
+  return true;
 }
 
 function startRunNotifications() {
@@ -199,6 +209,7 @@ function stopRunNotifications() {
 if (configureSingleInstance(app, () => mainWindow)) {
   app.whenReady().then(async () => {
     try {
+      await createWindow();
       port = await selectDesktopPort(preferredPort, reserveAvailablePort);
       url = `http://127.0.0.1:${port}`;
       const availability = await startOwnedServer({
@@ -218,12 +229,14 @@ if (configureSingleInstance(app, () => mainWindow)) {
         );
         app.quit();
       });
-      createWindow();
+      if (!(await loadApplicationWindow())) return;
       startRunNotifications();
     } catch (error) {
+      const startupWasCancelled = isQuitting;
       isQuitting = true;
       stopServer();
-      dialog.showErrorBox("Unable to start Orchestrator", error.message);
+      if (!startupWasCancelled)
+        dialog.showErrorBox("Unable to start Orchestrator", error.message);
       app.quit();
     }
   });

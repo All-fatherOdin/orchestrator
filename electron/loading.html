@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Запуск Orchestrator</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f4f1eb;
+        color: #20211f;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.96), rgba(244, 241, 235, 0.72) 34%, transparent 62%),
+          #f4f1eb;
+      }
+
+      main {
+        display: grid;
+        justify-items: center;
+        gap: 22px;
+        padding: 40px;
+        text-align: center;
+      }
+
+      .mark {
+        width: 54px;
+        height: 54px;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgba(32, 33, 31, 0.16);
+        border-radius: 17px;
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: 0 18px 48px rgba(48, 45, 38, 0.1);
+      }
+
+      .spinner {
+        width: 22px;
+        height: 22px;
+        border: 2px solid rgba(32, 33, 31, 0.16);
+        border-top-color: #20211f;
+        border-radius: 50%;
+        animation: spin 0.85s linear infinite;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.025em;
+      }
+
+      p {
+        margin: -10px 0 0;
+        color: #6e6b64;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      @media (prefers-reduced-motion: reduce) {
+        .spinner { animation-duration: 1.8s; }
+      }
+    </style>
+  </head>
+  <body>
+    <main role="status" aria-live="polite" aria-label="Orchestrator запускается">
+      <div class="mark" aria-hidden="true"><div class="spinner"></div></div>
+      <h1>Запуск Orchestrator</h1>
+      <p>Подготавливаем локальный сервер…</p>
+    </main>
+  </body>
+</html>

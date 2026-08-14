@@ -81,6 +81,36 @@ test("main interface exposes bounded Russian desktop diagnostics states", () => 
   ]) assert.equal(source.includes(label), true, `missing desktop diagnostics label: ${label}`);
 });
 
+test("desktop shows a local loading view before waiting for the owned server", () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const loadingSource = fs.readFileSync(path.join(__dirname, "loading.html"), "utf8");
+
+  assert.ok(mainSource.indexOf("await createWindow();") < mainSource.indexOf("await selectDesktopPort("));
+  assert.match(mainSource, /loadFile\(path\.join\(__dirname, "loading\.html"\)\)/);
+  assert.match(mainSource, /await mainWindow\.loadURL\(url\)/);
+  assert.match(loadingSource, /role="status"/);
+  assert.match(loadingSource, /aria-live="polite"/);
+  assert.match(loadingSource, /Подготавливаем локальный сервер/);
+});
+
+test("assisted installer launches the selected app only after its window closes", () => {
+  const packageConfiguration = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"),
+  );
+  const installerSource = fs.readFileSync(
+    path.join(__dirname, "..", "scripts", "installer.nsh"),
+    "utf8",
+  );
+
+  assert.equal(packageConfiguration.build.nsis.include, "scripts/installer.nsh");
+  assert.match(installerSource, /MUI_FINISHPAGE_RUN_FUNCTION "RememberLaunchAfterInstallerClose"/);
+  assert.match(installerSource, /Function \.onGUIEnd/);
+  assert.ok(
+    installerSource.indexOf("Function .onGUIEnd") <
+      installerSource.indexOf("StdUtils.ExecShellAsUser"),
+  );
+});
+
 test("Windows desktop registers the Orchestrator notification identity", () => {
   const calls = [];
   const app = {
