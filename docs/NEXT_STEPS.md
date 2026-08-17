@@ -1,7 +1,7 @@
 # Orchestrator Next Steps
 
 Status: active operational handoff
-Last updated: 2026-08-13
+Last updated: 2026-08-17
 
 ## Current Priority
 
@@ -232,6 +232,17 @@ working Control Plane navigation, a clean console, and no page-level overflow.
 There is no authorized Slice 3 or Phase 13; the next product phase requires a
 separately owner-reviewed and accepted contract.
 
+The owner placed Work Inventory and Roadmap in the next product-phase position
+as candidate Phase 13 on 2026-08-17, but explicitly deferred implementation.
+The documentation-only placement record is
+`docs/architecture/change-control-plane/work-inventory-roadmap-phase-placement-v1.md`.
+It authorizes no contract, queue, schema, API, UI, event, persistence, intake,
+connector, or Project Map mutation. A future admission review must first fix
+gap identity and lifecycle ownership, source authority and joins,
+duplicate/supersession and migration rules, exact roadmap denominators,
+partial/unknown semantics, privacy, and mutation authority. The preferred
+first admitted slice is a stateless read-only reconciliation projection.
+
 Slice 1 verification passes five focused connector tests, the combined Phase
 10/12 focused run (11/11), TypeScript, production build, context smoke 3/3,
 diff checks, and the full Windows regression (270/270, zero failures/skips,
@@ -279,6 +290,8 @@ no live GitHub credential or external request was used.
   `docs/architecture/change-control-plane/github-deployment-connector-contract-v1.md`.
 - Phase 12 completion evidence:
   `docs/architecture/change-control-plane/github-deployment-connector-completion-review-v1.md`.
+- Candidate Phase 13 roadmap placement; implementation deferred:
+  `docs/architecture/change-control-plane/work-inventory-roadmap-phase-placement-v1.md`.
 - Implemented and completion-reviewed Agentic Patterns Stage 1 S1 contract:
   `docs/architecture/change-control-plane/incident-to-eval-candidate-contract-v1.md`.
 - S1 completion evidence:
