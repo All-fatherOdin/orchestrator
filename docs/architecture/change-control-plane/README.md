@@ -1,7 +1,8 @@
 # Change Control Plane
 
-Status: Phase 1-12 and Agentic Stage 1 S1-S6 completion-reviewed
-Last reviewed: 2026-08-14
+Status: Phase 1-12 and Agentic Stage 1 S1-S6 completion-reviewed; candidate
+Phase 13 placed and implementation deferred
+Last reviewed: 2026-08-17
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -72,6 +73,10 @@ were observed.
     records the Stage 2 Pattern 16 admission evidence, owner-accepted `defer`
     decision, and reconsideration triggers. It authorizes no contract or
     implementation.
+26. [work-inventory-roadmap-phase-placement-v1.md](work-inventory-roadmap-phase-placement-v1.md)
+    places Work Inventory and Roadmap after Phase 12 as the candidate Phase 13,
+    records its admission questions and boundaries, and defers every contract
+    and implementation action.
 
 ## Current Boundary
 
@@ -178,6 +183,14 @@ and the fresh full Windows regression 313/313 with zero failures/skips pass.
 The formal completion review passed on 2026-08-13 with no unresolved finding.
 There is no authorized Slice 3 or Phase 13; any next product phase requires a
 separately reviewed and accepted contract.
+
+The next product-phase position is now reserved for the candidate Phase 13,
+Work Inventory and Roadmap. Its placement record is documentation-only: it
+does not accept a contract or authorize a queue, schema, API, UI, event,
+persistence, intake, connector, or Project Map mutation. Admission must first
+settle source authority, stable identities and joins, lifecycle ownership,
+deduplication/migration semantics, exact progress denominators, and
+partial/unknown behavior. Until then Phase 13 remains deferred.
 
 ## Authority
 

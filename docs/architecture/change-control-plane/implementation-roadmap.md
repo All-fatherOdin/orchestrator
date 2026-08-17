@@ -219,3 +219,23 @@ in-app Chromium checks at 1280 px and 390 px confirmed meaningful Russian
 content, working navigation, a clean console, and no page-level overflow. The
 durable decision is recorded in
 `docs/architecture/change-control-plane/github-deployment-connector-completion-review-v1.md`.
+
+## Phase 13 Candidate: Work Inventory and Roadmap
+
+Placement record:
+`docs/architecture/change-control-plane/work-inventory-roadmap-phase-placement-v1.md`.
+
+Roadmap placement is accepted and implementation is deferred. This candidate
+would connect known ideas, bugs, unfinished work, incidents, goals, accepted
+plans, changes, waves, tasks, runs, and outcomes into a bounded evidence-backed
+view of uncovered work and project direction. It belongs after Phase 12 in the
+main product roadmap, not in Agentic Patterns Stage 2.
+
+No Phase 13 contract, queue, schema, API, UI, event, persistence, import, or
+connector is authorized. Before a contract may be drafted, a separate owner
+review must fix gap identity and lifecycle ownership, source authority,
+cross-source joins, duplicate/supersession and migration semantics, exact
+roadmap numerator/denominator definitions, partial/unknown behavior, privacy
+limits, and every mutation authority. The preferred first admitted slice is a
+stateless read-only reconciliation projection; persistent intake and the
+`GAPS`/`ROADMAP` widgets remain later, separately reviewed boundaries.
