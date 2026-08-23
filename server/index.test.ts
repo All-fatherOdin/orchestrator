@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } fr
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { parse, stringify } from "yaml";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
@@ -190,6 +190,8 @@ const {
   taskSandbox,
   authorizationWriteViolations,
   codexExecutionBoundaryArgs,
+  codexSandboxAvailable,
+  codexSandboxPreflightArgs,
   codexExecCommandStartArgs,
   codexPromptInvocation,
   orchestratorVerificationCommands,
@@ -12699,7 +12701,7 @@ test("one configured approved apply contract authorizes its exact reversible loc
   }), false);
 });
 
-test("executor, reviewer, and correction phases carry the enforced sandbox boundary", () => {
+test("executor, reviewer, correction, and preflight carry the enforced sandbox boundary", async () => {
   const applyTask = {
     title: "Apply exact patch",
     prompt: "Change the server boundary",
@@ -12735,14 +12737,14 @@ test("executor, reviewer, and correction phases carry the enforced sandbox bound
     "-c",
     "default_permissions='orchestrator-reviewer'",
     "-c",
-    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':tmpdir' = 'write', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
   ]);
   assert.deepEqual(codexExecCommandStartArgs(apply, "reviewer"), [
     "exec",
     "-c",
     "default_permissions='orchestrator-reviewer'",
     "-c",
-    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':tmpdir' = 'write', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
   ]);
   const prompt = buildPrompt({
     ...applyTask,
@@ -12768,6 +12770,20 @@ test("executor, reviewer, and correction phases carry the enforced sandbox bound
     },
   }, {}, "feature/approval");
   assert.equal(codexExecutionBoundaryArgs(readOnly, "executor")[1], "read-only");
+  const sandboxArgs = codexSandboxPreflightArgs("C:\\workspace\\project");
+  assert.deepEqual(sandboxArgs.slice(0, 6), [
+    "sandbox",
+    "--permission-profile",
+    "orchestrator-preflight",
+    "-c",
+    "permissions.orchestrator-preflight={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    "--cd",
+  ]);
+  assert.equal(sandboxArgs[6], resolve("C:\\workspace\\project"));
+  assert.equal(await codexSandboxAvailable(process.cwd(), {
+    ...process.env,
+    ORCHESTRATOR_TEST: "1",
+  }), true);
 });
 
 test("exact changed-file and orchestrator verification boundaries fail closed", () => {

@@ -1680,6 +1680,7 @@ const jsonWriteChains = new Map<string, Promise<void>>();
 const checkpointWriteChains = new Map<string, Promise<void>>();
 const taskFinalizationChains = new Map<string, Promise<void>>();
 let codexCliCheck: Promise<boolean> | undefined;
+const codexSandboxChecks = new Map<string, Promise<boolean>>();
 
 /**
  * This key and the receipts derived from it deliberately never leave this
@@ -3751,7 +3752,7 @@ export function codexExecutionBoundaryArgs(
       "-c",
       "default_permissions='orchestrator-reviewer'",
       "-c",
-      "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':tmpdir' = 'write', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+      "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
     ];
   const sandbox = taskSandbox(evidence);
   const args = ["--sandbox", sandbox];
@@ -5699,6 +5700,7 @@ async function appendPipelineQueue(source: string, filename: string) {
   // Reject before turning an ordinary active run into a persisted pipeline.
   assertQueueLaunchAuthorized(queue);
   await assertQueueRecoveryContracts(queue);
+  await assertQueueCodexSandboxAvailable(queue);
   await assertQueueManagedPythonAvailable(queue);
   await assertQueueCommandRuntimesAvailable(queue);
   await assertQueueExternalReadRootsAvailable(queue);
@@ -6191,6 +6193,81 @@ async function commandSucceeds(
 function codexCliAvailable() {
   codexCliCheck ??= commandSucceeds(codexBin(), ["exec", "--help"]);
   return codexCliCheck;
+}
+
+const codexSandboxPreflightProfile = "orchestrator-preflight";
+const codexSandboxPreflightPolicy =
+  "permissions.orchestrator-preflight={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }";
+
+export function codexSandboxPreflightArgs(projectPath: string) {
+  const shell = process.platform === "win32" ? "powershell.exe" : "sh";
+  const command = process.platform === "win32"
+    ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-Location | Out-Null"]
+    : ["-c", "pwd >/dev/null"];
+  return [
+    "sandbox",
+    "--permission-profile",
+    codexSandboxPreflightProfile,
+    "-c",
+    codexSandboxPreflightPolicy,
+    "--cd",
+    resolve(projectPath),
+    shell,
+    ...command,
+  ];
+}
+
+export function codexSandboxAvailable(
+  projectPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  if (
+    environment.ORCHESTRATOR_TEST === "1" &&
+    environment.ORCHESTRATOR_TEST_SANDBOX_SMOKE !== "1"
+  ) return Promise.resolve(true);
+  const key = `${codexBin()}\0${resolve(projectPath)}`;
+  let check = codexSandboxChecks.get(key);
+  if (!check) {
+    const pending = commandSucceeds(
+      codexBin(),
+      codexSandboxPreflightArgs(projectPath),
+      projectPath,
+      verificationProcessEnvironment(projectPath, environment),
+      15_000,
+    );
+    check = pending.finally(() => {
+      if (codexSandboxChecks.get(key) === check)
+        codexSandboxChecks.delete(key);
+    });
+    codexSandboxChecks.set(key, check);
+  }
+  return check;
+}
+
+export async function assertQueueCodexSandboxAvailable(
+  queue: ReturnType<typeof validateQueue>,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  if (!await codexSandboxAvailable(queue.project.path, environment))
+    throw new Error("Codex sandbox unavailable for the project workspace.");
+}
+
+export async function assertPipelineCodexSandboxesAvailable(
+  pipeline: LoadedPipeline,
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const checks = await Promise.all(
+    pipeline.queues.map((entry) =>
+      codexSandboxAvailable(entry.queue.project.path, environment)
+    ),
+  );
+  const failed = checks.flatMap((ok, index) =>
+    ok ? [] : [`queue ${index + 1}`]
+  );
+  if (failed.length)
+    throw new Error(
+      `Codex sandbox unavailable for ${failed.join(", ")} project workspace.`,
+    );
 }
 
 async function runGit(cwd: string, args: string[]) {
@@ -7511,6 +7588,17 @@ async function preflight(value: unknown) {
         }))
       ))).flat()
     : await queueExternalReadRootPreflightChecks(queue);
+  const sandboxChecks = pipeline
+    ? await Promise.all(pipeline.queues.map(async (entry, index) => ({
+        name: `Pipeline queue ${index + 1} Codex sandbox`,
+        ok: await codexSandboxAvailable(entry.queue.project.path),
+        detail: entry.queue.project.path,
+      })))
+    : [{
+        name: "Codex sandbox",
+        ok: await codexSandboxAvailable(queue.project.path),
+        detail: queue.project.path,
+      }];
   const runtimeChecks = [
     ...managedPythonChecks,
     ...commandRuntimeChecks,
@@ -7584,13 +7672,15 @@ async function preflight(value: unknown) {
     ),
   );
   const result = {
-    ok: cli && git && runtimeChecks.every((check) => check.ok) &&
+    ok: cli && git && sandboxChecks.every((check) => check.ok) &&
+      runtimeChecks.every((check) => check.ok) &&
       checks.every((check) => check.ok) &&
       authorizationChecks.every((check) => check.ok) &&
       recoveryChecks.every((check) => check.ok) &&
       contextChecks.every((check) => check.ok),
     checks: [
       { name: "Codex CLI", ok: cli, detail: codexBin() },
+      ...sandboxChecks,
       { name: "Git repository", ok: git, detail: queue.project.path },
       ...runtimeChecks,
       {
@@ -10786,6 +10876,7 @@ app.post("/api/runs", async (request, response) => {
         const pipeline = await loadPipeline(value);
         assertPipelineLaunchAuthorized(pipeline);
         await assertPipelineRecoveryContracts(pipeline);
+        await assertPipelineCodexSandboxesAvailable(pipeline);
         await assertPipelineManagedPythonAvailable(pipeline);
         await assertPipelineCommandRuntimesAvailable(pipeline);
         await assertPipelineExternalReadRootsAvailable(pipeline);
@@ -10802,6 +10893,7 @@ app.post("/api/runs", async (request, response) => {
       const queue = validateTaskQueue(value);
       assertQueueLaunchAuthorized(queue);
       await assertQueueRecoveryContracts(queue);
+      await assertQueueCodexSandboxAvailable(queue);
       await assertQueueManagedPythonAvailable(queue);
       await assertQueueCommandRuntimesAvailable(queue);
       await assertQueueExternalReadRootsAvailable(queue);
