@@ -3873,12 +3873,14 @@ function assertWindowsPytestVerificationCommands(
 export function validateQueue(value: unknown): {
   project: { name: string; path: string } & ProjectSettings;
   tasks: ResolvedTask[];
+  review: ReviewSettings;
   limits: Limits;
   git: GitSettings;
 } {
   const queue = value as {
     project?: { name?: string; path?: string } & ProjectSettings;
     tasks?: unknown;
+    review?: unknown;
     limits?: Partial<Limits>;
     git?: Partial<GitSettings>;
   };
@@ -4083,6 +4085,45 @@ export function validateQueue(value: unknown): {
     throw new Error(
       "limits.maxParallelTasks must be an integer from 1 to 4.",
     );
+  let review = { ...defaultReviewSettings };
+  if (queue.review !== undefined) {
+    if (
+      !queue.review ||
+      typeof queue.review !== "object" ||
+      Array.isArray(queue.review)
+    ) throw new Error("review must be an object.");
+    const input = queue.review as Record<string, unknown>;
+    const unknownFields = Object.keys(input).filter(
+      (field) => !["enabled", "model", "effort", "maxCorrections"].includes(field),
+    );
+    if (unknownFields.length)
+      throw new Error(`review contains unsupported fields: ${unknownFields.join(", ")}.`);
+    if (input.enabled !== undefined && typeof input.enabled !== "boolean")
+      throw new Error("review.enabled must be true or false.");
+    if (
+      input.model !== undefined &&
+      (typeof input.model !== "string" || !Object.hasOwn(MODEL_IDS, input.model))
+    ) throw new Error("review.model is unsupported.");
+    if (
+      input.effort !== undefined &&
+      (typeof input.effort !== "string" || !["light", "medium", "high"].includes(input.effort))
+    ) throw new Error("review.effort is unsupported.");
+    if (
+      input.maxCorrections !== undefined &&
+      (!Number.isInteger(input.maxCorrections) ||
+        (input.maxCorrections as number) < 0 ||
+        (input.maxCorrections as number) > 3)
+    ) throw new Error("review.maxCorrections must be an integer from 0 to 3.");
+    review = {
+      ...review,
+      ...(input.enabled !== undefined ? { enabled: input.enabled as boolean } : {}),
+      ...(input.model !== undefined ? { model: input.model as Model } : {}),
+      ...(input.effort !== undefined ? { effort: input.effort as Effort } : {}),
+      ...(input.maxCorrections !== undefined
+        ? { maxCorrections: input.maxCorrections as number }
+        : {}),
+    };
+  }
   if (
     queue.git?.checkpointCommits !== undefined &&
     typeof queue.git.checkpointCommits !== "boolean"
@@ -4160,7 +4201,7 @@ export function validateQueue(value: unknown): {
         assertExecutionBudgetPolicyV1(task.executionBudget, {
           maxExecutorInvocations:
             (task.maxRetries ?? limits.maxTaskRetries) + 1,
-          maxCorrections: defaultReviewSettings.maxCorrections,
+          maxCorrections: review.maxCorrections,
         });
         executionBudget = structuredClone(task.executionBudget);
       } catch (error) {
@@ -4669,6 +4710,7 @@ export function validateQueue(value: unknown): {
       documentationGovernance,
     },
     tasks,
+    review,
     limits,
     git: { ...defaultGitSettings, ...queue.git },
   };
@@ -5399,7 +5441,7 @@ export function createRun(
     id: identifier(),
     project: queue.project,
     status: "idle",
-    review: { ...defaultReviewSettings },
+    review: { ...queue.review },
     limits: queue.limits,
     git: queue.git,
     pipeline,
@@ -5430,6 +5472,7 @@ export function markRunReadyForLaunch(run: Run): Run {
 function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
   return {
     project: run.project,
+    review: { ...(run.review ?? defaultReviewSettings) },
     limits: run.limits,
     git: run.git,
     tasks: run.tasks.map((task) => ({
@@ -5924,7 +5967,7 @@ export function retryRun(source: Run, task: Task, branch?: string): Run {
     id: identifier(),
     project: source.project,
     status: "idle",
-    review: { ...defaultReviewSettings },
+    review: { ...(source.review ?? defaultReviewSettings) },
     limits: source.limits ?? defaultLimits,
     git: source.git ?? defaultGitSettings,
     tasks: source.tasks.map((candidate) =>
@@ -5999,7 +6042,7 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
     id: identifier(),
     project: source.project,
     status: "idle",
-    review: { ...defaultReviewSettings },
+    review: { ...(source.review ?? defaultReviewSettings) },
     limits: source.limits ?? defaultLimits,
     git: source.git ?? defaultGitSettings,
     tasks: remaining,

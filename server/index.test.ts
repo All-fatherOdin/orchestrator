@@ -18598,7 +18598,14 @@ test("retry and resume preserve completed work and reset graph descendants", () 
     dependsOn: ["api"],
   };
   const source = run([completed, failed, blocked]);
+  source.review = {
+    enabled: false,
+    model: "sol",
+    effort: "high",
+    maxCorrections: 0,
+  };
   const retry = retryRun(source, failed);
+  assert.deepEqual(retry.review, source.review);
   assert.deepEqual(
     retry.tasks.map((item) => item.status),
     ["completed", "pending", "pending"],
@@ -18612,9 +18619,51 @@ test("retry and resume preserve completed work and reset graph descendants", () 
   ]);
   const resumed = resumeRun(source);
   assert.ok(resumed);
+  assert.deepEqual(resumed.review, source.review);
   assert.deepEqual(
     resumed.tasks.map((item) => item.status),
     ["completed", "pending", "pending"],
+  );
+});
+
+test("queue review settings are closed, resolved, and persisted into new runs", () => {
+  const base = {
+    project: { path: process.cwd() },
+    tasks: [{ key: "read", title: "Read", prompt: "Inspect without writes." }],
+  };
+  const queue = validateQueue(parse(stringify({
+    ...base,
+    review: {
+      enabled: false,
+      model: "sol",
+      effort: "high",
+      maxCorrections: 0,
+    },
+  })));
+  assert.deepEqual(queue.review, {
+    enabled: false,
+    model: "sol",
+    effort: "high",
+    maxCorrections: 0,
+  });
+  assert.deepEqual(createRun(queue).review, queue.review);
+  assert.deepEqual(validateQueue({ ...base, review: { enabled: false } }).review, {
+    enabled: false,
+    model: "terra",
+    effort: "light",
+    maxCorrections: 1,
+  });
+  assert.throws(
+    () => validateQueue({ ...base, review: { enabled: false, surprise: true } }),
+    /review contains unsupported fields/,
+  );
+  assert.throws(
+    () => validateQueue({ ...base, review: { maxCorrections: 4 } }),
+    /review\.maxCorrections must be an integer from 0 to 3/,
+  );
+  assert.throws(
+    () => validateQueue({ ...base, review: { model: "unknown" } }),
+    /review\.model is unsupported/,
   );
 });
 
