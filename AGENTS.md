@@ -25,6 +25,27 @@ Create one YAML queue from `tasks.example.yaml` only when there are at least two
 - every writing task has concrete `allowedPaths`, verification commands, and stop guards;
 - no investigation or later authorization is needed to discover additional scope.
 
+Before writing the YAML, inspect the relevant implementation, existing tests,
+and failure evidence. For each task, identify the concrete behavior to change,
+the complete write scope, required checks, and conditions that require stopping.
+Carry those findings into its prompt, impact map, `allowedPaths`, and guards.
+An open-ended instruction such as "inspect and fix if necessary" is not a
+defined writing task. If investigation determines the implementation scope, do
+that investigation in the current session before authoring the queue. A bounded
+read-only diagnosis may be useful on its own, but cannot supply unknown scope
+or authority to a pre-authored writing successor.
+
+A separate test-only task is appropriate only for an independently useful,
+previously uncovered contract. Name the specific input and expected behavior,
+the existing coverage gap, exact test paths, and verification commands before
+creating it. Keep tests required to establish an implementation task's own
+correctness with that implementation. Tests may call production code without
+requiring production write scope. If a test-only task discovers a production
+defect requiring edits outside its scope, stop with the failing evidence; do
+not expand scope or weaken the expected behavior to obtain a passing result.
+A dependency on a production-writing predecessor does not grant its scope to
+the test task. A final whole-change review does not replace task-level checks.
+
 Ordinary queue tasks share one project worktree and must be treated as
 sequential even when their `allowedPaths` do not overlap. Set
 `limits.maxParallelTasks: 1` unless every concurrently eligible task has an

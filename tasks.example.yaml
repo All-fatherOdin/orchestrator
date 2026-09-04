@@ -1,3 +1,7 @@
+# Illustrative queue: resolve the actual behavior, evidence paths, complete
+# write scope, and gates in the target repository before creating a user queue.
+# Do discovery that determines implementation scope in the current session.
+# Do not enqueue an open-ended "inspect and fix if necessary" writing task.
 project:
   name: My project
   # Optional fail-closed documentation policy. Replace the example command
@@ -112,11 +116,13 @@ git:
   # Enable this before adding an ordinary task's checkpointPolicy below.
 tasks:
   # Every queue task must be independently useful, not an artificial phase of one outcome.
-  # If production-owned code must be changed or called directly, keep the same task's implementation, tests, and benchmark together.
+  # Keep implementation and the tests/benchmarks required to prove it together.
   # Its allowedPaths must include all production and test files required for that complete outcome.
+  # A test-only task needs a specific, previously uncovered independent contract,
+  # exact test paths, and gates; calling production code does not require write access.
   # Do not rely on a dependent task to retroactively grant paths or prove a prerequisite.
   # Stable `key` values let the orchestrator construct a dependency graph.
-  # Tasks with no unmet dependsOn entries may run in parallel.
+  # Ready tasks still obey maxParallelTasks and workspace isolation requirements.
   - key: typecheck-fixes
     title: Fix TypeScript errors
     # Optional literal checkpoint message, with no forced prefix or templating.
@@ -148,7 +154,10 @@ tasks:
     #     - name: python
     #       environmentVariable: PYTHON_BIN
     #       versionPrefix: "Python 3."
-    prompt: Fix TypeScript errors in the notifications module and run the relevant checks.
+    prompt: >-
+      Correct the identified nullable notification payload type error in
+      src/notifications/result.ts by narrowing the payload before access.
+      Preserve the existing behavior for absent payloads and run npm.cmd run typecheck.
     # The orchestrator resolves Auto before the run and records the result.
     model: auto
     effort: medium
@@ -263,7 +272,12 @@ tasks:
     resources: [typescript-check]
   - key: reconnect-logic
     title: Add reconnect logic
-    prompt: Add WebSocket reconnection with exponential backoff and tests.
+    prompt: >-
+      Add WebSocket reconnection after an unexpected disconnect, with delays
+      of 1, 2, 4, then at most 8 seconds; reset the delay after a successful
+      connection and cancel pending retries on explicit close. Implement this
+      in src/websocket/client.ts with fake-timer tests in src/websocket/client.test.ts.
+      Run npm.cmd test -- websocket. These behavior tests belong to this task.
     model: auto
     minModel: terra
     effort: medium
@@ -290,8 +304,18 @@ tasks:
       approvalId: reconnect-logic-v1
     resources: [websocket-test-server]
   - key: integration-tests
-    title: Add integration coverage
-    prompt: Add integration tests for the TypeScript fixes and WebSocket reconnect behavior.
+    title: Cover notification delivery after reconnect
+    # Use this separate task only after confirming this cross-module contract
+    # is uncovered and the existing subscription behavior is understood.
+    # It does not defer the reconnect task's required behavior tests.
+    prompt: >-
+      Add tests/integration/notification-reconnect.test.ts for the independently
+      uncovered subscription lifecycle contract: after a connection is restored,
+      an existing notification subscription receives each new server event once;
+      after unsubscribe it receives none. Exercise the notification consumer and
+      WebSocket client together. Run npm.cmd test -- integration. Stop with
+      failing evidence if this requires production changes; do not change the
+      expected behavior or repair production code in this test-only task.
     model: terra
     effort: medium
     # This task waits for both independent implementation branches.
@@ -317,7 +341,7 @@ tasks:
       - Node.js and npm are available from the inherited process environment.
     verificationCommands: [npm.cmd test -- integration]
     executionGuards:
-      - Stop if integration coverage requires production edits outside the declared predecessor tasks.
+      - Stop with failing evidence if the contract requires production edits; predecessor write scopes do not authorize this task.
     authorization:
       enabled: true
       intent: apply
