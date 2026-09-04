@@ -169,6 +169,43 @@ Use a plan from `queues.plan.example.yaml` only when several already-defined tas
 
 If classification is ambiguous, use the current session for one bounded task, an Orchestrator queue for two or more understood tasks, and a sequential queue plan only for multiple already-defined queues.
 
+# Define acceptance evidence before execution
+
+For grouping, filtering, or aggregation work, resolve the following cases
+against the product contract before authoring the task. Record concrete fixture
+inputs and expected outputs in its prompt or an exact referenced specification;
+do not leave the executor to choose semantics during implementation.
+
+| Case | Required acceptance assertion |
+|---|---|
+| Missing value versus zero | Distinguish `null`, absent values, and numeric `0`; state their group membership and contribution to totals explicitly. |
+| Exact filter and whitespace | Specify whether whitespace is significant or normalized; test leading/trailing whitespace and a near-match that must be excluded by an exact filter. |
+| Accumulation | Use multiple contributing records and assert the exact accumulated result, including the rule for duplicate records. |
+| Sibling groups | Use at least two sibling groups and assert each result independently, so contributions cannot leak between groups. |
+| Pagination | Put relevant records on different pages; define page-local versus whole-result totals and verify the stated result without omissions or double counting. |
+
+Mark a case inapplicable only with a concrete reason. Tests must assert the
+specified values, not merely successful execution or non-empty output. Include
+their files and any required fixtures in the impact map and write scope.
+
+Keep acceptance claims tied to the evidence that proves them:
+
+- Automated checks: name the exact command and assertions; use the canonical
+  task verification receipts for executed results. Passing tests do not prove
+  an interactive browser flow was exercised.
+- Git checkpoints: use the task-owned checkpoint receipt and commit identity.
+  A commit proves recorded changes, not functional correctness; require it via
+  `checkpointPolicy` when it is a delivery condition.
+- Browser checks: specify the application/build, initial data, user actions,
+  and expected visible result. Retain the actual observation and exact artifact
+  locator when captured. A screenshot alone does not prove unobserved behavior
+  or all-page aggregation. If the check was not performed, report it as not run;
+  do not substitute an automated check or a commit for required browser evidence.
+
+These are authoring and reporting rules, not a new machine-enforced evidence
+schema. Use existing verification gates and checkpoint contracts where applicable;
+do not invent receipts or claim the runner validates prose-only browser evidence.
+
 # Project context and secondary memory
 
 - For non-trivial repository work, ground the task with

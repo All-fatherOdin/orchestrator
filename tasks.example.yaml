@@ -359,6 +359,20 @@ tasks:
     # and this task's machine gate results. Changed evidence prevents approval.
     # Phase 5 promptModel retains its required executor parent binding; that
     # executor receives the frozen predecessor handoff before it starts.
+    # Define acceptance cases before launch. For grouping/filtering work, bind
+    # concrete inputs and exact outputs for null/absent versus 0, whitespace
+    # and exact-match exclusion, multi-record accumulation and duplicates,
+    # sibling isolation, and records split across pages. State whether totals
+    # cover one page or the entire result. Name the exact specification/test
+    # paths and executable assertions; a passing command without those assertions
+    # does not prove these cases. Explain any inapplicable case.
+    # Report automated verification, Git delivery, and browser observations
+    # separately. Use actual verification/checkpoint receipts for the first two.
+    # Required browser checks must specify build/data/actions/visible results
+    # and retain observed evidence (and exact artifact paths when captured).
+    # Report an unperformed check as not run. Tests, commits, and screenshots
+    # cannot stand in for each other's claims. These comments add no runtime
+    # browser-evidence schema or automatic browser validation.
     prompt: Review the completed integration against the closed predecessor handoff and exact verification records; report findings without edits.
     model: terra
     effort: medium
