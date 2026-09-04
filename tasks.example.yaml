@@ -328,6 +328,25 @@ tasks:
 #   contractVersion: "1.0"
 #   sourceRunId: m2example-source-run
 #   sourceTaskId: m2example-source-task
+#   # Optional: explicitly adopt the failed task's retained changes. Copy the
+#   # entire object from that exact task's retainedDiff in canonical run.json.
+#   # It binds baseCommit and each file's SHA-256 (null means a deleted file).
+#   # Do not calculate replacement evidence for historical runs lacking it.
+#   # retainedDiff:
+#   #   contractType: RecoveryRetainedDiffV1
+#   #   contractVersion: "1.0"
+#   #   baseCommit: <exact 40-character commit hash from source receipt>
+#   #   files:
+#   #     src/example.ts: <exact 64-character SHA-256 from source receipt>
+# All retained paths must fit both source and recovery allowedPaths. Admission
+# requires the same repository, branch, HEAD and exact dirty file set/content;
+# unrelated changes, symlinks and stale evidence fail closed before execution.
+# This is supported only for ordinary worktrees, not managed workspaces.
+# The runner records receipts for failed opted-in apply attempts. Recovery
+# adoption remains optional; existing bindings without retainedDiff are unchanged.
+# Accepted files enter the recovery change set without additional edits and
+# remain subject to its verification, review and checkpoint settings. A later
+# failed recovery emits its own receipt; use that source for a new recovery.
 # executionKind:
 #   contractType: TaskExecutionKindV1
 #   contractVersion: "1.0"

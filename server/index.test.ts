@@ -208,6 +208,8 @@ const {
   recordProviderRuntimeStateForAdapterV1,
   normalizeProviderRuntimePersistenceV1,
   createCheckpoint,
+  assertRetainedDiffWorkspace,
+  admitRetainedDiff,
   isManagedCheckpoint,
   recoverPersistedRunForStartup,
   repositoryIdentityForGitRoot,
@@ -12400,6 +12402,125 @@ test("external Git roots use process-local safe.directory configuration and pass
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("retained recovery diff is captured, fenced and checkpointed without executor edits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-retained-recovery-"));
+  const project = join(root, "project");
+  const previousBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    await mkdir(join(project, "server"), { recursive: true });
+    git(project, "init");
+    git(project, "config", "user.name", "Test");
+    git(project, "config", "user.email", "test@example.invalid");
+    await writeFile(join(project, "server/index.ts"), "before\n");
+    git(project, "add", ".");
+    git(project, "commit", "-m", "baseline");
+    const base = git(project, "rev-parse", "HEAD").trim();
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, [
+      "const fs = require('node:fs'); let prompt = '';",
+      "process.stdin.setEncoding('utf8'); process.stdin.on('data', s => prompt += s);",
+      "process.stdin.on('end', () => {",
+      " const args = process.argv.slice(2); const output = args[args.indexOf('--output-last-message') + 1];",
+      " if (prompt.includes('WRITE_RETAINED_FIXTURE')) { fs.writeFileSync('server/index.ts', 'after\\n'); fs.writeFileSync('server/index.test.ts', 'test\\n'); }",
+      " fs.writeFileSync(output, prompt.startsWith('Review only') ? 'VERDICT: APPROVED\\n' : 'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED\\n');",
+      "});",
+    ].join("\n"));
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    const input = queueAuthoringContractInput(project);
+    input.tasks[0].prompt = "WRITE_RETAINED_FIXTURE";
+    input.tasks[0].verificationCommands = ['node -e "process.exit(1)"'];
+    input.project.approvedApplyContracts[0].verificationCommands = [...input.tasks[0].verificationCommands];
+    input.review = { enabled: false };
+    const source = createRun(validateTaskQueue(input));
+    await executeQueue(source);
+    assert.equal(source.tasks[0].status, "failed");
+    assert.equal(source.tasks[0].retainedDiff?.baseCommit, base);
+    assert.deepEqual(Object.keys(source.tasks[0].retainedDiff!.files), ["server/index.test.ts", "server/index.ts"]);
+    const binding = {
+      contractType: "RecoveryTaskBindingV1" as const, contractVersion: "1.0" as const,
+      sourceRunId: source.id, sourceTaskId: source.tasks[0].id,
+      retainedDiff: structuredClone(source.tasks[0].retainedDiff!),
+    };
+    const recoveryInput = queueAuthoringContractInput(project, undefined, binding);
+    recoveryInput.git = { checkpointCommits: true };
+    recoveryInput.review = { enabled: true, maxCorrections: 0 };
+    const queue = validateTaskQueue(recoveryInput);
+    const recovery = createRun(queue);
+    const task = recovery.tasks[0];
+    const branch = git(project, "branch", "--show-current").trim();
+    task.authorizationEvidence = authorizeTask(task, recovery.project, branch);
+    await assertRetainedDiffWorkspace(task, project);
+    const altered = structuredClone(task);
+    altered.recovery!.retainedDiff!.files["server/index.ts"] = "0".repeat(64);
+    await assert.rejects(admitRetainedDiff(recovery, altered), /AUTHORIZATION_INVALID/);
+    await writeFile(join(project, "foreign.txt"), "unrelated\n");
+    await assert.rejects(acquireProjectLock(recovery), /WORKSPACE_MISMATCH/);
+    assert.equal(recovery.lock, undefined);
+    await rm(join(project, "foreign.txt"));
+    await writeFile(join(project, "server/index.ts"), "tampered\n");
+    await assert.rejects(assertRetainedDiffWorkspace(task, project), /CONTENT_CHANGED/);
+    await writeFile(join(project, "server/index.ts"), "after\n");
+    git(project, "checkout", "-b", "different-branch");
+    await assert.rejects(assertRetainedDiffWorkspace(task, project), /WORKSPACE_MISMATCH/);
+    git(project, "checkout", branch);
+    git(project, "commit", "--allow-empty", "-m", "different base");
+    await assert.rejects(assertRetainedDiffWorkspace(task, project), /WORKSPACE_MISMATCH/);
+    git(project, "reset", "--soft", base);
+
+    const sourceFile = join(testDataDirectory, "runs", source.id, "run.json");
+    const original = await readFile(sourceFile, "utf8");
+    const missing = JSON.parse(original);
+    delete missing.tasks[0].retainedDiff;
+    await writeFile(sourceFile, JSON.stringify(missing));
+    await assert.rejects(assertRetainedDiffWorkspace(task, project), /RETAINED_DIFF_INVALID/);
+    await writeFile(sourceFile, original);
+    const stale = JSON.parse(original);
+    stale.tasks[0].retainedDiff.files["server/index.ts"] = "0".repeat(64);
+    await writeFile(sourceFile, JSON.stringify(stale));
+    await assert.rejects(assertRetainedDiffWorkspace(task, project), /SOURCE_MISMATCH/);
+    await writeFile(sourceFile, original);
+    const malformed = structuredClone(recoveryInput);
+    malformed.tasks[0].recovery.retainedDiff.files["foreign.txt"] = "0".repeat(64);
+    assert.throws(() => validateTaskQueue(malformed), /SCOPE_INVALID/);
+    const invalidPath = structuredClone(recoveryInput);
+    invalidPath.tasks[0].recovery.retainedDiff.files["../foreign.txt"] = "0".repeat(64);
+    assert.throws(() => validateTaskQueue(invalidPath));
+
+    const failedInput = structuredClone(recoveryInput);
+    failedInput.tasks[0].verificationCommands = ['node -e "process.exit(1)"'];
+    failedInput.project.approvedApplyContracts[0].verificationCommands = [...failedInput.tasks[0].verificationCommands];
+    const failedRecovery = createRun(validateTaskQueue(failedInput));
+    await executeQueue(failedRecovery);
+    assert.equal(failedRecovery.tasks[0].status, "failed");
+    assert.equal(failedRecovery.tasks[0].checkpoint, undefined);
+    assert.deepEqual(failedRecovery.tasks[0].retainedDiff, binding.retainedDiff);
+    const nextInput = structuredClone(recoveryInput);
+    nextInput.tasks[0].recovery = {
+      ...binding, sourceRunId: failedRecovery.id, sourceTaskId: failedRecovery.tasks[0].id,
+      retainedDiff: structuredClone(failedRecovery.tasks[0].retainedDiff!),
+    };
+    const next = createRun(validateTaskQueue(nextInput));
+    await executeQueue(next);
+    const completed = next.tasks[0];
+    assert.equal(completed.status, "completed", completed.log.join("\n"));
+    assert.ok(completed.checkpoint);
+    assert.deepEqual(completed.changedFiles, ["server/index.test.ts", "server/index.ts"]);
+    assert.deepEqual(git(project, "diff-tree", "--no-commit-id", "--name-only", "-r", completed.checkpoint!.hash).trim().split(/\r?\n/), completed.changedFiles);
+    assert.equal(git(project, "status", "--porcelain").trim(), "");
+    assert.equal(await readFile(join(project, "server/index.ts"), "utf8"), "after\n");
+    assert.equal(completed.verificationEvidence?.[0].exitCode, 0);
+    assert.equal(completed.reviewStatus, "approved");
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    await rm(root, { recursive: true, force: true });
   }
 });
 

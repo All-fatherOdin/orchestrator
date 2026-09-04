@@ -5,6 +5,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { existsSync, readdirSync, statSync } from "node:fs";
 import {
   mkdir,
+  lstat,
   open,
   readFile,
   readdir,
@@ -301,11 +302,18 @@ export type QueueAuthoringContractV1 = {
   contractVersion: "1.0";
 };
 export type ImpactPathsV1 = Record<string, string[]>;
+export type RecoveryRetainedDiffV1 = {
+  contractType: "RecoveryRetainedDiffV1";
+  contractVersion: "1.0";
+  baseCommit: string;
+  files: Record<string, string | null>;
+};
 export type RecoveryTaskBindingV1 = {
   contractType: "RecoveryTaskBindingV1";
   contractVersion: "1.0";
   sourceRunId: string;
   sourceTaskId: string;
+  retainedDiff?: RecoveryRetainedDiffV1;
 };
 export type TaskExecutionKindV1 = {
   contractType: "TaskExecutionKindV1";
@@ -982,6 +990,9 @@ type Task = ResolvedTask & {
   changedFiles?: string[];
   /** Task-owned paths retained across retry runs for authoritative review lineage. */
   retryLineageChangedFiles?: string[];
+  /** Captured by the runner for a failed ordinary-worktree attempt. */
+  retainedDiff?: RecoveryRetainedDiffV1;
+  retainedDiffAdmitted?: RecoveryRetainedDiffV1;
   diff?: string;
   finalOutput?: string;
   reviewStatus?: ReviewStatus;
@@ -2006,6 +2017,8 @@ async function reconcileLegacyProjectLock(projectPath: string) {
 }
 
 export async function acquireProjectLock(run: Run) {
+  for (const task of run.tasks.filter((candidate) => candidate.status === "pending"))
+    await assertRetainedDiffWorkspace(task, run.project.path);
   const path = projectLockPath(run.project.path);
   const payload = JSON.stringify(
     {
@@ -2730,6 +2743,23 @@ function isSafeRecoveryIdentifier(value: unknown): value is string {
     value !== "..";
 }
 
+function validateRecoveryRetainedDiffV1(value: unknown): RecoveryRetainedDiffV1 {
+  const entry = value as RecoveryRetainedDiffV1;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+    Object.keys(entry).sort().join(",") !== "baseCommit,contractType,contractVersion,files" ||
+    entry.contractType !== "RecoveryRetainedDiffV1" || entry.contractVersion !== "1.0" ||
+    typeof entry.baseCommit !== "string" || !/^[a-f0-9]{40}$/.test(entry.baseCommit) || !entry.files ||
+    typeof entry.files !== "object" || Array.isArray(entry.files) ||
+    !Object.keys(entry.files).length || Object.keys(entry.files).length > 64)
+    throw new Error("RECOVERY_RETAINED_DIFF_INVALID");
+  for (const [path, hash] of Object.entries(entry.files)) {
+    if (normalizeAllowedPathScopeV1(path, "retained diff path") !== path || path.endsWith("/**") ||
+      (hash !== null && (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))))
+      throw new Error("RECOVERY_RETAINED_DIFF_INVALID");
+  }
+  return structuredClone(entry);
+}
+
 function validateRecoveryTaskBindingV1(
   value: unknown,
   field: string,
@@ -2738,7 +2768,9 @@ function validateRecoveryTaskBindingV1(
     throw new Error(`${field} must be an exact RecoveryTaskBindingV1.`);
   const candidate = value as Record<string, unknown>;
   if (
-    Object.keys(candidate).length !== 4 ||
+    Object.keys(candidate).sort().join(",") !== (candidate.retainedDiff === undefined
+      ? "contractType,contractVersion,sourceRunId,sourceTaskId"
+      : "contractType,contractVersion,retainedDiff,sourceRunId,sourceTaskId") ||
     candidate.contractType !== RECOVERY_TASK_BINDING_V1.contractType ||
     candidate.contractVersion !== RECOVERY_TASK_BINDING_V1.contractVersion ||
     !isSafeRecoveryIdentifier(candidate.sourceRunId) ||
@@ -2750,6 +2782,9 @@ function validateRecoveryTaskBindingV1(
     contractVersion: RECOVERY_TASK_BINDING_V1.contractVersion,
     sourceRunId: candidate.sourceRunId,
     sourceTaskId: candidate.sourceTaskId,
+    ...(candidate.retainedDiff !== undefined
+      ? { retainedDiff: validateRecoveryRetainedDiffV1(candidate.retainedDiff) }
+      : {}),
   };
 }
 
@@ -4394,6 +4429,9 @@ export function validateQueue(value: unknown): {
         throw new Error(`Task ${index + 1}: ordinary TaskExecutionKindV1 rejects a recovery binding.`);
       if (executionKind.kind === "recovery" && !recovery)
         throw new Error(`Task ${index + 1}: recovery TaskExecutionKindV1 requires one exact RecoveryTaskBindingV1.`);
+      if (recovery?.retainedDiff && (task.workspace ||
+        outsideAllowedPaths(Object.keys(recovery.retainedDiff.files), task.allowedPaths).length))
+        throw new Error("RECOVERY_RETAINED_DIFF_SCOPE_INVALID");
     }
     if (task.wholeChangeAcceptance !== undefined)
       wholeChangeAcceptance = validateWholeChangeAcceptanceV1(
@@ -5317,6 +5355,10 @@ async function persistedRecoverySourceTaskV1(
       validateRecoveryTaskBindingV1(sourceTask.recovery, "persisted source recovery"),
       nextLineage,
     );
+    if (sourceTask.recovery.retainedDiff && (
+      JSON.stringify(validateRecoveryRetainedDiffV1(upstream.sourceTask.retainedDiff)) !== JSON.stringify(sourceTask.recovery.retainedDiff) ||
+      resolve(source.project.path) !== resolve(upstream.sourceProject.path)
+    )) throw new Error("RECOVERY_RETAINED_DIFF_SOURCE_MISMATCH");
     const missingUpstreamConstraints = upstream.sourceConstraints.filter(
       (constraint) => !new Set(sourceConstraints).has(constraint),
     );
@@ -5338,7 +5380,81 @@ async function persistedRecoverySourceTaskV1(
     )
   )
     throw new Error("RECOVERY_SOURCE_AUTHORIZATION_EVIDENCE_CHANGED");
-  return { sourceTask, sourceConstraints };
+  return { sourceTask, sourceConstraints, sourceProject: source.project };
+}
+
+async function assertRetainedDiffSource(task: Pick<TaskInput, "recovery" | "allowedPaths">, projectPath: string) {
+  const binding = task.recovery;
+  if (!binding?.retainedDiff) return;
+  const { sourceTask, sourceProject } = await persistedRecoverySourceTaskV1(binding);
+  const receipt = validateRecoveryRetainedDiffV1(sourceTask.retainedDiff);
+  if (resolve(sourceProject.path) !== resolve(projectPath) || sourceTask.workspace ||
+    JSON.stringify(receipt) !== JSON.stringify(binding.retainedDiff) ||
+    JSON.stringify(Object.keys(receipt.files).sort()) !== JSON.stringify([...(sourceTask.changedFiles ?? [])].sort()) ||
+    outsideAllowedPaths(Object.keys(receipt.files), sourceTask.allowedPaths).length ||
+    outsideAllowedPaths(Object.keys(receipt.files), task.allowedPaths).length)
+    throw new Error("RECOVERY_RETAINED_DIFF_SOURCE_MISMATCH");
+}
+
+async function retainedFileHash(root: string, path: string): Promise<string | null> {
+  const parts = path.split("/");
+  let current = root;
+  for (let index = 0; index < parts.length; index++) {
+    current = join(current, parts[index]);
+    try {
+      const stat = await lstat(current);
+      if (stat.isSymbolicLink() || (index < parts.length - 1 ? !stat.isDirectory() : !stat.isFile()))
+        throw new Error("RECOVERY_RETAINED_DIFF_UNSAFE_PATH");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+  return createHash("sha256").update(await readFile(current)).digest("hex");
+}
+
+export async function assertRetainedDiffWorkspace(task: Pick<TaskInput, "recovery" | "allowedPaths">, projectPath: string) {
+  const receipt = task.recovery?.retainedDiff;
+  if (!receipt) return;
+  await assertRetainedDiffSource(task, projectPath);
+  const head = await runGit(projectPath, ["rev-parse", "HEAD"]);
+  const { sourceTask } = await persistedRecoverySourceTaskV1(task.recovery!);
+  const dirty = [...await readGitStatus(projectPath)].sort();
+  if (head.code !== 0 || head.output !== receipt.baseCommit ||
+    await currentBranchIdentity(projectPath) !== sourceTask.authorizationEvidence!.branch ||
+    JSON.stringify(dirty) !== JSON.stringify(Object.keys(receipt.files).sort()))
+    throw new Error("RECOVERY_RETAINED_DIFF_WORKSPACE_MISMATCH");
+  for (const [path, hash] of Object.entries(receipt.files))
+    if (await retainedFileHash(projectPath, path) !== hash)
+      throw new Error("RECOVERY_RETAINED_DIFF_CONTENT_CHANGED");
+  await assertRetainedDiffSource(task, projectPath);
+}
+
+export async function captureRetainedDiff(run: Run, task: Task, baseCommit: string) {
+  delete task.retainedDiff;
+  if (!task.authoringContract || task.workspace || !task.changedFiles?.length ||
+    !["failed", "timed_out", "cancelled"].includes(task.status) ||
+    !task.authorizationEvidence?.enabled || task.authorizationEvidence.decision !== "authorized" ||
+    outsideAllowedPaths(task.changedFiles, task.allowedPaths).length) return;
+  const head = await runGit(run.project.path, ["rev-parse", "HEAD"]);
+  if (head.code !== 0 || head.output !== baseCommit ||
+    !verifyStoredTaskAuthorization(task.authorizationEvidence, task, run.project, await currentBranchIdentity(run.project.path))) return;
+  const files: Record<string, string | null> = {};
+  for (const path of [...task.changedFiles].sort()) files[path] = await retainedFileHash(run.project.path, path);
+  task.retainedDiff = validateRecoveryRetainedDiffV1({
+    contractType: "RecoveryRetainedDiffV1", contractVersion: "1.0", baseCommit, files,
+  });
+}
+
+export async function admitRetainedDiff(run: Run, task: Task) {
+  if (!task.recovery?.retainedDiff) return;
+  const branch = await currentBranchIdentity(run.project.path);
+  if (!task.authorizationEvidence?.enabled || task.authorizationEvidence.decision !== "authorized" ||
+    !verifyStoredTaskAuthorization(task.authorizationEvidence, task, run.project, branch))
+    throw new Error("RECOVERY_RETAINED_DIFF_AUTHORIZATION_INVALID");
+  await assertRetainedDiffWorkspace(task, run.project.path);
+  task.retainedDiffAdmitted = structuredClone(task.recovery.retainedDiff);
+  task.changedFiles = authoritativeTaskChangedFiles(task, task.changedFiles ?? []);
 }
 
 export async function queueRecoveryContractChecks(
@@ -5358,6 +5474,7 @@ export async function queueRecoveryContractChecks(
         );
         if (missingConstraints.length)
           throw new Error("RECOVERY_RUNTIME_CONSTRAINTS_NARROWED");
+        await assertRetainedDiffSource(task, queue.project.path);
         return {
           name: `${label} recovery contract`,
           ok: true,
@@ -5916,6 +6033,8 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     exitCode: undefined,
     timedOut: undefined,
     changedFiles: undefined,
+    retainedDiff: undefined,
+    retainedDiffAdmitted: undefined,
     retryLineageChangedFiles:
       retryLineageChangedFiles.length > 0
         ? retryLineageChangedFiles
@@ -6987,9 +7106,12 @@ function authoritativeTaskChangedFiles(
   task: Task,
   currentAttemptChangedFiles: string[],
 ) {
+  if (task.retainedDiffAdmitted && JSON.stringify(task.retainedDiffAdmitted) !== JSON.stringify(task.recovery?.retainedDiff))
+    throw new Error("RECOVERY_RETAINED_DIFF_ADMISSION_CHANGED");
   return [
     ...new Set([
       ...(task.retryLineageChangedFiles ?? []),
+      ...Object.keys(task.retainedDiffAdmitted?.files ?? {}),
       ...currentAttemptChangedFiles,
     ]),
   ].sort();
@@ -7670,7 +7792,17 @@ async function preflight(value: unknown) {
         ...(task.preconditions ?? []),
         ...(task.verificationCommands ?? []),
       ]);
+      let retainedDiffCheck: LaunchAuthorizationCheck | undefined;
+      if (task.recovery?.retainedDiff) {
+        try {
+          await assertRetainedDiffWorkspace(task, queue.project.path);
+          retainedDiffCheck = { name: `Task ${index + 1} retained diff`, ok: true, detail: "Exact retained workspace verified." };
+        } catch (error) {
+          retainedDiffCheck = { name: `Task ${index + 1} retained diff`, ok: false, detail: error instanceof Error ? error.message : "Invalid retained diff." };
+        }
+      }
       return [
+        ...(retainedDiffCheck ? [retainedDiffCheck] : []),
         {
           name: `Task ${index + 1} model`,
           ok: modelOk,
@@ -7782,6 +7914,10 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
       task.authorizationEvidence ?? authorizeTask(task, project),
   });
   const additions: string[] = [];
+  if (task.retainedDiffAdmitted)
+    additions.push(
+      `The orchestrator adopted this exact retained diff from ${task.recovery!.sourceRunId}/${task.recovery!.sourceTaskId} at base ${task.retainedDiffAdmitted.baseCommit}:\n${Object.keys(task.retainedDiffAdmitted.files).map((path) => `- ${path}`).join("\n")}\nThese files already belong to this task and its checkpoint. Do not edit them merely to establish ownership. Complete only the requested recovery; all declared verification and review gates still apply.`,
+    );
   if (task.authoringContract && task.runtimeConstraints?.length) {
     const runtimeConstraints = task.runtimeConstraints
       .map((constraint) => `- ${constraint}`)
@@ -8929,6 +9065,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       publish("run", run);
       return task.status;
     }
+    await admitRetainedDiff(run, task);
     const baseline = await readWorkspaceSnapshot(executionPath);
     task.executionPhase = "executor";
     task.attempts = 1;
@@ -8989,6 +9126,8 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
           task.model,
           task.effort,
         );
+        if (attempt === 1) await assertRetainedDiffWorkspace(task, run.project.path);
+        else await assertRetainedDiffSource(task, run.project.path);
         child = spawnCodexWithPrompt(
           args,
           prompt,
@@ -9175,6 +9314,11 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     if (settledStatus !== "completed") task.status = settledStatus;
     task.executionPhase = undefined;
     task.finishedAt ??= timestamp();
+    try {
+      await captureRetainedDiff(run, task, baseline.get("\0HEAD") ?? "");
+    } catch (error) {
+      task.log.push(`Retained diff evidence unavailable: ${error instanceof Error ? error.message : "invalid file state"}`);
+    }
     await finalizeSettledTask(run, task);
     publish("run", run);
     return task.status;
