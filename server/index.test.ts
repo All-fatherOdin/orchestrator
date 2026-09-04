@@ -19581,6 +19581,49 @@ test("PowerShell verification syntax is parsed during preflight without executin
   assert.match(invalid.detail, /PowerShell syntax/i);
 });
 
+test("Windows verification shares cwd, environment and script policy with syntax preflight", async (context) => {
+  if (process.platform !== "win32") return context.skip("Windows verification");
+  const root = await mkdtemp(join(tmpdir(), "orchestrator shell context "));
+  try {
+    const directory = join(root, "scripts with spaces");
+    await mkdir(directory);
+    await writeFile(join(root, "fixture.txt"), "данные & literal $value");
+    const script = join(directory, "verify.ps1");
+    await writeFile(script, [
+      "param([string]$Value)",
+      "if ($PWD.Path -ne $env:VERIFY_EXPECTED_ROOT) { throw 'Wrong working directory' }",
+      "if ($Value -ne $env:VERIFY_EXPECTED_VALUE) { throw 'Argument changed' }",
+      "if ($env:VERIFY_FAIL -eq 'yes') { exit 7 }",
+      "Write-Output ('ok:' + (Get-Content -LiteralPath './fixture.txt' -Raw -Encoding UTF8))",
+    ].join("\n"));
+    const command = '"./scripts with spaces/verify.ps1" \'a & b $literal\'';
+    const environment = { ...process.env, VERIFY_EXPECTED_ROOT: root, VERIFY_EXPECTED_VALUE: "a & b $literal", PSExecutionPolicyPreference: "Restricted" };
+    const preflight = await powershellVerificationSyntaxPreflight([command], root, environment);
+    assert.equal(preflight.ok, true, preflight.detail);
+    const invocation = verificationCommandInvocation(command, root, environment);
+    assert.equal(invocation.cwd, root);
+    assert.equal(invocation.env.VERIFY_EXPECTED_VALUE, environment.VERIFY_EXPECTED_VALUE);
+    assert.ok(invocation.args.includes("Bypass"));
+    const options = { cwd: invocation.cwd, env: invocation.env, windowsHide: true, windowsVerbatimArguments: invocation.windowsVerbatimArguments, encoding: "utf8" as const };
+    assert.equal(execFileSync(invocation.executable, invocation.args, options).trim(), "ok:данные & literal $value");
+    const fileCommand = `powershell.exe -NoProfile -File ${command}`;
+    assert.equal((await powershellVerificationSyntaxPreflight([fileCommand], root, environment)).ok, true);
+    const fileInvocation = verificationCommandInvocation(fileCommand, root, environment);
+    assert.equal(execFileSync(fileInvocation.executable, fileInvocation.args, options).trim(), "ok:данные & literal $value");
+    assert.throws(() => execFileSync(invocation.executable, invocation.args, { ...options, env: { ...invocation.env, VERIFY_FAIL: "yes" } }), (error: any) => error.status !== 0);
+    await writeFile(script, "throw 'Only execution may reach this'\n");
+    assert.equal((await powershellVerificationSyntaxPreflight([command], root, environment)).ok, true);
+    await writeFile(script, "if ( {\n");
+    assert.equal((await powershellVerificationSyntaxPreflight([command], root, environment)).ok, false);
+    assert.equal((await powershellVerificationSyntaxPreflight([command], directory, environment)).ok, false);
+    const cmd = verificationCommandInvocation('node -e "process.stdout.write(process.cwd()+\'|\'+process.env.VERIFY_EXPECTED_VALUE)"', root, environment);
+    const cmdOptions = { cwd: cmd.cwd, env: cmd.env, windowsHide: true, windowsVerbatimArguments: cmd.windowsVerbatimArguments, encoding: "utf8" as const };
+    assert.equal(execFileSync(cmd.executable, cmd.args, cmdOptions), root + "|a & b $literal");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("detected PowerShell verification is executed by PowerShell rather than cmd", () => {
   const powershell = verificationCommandInvocation(
     "$paths = @('one.md'); Test-Path -LiteralPath $paths[0]",
@@ -19592,8 +19635,10 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
     "-NoProfile",
     "-NonInteractive",
   ]);
-  assert.match(powershell.args[4], /Console\]::OutputEncoding/);
-  assert.match(powershell.args[4], /Test-Path -LiteralPath/);
+  const source = Buffer.from(powershell.args.at(-1)!, "base64").toString("utf16le");
+  assert.match(source, /Console\]::OutputEncoding/);
+  assert.match(source, /Test-Path -LiteralPath/);
+  assert.ok(powershell.args.includes("-EncodedCommand"));
   assert.equal(
     verificationCommandInvocation(
       'python -m pytest --basetemp="$env:TEMP\\orchestrator-pytest-$PID"',
@@ -19614,8 +19659,17 @@ test("detected PowerShell verification is executed by PowerShell rather than cmd
   }
 
   const ordinary = verificationCommandInvocation("npm test");
-  assert.equal(ordinary.executable, "npm.cmd test");
-  assert.equal(ordinary.shell, true);
+  assert.equal(verificationCommandInvocation("pwsh -File ./verify.ps1").executable, "pwsh");
+  assert.deepEqual(commandRuntimeProbes(["pwsh -File ./verify.ps1"]).map(probe => probe.name), ["PowerShell 7"]);
+  if (process.platform === "win32") {
+    assert.match(ordinary.executable, /cmd\.exe$/i);
+    assert.deepEqual(ordinary.args, ["/d", "/s", "/c", '"npm.cmd test"']);
+    assert.equal(ordinary.shell, false);
+    assert.equal(ordinary.windowsVerbatimArguments, true);
+  } else {
+    assert.equal(ordinary.executable, "npm test");
+    assert.equal(ordinary.shell, true);
+  }
 });
 
 test("Windows command policy rejects cmd single quotes and unmanaged Python", () => {

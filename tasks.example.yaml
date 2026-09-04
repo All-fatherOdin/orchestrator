@@ -64,6 +64,16 @@ project:
   #   - >-
   #     & $env:PYTHON_BIN -m pytest -q
   #     --basetemp="$env:TEMP\orchestrator-pytest-$PID"
+  # Windows commands run from project.path (or the task's managed worktree),
+  # with the same inherited environment used by preflight. Plain strings use
+  # cmd.exe /d /s /c; PowerShell commands use a profile-free, non-interactive
+  # host with UTF-8 output and process-only ExecutionPolicy Bypass.
+  # Prefer: & "./scripts/verify.ps1" -Root "."
+  # The standard powershell/pwsh -File form uses that selected host with the
+  # same flags. Custom host options remain explicit. Literal .ps1 paths are
+  # syntax-checked without execution, relative to the queue project root.
+  # An absolute script path does not change cwd; pass any external root
+  # explicitly and declare it in externalReadRoots and the apply approval.
 limits:
   taskTimeoutMinutes: 30
   reviewerTimeoutMinutes: 10

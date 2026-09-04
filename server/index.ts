@@ -3293,21 +3293,66 @@ export function inlineCommandViolations(commands: readonly string[]) {
   return violations;
 }
 
-async function powershellSyntaxViolation(command: string) {
+function powershellInvocation(script: string, platform: NodeJS.Platform = process.platform, executable?: string) {
+  return {
+    executable: executable ?? (platform === "win32" ? "powershell.exe" : "pwsh"),
+    args: [
+      "-NoLogo", "-NoProfile", "-NonInteractive",
+      "-OutputFormat", "Text",
+      ...(platform === "win32" ? ["-ExecutionPolicy", "Bypass"] : []),
+      "-EncodedCommand",
+      Buffer.from([
+        "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)",
+        "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)",
+        "$OutputEncoding = [Console]::OutputEncoding",
+        "$ProgressPreference = 'SilentlyContinue'",
+        script,
+      ].join("; "), "utf16le").toString("base64"),
+    ],
+    shell: false,
+    windowsVerbatimArguments: false,
+  };
+}
+
+function powerShellCommandSpec(command: string) {
+  // Flatten the standard -File form so the selected host parses and executes
+  // the script with the same runner flags. Custom host options remain explicit.
+  const fileHost = /^\s*(pwsh(?:\.exe)?|powershell(?:\.exe)?)\s+(?:-(?:NoProfile|NoLogo|NonInteractive)\s+)*-File\s+(.+)$/i.exec(command);
+  if (fileHost) return { executable: fileHost[1], source: `& ${fileHost[2]}` };
+  // A quoted .ps1 path is an expression unless the call operator is present.
+  return { executable: undefined, source: /^\s*(?:"[^"$]+\.ps1"|'[^']+\.ps1'|[^\s"';&|$]+\.ps1)(?:\s|$)/i.test(command)
+    ? `& ${command.trimStart()}` : command };
+}
+
+function literalPowerShellScript(command: string) {
+  const match = /^\s*(?:&\s*)?(?:"([^"$]+\.ps1)"|'([^']+\.ps1)'|([^\s"';&|$]+\.ps1))(?:\s|$)/i.exec(command);
+  return match?.slice(1).find(Boolean);
+}
+
+async function powershellSyntaxViolation(command: string, cwd: string, environment: NodeJS.ProcessEnv) {
   const syntaxParserTimeoutMs = 10_000;
-  const encodedSource = Buffer.from(command, "utf8").toString("base64");
+  const specification = powerShellCommandSpec(command);
+  const encodedSource = Buffer.from(specification.source, "utf8").toString("base64");
+  const scriptPath = literalPowerShellScript(specification.source);
   const parserScript = [
     `$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedSource}'))`,
     "$tokens = $null",
     "$errors = $null",
     "[System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors) | Out-Null",
     "if ($errors.Count -gt 0) { $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }; exit 1 }",
+    ...(scriptPath ? [
+      `$file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(resolve(cwd, scriptPath), "utf8").toString("base64")}'))`,
+      "if (!(Test-Path -LiteralPath $file -PathType Leaf)) { [Console]::Error.WriteLine('PowerShell script is missing'); exit 1 }",
+      "[System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null",
+      "if ($errors.Count -gt 0) { $errors | ForEach-Object { [Console]::Error.WriteLine($_.Message) }; exit 1 }",
+    ] : []),
   ].join("; ");
   return await new Promise<string | undefined>((resolveResult) => {
+    const invocation = powershellInvocation(parserScript, process.platform, specification.executable);
     const child = spawn(
-      process.platform === "win32" ? "powershell.exe" : "pwsh",
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", parserScript],
-      { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
+      invocation.executable,
+      invocation.args,
+      { cwd, env: environment, shell: invocation.shell, windowsHide: true, stdio: ["ignore", "ignore", "pipe"] },
     );
     let diagnostics = "";
     const decoder = createUtf8StreamDecoder((text) => {
@@ -3344,6 +3389,8 @@ async function powershellSyntaxViolation(command: string) {
 
 export async function powershellVerificationSyntaxPreflight(
   commands: string[],
+  cwd = process.cwd(),
+  environment: NodeJS.ProcessEnv = process.env,
 ) {
   const powershellCommands = commands.filter(isLikelyPowerShellCommand);
   if (!powershellCommands.length)
@@ -3353,7 +3400,7 @@ export async function powershellVerificationSyntaxPreflight(
       detail: "No PowerShell verification commands detected.",
     };
   for (const command of powershellCommands) {
-    const violation = await powershellSyntaxViolation(command);
+    const violation = await powershellSyntaxViolation(command, cwd, verificationProcessEnvironment(cwd, environment));
     if (violation)
       return { required: true, ok: false, detail: violation };
   }
@@ -3364,26 +3411,17 @@ export async function powershellVerificationSyntaxPreflight(
   };
 }
 
-export function verificationCommandInvocation(command: string) {
+export function verificationCommandInvocation(command: string, cwd = process.cwd(), environment: NodeJS.ProcessEnv = process.env) {
   const normalizedCommand = normalizeWindowsNpmCommand(command);
-  if (isLikelyPowerShellCommand(normalizedCommand))
-    return {
-      executable: process.platform === "win32" ? "powershell.exe" : "pwsh",
-      args: [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        [
-          "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)",
-          "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)",
-          "$OutputEncoding = [Console]::OutputEncoding",
-          normalizedCommand,
-        ].join("; "),
-      ],
-      shell: false,
-    };
-  return { executable: normalizedCommand, args: [] as string[], shell: true };
+  const context = { cwd, env: verificationProcessEnvironment(cwd, environment), windowsHide: true };
+  if (isLikelyPowerShellCommand(normalizedCommand)) {
+    const specification = powerShellCommandSpec(normalizedCommand);
+    return { ...context, ...powershellInvocation(specification.source, process.platform, specification.executable) };
+  }
+  if (process.platform === "win32")
+    return { ...context, executable: environment.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", `"${normalizedCommand}"`], shell: false, windowsVerbatimArguments: true };
+  return { ...context, executable: normalizedCommand, args: [] as string[], shell: true, windowsVerbatimArguments: false };
 }
 
 export function normalizeWindowsNpmCommand(
@@ -7548,11 +7586,11 @@ export function commandRuntimeProbes(
         "i",
       ).test(command)
     );
-  if (commands.some(isLikelyPowerShellCommand))
+  if (commands.some(command => isLikelyPowerShellCommand(command) &&
+    !/^pwsh(?:\.exe)?$/i.test(powerShellCommandSpec(command).executable ?? "")))
     probes.set("PowerShell", {
       name: "PowerShell",
-      executable: platform === "win32" ? "powershell.exe" : "pwsh",
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+      ...powershellInvocation("$PSVersionTable.PSVersion.ToString()", platform),
     });
   if (invokes("node(?:\\.exe)?"))
     probes.set("Node.js", { name: "Node.js", executable: "node", args: ["--version"] });
@@ -7569,8 +7607,8 @@ export function commandRuntimeProbes(
   if (invokes("pwsh(?:\\.exe)?"))
     probes.set("PowerShell 7", {
       name: "PowerShell 7",
+      ...powershellInvocation("$PSVersionTable.PSVersion.ToString()", platform),
       executable: "pwsh",
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"],
     });
   return [...probes.values()];
 }
@@ -7588,7 +7626,13 @@ export async function queueCommandRuntimePreflightChecks(
       gitSafeDirectoryProcessEnvironment(processEnvironment, task.externalReadRoots)))
       .map(check => ({ ...check, name: `Task ${index + 1} runtime: ${check.name}` }))
   ))).flat();
-  return [...declaredChecks, ...await Promise.all(
+  const syntaxChecks = (await Promise.all(queue.tasks.map(async (task, index) => {
+    const check = await powershellVerificationSyntaxPreflight([
+      ...(queue.project.verificationCommands ?? []), ...(task.preconditions ?? []), ...(task.verificationCommands ?? []),
+    ], queue.project.path, gitSafeDirectoryProcessEnvironment(processEnvironment, task.externalReadRoots));
+    return check.required ? [{ name: `Task ${index + 1} PowerShell syntax`, ok: check.ok, detail: check.detail }] : [];
+  }))).flat();
+  return [...declaredChecks, ...syntaxChecks, ...await Promise.all(
     commandRuntimeProbes(
       queueConfiguredCommands(queue),
       process.platform,
@@ -7833,11 +7877,6 @@ async function preflight(value: unknown) {
     await Promise.all(queue.tasks.map(async (task, index) => {
       const modelOk = Object.hasOwn(MODEL_IDS, task.model ?? "terra");
       const evidence = reviewerEvidencePreflight(task, queue.project);
-      const powershellSyntax = await powershellVerificationSyntaxPreflight([
-        ...(queue.project.verificationCommands ?? []),
-        ...(task.preconditions ?? []),
-        ...(task.verificationCommands ?? []),
-      ]);
       let retainedDiffCheck: LaunchAuthorizationCheck | undefined;
       if (task.recovery?.retainedDiff) {
         try {
@@ -7859,13 +7898,6 @@ async function preflight(value: unknown) {
               name: `Task ${index + 1} reviewer evidence`,
               ok: evidence.ok,
               detail: evidence.detail,
-            }]
-          : []),
-        ...(powershellSyntax.required
-          ? [{
-              name: `Task ${index + 1} PowerShell syntax`,
-              ok: powershellSyntax.ok,
-              detail: powershellSyntax.detail,
             }]
           : []),
       ];
@@ -8884,12 +8916,13 @@ async function runConfiguredTaskCommands(
     task.log.push(`${label}: ${command}`);
     let child: ReturnType<typeof spawn>;
     try {
-      const invocation = verificationCommandInvocation(command);
+      const invocation = verificationCommandInvocation(command, executionPath, taskProcessEnvironment(run, task));
       child = spawn(invocation.executable, invocation.args, {
-        cwd: executionPath,
-        env: taskProcessEnvironment(run, task),
+        cwd: invocation.cwd,
+        env: invocation.env,
         shell: invocation.shell,
-        windowsHide: true,
+        windowsHide: invocation.windowsHide,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
