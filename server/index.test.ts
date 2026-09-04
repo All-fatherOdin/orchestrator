@@ -12274,6 +12274,58 @@ test("whole-change acceptance uses a bounded HEAD diff for a partially staged la
   }
 });
 
+test("whole-change acceptance includes large checkpointed files across writers and fences changed evidence", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-whole-change-checkpoint-"));
+  try {
+    git(project, "init");
+    git(project, "config", "user.name", "Test");
+    git(project, "config", "user.email", "test@example.invalid");
+    const body = "baseline\n".repeat(2_100);
+    await writeFile(join(project, "large.md"), `header\n${body}tail\n`);
+    git(project, "add", "large.md");
+    git(project, "commit", "-m", "baseline");
+    const run = createRun(validateTaskQueue({
+      project: { path: project },
+      git: { checkpointCommits: true },
+      tasks: [
+        { key: "first", title: "First", prompt: "Write.", allowedPaths: ["large.md"] },
+        { key: "second", title: "Second", prompt: "Write.", dependsOn: ["first"], allowedPaths: ["large.md"] },
+        {
+          key: "accept", title: "Accept", prompt: "Review.", dependsOn: ["second", "first"], allowedPaths: [],
+          wholeChangeAcceptance: {
+            contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["second", "first"],
+          },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+        },
+      ],
+    }));
+    for (const writer of run.tasks.slice(0, 2)) {
+      writer.status = "completed";
+      writer.reviewStatus = "approved";
+      writer.changedFiles = ["large.md"];
+      await writeFile(join(project, "large.md"), `changed header\n${body}${writer.key === "first" ? "tail" : "changed tail"}\n`);
+      await createCheckpoint(run, writer);
+      assert.ok(writer.checkpoint);
+    }
+    assert.equal(git(project, "status", "--porcelain").trim(), "");
+    const acceptance = run.tasks[2];
+    const evidence = await prepareWholeChangeAcceptanceEvidence(run, acceptance);
+    assert.match(evidence!.contentEvidence[0].diff!, /changed header/);
+    assert.match(evidence!.contentEvidence[0].diff!, /changed tail/);
+    assert.ok(evidence!.contentEvidence[0].sha256);
+    assert.equal(evidence!.contentEvidence[0].content, undefined);
+    assert.deepEqual(await prepareWholeChangeAcceptanceEvidence(run, acceptance), evidence);
+
+    await writeFile(join(project, "large.md"), `changed header\n${body}tampered tail\n`);
+    await assert.rejects(prepareWholeChangeAcceptanceEvidence(run, acceptance), /PERSISTED_EVIDENCE_CHANGED/);
+    await writeFile(join(project, "large.md"), `changed header\n${body}changed tail\n`);
+    run.tasks[0].checkpoint!.parentHash = run.tasks[1].checkpoint!.hash;
+    await assert.rejects(prepareWholeChangeAcceptanceEvidence(run, acceptance), /CHECKPOINT_INVALID/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("external read roots are normalized, approval-bound, persisted, and shown to the executor", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-external-project-"));
   const external = await mkdtemp(join(tmpdir(), "orchestrator-external-read-"));

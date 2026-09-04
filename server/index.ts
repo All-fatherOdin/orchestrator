@@ -7170,7 +7170,7 @@ export async function isManagedCheckpoint(run: Run, task: Task) {
   return isAncestor.code === 0;
 }
 
-async function readGitDiff(cwd: string, paths: string[], base?: "HEAD") {
+async function readGitDiff(cwd: string, paths: string[], base?: string) {
   if (!paths.length) return "";
   return new Promise<string>((done) => {
     let child: ReturnType<typeof spawn>;
@@ -7917,6 +7917,26 @@ function wholeChangeAcceptanceIssue(
   return undefined;
 }
 
+async function wholeChangeDiffBase(run: Run, predecessors: Task[], path: string) {
+  const owners = predecessors.filter((candidate) =>
+    candidate.changedFiles?.includes(path) && candidate.checkpoint,
+  );
+  let base = "HEAD";
+  for (const owner of owners) {
+    if (!await isManagedCheckpoint(run, owner))
+      throw new Error("WHOLE_CHANGE_ACCEPTANCE_CHECKPOINT_INVALID");
+    const parent = owner.checkpoint!.parentHash;
+    if (base === "HEAD") base = parent;
+    else {
+      const ancestor = await runGit(run.project.path, ["merge-base", "--is-ancestor", parent, base]);
+      if (ancestor.code === 0) base = parent;
+      else if ((await runGit(run.project.path, ["merge-base", "--is-ancestor", base, parent])).code !== 0)
+        throw new Error("WHOLE_CHANGE_ACCEPTANCE_CHECKPOINT_LINEAGE_INVALID");
+    }
+  }
+  return base;
+}
+
 export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task) {
   const acceptance = task.wholeChangeAcceptance;
   if (!acceptance) return undefined;
@@ -7958,12 +7978,14 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
       const content = await readFile(absolute);
       if (content.length > WHOLE_CHANGE_MAX_FILE_BYTES || content.length > remaining) {
         if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED");
-        const diff = await readGitDiff(run.project.path, [path], "HEAD");
+        // A checkpoint removes the worktree diff against HEAD. Use its
+        // authenticated parent to retain the complete change in bounded evidence.
+        const diff = await readGitDiff(run.project.path, [path], await wholeChangeDiffBase(run, expected, path));
         const diffBytes = Buffer.byteLength(diff, "utf8");
         if (!diff || diffBytes > WHOLE_CHANGE_MAX_FILE_BYTES || diffBytes > remaining)
           throw new Error("WHOLE_CHANGE_ACCEPTANCE_TRACKED_CONTENT_MISSING_OR_OVERSIZED");
         remaining -= diffBytes;
-        contentEvidence.push({ path, kind, diff });
+        contentEvidence.push({ path, kind, diff, sha256: createHash("sha256").update(content).digest("hex") });
         continue;
       }
       remaining -= content.length;
@@ -7976,7 +7998,7 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
     } catch (error) {
       if (error instanceof Error && error.message === "WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED") throw error;
       if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_UNTRACKED_CONTENT_MISSING");
-      const diff = await readGitDiff(run.project.path, [path], "HEAD");
+      const diff = await readGitDiff(run.project.path, [path], await wholeChangeDiffBase(run, expected, path));
       const diffBytes = Buffer.byteLength(diff, "utf8");
       if (!diff || diffBytes > WHOLE_CHANGE_MAX_FILE_BYTES || diffBytes > remaining)
         throw new Error("WHOLE_CHANGE_ACCEPTANCE_TRACKED_CONTENT_MISSING_OR_OVERSIZED");
