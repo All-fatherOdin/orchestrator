@@ -14,6 +14,23 @@ project:
   #   verificationCommands:
   #     - node scripts/assert-documentation-delta.mjs --forbid DOC-REACH-001
   path: D:\\work\\my-project
+  # Optional queue-entry contract. Requires enabled authorization on every task.
+  # Checked by preflight, before the project lock, and before execution; it is
+  # not re-applied after the queue's own writers create checkpoints. Retry/resume
+  # still require the declared entry state, so stale baselines fail closed.
+  # initialState:
+  #   contractType: InitialWorkspaceStateV1
+  #   contractVersion: "1.0"
+  #   branch: main # Or detached:<the same full HEAD hash>.
+  #   head: <exact-40-character-commit-hash>
+  #   mode: clean
+  # For mode: retained, also declare every dirty tracked/untracked path in files
+  # with its SHA-256 (null for deletion), plus indexSha256: SHA-256 of the exact
+  # UTF-8 output of git ls-files --stage -z. captureInitialWorkspaceStateV1 is
+  # the read-only implementation used to capture and verify this envelope.
+  # files and indexSha256 are forbidden in clean mode. Retained recovery must
+  # bind the same HEAD and file manifest. Initial-state permission never adopts
+  # files into a task; RecoveryRetainedDiffV1 remains the ownership mechanism.
   # Every authorization-enabled apply task must reference one independently
   # approved contract whose paths, preconditions, verification commands, and
   # ordered Queue Authoring Contract v1 impactPaths exactly match the task, with

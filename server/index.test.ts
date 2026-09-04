@@ -85,6 +85,9 @@ test.after(async () =>
 
 const {
   acquireProjectLock,
+  assertProjectInitialState,
+  captureInitialWorkspaceStateV1,
+  validateInitialWorkspaceStateV1,
   blockTasksWithFailedDependencies,
   outsideAllowedPaths,
   taskWriteViolations,
@@ -12500,6 +12503,112 @@ test("external Git roots use process-local safe.directory configuration and pass
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("initial workspace state binds branch, HEAD, tracked/untracked content and the index", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-initial-state-"));
+  try {
+    git(project, "init");
+    git(project, "config", "user.name", "Test");
+    git(project, "config", "user.email", "test@example.invalid");
+    await writeFile(join(project, "tracked.txt"), "before");
+    git(project, "add", ".");
+    git(project, "commit", "-m", "baseline");
+    const clean = await captureInitialWorkspaceStateV1(project);
+    assert.equal(clean.mode, "clean");
+    await assertProjectInitialState({ path: project, initialState: clean });
+    assert.throws(() => validateInitialWorkspaceStateV1({ ...clean, files: {} }), /INVALID/);
+    assert.throws(() => validateInitialWorkspaceStateV1({ ...clean, head: "HEAD" }), /INVALID/);
+    await writeFile(join(project, "tracked.txt"), "after");
+    await writeFile(join(project, "new.txt"), "new");
+    await assert.rejects(assertProjectInitialState({ path: project, initialState: clean }), /MISMATCH/);
+    const retained = await captureInitialWorkspaceStateV1(project);
+    assert.equal(retained.mode, "retained");
+    if (retained.mode !== "retained") throw new Error("Expected retained state");
+    assert.deepEqual(Object.keys(retained.files), ["new.txt", "tracked.txt"]);
+    await assertProjectInitialState({ path: project, initialState: retained });
+    git(project, "add", "tracked.txt");
+    await assert.rejects(assertProjectInitialState({ path: project, initialState: retained }), /MISMATCH/);
+    const staged = await captureInitialWorkspaceStateV1(project);
+    await assertProjectInitialState({ path: project, initialState: staged });
+    await writeFile(join(project, "new.txt"), "tampered");
+    await assert.rejects(assertProjectInitialState({ path: project, initialState: staged }), /MISMATCH/);
+    await writeFile(join(project, "new.txt"), "new");
+    await writeFile(join(project, "foreign.txt"), "foreign");
+    await assert.rejects(assertProjectInitialState({ path: project, initialState: staged }), /MISMATCH/);
+    await rm(join(project, "foreign.txt"));
+    git(project, "checkout", "-b", "other");
+    await assert.rejects(assertProjectInitialState({ path: project, initialState: staged }), /MISMATCH/);
+    git(project, "checkout", clean.branch);
+    git(project, "commit", "-m", "change head");
+    await assert.rejects(assertProjectInitialState({ path: project, initialState: staged }), /MISMATCH/);
+
+    const input = queueAuthoringContractInput(project, undefined, {
+      contractType: "RecoveryTaskBindingV1", contractVersion: "1.0", sourceRunId: "source-run", sourceTaskId: "source-task",
+    });
+    input.tasks[0].recovery.retainedDiff = { contractType: "RecoveryRetainedDiffV1", contractVersion: "1.0", baseCommit: clean.head, files: { "server/index.ts": "a".repeat(64) } };
+    input.tasks[1].authorization = { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" };
+    input.project.initialState = clean;
+    assert.throws(() => validateTaskQueue(input), /CONFLICTS_WITH_RETAINED_RECOVERY/);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("initial workspace state is checked before locks and execution but allows own checkpoints", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-initial-run-"));
+  const previousBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    const project = join(root, "project");
+    await mkdir(project);
+    git(project, "init");
+    git(project, "config", "user.name", "Test");
+    git(project, "config", "user.email", "test@example.invalid");
+    await writeFile(join(project, "owned.txt"), "before");
+    git(project, "add", ".");
+    git(project, "commit", "-m", "baseline");
+    const initialState = await captureInitialWorkspaceStateV1(project);
+    const approval = { approvalId: "writer", intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", allowedPaths: ["owned.txt"], verificationCommands: ["node --version"] };
+    const queue = validateTaskQueue({
+      project: { path: project, initialState, approvedApplyContracts: [approval] }, git: { checkpointCommits: true },
+      tasks: [
+        { key: "writer", title: "Writer", prompt: "WRITE_INITIAL_FIXTURE", allowedPaths: ["owned.txt"], verificationCommands: approval.verificationCommands, authorization: { enabled: true, intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", approvalId: "writer" } },
+        { key: "after", title: "After", prompt: "Review.", allowedPaths: [], dependsOn: ["writer"], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } },
+      ],
+    });
+    const evidence = authorizeTask(queue.tasks[0], queue.project);
+    assert.equal(verifyStoredTaskAuthorization(evidence, queue.tasks[0], { ...queue.project, initialState: undefined }), false);
+    const denied = createRun(queue);
+    await writeFile(join(project, "foreign.txt"), "unrelated");
+    await assert.rejects(acquireProjectLock(denied), /INITIAL_WORKSPACE_STATE_MISMATCH/);
+    assert.equal(denied.lock, undefined);
+    await assert.rejects(executeQueue(denied), /INITIAL_WORKSPACE_STATE_MISMATCH/);
+    await assert.rejects(access(join(testDataDirectory, "runs", denied.id, "run.json")));
+    await rm(join(project, "foreign.txt"));
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, [
+      "const fs=require('node:fs'); let prompt=''; process.stdin.on('data', s=>prompt+=s);",
+      "process.stdin.on('end',()=>{ const a=process.argv.slice(2); const reviewer=prompt.startsWith('Review only');",
+      "if(!reviewer && prompt.includes('WRITE_INITIAL_FIXTURE')) fs.writeFileSync('owned.txt','after');",
+      "fs.writeFileSync(a[a.indexOf('--output-last-message')+1],reviewer?'VERDICT: APPROVED':'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED'); });",
+    ].join("\n"));
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    const run = createRun(queue);
+    await executeQueue(run);
+    assert.equal(run.status, "completed", run.tasks.flatMap(task => task.log).join("\n"));
+    assert.ok(run.tasks[0].checkpoint);
+    assert.deepEqual(run.initialStateEvidence, initialState);
+    assert.deepEqual((await loadRun(run.id))?.project.initialState, initialState);
+    await assert.rejects(executeQueue(createRun(queue)), /INITIAL_WORKSPACE_STATE_MISMATCH/);
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -278,6 +278,7 @@ type CheckpointLedgerEntry = {
 };
 type ProjectLock = { path: string; acquiredAt: string };
 type ProjectSettings = {
+  initialState?: InitialWorkspaceStateV1;
   profileId?: string;
   verificationCommands?: string[];
   defaultModel?: Model;
@@ -288,6 +289,12 @@ type ProjectSettings = {
   /** Explicit repository-owned policy for preventing orphaned active documentation. */
   documentationGovernance?: DocumentationGovernancePolicyV1;
 };
+export type InitialWorkspaceStateV1 = {
+  contractType: "InitialWorkspaceStateV1";
+  contractVersion: "1.0";
+  branch: string;
+  head: string;
+} & ({ mode: "clean" } | { mode: "retained"; files: Record<string, string | null>; indexSha256: string });
 export type DocumentationGovernancePolicyV1 = {
   contractType: "DocumentationGovernancePolicyV1";
   contractVersion: "1.0";
@@ -1058,6 +1065,7 @@ type UsageRecord = {
 type Run = {
   id: string;
   project: { name: string; path: string } & ProjectSettings;
+  initialStateEvidence?: InitialWorkspaceStateV1;
   status:
     | "idle"
     | "running"
@@ -2023,6 +2031,7 @@ async function reconcileLegacyProjectLock(projectPath: string) {
 }
 
 export async function acquireProjectLock(run: Run) {
+  await assertProjectInitialState(run.project);
   for (const task of run.tasks.filter((candidate) => candidate.status === "pending"))
     await assertRetainedDiffWorkspace(task, run.project.path);
   const path = projectLockPath(run.project.path);
@@ -2747,6 +2756,28 @@ function isSafeRecoveryIdentifier(value: unknown): value is string {
     RECOVERY_ID_PATTERN.test(value) &&
     value !== "." &&
     value !== "..";
+}
+
+export function validateInitialWorkspaceStateV1(value: unknown): InitialWorkspaceStateV1 {
+  const entry = value as InitialWorkspaceStateV1;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+    entry.contractType !== "InitialWorkspaceStateV1" || entry.contractVersion !== "1.0" ||
+    !["clean", "retained"].includes(entry.mode) ||
+    Object.keys(entry).sort().join(",") !== (entry.mode === "clean"
+      ? "branch,contractType,contractVersion,head,mode" : "branch,contractType,contractVersion,files,head,indexSha256,mode") ||
+    typeof entry.branch !== "string" || !entry.branch.length || entry.branch.length > 255 ||
+    entry.branch.trim() !== entry.branch || /[\x00-\x20\x7f]/.test(entry.branch) ||
+    typeof entry.head !== "string" || !/^[a-f0-9]{40}$/.test(entry.head) ||
+    (entry.branch.startsWith("detached:") && entry.branch !== `detached:${entry.head}`))
+    throw new Error("INITIAL_WORKSPACE_STATE_INVALID");
+  const base = { contractType: "InitialWorkspaceStateV1" as const, contractVersion: "1.0" as const, branch: entry.branch, head: entry.head };
+  if (entry.mode === "clean") return { ...base, mode: "clean" };
+  const manifest = validateRecoveryRetainedDiffV1({
+    contractType: "RecoveryRetainedDiffV1", contractVersion: "1.0", baseCommit: entry.head, files: entry.files,
+  });
+  if (typeof entry.indexSha256 !== "string" || !/^[a-f0-9]{64}$/.test(entry.indexSha256))
+    throw new Error("INITIAL_WORKSPACE_INDEX_DIGEST_INVALID");
+  return { ...base, mode: "retained", files: Object.fromEntries(Object.entries(manifest.files).sort(([a], [b]) => a.localeCompare(b))), indexSha256: entry.indexSha256 };
 }
 
 function validateRecoveryRetainedDiffV1(value: unknown): RecoveryRetainedDiffV1 {
@@ -3491,6 +3522,7 @@ function taskAuthorityFingerprint(
     projectName: project.name ?? "",
     projectPath: project.path ?? "",
     approvalId: authorization?.approvalId ?? "",
+    ...(project.initialState ? { initialState: validateInitialWorkspaceStateV1(project.initialState) } : {}),
   })).digest("hex");
 }
 
@@ -4792,6 +4824,17 @@ export function validateQueue(value: unknown): {
     project.verificationCommands
       ?.filter(Boolean)
       .map((command) => normalizeWindowsNpmCommand(command)) ?? [];
+  const initialState = project.initialState === undefined ? undefined : validateInitialWorkspaceStateV1(project.initialState);
+  if (initialState) {
+    if (tasks.some(task => !task.authorization?.enabled))
+      throw new Error("project.initialState requires enabled authorization for every task.");
+    for (const task of tasks) {
+      const retained = task.recovery?.retainedDiff;
+      if (retained && (initialState.mode !== "retained" || initialState.head !== retained.baseCommit ||
+        JSON.stringify(initialState.files) !== JSON.stringify(Object.fromEntries(Object.entries(retained.files).sort(([a], [b]) => a.localeCompare(b))))))
+        throw new Error("INITIAL_WORKSPACE_STATE_CONFLICTS_WITH_RETAINED_RECOVERY");
+    }
+  }
   return {
     project: {
       name: project.name || projectPath.split(/[\\/]/).pop() || "Project",
@@ -4803,6 +4846,7 @@ export function validateQueue(value: unknown): {
       allowedModels: project.allowedModels,
       approvedApplyContracts,
       documentationGovernance,
+      ...(initialState ? { initialState } : {}),
     },
     tasks,
     review,
@@ -5472,6 +5516,43 @@ async function retainedFileHash(root: string, path: string): Promise<string | nu
     }
   }
   return createHash("sha256").update(await readFile(current)).digest("hex");
+}
+
+/** Read-only authoring helper. Capturing a baseline never grants file ownership. */
+export async function captureInitialWorkspaceStateV1(projectPath: string): Promise<InitialWorkspaceStateV1> {
+  const head = await runGit(projectPath, ["rev-parse", "HEAD"]);
+  const branch = await currentBranchIdentity(projectPath);
+  const status = await runGit(projectPath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const unmerged = await runGit(projectPath, ["ls-files", "--unmerged"]);
+  const index = await runGit(projectPath, ["ls-files", "--stage", "-z"]);
+  if (head.code || status.code || index.code || unmerged.code || unmerged.output || !branch)
+    throw new Error("INITIAL_WORKSPACE_GIT_STATE_UNAVAILABLE_OR_UNMERGED");
+  const paths = [...await readGitStatus(projectPath)].sort();
+  if (paths.length > 64) throw new Error("INITIAL_WORKSPACE_CHANGESET_OVERSIZED");
+  const files: Record<string, string | null> = {};
+  for (const path of paths) files[path] = await retainedFileHash(projectPath, path);
+  const base = { contractType: "InitialWorkspaceStateV1", contractVersion: "1.0", branch, head: head.output };
+  const observed = validateInitialWorkspaceStateV1(paths.length
+    ? { ...base, mode: "retained", files, indexSha256: createHash("sha256").update(index.output).digest("hex") }
+    : { ...base, mode: "clean" });
+  const finalHead = await runGit(projectPath, ["rev-parse", "HEAD"]);
+  const finalIndex = await runGit(projectPath, ["ls-files", "--stage", "-z"]);
+  if (finalHead.code || finalIndex.code || finalHead.output !== head.output || finalIndex.output !== index.output ||
+    await currentBranchIdentity(projectPath) !== branch ||
+    JSON.stringify([...await readGitStatus(projectPath)].sort()) !== JSON.stringify(paths))
+    throw new Error("INITIAL_WORKSPACE_CHANGED_DURING_CAPTURE");
+  for (const path of paths)
+    if (await retainedFileHash(projectPath, path) !== files[path]) throw new Error("INITIAL_WORKSPACE_CHANGED_DURING_CAPTURE");
+  return observed;
+}
+
+export async function assertProjectInitialState(project: ProjectSettings & { path: string }) {
+  if (!project.initialState) return undefined;
+  const expected = validateInitialWorkspaceStateV1(project.initialState);
+  const actual = await captureInitialWorkspaceStateV1(project.path);
+  if (JSON.stringify(actual) !== JSON.stringify(expected))
+    throw new Error("INITIAL_WORKSPACE_STATE_MISMATCH: branch, HEAD, dirty files, content, or index changed.");
+  return actual;
 }
 
 export async function assertRetainedDiffWorkspace(task: Pick<TaskInput, "recovery" | "allowedPaths">, projectPath: string) {
@@ -7859,6 +7940,14 @@ async function preflight(value: unknown) {
     ...commandRuntimeChecks,
     ...externalReadRootChecks,
   ];
+  if (queue.project.initialState) {
+    try {
+      await assertProjectInitialState(queue.project);
+      runtimeChecks.push({ name: "Initial workspace state", ok: true, detail: "Branch, HEAD, worktree and index match the declared entry state." });
+    } catch (error) {
+      runtimeChecks.push({ name: "Initial workspace state", ok: false, detail: error instanceof Error ? error.message : "Invalid initial workspace state." });
+    }
+  }
   const [cli, git, scripts] = await Promise.all([
     codexCliAvailable(),
     commandSucceeds(
@@ -9181,6 +9270,8 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
         throw new Error("Runtime version probes violated their read-only boundary.");
     }
     const baseline = await readWorkspaceSnapshot(executionPath);
+    if (run.project.initialState && !run.tasks.some(candidate => candidate !== task && candidate.startedAt))
+      await assertProjectInitialState(run.project);
     if (task.wholeChangeAcceptance) {
       if (!task.promptModel) task.executionAttempts = 0;
       await prepareWholeChangeAcceptanceEvidence(run, task);
@@ -9516,6 +9607,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
 export async function executeQueue(run: Run) {
   const replayQueue = rebuildPersistedQueueForReplayV1(run);
   await assertQueueRecoveryContracts(replayQueue);
+  run.initialStateEvidence = await assertProjectInitialState(run.project);
   if (replayQueue.tasks.some(task => task.runtimeRequirements))
     await assertQueueCommandRuntimesAvailable(replayQueue);
   const branch = await currentBranchIdentity(run.project.path);
