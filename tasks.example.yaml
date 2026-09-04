@@ -72,6 +72,13 @@ limits:
   # even when their allowedPaths do not overlap. Values above 1 provide real
   # concurrency only for tasks with isolated managed-workspace bindings.
   maxParallelTasks: 1
+review:
+  enabled: true
+  # Shared correction limit for failed required verification and reviewer findings.
+  # Zero disables corrections. Verification corrections require an authorized
+  # apply task, preserve its write scope, and rerun all declared gates in order.
+  # Read-only/advisory tasks, timeouts, and scope violations are not corrected.
+  maxCorrections: 1
 git:
   # Creates a checkpoint commit after each reviewer-approved task.
   checkpointCommits: false

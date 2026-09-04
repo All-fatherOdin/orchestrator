@@ -12524,6 +12524,97 @@ test("retained recovery diff is captured, fenced and checkpointed without execut
   }
 });
 
+test("verification corrections rerun all gates and stop at scope, outcome and shared budget boundaries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-verification-correction-"));
+  const previousBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, [
+      "const fs = require('node:fs'); let prompt = '';",
+      "process.stdin.setEncoding('utf8'); process.stdin.on('data', s => prompt += s);",
+      "process.stdin.on('end', () => {",
+      " const args = process.argv.slice(2); const out = args[args.indexOf('--output-last-message') + 1];",
+      " const mode = fs.readFileSync('mode.txt', 'utf8');",
+      " const verifyFix = prompt.includes('Required verification failed');",
+      " const reviewFix = prompt.includes('Reviewer found these issues:');",
+      " const reviewer = prompt.startsWith('Review only');",
+      " if (verifyFix && (!prompt.includes('FIRST_GATE') || !prompt.includes('BROKEN_GATE'))) process.exit(9);",
+      " if (verifyFix && mode === 'missing') return;",
+      " if (verifyFix && mode === 'scope') fs.writeFileSync('foreign.txt', 'outside');",
+      " if (verifyFix && !['exhausted','scope','stopped'].includes(mode)) fs.writeFileSync('value.txt', 'fixed');",
+      " const wantsReviewFix = reviewer && mode === 'shared' && !fs.existsSync('review-fixed.txt');",
+      " if (reviewFix) fs.writeFileSync('review-fixed.txt', 'done');",
+      " fs.writeFileSync(out, reviewer ? (wantsReviewFix ? 'VERDICT: CHANGES_REQUESTED\\nNeed review fix.' : 'VERDICT: APPROVED') : (verifyFix && mode === 'stopped' ? 'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: STOPPED' : 'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED'));",
+      "});",
+    ].join("\n"));
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    for (const mode of ["success", "exhausted", "disabled", "readonly", "stopped", "missing", "scope", "shared", "budget"]) {
+      const project = join(root, mode);
+      await mkdir(project);
+      git(project, "init");
+      git(project, "config", "user.name", "Test");
+      git(project, "config", "user.email", "test@example.invalid");
+      await writeFile(join(project, "value.txt"), "broken");
+      await writeFile(join(project, "mode.txt"), mode);
+      git(project, "add", ".");
+      git(project, "commit", "-m", "baseline");
+      const commands = [
+        'node -e "console.log(\'FIRST_GATE\')"',
+        'node -e "if(require(\'node:fs\').readFileSync(\'value.txt\',\'utf8\')!==\'fixed\'){console.error(\'BROKEN_GATE\');process.exit(2)}"',
+      ];
+      const allowedPaths = mode === "readonly" ? [] : ["value.txt", "review-fixed.txt"];
+      const approval = {
+        approvalId: "fix-verification", intent: "apply", technicalPermission: "reversible_local_write",
+        sideEffectRisk: "reversible_local_write", allowedPaths, verificationCommands: commands,
+      };
+      const input: any = {
+        project: { path: project, approvedApplyContracts: mode === "readonly" ? [] : [approval] },
+        git: { checkpointCommits: true },
+        review: { enabled: true, maxCorrections: mode === "disabled" ? 0 : 2 },
+        tasks: [
+          {
+            key: "writer", title: "Repair verification", prompt: "Complete the bounded task.",
+            allowedPaths, verificationCommands: commands,
+            authorization: mode === "readonly"
+              ? { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" }
+              : { enabled: true, intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", approvalId: approval.approvalId },
+          },
+          { key: "after", title: "Dependent", prompt: "Report.", dependsOn: ["writer"], allowedPaths: [] },
+        ],
+      };
+      if (mode === "budget") input.tasks[0].executionBudget = {
+        ...executionBudgetPolicyFixtureV1, maxProviderInvocations: 2,
+        phaseCaps: { executor: 1, reviewer: 1, correction: 0 },
+      };
+      const run = createRun(validateTaskQueue(input));
+      await executeQueue(run);
+      const task = run.tasks[0];
+      const succeeds = mode === "success" || mode === "shared";
+      assert.equal(task.status, succeeds ? "completed" : "failed", `${mode}: ${task.log.join("\n")}`);
+      assert.equal(Boolean(task.checkpoint), succeeds, mode);
+      assert.deepEqual(task.verificationCommands, commands);
+      const gateRuns = task.log.filter((line) => line === `Orchestrator verification: ${commands[0]}`).length;
+      assert.equal(gateRuns, mode === "exhausted" || mode === "shared" ? 3 : mode === "success" ? 2 : 1, mode);
+      if (succeeds) {
+        assert.equal(task.reviewStatus, "approved");
+        assert.deepEqual(task.verificationEvidence?.map((record) => record.exitCode), [0, 0]);
+        assert.equal(task.verificationCorrectionHistory?.[0][1].exitCode, 2);
+        assert.equal(git(project, "status", "--porcelain").trim(), "");
+      } else assert.equal(run.tasks[1].status, "blocked", mode);
+      if (mode === "exhausted" || mode === "shared") assert.equal(task.attempts, 3, mode);
+      if (mode === "disabled" || mode === "readonly") assert.equal(task.verificationCorrectionHistory, undefined, mode);
+    }
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runtime constraints persist in task authorization evidence while legacy queues synthesize nothing", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-authoring-persist-"));
   try {
