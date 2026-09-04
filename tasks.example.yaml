@@ -91,6 +91,24 @@ tasks:
   # Tasks with no unmet dependsOn entries may run in parallel.
   - key: typecheck-fixes
     title: Fix TypeScript errors
+    # Declare tools even when only a nested .ps1/.mjs script uses them.
+    # Each tool is resolved in the task environment and probed with --version
+    # before launch and again before implementation. Probes must be read-only.
+    # command is a PATH name, never an installation path or shell expression.
+    # environmentVariable must resolve to an absolute executable; do not put
+    # a versioned Codex installation path into YAML. Optional tools with native
+    # fallbacks should not be listed. These requirements require authorization,
+    # are bound to its evidence, and must be preserved in recovery tasks.
+    # runtimeRequirements:
+    #   contractType: RuntimeRequirementsV1
+    #   contractVersion: "1.0"
+    #   tools:
+    #     - name: ripgrep
+    #       command: rg
+    #       versionPrefix: "ripgrep 14."
+    #     - name: python
+    #       environmentVariable: PYTHON_BIN
+    #       versionPrefix: "Python 3."
     prompt: Fix TypeScript errors in the notifications module and run the relevant checks.
     # The orchestrator resolves Auto before the run and records the result.
     model: auto

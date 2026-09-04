@@ -6,6 +6,7 @@ import test from "node:test";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { parse, stringify } from "yaml";
+import { checkRuntimeRequirementsV1, validateRuntimeRequirementsV1 } from "./runtime-requirements.ts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import Ajv2020 from "ajv8/dist/2020.js";
@@ -19668,6 +19669,160 @@ test("command runtime probes cover the exact Windows queue toolchain", () => {
     executable: "C:\\Windows\\System32\\cmd.exe",
     args: ["/d", "/s", "/c", "npm.cmd --version"],
   });
+});
+
+test("declared runtime requirements are closed, environment-resolved and authorization-bound", async () => {
+  const requirements = validateRuntimeRequirementsV1({
+    contractType: "RuntimeRequirementsV1", contractVersion: "1.0",
+    tools: [{ name: "node", environmentVariable: "TEST_RUNTIME_NODE", versionPrefix: process.version }],
+  });
+  const environment = { ...process.env, TEST_RUNTIME_NODE: process.execPath };
+  const checks = await checkRuntimeRequirementsV1(requirements, process.cwd(), environment);
+  assert.equal(checks[0].ok, true, checks[0].detail);
+  assert.equal(checks[0].executable, process.execPath);
+  assert.equal(checks[0].version, process.version);
+  assert.equal((await checkRuntimeRequirementsV1(requirements, process.cwd(), { ...environment, TEST_RUNTIME_NODE: "relative/node" }))[0].ok, false);
+  assert.equal((await checkRuntimeRequirementsV1(requirements, process.cwd(), { ...environment, TEST_RUNTIME_NODE: undefined }))[0].ok, false);
+  assert.equal((await checkRuntimeRequirementsV1({ ...requirements, tools: [{ ...requirements.tools[0], versionPrefix: "wrong-version" }] }, process.cwd(), environment))[0].ok, false);
+  for (const tools of [[], [{ name: "node", command: process.execPath }],
+    [{ name: "node", command: "node --version" }], [{ name: "node", command: "node", environmentVariable: "BIN" }],
+    [{ name: "node", command: "node", args: ["--eval", "bad"] }],
+    [{ name: "node", command: "node" }, { name: "NODE", command: "node" }]]) {
+    assert.throws(() => validateRuntimeRequirementsV1({ ...requirements, tools }), /RuntimeRequirementsV1/);
+  }
+  const queue = validateTaskQueue({
+    project: { path: process.cwd() },
+    tasks: [
+      { key: "runtime", title: "Runtime", prompt: "Inspect.", allowedPaths: [], runtimeRequirements: requirements,
+        authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } },
+      { key: "after", title: "After", prompt: "Inspect.", allowedPaths: [] },
+    ],
+  });
+  const evidence = authorizeTask(queue.tasks[0], queue.project);
+  assert.deepEqual(evidence.runtimeRequirements, requirements);
+  assert.equal(verifyStoredTaskAuthorization(evidence, { ...queue.tasks[0], runtimeRequirements: undefined }, queue.project), false);
+  assert.equal(authorizeTask(queue.tasks[1], queue.project).runtimeRequirements, undefined);
+  const changed = structuredClone(queue);
+  changed.tasks[0].authorization = undefined;
+  assert.throws(() => validateTaskQueue(changed), /requires enabled task authorization/);
+  const pathTool = { ...requirements, tools: [{ name: "nestedTool", command: "orchestrator_missing_nested_tool_1234" }] };
+  const missing = await queueCommandRuntimePreflightChecks({ ...queue, tasks: [{ ...queue.tasks[0], runtimeRequirements: pathTool }] }, environment);
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].ok, false);
+  assert.match(missing[0].name, /nestedTool/);
+});
+
+test("declared runtime requirements survive recovery without dropping or changing source tools", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-runtime-recovery-"));
+  try {
+    const input = queueAuthoringContractInput(project);
+    input.tasks[0].runtimeRequirements = {
+      contractType: "RuntimeRequirementsV1", contractVersion: "1.0",
+      tools: [{ name: "node", command: "node", versionPrefix: "v22." }],
+    };
+    const source = createRun(validateTaskQueue(input));
+    source.status = "failed";
+    source.tasks[0].status = "failed";
+    source.tasks[1].status = "skipped";
+    source.tasks[0].authorizationEvidence = authorizeTask(source.tasks[0], source.project);
+    await persistRun(source);
+    input.tasks[0].executionKind = { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "recovery" };
+    input.tasks[0].recovery = { contractType: "RecoveryTaskBindingV1", contractVersion: "1.0", sourceRunId: source.id, sourceTaskId: source.tasks[0].id };
+    await assertQueueRecoveryContracts(validateTaskQueue(input));
+    const missing = structuredClone(input);
+    delete missing.tasks[0].runtimeRequirements;
+    await assert.rejects(assertQueueRecoveryContracts(validateTaskQueue(missing)), /RUNTIME_REQUIREMENTS_NARROWED/);
+    const changed = structuredClone(input);
+    changed.tasks[0].runtimeRequirements.tools[0].versionPrefix = "v23.";
+    await assert.rejects(assertQueueRecoveryContracts(validateTaskQueue(changed)), /RUNTIME_REQUIREMENTS_NARROWED/);
+    input.tasks[0].runtimeRequirements.tools.push({ name: "git", command: "git" });
+    await assertQueueRecoveryContracts(validateTaskQueue(input));
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("declared runtime requirements resolve PATH and Windows batch tools without a shell expression", async (context) => {
+  if (process.platform !== "win32") return context.skip("Windows batch resolution");
+  const root = await mkdtemp(join(tmpdir(), "runtime tools with spaces "));
+  try {
+    const tool = join(root, "runtime-probe.cmd");
+    await writeFile(tool, "@echo off\r\necho runtime-version-1\r\n");
+    const requirements = validateRuntimeRequirementsV1({
+      contractType: "RuntimeRequirementsV1", contractVersion: "1.0",
+      tools: [{ name: "batch", command: "runtime-probe", versionPrefix: "runtime-version-1" }],
+    });
+    const environment = { ...process.env, PATH: root, Path: root, PATHEXT: ".EXE;.CMD" };
+    const checks = await checkRuntimeRequirementsV1(requirements, process.cwd(), environment);
+    assert.equal(checks[0].ok, true, checks[0].detail);
+    assert.equal(checks[0].executable?.toLowerCase(), tool.toLowerCase());
+    const shadow = await checkRuntimeRequirementsV1(requirements, root, environment);
+    assert.equal(shadow[0].ok, false);
+    assert.match(shadow[0].detail, /shadowed/);
+    await writeFile(tool, "@echo off\r\nexit /b 2\r\n");
+    assert.equal((await checkRuntimeRequirementsV1(requirements, process.cwd(), environment))[0].ok, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("declared runtime requirements block before launch and recheck the executor environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-runtime-declaration-"));
+  const previousBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  const previousRuntime = process.env.TEST_RUNTIME_NODE;
+  try {
+    const project = join(root, "project");
+    await mkdir(project);
+    git(project, "init");
+    git(project, "config", "user.name", "Test");
+    git(project, "config", "user.email", "test@example.invalid");
+    await writeFile(join(project, "check.cjs"), "const cp = require('node:child_process'); console.log(cp.execFileSync(process.env.TEST_RUNTIME_NODE, ['--version'], {encoding:'utf8'}));");
+    git(project, "add", "check.cjs");
+    git(project, "commit", "-m", "baseline");
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, [
+      "const fs=require('node:fs'); let prompt=''; process.stdin.on('data', s=>prompt+=s);",
+      "process.stdin.on('end',()=>{",
+      " if(!process.env.TEST_RUNTIME_NODE) process.exit(9);",
+      " const args=process.argv.slice(2); const reviewer=prompt.startsWith('Review only');",
+      " if(!reviewer && prompt.includes('Runtime bound') && !prompt.includes('Runtime checks:')) process.exit(8);",
+      " fs.writeFileSync(args[args.indexOf('--output-last-message')+1], reviewer?'VERDICT: APPROVED':'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');",
+      "});",
+    ].join("\n"));
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    process.env.TEST_RUNTIME_NODE = process.execPath;
+    const queue = validateTaskQueue({
+      project: { path: project },
+      tasks: [
+        { key: "runtime", title: "Runtime bound", prompt: "Inspect.", allowedPaths: [],
+          verificationCommands: ['node check.cjs'],
+          runtimeRequirements: { contractType: "RuntimeRequirementsV1", contractVersion: "1.0", tools: [{ name: "nestedNode", environmentVariable: "TEST_RUNTIME_NODE", versionPrefix: process.version }] },
+          authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } },
+        { key: "after", title: "After", prompt: "Inspect.", dependsOn: ["runtime"], allowedPaths: [] },
+      ],
+    });
+    const run = createRun(queue);
+    await executeQueue(run);
+    assert.equal(run.tasks[0].status, "completed", run.tasks[0].log.join("\n"));
+    assert.equal(run.tasks[0].runtimeRequirementEvidence?.[0].executable, process.execPath);
+    assert.match(run.tasks[0].verificationEvidence![0].output, new RegExp(process.version.replaceAll(".", "\\.")));
+    assert.deepEqual((await loadRun(run.id))?.tasks[0].runtimeRequirements, queue.tasks[0].runtimeRequirements);
+    delete process.env.TEST_RUNTIME_NODE;
+    const denied = createRun(queue);
+    await assert.rejects(executeQueue(denied), /Required command runtime unavailable/);
+    await assert.rejects(access(join(testDataDirectory, "runs", denied.id, "run.json")));
+    assert.equal(denied.tasks[0].executionAttempts, undefined);
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    if (previousRuntime === undefined) delete process.env.TEST_RUNTIME_NODE;
+    else process.env.TEST_RUNTIME_NODE = previousRuntime;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("command runtime preflight uses the inherited task environment and fails closed", async () => {

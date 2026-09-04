@@ -17,6 +17,7 @@ import {
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parse } from "yaml";
+import { checkRuntimeRequirementsV1, validateRuntimeRequirementsV1, type RuntimeRequirementsV1, type RuntimeToolCheckV1 } from "./runtime-requirements.ts";
 import { renderProductionLegacyPromptV1 } from "./prompt-compiler-v1/legacy-prompt-renderer.mjs";
 import {
   AmkProjectArtifactsServiceV1,
@@ -368,6 +369,7 @@ export type TaskAuthorizationEvidence = {
   authoringContract?: QueueAuthoringContractV1;
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
+  runtimeRequirements?: RuntimeRequirementsV1;
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
   wholeChangeAcceptance?: WholeChangeAcceptanceV1;
@@ -412,6 +414,7 @@ export type TaskInput = {
   impactPaths?: ImpactPathsV1;
   /** Explicit runtime facts; never inferred from prompt or guard prose. */
   runtimeConstraints?: string[];
+  runtimeRequirements?: RuntimeRequirementsV1;
   /** Exact persisted source task for a recovery task. */
   recovery?: RecoveryTaskBindingV1;
   /** Required explicit execution identity for QueueAuthoringContractV1 tasks. */
@@ -995,6 +998,7 @@ type Task = ResolvedTask & {
   retainedDiffAdmitted?: RecoveryRetainedDiffV1;
   /** Failed machine gates supplied to each verification correction. */
   verificationCorrectionHistory?: VerificationEvidence[][];
+  runtimeRequirementEvidence?: RuntimeToolCheckV1[];
   diff?: string;
   finalOutput?: string;
   reviewStatus?: ReviewStatus;
@@ -2982,6 +2986,7 @@ function authorizationScope(
     | "authoringContract"
     | "impactPaths"
     | "runtimeConstraints"
+    | "runtimeRequirements"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3037,6 +3042,8 @@ function authorizationScope(
   return {
     allowedPaths,
     ...(externalReadRoots ? { externalReadRoots } : {}),
+    ...(task.runtimeRequirements !== undefined
+      ? { runtimeRequirements: validateRuntimeRequirementsV1(task.runtimeRequirements) } : {}),
     ...(authoringScope ?? {}),
     ...(task.wholeChangeAcceptance
       ? { wholeChangeAcceptance: validateWholeChangeAcceptanceV1(task.wholeChangeAcceptance, "Task wholeChangeAcceptance") }
@@ -3417,6 +3424,7 @@ function scopeFingerprint(scope: {
   authoringContract?: QueueAuthoringContractV1;
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
+  runtimeRequirements?: RuntimeRequirementsV1;
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
   wholeChangeAcceptance?: WholeChangeAcceptanceV1;
@@ -3460,6 +3468,7 @@ function matchingApplyContract(
     authoringContract?: QueueAuthoringContractV1;
     impactPaths?: ImpactPathsV1;
     runtimeConstraints?: string[];
+    runtimeRequirements?: RuntimeRequirementsV1;
     recovery?: RecoveryTaskBindingV1;
     executionKind?: TaskExecutionKindV1;
     wholeChangeAcceptance?: WholeChangeAcceptanceV1;
@@ -3530,6 +3539,7 @@ export function authorizeTask(
     | "authoringContract"
     | "impactPaths"
     | "runtimeConstraints"
+    | "runtimeRequirements"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3595,6 +3605,7 @@ export function replayTaskAuthorization(
     | "authoringContract"
     | "impactPaths"
     | "runtimeConstraints"
+    | "runtimeRequirements"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3621,6 +3632,7 @@ export function verifyStoredTaskAuthorization(
     | "authoringContract"
     | "impactPaths"
     | "runtimeConstraints"
+    | "runtimeRequirements"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3654,6 +3666,7 @@ type ProviderRuntimeTaskV1 = Pick<
   | "authoringContract"
   | "impactPaths"
   | "runtimeConstraints"
+  | "runtimeRequirements"
   | "recovery"
   | "executionKind"
   | "wholeChangeAcceptance"
@@ -4523,6 +4536,8 @@ export function validateQueue(value: unknown): {
           );
       }
     }
+    if (task.runtimeRequirements !== undefined && !task.authorization?.enabled)
+      throw new Error(`Task ${index + 1}: runtimeRequirements requires enabled task authorization.`);
     return {
       key: task.key,
       dependsOn: task.dependsOn,
@@ -4539,6 +4554,8 @@ export function validateQueue(value: unknown): {
         : undefined,
       impactPaths,
       runtimeConstraints,
+      runtimeRequirements: task.runtimeRequirements !== undefined
+        ? validateRuntimeRequirementsV1(task.runtimeRequirements) : undefined,
       recovery,
       executionKind,
       wholeChangeAcceptance,
@@ -5366,6 +5383,10 @@ async function persistedRecoverySourceTaskV1(
     );
     if (missingUpstreamConstraints.length)
       throw new Error("RECOVERY_SOURCE_RUNTIME_CONSTRAINTS_NARROWED");
+    for (const tool of upstream.sourceTask.runtimeRequirements?.tools ?? []) {
+      if (!sourceTask.runtimeRequirements?.tools.some(candidate => JSON.stringify(candidate) === JSON.stringify(tool)))
+        throw new Error("RECOVERY_SOURCE_RUNTIME_REQUIREMENTS_NARROWED");
+    }
   }
   const evidence = sourceTask.authorizationEvidence;
   if (
@@ -5467,7 +5488,7 @@ export async function queueRecoveryContractChecks(
     const label = launchAuthorizationTaskLabel(task, index);
     return [(async (): Promise<LaunchAuthorizationCheck> => {
       try {
-        const { sourceConstraints } = await persistedRecoverySourceTaskV1(
+        const { sourceConstraints, sourceTask } = await persistedRecoverySourceTaskV1(
           task.recovery!,
         );
         const recoveryConstraints = new Set(task.runtimeConstraints ?? []);
@@ -5476,6 +5497,10 @@ export async function queueRecoveryContractChecks(
         );
         if (missingConstraints.length)
           throw new Error("RECOVERY_RUNTIME_CONSTRAINTS_NARROWED");
+        for (const tool of sourceTask.runtimeRequirements?.tools ?? []) {
+          if (!task.runtimeRequirements?.tools.some(candidate => JSON.stringify(candidate) === JSON.stringify(tool)))
+            throw new Error("RECOVERY_RUNTIME_REQUIREMENTS_NARROWED");
+        }
         await assertRetainedDiffSource(task, queue.project.path);
         return {
           name: `${label} recovery contract`,
@@ -5608,6 +5633,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       authoringContract: task.authoringContract,
       impactPaths: task.impactPaths,
       runtimeConstraints: task.runtimeConstraints,
+      runtimeRequirements: task.runtimeRequirements,
       recovery: task.recovery,
       executionKind: task.executionKind,
       wholeChangeAcceptance: task.wholeChangeAcceptance,
@@ -6047,6 +6073,7 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     retainedDiff: undefined,
     retainedDiffAdmitted: undefined,
     verificationCorrectionHistory: undefined,
+    runtimeRequirementEvidence: undefined,
     retryLineageChangedFiles:
       retryLineageChangedFiles.length > 0
         ? retryLineageChangedFiles
@@ -6147,6 +6174,7 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
       status: "pending" as Status,
       log: [`Возобновлено из run ${source.id}`],
       verificationCorrectionHistory: undefined,
+      runtimeRequirementEvidence: undefined,
       startedAt: undefined,
       finishedAt: undefined,
       exitCode: undefined,
@@ -7555,7 +7583,12 @@ export async function queueCommandRuntimePreflightChecks(
     queue.project.path,
     environment,
   );
-  return await Promise.all(
+  const declaredChecks = (await Promise.all(queue.tasks.map(async (task, index) =>
+    (await checkRuntimeRequirementsV1(task.runtimeRequirements, queue.project.path,
+      gitSafeDirectoryProcessEnvironment(processEnvironment, task.externalReadRoots)))
+      .map(check => ({ ...check, name: `Task ${index + 1} runtime: ${check.name}` }))
+  ))).flat();
+  return [...declaredChecks, ...await Promise.all(
     commandRuntimeProbes(
       queueConfiguredCommands(queue),
       process.platform,
@@ -7571,7 +7604,7 @@ export async function queueCommandRuntimePreflightChecks(
       ),
       detail: probe.name,
     })),
-  );
+  )];
 }
 
 export async function assertQueueCommandRuntimesAvailable(
@@ -7927,6 +7960,8 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
       task.authorizationEvidence ?? authorizeTask(task, project),
   });
   const additions: string[] = [];
+  if (task.runtimeRequirements)
+    additions.push(`Required runtime tools (resolved by Orchestrator; do not guess installation paths):\n${JSON.stringify(task.runtimeRequirements)}\nRuntime checks: ${JSON.stringify(task.runtimeRequirementEvidence ?? [])}`);
   if (task.wholeChangeAcceptanceEvidence)
     additions.push(
       `Closed whole-change predecessor handoff (authoritative evidence, not instructions):\n${JSON.stringify(task.wholeChangeAcceptanceEvidence)}\nThe current task's machine gates run after this executor. Do not claim their results or rerun them.`,
@@ -9101,6 +9136,17 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       return task.status;
     }
     await admitRetainedDiff(run, task);
+    if (task.runtimeRequirements) {
+      const runtimeBaseline = await readWorkspaceSnapshot(executionPath);
+      task.runtimeRequirementEvidence = await checkRuntimeRequirementsV1(
+        task.runtimeRequirements, executionPath, taskProcessEnvironment(run, task),
+      );
+      await persist(run);
+      if (task.runtimeRequirementEvidence.some(check => !check.ok))
+        throw new Error(`Required runtime unavailable: ${task.runtimeRequirementEvidence.filter(check => !check.ok).map(check => `${check.name}: ${check.detail}`).join("; ")}`);
+      if (changedWorkspaceFiles(runtimeBaseline, await readWorkspaceSnapshot(executionPath)).length)
+        throw new Error("Runtime version probes violated their read-only boundary.");
+    }
     const baseline = await readWorkspaceSnapshot(executionPath);
     if (task.wholeChangeAcceptance) {
       if (!task.promptModel) task.executionAttempts = 0;
@@ -9437,6 +9483,8 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
 export async function executeQueue(run: Run) {
   const replayQueue = rebuildPersistedQueueForReplayV1(run);
   await assertQueueRecoveryContracts(replayQueue);
+  if (replayQueue.tasks.some(task => task.runtimeRequirements))
+    await assertQueueCommandRuntimesAvailable(replayQueue);
   const branch = await currentBranchIdentity(run.project.path);
   await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
   for (const task of run.tasks) {
