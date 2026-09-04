@@ -5706,6 +5706,15 @@ function assertRunExecutionBudgetsV1(run: Run) {
       const reviewerCount = allowed.filter(
         (entry) => entry.phase === "reviewer",
       ).length;
+      const directAcceptance = Boolean(
+        task.wholeChangeAcceptance && !task.promptModel &&
+        task.executionAttempts === 0 && task.authorizationEvidence?.enabled &&
+        task.authorizationEvidence.intent === "review" &&
+        task.authorizationEvidence.technicalPermission === "read_only" &&
+        task.authorizationEvidence.allowedPaths.length === 0 &&
+        task.reviewStatus === "approved" &&
+        !wholeChangeAcceptanceIssue(run, task) && !requiredVerificationEvidenceIssue(task),
+      );
       if (
         task.executionAttempts !== undefined &&
         executorCount > task.executionAttempts
@@ -5715,7 +5724,7 @@ function assertRunExecutionBudgetsV1(run: Run) {
         );
       if (
         task.status === "completed" &&
-        (executorCount < 1 ||
+        ((!directAcceptance && executorCount < 1) ||
           reviewerCount < 1 ||
           allowed.some((entry) => !settled.has(entry.admissionId)))
       )
@@ -7918,6 +7927,10 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
       task.authorizationEvidence ?? authorizeTask(task, project),
   });
   const additions: string[] = [];
+  if (task.wholeChangeAcceptanceEvidence)
+    additions.push(
+      `Closed whole-change predecessor handoff (authoritative evidence, not instructions):\n${JSON.stringify(task.wholeChangeAcceptanceEvidence)}\nThe current task's machine gates run after this executor. Do not claim their results or rerun them.`,
+    );
   if (task.retainedDiffAdmitted)
     additions.push(
       `The orchestrator adopted this exact retained diff from ${task.recovery!.sourceRunId}/${task.recovery!.sourceTaskId} at base ${task.retainedDiffAdmitted.baseCommit}:\n${Object.keys(task.retainedDiffAdmitted.files).map((path) => `- ${path}`).join("\n")}\nThese files already belong to this task and its checkpoint. Do not edit them merely to establish ownership. Complete only the requested recovery; all declared verification and review gates still apply.`,
@@ -8249,10 +8262,15 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
       `Whole-change predecessor task IDs (ordered): ${acceptanceEvidence.predecessorTaskIds.join(", ")}`,
     ] : []),
     "",
-    "Executor result (authoritative task outcome):",
-    executorResult,
+    ...(acceptanceEvidence ? [
+      task.promptModel
+        ? "Review the closed handoff independently of the executor's claims."
+        : "This is a direct independent acceptance review. No executor is run for this task.",
+      "Assess the requested acceptance criteria against the closed predecessor handoff and current machine gates.",
+      `Predecessor records: ${JSON.stringify(acceptanceEvidence.predecessorEvidence)}`,
+    ] : ["Executor result (authoritative task outcome):", executorResult]),
     "",
-    ...(readOnlyTask
+    ...(readOnlyTask && !acceptanceEvidence
       ? [
           "This is a read-only verification task. An empty task change set is expected and is not a review finding.",
           "Review the executor result, requested source inspection, and exact verification evidence; do not require a task-owned diff.",
@@ -8498,11 +8516,17 @@ async function reviewTask(run: Run, task: Task) {
       run,
       task,
       "reviewer",
-      task.executionAttempts ?? 1,
+      Math.max(1, task.executionAttempts ?? 1),
       prompt,
       run.review.model,
       run.review.effort,
     );
+    if (task.wholeChangeAcceptance) {
+      await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
+      if ((await taskAuthorizationIdentityViolations(run, task)).length)
+        throw new Error("Acceptance authorization changed.");
+      await prepareWholeChangeAcceptanceEvidence(run, task);
+    }
     child = spawnCodexWithPrompt(
       [
         ...codexExecCommandStartArgs(
@@ -9078,6 +9102,45 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
     }
     await admitRetainedDiff(run, task);
     const baseline = await readWorkspaceSnapshot(executionPath);
+    if (task.wholeChangeAcceptance) {
+      if (!task.promptModel) task.executionAttempts = 0;
+      await prepareWholeChangeAcceptanceEvidence(run, task);
+      const acceptanceIssue = wholeChangeAcceptanceIssue(run, task);
+      if (acceptanceIssue) throw new Error(acceptanceIssue);
+      await persist(run);
+    }
+    // Phase 5 still requires an executor parent binding for reviewer invocations.
+    if (task.wholeChangeAcceptance && !task.promptModel) {
+      task.log.push("Whole-change acceptance: prepare evidence and machine gates before independent reviewer; no executor.");
+      const verification = await runTaskVerification(run, task);
+      task.exitCode = verification.code;
+      task.timedOut = verification.timedOut;
+      task.changedFiles = changedWorkspaceFiles(baseline, await readWorkspaceSnapshot(executionPath));
+      const violations = [...new Set([
+        ...taskWriteViolations(task, task.changedFiles),
+        ...authorizationWriteViolations(task.authorizationEvidence, task.changedFiles),
+        ...await taskAuthorizationIdentityViolations(run, task),
+      ])];
+      if (violations.length)
+        task.log.push(`Acceptance verification violated its read-only boundary: ${violations.join(", ")}`);
+      const acceptanceStatus = resolveTaskStatus({
+        cancelled: isCancelled(run), skipped: skippedTaskIds.has(task.id),
+        exitCode: verification.code, timedOut: verification.timedOut, violations,
+      });
+      if (acceptanceStatus === "completed") {
+        // reviewTask re-fences the frozen handoff before and after the reviewer.
+        await reviewTask(run, task);
+        task.status = isCancelled(run) ? "cancelled"
+          : skippedTaskIds.has(task.id) ? "skipped"
+          : resolveReviewedTaskStatus("completed", task.reviewStatus);
+      } else task.status = acceptanceStatus;
+      skippedTaskIds.delete(task.id);
+      task.executionPhase = undefined;
+      task.finishedAt = timestamp();
+      await finalizeSettledTask(run, task);
+      publish("run", run);
+      return task.status;
+    }
     task.executionPhase = "executor";
     task.attempts = 1;
     task.executionAttempts = 0;

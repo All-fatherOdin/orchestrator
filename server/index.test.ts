@@ -12328,6 +12328,103 @@ test("whole-change acceptance includes large checkpointed files across writers a
   }
 });
 
+test("whole-change acceptance goes directly to reviewer with frozen handoff and machine gates", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-direct-acceptance-"));
+  const previousBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, [
+      "const fs = require('node:fs'); let prompt = '';",
+      "process.stdin.setEncoding('utf8'); process.stdin.on('data', s => prompt += s);",
+      "process.stdin.on('end', () => {",
+      " const mode = fs.readFileSync('mode.txt', 'utf8');",
+      " fs.appendFileSync(require('node:path').join(__dirname, mode + '.calls'), prompt);",
+      " if (!prompt.startsWith('Review only the authoritative whole-change') || !prompt.includes('PREDECESSOR_GATE') || !prompt.includes('ACCEPTANCE_GATE') || !prompt.includes('owned content')) process.exit(9);",
+      " if (mode === 'reviewwrite') fs.writeFileSync('owned.txt', 'tampered');",
+      " if (mode === 'missing') return;",
+      " const args = process.argv.slice(2); fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], mode === 'reject' ? 'VERDICT: CHANGES_REQUESTED' : 'VERDICT: APPROVED');",
+      "});",
+    ].join("\n"));
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    for (const mode of ["success", "gatefail", "gatewrite", "reject", "reviewwrite", "missing", "invalid"]) {
+      const project = join(root, mode);
+      await mkdir(project);
+      git(project, "init");
+      git(project, "config", "user.name", "Test");
+      git(project, "config", "user.email", "test@example.invalid");
+      await writeFile(join(project, "mode.txt"), mode);
+      git(project, "add", "mode.txt");
+      git(project, "commit", "-m", "baseline");
+      await writeFile(join(project, "owned.txt"), "owned content");
+      const command = mode === "gatefail" ? 'node -e "process.exit(2)"'
+        : mode === "gatewrite" ? 'node -e "require(\'node:fs\').writeFileSync(\'owned.txt\',\'changed\')"'
+        : 'node -e "console.log(\'ACCEPTANCE_GATE\')"';
+      const run = createRun(validateTaskQueue({
+        project: { path: project },
+        review: { enabled: true, maxCorrections: 2 },
+        tasks: [
+          { key: "writer", title: "Writer", prompt: "Write.", allowedPaths: ["owned.txt"] },
+          {
+            key: "accept", title: "Accept", prompt: "Use the closed predecessor evidence to review the entire change.",
+            dependsOn: ["writer"], allowedPaths: [], verificationCommands: [command],
+            authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" },
+            wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"] },
+            executionBudget: {
+              ...executionBudgetPolicyFixtureV1, maxProviderInvocations: 2,
+              phaseCaps: { executor: 1, reviewer: 1, correction: 0 },
+            },
+          },
+        ],
+      }));
+      const writer = run.tasks[0];
+      writer.status = "completed";
+      writer.reviewStatus = mode === "invalid" ? "changes_requested" : "approved";
+      writer.changedFiles = ["owned.txt"];
+      writer.verificationEvidence = [{ command: "predecessor-check", exitCode: 0, timedOut: false, output: "PREDECESSOR_GATE" }];
+      await executeQueue(run);
+      const acceptance = run.tasks[1];
+      assert.equal(acceptance.status, mode === "success" ? "completed" : "failed", `${mode}: ${acceptance.log.join("\n")}`);
+      assert.equal(acceptance.executionAttempts, 0);
+      assert.equal(acceptance.finalOutput, undefined);
+      const called = await access(join(root, mode + ".calls")).then(() => true, () => false);
+      assert.equal(called, !["gatefail", "gatewrite", "invalid"].includes(mode), mode);
+      if (called) {
+        const prompt = await readFile(join(root, mode + ".calls"), "utf8");
+        assert.equal(prompt.split("Review only the authoritative whole-change").length - 1, 1);
+        assert.ok(prompt.includes(writer.id));
+        assert.ok(!prompt.includes("Executor result (authoritative task outcome)"));
+      }
+      if (mode === "success") {
+        assert.equal(acceptance.reviewStatus, "approved");
+        assert.ok(acceptance.executionBudgetEvidence?.length);
+        const admissions = acceptance.executionBudgetEvidence?.filter((record) => record.contractType === "ExecutionBudgetAdmissionV1");
+        assert.equal(admissions?.length, 1);
+        assert.equal(admissions?.[0].phase, "reviewer");
+        assert.equal((await loadRun(run.id))?.tasks[1].status, "completed");
+        const savedHandoff = acceptance.wholeChangeAcceptanceEvidence;
+        acceptance.wholeChangeAcceptanceEvidence = undefined;
+        await persistRun(run);
+        await assert.rejects(loadRun(run.id), /PERSISTED_EXECUTION_BUDGET_INVALID/);
+        acceptance.wholeChangeAcceptanceEvidence = savedHandoff;
+        await persistRun(run);
+        const executorPrompt = buildPrompt(acceptance, run.project);
+        assert.ok(executorPrompt.includes("Closed whole-change predecessor handoff"));
+        assert.ok(executorPrompt.includes(writer.id));
+        assert.ok(executorPrompt.includes("PREDECESSOR_GATE"));
+        assert.ok(executorPrompt.includes("owned content"));
+      }
+    }
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("external read roots are normalized, approval-bound, persisted, and shown to the executor", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-external-project-"));
   const external = await mkdtemp(join(tmpdir(), "orchestrator-external-read-"));

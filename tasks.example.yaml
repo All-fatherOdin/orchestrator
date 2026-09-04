@@ -272,12 +272,13 @@ tasks:
     # WholeChangeAcceptanceV1 appears exactly once, as the final task and unique
     # dependency sink. Its direct predecessor list covers every writer anywhere
     # in this queue, so every writer is an ancestor of this read-only review.
-    # Dependencies order this source inspection after implementation, but do
-    # not inject predecessor verification records into this executor. Its own
-    # commands run after the executor and are supplied only to the independent
-    # reviewer. Use this task for direct read-only source inspection, not for a
-    # claim that it consumed evidence unavailable in its prompt.
-    prompt: Inspect the completed integration source directly and report findings without edits; do not claim access to predecessor verification records.
+    # Orchestrator freezes the predecessor handoff, runs this task's required
+    # gates, and invokes the independent reviewer directly, without an executor.
+    # The reviewer receives predecessor IDs, file content, verification receipts,
+    # and this task's machine gate results. Changed evidence prevents approval.
+    # Phase 5 promptModel retains its required executor parent binding; that
+    # executor receives the frozen predecessor handoff before it starts.
+    prompt: Review the completed integration against the closed predecessor handoff and exact verification records; report findings without edits.
     model: terra
     effort: medium
     dependsOn: [typecheck-fixes, reconnect-logic, integration-tests]
