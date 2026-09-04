@@ -109,6 +109,7 @@ review:
 git:
   # Creates a checkpoint commit after each reviewer-approved task.
   checkpointCommits: false
+  # Enable this before adding an ordinary task's checkpointPolicy below.
 tasks:
   # Every queue task must be independently useful, not an artificial phase of one outcome.
   # If production-owned code must be changed or called directly, keep the same task's implementation, tests, and benchmark together.
@@ -118,6 +119,17 @@ tasks:
   # Tasks with no unmet dependsOn entries may run in parallel.
   - key: typecheck-fixes
     title: Fix TypeScript errors
+    # Optional literal checkpoint message, with no forced prefix or templating.
+    # Requires enabled apply authorization and checkpointCommits (or a managed
+    # workspace). The legacy default message is retained when this is omitted.
+    # required: true makes a missing/invalid checkpoint fail this task and block
+    # dependents, including when the task produced no changes. No empty commit
+    # or extra edits are manufactured to satisfy the requirement.
+    # checkpointPolicy:
+    #   contractType: CheckpointPolicyV1
+    #   contractVersion: "1.0"
+    #   message: "fix: correct notification types"
+    #   required: true
     # Declare tools even when only a nested .ps1/.mjs script uses them.
     # Each tool is resolved in the task environment and probed with --version
     # before launch and again before implementation. Probes must be read-only.

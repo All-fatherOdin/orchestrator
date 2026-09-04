@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { tmpdir } from "node:os";
@@ -12503,6 +12503,85 @@ test("external Git roots use process-local safe.directory configuration and pass
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(external, { recursive: true, force: true });
+  }
+});
+
+test("checkpoint policy preserves literal messages and blocks missing or altered required commits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "orchestrator-checkpoint-policy-"));
+  const previousBin = process.env.CODEX_BIN;
+  const previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, [
+      "const fs=require('node:fs'); let p=''; process.stdin.on('data',s=>p+=s);",
+      "process.stdin.on('end',()=>{const a=process.argv.slice(2); const reviewer=p.startsWith('Review only');",
+      "if(!reviewer && p.includes('WRITE_POLICY_FIXTURE')) fs.writeFileSync('owned.txt','after');",
+      "fs.writeFileSync(a[a.indexOf('--output-last-message')+1],reviewer?'VERDICT: APPROVED':'ORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');});",
+    ].join("\n"));
+    process.env.CODEX_BIN = process.execPath;
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    for (const mode of ["success", "missing", "hook-fails", "message-changed", "optional"]) {
+      const project = join(root, mode);
+      await mkdir(project);
+      git(project, "init");
+      git(project, "config", "user.name", "Test");
+      git(project, "config", "user.email", "test@example.invalid");
+      await writeFile(join(project, "owned.txt"), "before");
+      git(project, "add", ".");
+      git(project, "commit", "-m", "baseline");
+      if (mode === "hook-fails" || mode === "message-changed") {
+        const hook = join(project, ".git", "hooks", mode === "hook-fails" ? "pre-commit" : "commit-msg");
+        await writeFile(hook, mode === "hook-fails" ? "#!/bin/sh\nexit 1\n" : '#!/bin/sh\necho changed-by-hook > "$1"\n');
+        await chmod(hook, 0o755);
+      }
+      const policy = { contractType: "CheckpointPolicyV1", contractVersion: "1.0", message: 'fix: literal $HOME & "scope"', required: mode !== "optional" };
+      const approval = { approvalId: "writer", intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", allowedPaths: ["owned.txt"], verificationCommands: ["node --version"] };
+      const input: any = {
+        project: { path: project, approvedApplyContracts: [approval] }, git: { checkpointCommits: true },
+        tasks: [
+          { key: "writer", title: "Human-readable title", prompt: ["missing", "optional"].includes(mode) ? "Inspect." : "WRITE_POLICY_FIXTURE", allowedPaths: approval.allowedPaths, verificationCommands: approval.verificationCommands, checkpointPolicy: policy,
+            authorization: { enabled: true, intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", approvalId: "writer" } },
+          { key: "after", title: "After", prompt: "Inspect.", dependsOn: ["writer"], allowedPaths: [] },
+        ],
+      };
+      if (mode === "hook-fails") {
+        input.tasks[0].authoringContract = { contractType: "QueueAuthoringContractV1", contractVersion: "1.0" };
+        input.tasks[0].executionKind = { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "ordinary" };
+        input.tasks[0].impactPaths = { production: ["owned.txt"] };
+        input.tasks[0].runtimeConstraints = ["Use the declared Node verification."];
+        input.project.approvedApplyContracts[0].impactPaths = { production: ["owned.txt"] };
+      }
+      const queue = validateTaskQueue(input);
+      const evidence = authorizeTask(queue.tasks[0], queue.project);
+      assert.equal(verifyStoredTaskAuthorization(evidence, { ...queue.tasks[0], checkpointPolicy: undefined }, queue.project), false);
+      for (const invalid of [{ ...policy, message: "bad\nmessage" }, { ...policy, required: "true" }, { ...policy, message: "x".repeat(201) }]) {
+        const bad = structuredClone(input);
+        bad.tasks[0].checkpointPolicy = invalid;
+        assert.throws(() => validateTaskQueue(bad), /CHECKPOINT_POLICY_INVALID/);
+      }
+      const disabled = structuredClone(input);
+      disabled.git.checkpointCommits = false;
+      assert.throws(() => validateTaskQueue(disabled), /enabled checkpoints/);
+      const run = createRun(queue);
+      await executeQueue(run);
+      const succeeds = ["success", "optional"].includes(mode);
+      assert.equal(run.tasks[0].status, succeeds ? "completed" : "failed", `${mode}: ${run.tasks[0].log.join("\n")}`);
+      assert.equal(run.tasks[1].status, succeeds ? "completed" : "blocked", mode);
+      if (mode === "success") {
+        assert.equal(git(project, "log", "-1", "--format=%B").trim(), policy.message);
+        assert.equal(run.tasks[0].checkpoint?.message, policy.message);
+        assert.equal(await isManagedCheckpoint(run, run.tasks[0]), true);
+        assert.deepEqual((await loadRun(run.id))?.tasks[0].checkpointPolicy, policy);
+      } else if (mode === "optional") assert.equal(run.tasks[0].checkpoint, undefined);
+      else assert.ok(run.tasks[0].log.some(line => line.includes("CHECKPOINT_POLICY_UNSATISFIED")));
+      if (mode === "hook-fails") assert.deepEqual(Object.keys(run.tasks[0].retainedDiff?.files ?? {}), ["owned.txt"]);
+    }
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+    else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    await rm(root, { recursive: true, force: true });
   }
 });
 

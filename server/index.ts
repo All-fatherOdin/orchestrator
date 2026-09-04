@@ -257,6 +257,12 @@ type Limits = {
   maxParallelTasks: number;
 };
 type GitSettings = { checkpointCommits: boolean };
+export type CheckpointPolicyV1 = {
+  contractType: "CheckpointPolicyV1";
+  contractVersion: "1.0";
+  message: string;
+  required: boolean;
+};
 type Checkpoint = {
   hash: string;
   parentHash: string;
@@ -377,6 +383,7 @@ export type TaskAuthorizationEvidence = {
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
   runtimeRequirements?: RuntimeRequirementsV1;
+  checkpointPolicy?: CheckpointPolicyV1;
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
   wholeChangeAcceptance?: WholeChangeAcceptanceV1;
@@ -422,6 +429,7 @@ export type TaskInput = {
   /** Explicit runtime facts; never inferred from prompt or guard prose. */
   runtimeConstraints?: string[];
   runtimeRequirements?: RuntimeRequirementsV1;
+  checkpointPolicy?: CheckpointPolicyV1;
   /** Exact persisted source task for a recovery task. */
   recovery?: RecoveryTaskBindingV1;
   /** Required explicit execution identity for QueueAuthoringContractV1 tasks. */
@@ -2758,6 +2766,18 @@ function isSafeRecoveryIdentifier(value: unknown): value is string {
     value !== "..";
 }
 
+export function validateCheckpointPolicyV1(value: unknown): CheckpointPolicyV1 {
+  const entry = value as CheckpointPolicyV1;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+    Object.keys(entry).sort().join(",") !== "contractType,contractVersion,message,required" ||
+    entry.contractType !== "CheckpointPolicyV1" || entry.contractVersion !== "1.0" ||
+    typeof entry.required !== "boolean" || typeof entry.message !== "string" ||
+    !entry.message.length || entry.message.length > 200 || entry.message.trim() !== entry.message ||
+    /[\x00-\x1f\x7f]/.test(entry.message))
+    throw new Error("CHECKPOINT_POLICY_INVALID: provide a literal single-line message (1–200 characters) and required boolean.");
+  return { contractType: "CheckpointPolicyV1", contractVersion: "1.0", message: entry.message, required: entry.required };
+}
+
 export function validateInitialWorkspaceStateV1(value: unknown): InitialWorkspaceStateV1 {
   const entry = value as InitialWorkspaceStateV1;
   if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
@@ -3018,6 +3038,7 @@ function authorizationScope(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "checkpointPolicy"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3075,6 +3096,8 @@ function authorizationScope(
     ...(externalReadRoots ? { externalReadRoots } : {}),
     ...(task.runtimeRequirements !== undefined
       ? { runtimeRequirements: validateRuntimeRequirementsV1(task.runtimeRequirements) } : {}),
+    ...(task.checkpointPolicy !== undefined
+      ? { checkpointPolicy: validateCheckpointPolicyV1(task.checkpointPolicy) } : {}),
     ...(authoringScope ?? {}),
     ...(task.wholeChangeAcceptance
       ? { wholeChangeAcceptance: validateWholeChangeAcceptanceV1(task.wholeChangeAcceptance, "Task wholeChangeAcceptance") }
@@ -3494,6 +3517,7 @@ function scopeFingerprint(scope: {
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
   runtimeRequirements?: RuntimeRequirementsV1;
+  checkpointPolicy?: CheckpointPolicyV1;
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
   wholeChangeAcceptance?: WholeChangeAcceptanceV1;
@@ -3539,6 +3563,7 @@ function matchingApplyContract(
     impactPaths?: ImpactPathsV1;
     runtimeConstraints?: string[];
     runtimeRequirements?: RuntimeRequirementsV1;
+    checkpointPolicy?: CheckpointPolicyV1;
     recovery?: RecoveryTaskBindingV1;
     executionKind?: TaskExecutionKindV1;
     wholeChangeAcceptance?: WholeChangeAcceptanceV1;
@@ -3610,6 +3635,7 @@ export function authorizeTask(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "checkpointPolicy"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3676,6 +3702,7 @@ export function replayTaskAuthorization(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "checkpointPolicy"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3703,6 +3730,7 @@ export function verifyStoredTaskAuthorization(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "checkpointPolicy"
     | "recovery"
     | "executionKind"
     | "wholeChangeAcceptance"
@@ -3737,6 +3765,7 @@ type ProviderRuntimeTaskV1 = Pick<
   | "impactPaths"
   | "runtimeConstraints"
   | "runtimeRequirements"
+  | "checkpointPolicy"
   | "recovery"
   | "executionKind"
   | "wholeChangeAcceptance"
@@ -4608,6 +4637,10 @@ export function validateQueue(value: unknown): {
     }
     if (task.runtimeRequirements !== undefined && !task.authorization?.enabled)
       throw new Error(`Task ${index + 1}: runtimeRequirements requires enabled task authorization.`);
+    if (task.checkpointPolicy !== undefined && (
+      !task.authorization?.enabled || task.authorization.intent !== "apply" || !allowedPaths?.length ||
+      (!task.workspace && queue.git?.checkpointCommits !== true)))
+      throw new Error(`Task ${index + 1}: checkpointPolicy requires an authorized writing task and enabled checkpoints.`);
     return {
       key: task.key,
       dependsOn: task.dependsOn,
@@ -4626,6 +4659,7 @@ export function validateQueue(value: unknown): {
       runtimeConstraints,
       runtimeRequirements: task.runtimeRequirements !== undefined
         ? validateRuntimeRequirementsV1(task.runtimeRequirements) : undefined,
+      checkpointPolicy: task.checkpointPolicy !== undefined ? validateCheckpointPolicyV1(task.checkpointPolicy) : undefined,
       recovery,
       executionKind,
       wholeChangeAcceptance,
@@ -5753,6 +5787,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       impactPaths: task.impactPaths,
       runtimeConstraints: task.runtimeConstraints,
       runtimeRequirements: task.runtimeRequirements,
+      checkpointPolicy: task.checkpointPolicy,
       recovery: task.recovery,
       executionKind: task.executionKind,
       wholeChangeAcceptance: task.wholeChangeAcceptance,
@@ -7307,7 +7342,7 @@ export async function createCheckpoint(run: Run, task: Task) {
     task.log.push("Checkpoint was not created: parent commit is unavailable.");
     return;
   }
-  const message = `orchestrator: ${task.title}`.slice(0, 200);
+  const message = task.checkpointPolicy ? validateCheckpointPolicyV1(task.checkpointPolicy).message : `orchestrator: ${task.title}`.slice(0, 200);
   let head: { code: number; output: string };
   if (task.workspaceAttemptId) {
     try {
@@ -7359,6 +7394,13 @@ export async function createCheckpoint(run: Run, task: Task) {
     task.log.push("Checkpoint создан, но hash не получен.");
     return;
   }
+  const recordedMessage = task.checkpointPolicy
+    ? await runGit(cwd, ["show", "-s", "--format=%B", head.output])
+    : { code: 0, output: message };
+  if (recordedMessage.code !== 0) {
+    task.log.push("Checkpoint created, but its commit message could not be verified.");
+    return;
+  }
   const ledger: CheckpointLedgerEntry = {
     ledgerId: randomBytes(24).toString("hex"),
     runId: run.id,
@@ -7366,7 +7408,7 @@ export async function createCheckpoint(run: Run, task: Task) {
     commitHash: head.output,
     parentHash: parent.output,
     branch,
-    message,
+    message: recordedMessage.output,
     createdAt: timestamp(),
   };
   const canonical = checkpointCanonical(ledger);
@@ -8081,6 +8123,8 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
       task.authorizationEvidence ?? authorizeTask(task, project),
   });
   const additions: string[] = [];
+  if (task.checkpointPolicy)
+    additions.push(`Runner-owned checkpoint policy: ${JSON.stringify(task.checkpointPolicy)}. Do not create a Git commit or make unnecessary edits merely to produce a checkpoint.`);
   if (task.runtimeRequirements)
     additions.push(`Required runtime tools (resolved by Orchestrator; do not guess installation paths):\n${JSON.stringify(task.runtimeRequirements)}\nRuntime checks: ${JSON.stringify(task.runtimeRequirementEvidence ?? [])}`);
   if (task.wholeChangeAcceptanceEvidence)
@@ -9090,6 +9134,22 @@ export async function finalizeSettledTask(run: Run, task: Task) {
   return serializeTaskFinalization(run, task, async () => {
     if (task.status === "completed") {
       await createCheckpoint(run, task);
+      if (task.checkpointPolicy && (task.checkpointPolicy.required || task.checkpoint)) {
+        // Managed attempts keep their commit in the owned worktree until merge.
+        const checkpointPath = await taskExecutionPathV1(run, task);
+        const checkpointRun = { ...run, project: { ...run.project, path: checkpointPath } };
+        const actualMessage = task.checkpoint
+          ? await runGit(checkpointPath, ["show", "-s", "--format=%B", task.checkpoint.hash]) : undefined;
+        if (task.checkpoint?.message !== task.checkpointPolicy.message ||
+          !await isManagedCheckpoint(checkpointRun, task) || actualMessage?.code !== 0 ||
+          actualMessage.output !== task.checkpointPolicy.message) {
+          task.status = "failed";
+          task.exitCode = 1;
+          task.log.push("CHECKPOINT_POLICY_UNSATISFIED: checkpoint is missing, unauthenticated, or has a different commit message.");
+          await persist(run);
+          return;
+        }
+      }
       if (task.workspaceAttemptId) {
         const attempt = await inspectOwnedWorkspaceAttemptV1(
           runStatePath(run.id),
@@ -9600,6 +9660,17 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       task.log.push(`Retained diff evidence unavailable: ${error instanceof Error ? error.message : "invalid file state"}`);
     }
     await finalizeSettledTask(run, task);
+    if (task.status === "failed" && task.checkpointPolicy) {
+      // Checkpoint rejection can turn a reviewed success into a failed writer.
+      // Preserve its uncommitted files for the existing authenticated recovery.
+      try {
+        await captureRetainedDiff(run, task, baseline.get("\0HEAD") ?? "");
+        await persist(run);
+      } catch (error) {
+        task.log.push(`Checkpoint recovery evidence unavailable: ${error instanceof Error ? error.message : "invalid file state"}`);
+        await persist(run);
+      }
+    }
     publish("run", run);
     return task.status;
 }
