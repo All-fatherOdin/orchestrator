@@ -1,4 +1,5 @@
 import express from "express";
+import { coordinationReport } from "./coordination-economics.ts";
 import { installLocalApiSecurity, LOCAL_API_HOST } from "./local-api-security.ts";
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
@@ -1248,6 +1249,7 @@ export function projectRunMetrics(run: Run) {
     durationMs: durationMs(run.startedAt, run.finishedAt),
     tokens,
     tasks,
+    coordination: coordinationReport(run),
   };
 }
 

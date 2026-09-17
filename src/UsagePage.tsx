@@ -1,12 +1,14 @@
 import { apiFetch as fetch } from "./api-client";
 import { useEffect, useMemo, useState } from "react";
+import { CoordinationReport } from "./CoordinationReport";
+import type { CoordinationReport as CoordinationData } from "../shared/coordination-economics";
 
 type UsageRecord = { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens?: number };
 type Task = { id: string; key?: string; title: string; model: string; usage?: UsageRecord[] };
 type OutcomeClass = "success" | "failure" | "interrupted" | "pending";
 type TokenMetrics = { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens?: number; totalTokens: number; calls: number };
 type TaskMetrics = { id: string; key?: string; status: string; outcome: OutcomeClass; durationMs: number | null; executionAttempts: number | null; reviewCorrectionCycles: number | null; tokens: TokenMetrics };
-type RunMetrics = { id: string; status: string; outcome: OutcomeClass; durationMs: number | null; tokens: TokenMetrics; tasks: TaskMetrics[] };
+type RunMetrics = { id: string; status: string; outcome: OutcomeClass; durationMs: number | null; tokens: TokenMetrics; tasks: TaskMetrics[]; coordination?: CoordinationData };
 export type UsageRun = {
   id: string;
   project: { name: string };
@@ -79,23 +81,28 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
   const [metricsByRun, setMetricsByRun] = useState<Record<string, RunMetrics>>({});
 
   useEffect(() => {
+    let cancelled = false;
     void fetch(`/api/runs?offset=${runsOffset}&limit=${pageSize}`)
       .then((response) => response.ok ? response.json() : { runs: [], total: 0 })
-      .then((value: { runs: RunSummary[]; total: number }) => { setRuns(value.runs); setRunsTotal(value.total); })
-      .catch(() => { setRuns([]); setRunsTotal(0); });
+      .then((value: { runs: RunSummary[]; total: number }) => { if (!cancelled) { setRuns(value.runs); setRunsTotal(value.total); } })
+      .catch(() => { if (!cancelled) { setRuns([]); setRunsTotal(0); } });
+    return () => { cancelled = true; };
   }, [runsOffset]);
   useEffect(() => {
     if (activeRun && !source) setSource(`${activeRun.pipeline ? "pipeline" : "run"}:${activeRun.pipeline?.id ?? activeRun.id}`);
   }, [activeRun, source]);
   useEffect(() => {
     if (!source) return;
+    let cancelled = false;
     const [kind, id] = source.split(":", 2);
-    if (kind === "run" && activeRun?.id === id) { setSourceRuns([activeRun]); return; }
+    if (kind === "run" && activeRun?.id === id) { setSourceRuns([activeRun]); setLoading(false); return; }
     setLoading(true);
+    setSourceRuns([]);
     const path = kind === "pipeline" ? `/api/pipelines/${encodeURIComponent(id)}/runs` : `/api/runs/${encodeURIComponent(id)}`;
     void fetch(path).then((response) => response.ok ? response.json() : null).then((value: UsageRun | { runs: UsageRun[] } | null) => {
-      setSourceRuns(value && "runs" in value ? value.runs : value ? [value] : []);
-    }).catch(() => setSourceRuns([])).finally(() => setLoading(false));
+      if (!cancelled) setSourceRuns(value && "runs" in value ? value.runs : value ? [value] : []);
+    }).catch(() => { if (!cancelled) setSourceRuns([]); }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [activeRun, source]);
   useEffect(() => { setQueueId("all"); setTaskId("all"); }, [source]);
   useEffect(() => setTaskId("all"), [queueId]);
@@ -154,21 +161,27 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
   return <section className="usagePage">
     <div className="sectionHeading usageHeading"><div><h2>Расход</h2><span>Токены по запуску, очереди и отдельной задаче</span></div></div>
     <div className="usageFilters">
-      <label>Запуск или цепочка<select value={source} onChange={(event) => setSource(event.target.value)}>
+      <label>Запуск или цепочка<select aria-label="Запуск или цепочка" value={source} onChange={(event) => setSource(event.target.value)}>
         {!sources.length ? <option value="">Нет запусков</option> : null}
+        {source && !sources.some(item => item.value === source) ? <option value={source}>Выбранный запуск · {sourceRuns[0]?.project.name ?? source}</option> : null}
         {sources.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
       </select></label>
-      <label>Очередь<select value={queueId} onChange={(event) => setQueueId(event.target.value)} disabled={!sourceRuns.length || !isPipeline}>
+      <label>Очередь<select aria-label="Очередь" value={queueId} onChange={(event) => setQueueId(event.target.value)} disabled={!sourceRuns.length || !isPipeline}>
         <option value="all">{isPipeline ? "Все очереди цепочки" : "Текущая очередь"}</option>
         {isPipeline ? sourceRuns.map((run) => <option key={run.id} value={run.id}>Очередь {run.pipeline?.index} из {run.pipeline?.total} · {run.project.name}</option>) : null}
       </select></label>
-      <label>Задача<select value={taskId} onChange={(event) => setTaskId(event.target.value)} disabled={!allTasks.length}>
+      <label>Задача<select aria-label="Задача" value={taskId} onChange={(event) => setTaskId(event.target.value)} disabled={!allTasks.length}>
         <option value="all">Все задачи</option>
         {allTasks.map((task) => <option key={`${task.runId}:${task.id}`} value={`${task.runId}:${task.id}`}>{task.queueIndex ? `Оч. ${task.queueIndex} · ` : ""}{task.key ?? task.id} · {task.title}</option>)}
       </select></label>
     </div>
     <div className="usagePagination"><span>Запуски: {runsTotal ? `${runsOffset + 1}–${Math.min(runsOffset + pageSize, runsTotal)} из ${runsTotal}` : "нет"}</span><button onClick={() => setRunsOffset((value) => Math.max(0, value - pageSize))} disabled={runsOffset === 0}>Назад</button><button onClick={() => setRunsOffset((value) => value + pageSize)} disabled={runsOffset + pageSize >= runsTotal}>Далее</button></div>
     {loading ? <p className="empty">Загружаем данные запуска…</p> : !sourceRuns.length ? <p className="empty">Выберите запуск, чтобы посмотреть расход.</p> : <>
+      {visibleRuns.filter(run => taskId === "all" || visibleTasks.some(task => task.runId === run.id)).map(run => {
+        const report = metricsByRun[run.id]?.coordination;
+        const selected = taskId === "all" ? undefined : visibleTasks.find(task => task.runId === run.id)?.id;
+        return report ? <CoordinationReport key={run.id} report={report} taskId={selected} /> : <p className="usageEmpty" key={run.id}>Отчёт координации для {run.id} пока недоступен.</p>;
+      })}
       <div className="usageMetrics"><UsageMetric label="Всего токенов" value={usage.input + usage.output} /><UsageMetric label="Входящие токены" value={usage.input} /><UsageMetric label="Исходящие токены" value={usage.output} /><UsageMetric label="Кэш-чтение" value={usage.cacheRead} title={`Метрики точки доступа: ${format.format(endpointCacheTotals.read)}`} /><UsageMetric label="Кэш-запись" value={usage.cacheWrite} title={`Метрики точки доступа: ${format.format(endpointCacheTotals.write)}`} /><ProcessMetric label="Время задач" value={formatDuration(processTotals.durationMs)} /><ProcessMetric label="Запуски исполнителя" value={processTotals.attempts === null ? "—" : format.format(processTotals.attempts)} /><ProcessMetric label="Циклы проверки" value={processTotals.cycles === null ? "—" : format.format(processTotals.cycles)} /><article className="usageMetric"><span>Стоимость</span><strong>Не предоставлена CLI</strong><small>Без тарифов провайдера оценка была бы неточной</small></article></div>
       {!hasUsage && !hasProcessMetrics ? <p className="usageEmpty">Для выбранных данных пока нет событий телеметрии. Метрики появятся у новых запусков; старые записи продолжат открываться без миграции.</p> : <>
         {hasUsage && taskId === "all" ? <section className="usageChart"><div className="usageChartHead"><h3>{isPipeline && queueId === "all" ? "Токены по всем очередям" : "Токены по задачам"}</h3><span><i className="input" /> входящие без кэша <i className="output" /> исходящие <i className="cached" /> кэш-чтение</span></div>{allTasks.map((task) => <TaskBar key={`${task.runId}:${task.id}`} task={task} maximum={maximum} />)}</section> : null}
