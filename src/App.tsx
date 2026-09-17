@@ -1,7 +1,9 @@
+import { apiFetch as fetch } from "./api-client";
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse, stringify } from "yaml";
 import { UsagePage } from "./UsagePage";
 import { OperatorDashboard } from "./OperatorDashboard";
+import { TaskFailurePanel, PreflightFailurePanel, taskFailureGuidance, type DiagnosticTask, type PreflightCheck } from "./FailureGuidance";
 
 type Status =
   | "pending"
@@ -36,7 +38,7 @@ type ProjectProfile = {
   allowedModels: Array<"luna" | "terra" | "sol">;
 };
 type Checkpoint = { hash: string; message: string; createdAt: string };
-type Task = {
+type Task = DiagnosticTask & {
   id: string;
   key?: string;
   dependsOn?: string[];
@@ -330,6 +332,9 @@ export function App() {
   const [run, setRun] = useState<Run | null>(null);
   const [queue, setQueue] = useState(emptyQueue);
   const [error, setError] = useState("");
+  const [preflightFailures, setPreflightFailures] = useState<PreflightCheck[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState<string>();
+  useEffect(() => setPreflightFailures([]), [queue]);
   const [notice, setNotice] = useState("");
   const [isStarting, setIsStarting] = useState(false);
   const [isRunLoading, setIsRunLoading] = useState(true);
@@ -364,9 +369,19 @@ export function App() {
   );
   const [logSearch, setLogSearch] = useState("");
   const current =
+    run?.tasks.find((task) => task.id === selectedTaskId) ??
     run?.tasks.find((task) => task.status === "running") ??
     run?.tasks.find((task) => task.status === "failed") ??
     run?.tasks.at(-1);
+  function selectTask(id: string) {
+    setSelectedTaskId(id);
+    requestAnimationFrame(() => {
+      const inspector = document.querySelector<HTMLElement>(".inspectorBody");
+      if (inspector) inspector.scrollTop = 0;
+      if (window.matchMedia("(max-width: 1100px)").matches)
+        document.querySelector(".mobileTaskGuidance")?.scrollIntoView({ block: "nearest" });
+    });
+  }
   const completed =
     run?.tasks.filter((task) => task.status === "completed").length ?? 0;
   const runningCount =
@@ -405,8 +420,8 @@ export function App() {
   );
   function taskStateDetail(task: Task) {
     if (task.status === "running") return "Выполнение и проверки";
-    if (task.status === "blocked")
-      return task.log.find((line) => line.startsWith("Blocked:")) ?? "Заблокировано";
+    if (["blocked", "failed", "timed_out"].includes(task.status))
+      return taskFailureGuidance(task, run?.tasks ?? [])?.reason ?? statusLabel[task.status];
     if (task.status === "pending") {
       const unmet = (task.dependsOn ?? []).filter(
         (key) => taskByKey.get(key)?.status !== "completed",
@@ -570,6 +585,7 @@ export function App() {
   }
   async function start() {
     setError("");
+    setPreflightFailures([]);
     setIsStarting(true);
     try {
       const preflight = await fetch("/api/preflight", {
@@ -577,20 +593,27 @@ export function App() {
         headers: { "Content-Type": "text/yaml" },
         body: queue,
       }).then(
-        (response) =>
-          parseJsonResponse<{
+        async (response) => {
+          const result = await parseJsonResponse<{
             ok: boolean;
             checks: { name: string; ok: boolean; detail: string }[];
             contextPreviews?: ContextPreview[];
-          }>(response, "Проверка очереди"),
+            error?: string;
+          }>(response, "Проверка очереди");
+          if (!response.ok && !Array.isArray(result.checks))
+            throw new Error(result.error ?? "Не удалось проверить очередь. Повторите действие.");
+          return result;
+        },
       );
-      if (!preflight.ok)
+      if (!preflight.ok) {
+        setPreflightFailures(preflight.checks.filter(check => !check.ok && check.name !== "AGENTS.md"));
         throw new Error(
           preflight.checks
             .filter((check) => !check.ok)
             .map((check) => `${check.name}: ${check.detail}`)
             .join("; "),
         );
+      }
       setContextPreviews(preflight.contextPreviews ?? []);
       const parsed = await fetch("/api/runs", {
         method: "POST",
@@ -1458,6 +1481,7 @@ export function App() {
                 ) : null}
               </section>
             )}
+            <PreflightFailurePanel checks={preflightFailures} />
             {contextPreviews.length > 0 && (
               <section className="contextPreview" aria-label="Предпросмотр проверки контекста">
                 <div className="sectionHeading">
@@ -1587,7 +1611,7 @@ export function App() {
                         )}
                       </div>
                       <div className="taskBody">
-                        <h3 title={task.title}>{task.title}</h3>
+                        <h3 title={task.title}><button className="taskSelect" aria-pressed={current?.id === task.id} onClick={() => selectTask(task.id)}>{task.title}</button></h3>
                         <code>
                           {[
                             task.key && `#${task.key}`,
@@ -1619,6 +1643,14 @@ export function App() {
                     </article>
                   ))}
                 </section>
+                {current && taskFailureGuidance(current, run.tasks) && <section className="mobileTaskGuidance" aria-label="Сведения о выбранной задаче">
+                  <h2>{current.title}</h2>
+                  <TaskFailurePanel task={current} tasks={run.tasks} onSelectTask={selectTask} onShowLog={() => {
+                    const details = document.getElementById("mobile-task-log") as HTMLDetailsElement | null;
+                    if (details) { details.open = true; details.scrollIntoView({ block: "nearest" }); }
+                  }} />
+                  <details id="mobile-task-log"><summary>Журнал выбранной задачи</summary><pre>{current.log.join("\n") || "Нет событий."}</pre></details>
+                </section>}
               </>
             )}
           </>
@@ -1636,6 +1668,11 @@ export function App() {
             <span className={`status ${current.status}`}>
               {statusLabel[current.status]}
             </span>
+            <TaskFailurePanel task={current} tasks={run?.tasks ?? []} onSelectTask={selectTask} onShowLog={() => {
+              setLogSearch(""); setLogFilters(new Set(["agent", "command", "warning", "error"]));
+              const log = document.getElementById("task-activity-log");
+              log?.scrollIntoView({ block: "nearest" }); log?.focus({ preventScroll: true });
+            }} />
             <dl>
               <dt>Модель</dt>
               <dd>{current.model}</dd>
@@ -1692,7 +1729,7 @@ export function App() {
                 ))}
               </div>
             </div>
-            <pre className="activityLog">
+            <pre className="activityLog" id="task-activity-log" tabIndex={0}>
               {visibleLog.join("\n") || "Нет событий по выбранным фильтрам."}
             </pre>
             {current.changedFiles?.length ? (

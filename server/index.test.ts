@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fetch } from "../scripts/test-api-fetch.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";

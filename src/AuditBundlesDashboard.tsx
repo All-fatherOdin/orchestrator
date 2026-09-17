@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from "./api-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ProjectionItem = { projectId: string; entityId: string; data: Record<string, unknown> };

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { fetch } from "../../scripts/test-api-fetch.ts";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import { createServer, type Server } from "node:http";

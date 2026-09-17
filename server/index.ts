@@ -1,4 +1,5 @@
 import express from "express";
+import { installLocalApiSecurity, LOCAL_API_HOST } from "./local-api-security.ts";
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -9880,6 +9881,7 @@ function normalizeProjectProfile(
 }
 
 export const app = express();
+installLocalApiSecurity(app, process.env.ORCHESTRATOR_DEV_ORIGIN);
 installAmkQueueDraftRoutesV1(
   app,
   new AmkQueueDraftServiceV1(
@@ -11700,7 +11702,7 @@ const port = Number(process.env.PORT || 4318);
 if (process.env.ORCHESTRATOR_TEST !== "1") {
   void codexCliAvailable();
   const listen = () => new Promise<ReturnType<typeof app.listen>>((resolveListen, rejectListen) => {
-    const server = app.listen(port);
+    const server = app.listen(port, LOCAL_API_HOST);
     server.once("error", rejectListen);
     server.once("listening", () => resolveListen(server));
   });

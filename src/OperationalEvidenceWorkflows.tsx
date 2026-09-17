@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from "./api-client";
 import { useEffect, useRef, useState } from "react";
 import type { Observation, OperationalEvidenceProjection, Receipt } from "./OperationalEvidenceIntakeDashboard";
 import { GitHubDeploymentConnectorWorkflow } from "./GitHubDeploymentConnectorWorkflow";

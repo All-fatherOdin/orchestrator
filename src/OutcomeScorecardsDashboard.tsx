@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from "./api-client";
 import { useEffect, useRef, useState } from "react";
 
 const POLICY_VERSION = "outcome-scorecard-policy-v1" as const;

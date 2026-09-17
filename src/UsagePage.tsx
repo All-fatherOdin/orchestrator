@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from "./api-client";
 import { useEffect, useMemo, useState } from "react";
 
 type UsageRecord = { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens?: number };

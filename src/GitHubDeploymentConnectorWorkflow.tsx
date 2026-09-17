@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from "./api-client";
 import { useEffect, useState } from "react";
 import type { EvidenceSource, OperationalEvidenceProjection, Receipt } from "./OperationalEvidenceIntakeDashboard";
 

@@ -1,3 +1,4 @@
+import { apiFetch as fetch } from "./api-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 export const AMK_CONTRACTS = [
