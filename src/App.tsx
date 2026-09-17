@@ -1,9 +1,11 @@
 import { apiFetch as fetch } from "./api-client";
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parse, stringify } from "yaml";
 import { UsagePage } from "./UsagePage";
 import { OperatorDashboard } from "./OperatorDashboard";
 import { TaskFailurePanel, PreflightFailurePanel, taskFailureGuidance, type DiagnosticTask, type PreflightCheck } from "./FailureGuidance";
+import { inspectQueue, patchQueueFields, editQueueTaskOrder } from "./queue-editor";
+import { QueuePreparation, QueueListField } from "./QueuePreparation";
 
 type Status =
   | "pending"
@@ -331,10 +333,14 @@ const logFilterLabels: Record<LogFilter, string> = {
 export function App() {
   const [run, setRun] = useState<Run | null>(null);
   const [queue, setQueue] = useState(emptyQueue);
+  const queueSource = useRef(queue);
+  queueSource.current = queue;
+  const [isCheckingQueue, setIsCheckingQueue] = useState(false);
+  const [checkedQueue, setCheckedQueue] = useState<string>();
   const [error, setError] = useState("");
   const [preflightFailures, setPreflightFailures] = useState<PreflightCheck[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
-  useEffect(() => setPreflightFailures([]), [queue]);
+  useEffect(() => { setPreflightFailures([]); setCheckedQueue(undefined); setContextPreviews([]); }, [queue]);
   const [notice, setNotice] = useState("");
   const [isStarting, setIsStarting] = useState(false);
   const [isRunLoading, setIsRunLoading] = useState(true);
@@ -402,13 +408,8 @@ export function App() {
       ),
     [run],
   );
-  const draft = useMemo(() => {
-    try {
-      return parse(queue) as DraftQueue;
-    } catch {
-      return undefined;
-    }
-  }, [queue]);
+  const queueInspection = useMemo(() => inspectQueue(queue), [queue]);
+  const draft = queueInspection.editable ? queueInspection.value as DraftQueue : undefined;
   const visibleLog = useMemo(
     () =>
       (current?.log ?? []).filter(
@@ -583,15 +584,11 @@ export function App() {
       setIsDeletingRun(false);
     }
   }
-  async function start() {
-    setError("");
-    setPreflightFailures([]);
-    setIsStarting(true);
-    try {
-      const preflight = await fetch("/api/preflight", {
+  async function checkQueue(source: string) {
+    return await fetch("/api/preflight", {
         method: "POST",
         headers: { "Content-Type": "text/yaml" },
-        body: queue,
+        body: source,
       }).then(
         async (response) => {
           const result = await parseJsonResponse<{
@@ -605,6 +602,27 @@ export function App() {
           return result;
         },
       );
+  }
+  async function inspectBeforeRun() {
+    const source = queue;
+    setIsCheckingQueue(true); setError(""); setPreflightFailures([]); setCheckedQueue(undefined);
+    try {
+      const result = await checkQueue(source);
+      if (queueSource.current !== source) return;
+      setPreflightFailures(result.checks.filter(check => !check.ok && check.name !== "AGENTS.md"));
+      setContextPreviews(result.contextPreviews ?? []);
+      if (result.ok) setCheckedQueue(source);
+    } catch (reason) {
+      if (queueSource.current === source) setError(reason instanceof Error ? reason.message : "Не удалось проверить очередь.");
+    } finally { setIsCheckingQueue(false); }
+  }
+  async function start() {
+    setError("");
+    setPreflightFailures([]);
+    setIsStarting(true);
+    try {
+      const preflight = await checkQueue(queue);
+      if (queueSource.current !== queue) throw new Error("Очередь изменилась во время проверки. Проверьте новую версию и повторите запуск.");
       if (!preflight.ok) {
         setPreflightFailures(preflight.checks.filter(check => !check.ok && check.name !== "AGENTS.md"));
         throw new Error(
@@ -806,38 +824,21 @@ export function App() {
       );
     }
   }
+  function editQueue(change: (source: string) => string) {
+    try { setQueue(change(queue)); setError(""); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось изменить YAML."); }
+  }
   function changeTasks(change: (tasks: DraftTask[]) => DraftTask[]) {
-    if (!draft?.tasks) {
-      setError("Исправьте YAML, чтобы открыть визуальный редактор.");
-      return;
-    }
-    setError("");
-    setQueue(stringify({ ...draft, tasks: change(draft.tasks) }));
+    if (!draft?.tasks) return;
+    const tasks = draft.tasks;
+    const order = change(tasks).map(task => tasks.includes(task) ? tasks.indexOf(task) : task);
+    editQueue(source => editQueueTaskOrder(source, order));
   }
   function updateLimits(patch: Partial<Limits>) {
-    if (!draft) return;
-    setQueue(
-      stringify({
-        ...draft,
-        limits: {
-          taskTimeoutMinutes: 30,
-          reviewerTimeoutMinutes: 10,
-          maxTaskRetries: 1,
-          maxParallelTasks: 1,
-          ...draft.limits,
-          ...patch,
-        },
-      }),
-    );
+    editQueue(source => patchQueueFields(source, ["limits"], patch));
   }
   function updateGit(patch: Partial<GitSettings>) {
-    if (!draft) return;
-    setQueue(
-      stringify({
-        ...draft,
-        git: { checkpointCommits: false, ...draft.git, ...patch },
-      }),
-    );
+    editQueue(source => patchQueueFields(source, ["git"], patch));
   }
   async function saveProject() {
     const payload = {
@@ -868,9 +869,7 @@ export function App() {
     });
   }
   function useProject(profile: ProjectProfile) {
-    const next = {
-      ...draft,
-      project: {
+    editQueue(source => patchQueueFields(source, ["project"], {
         name: profile.name,
         path: profile.path,
         profileId: profile.id,
@@ -878,9 +877,7 @@ export function App() {
         defaultModel: profile.defaultModel,
         defaultEffort: profile.defaultEffort,
         allowedModels: profile.allowedModels,
-      },
-    };
-    setQueue(stringify(next));
+    }));
     setShowProjects(false);
     setShowHistory(false);
   }
@@ -889,11 +886,7 @@ export function App() {
     setProjects((items) => items.filter((profile) => profile.id !== id));
   }
   function updateTask(index: number, patch: Partial<DraftTask>) {
-    changeTasks((tasks) =>
-      tasks.map((task, position) =>
-        position === index ? { ...task, ...patch } : task,
-      ),
-    );
+    editQueue(source => patchQueueFields(source, ["tasks", index], patch));
   }
   function moveTask(index: number, direction: -1 | 1) {
     changeTasks((tasks) => {
@@ -1215,10 +1208,23 @@ export function App() {
                   <p>Задачи выполняются последовательно, каждая — в новой сессии Codex целевого проекта.</p>
                 </div>
                 <textarea
+                  id="queue-yaml"
+                  aria-label="YAML очереди"
                   value={queue}
                   onChange={(event) => setQueue(event.target.value)}
                   spellCheck={false}
                 />
+                <QueuePreparation inspection={queueInspection} />
+                <div className="queueCheckActions">
+                  <button type="button" disabled={isCheckingQueue || isStarting} onClick={() => void inspectBeforeRun()}>
+                    {isCheckingQueue ? "Проверяем очередь…" : "Проверить без запуска"}
+                  </button>
+                  {checkedQueue === queue && <p role="status">Серверная проверка пройдена. Очередь не запущена; при запуске условия будут проверены заново.</p>}
+                </div>
+                {draft && <div className="queueProjectFields">
+                  <label>Название проекта<input aria-label="Название проекта очереди" value={draft.project?.name ?? ""} onChange={event => editQueue(source => patchQueueFields(source, ["project"], { name: event.target.value }))} /></label>
+                  <label>Путь к репозиторию<input id="queue-field-project.path" aria-label="Путь к репозиторию" value={draft.project?.path ?? ""} onChange={event => editQueue(source => patchQueueFields(source, ["project"], { path: event.target.value }))} /></label>
+                </div>}
                 <div className="rules">
                   <b>Ограничения</b>
                   <span>Модели: Luna, Terra, Sol</span>
@@ -1320,17 +1326,19 @@ export function App() {
                     {draft.tasks.map((task, index) => (
                       <article
                         className="editTask"
-                        key={`${task.title}-${index}`}
+                        key={index}
                       >
                         <div className="editOrder">
                           <b>{index + 1}</b>
                           <button
+                            aria-label={`Поднять задачу ${index + 1}`}
                             onClick={() => moveTask(index, -1)}
                             disabled={index === 0}
                           >
                             ↑
                           </button>
                           <button
+                            aria-label={`Опустить задачу ${index + 1}`}
                             onClick={() => moveTask(index, 1)}
                             disabled={index === draft.tasks!.length - 1}
                           >
@@ -1339,11 +1347,18 @@ export function App() {
                         </div>
                         <div className="editFields">
                           <input
-                            value={task.title}
+                            id={`queue-field-tasks[${index}].title`}
+                            aria-label={`Название · задача ${index + 1}`}
+                            placeholder="Название задачи"
+                            value={task.title ?? ""}
                             onChange={(event) =>
                               updateTask(index, { title: event.target.value })
                             }
                           />
+                          <label className="queueLongField">Результат и инструкция · задача {index + 1}
+                            <textarea id={`queue-field-tasks[${index}].prompt`} aria-label={`Инструкция · задача ${index + 1}`} rows={4} value={task.prompt ?? ""} placeholder="Что сделать и как проверить результат" onChange={event => updateTask(index, { prompt: event.target.value })} />
+                          </label>
+                          <QueueListField label={`Команды проверки · задача ${index + 1}`} id={`queue-field-tasks[${index}].verificationCommands`} values={task.verificationCommands} hint="Одна команда на строку. Обязательные проверки требуют согласованной авторизации в YAML." onCommit={values => updateTask(index, { verificationCommands: values })} />
                           <label>
                             Модель
                             <select
@@ -1417,6 +1432,8 @@ export function App() {
                           />
                           <input
                             className="paths"
+                            id={`queue-field-tasks[${index}].key`}
+                            aria-label={`Ключ · задача ${index + 1}`}
                             value={task.key ?? ""}
                             placeholder="key (уникальный идентификатор)"
                             onChange={(event) =>
@@ -1425,48 +1442,13 @@ export function App() {
                               })
                             }
                           />
-                          <input
-                            className="paths"
-                            value={(task.dependsOn ?? []).join(", ")}
-                            placeholder="dependsOn через запятую"
-                            onChange={(event) =>
-                              updateTask(index, {
-                                dependsOn: event.target.value
-                                  .split(",")
-                                  .map((key) => key.trim())
-                                  .filter(Boolean),
-                              })
-                            }
-                          />
-                          <input
-                            className="paths"
-                            value={(task.resources ?? []).join(", ")}
-                            placeholder="resources через запятую"
-                            onChange={(event) =>
-                              updateTask(index, {
-                                resources: event.target.value
-                                  .split(",")
-                                  .map((resource) => resource.trim())
-                                  .filter(Boolean),
-                              })
-                            }
-                          />
-                          <input
-                            className="paths"
-                            value={(task.allowedPaths ?? []).join(", ")}
-                            placeholder="allowedPaths через запятую"
-                            onChange={(event) =>
-                              updateTask(index, {
-                                allowedPaths: event.target.value
-                                  .split(",")
-                                  .map((path) => path.trim())
-                                  .filter(Boolean),
-                              })
-                            }
-                          />
+                          <QueueListField label={`Зависимости · задача ${index + 1}`} id={`queue-field-tasks[${index}].dependsOn`} values={task.dependsOn} separator="," hint="Точные ключи задач через запятую." onCommit={values => updateTask(index, { dependsOn: values })} />
+                          <QueueListField label={`Ресурсы · задача ${index + 1}`} id={`queue-field-tasks[${index}].resources`} values={task.resources} separator="," hint="Имена ресурсов через запятую." onCommit={values => updateTask(index, { resources: values })} />
+                          <QueueListField label={`Разрешённые файлы · задача ${index + 1}`} id={`queue-field-tasks[${index}].allowedPaths`} values={task.allowedPaths}  hint="Один путь на строку. Пустой список — только чтение. Каталог: src/**." onCommit={values => updateTask(index, { allowedPaths: values })} />
                         </div>
                         <button
                           className="removeTask"
+                          aria-label={`Удалить задачу ${index + 1}`}
                           onClick={() =>
                             changeTasks((tasks) =>
                               tasks.filter((_, position) => position !== index),
