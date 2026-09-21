@@ -3906,7 +3906,7 @@ export function codexExecutionBoundaryArgs(
       "-c",
       "default_permissions='orchestrator-reviewer'",
       "-c",
-      "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+      `permissions.orchestrator-reviewer=${codexReadOnlyPermissionPolicy}`,
     ];
   const sandbox = taskSandbox(evidence);
   const args = ["--sandbox", sandbox];
@@ -6569,8 +6569,12 @@ function codexCliAvailable() {
 }
 
 const codexSandboxPreflightProfile = "orchestrator-preflight";
+// Elevated Windows sandbox requires effective root read access. This is still
+// read-only: no filesystem write capability or network access is granted.
+const codexReadOnlyPermissionPolicy =
+  `{ filesystem = { '${process.platform === "win32" ? ":root" : ":minimal"}' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }`;
 const codexSandboxPreflightPolicy =
-  "permissions.orchestrator-preflight={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }";
+  `permissions.orchestrator-preflight=${codexReadOnlyPermissionPolicy}`;
 
 export function codexSandboxPreflightArgs(projectPath: string) {
   const shell = process.platform === "win32" ? "powershell.exe" : "sh";

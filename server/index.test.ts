@@ -13389,14 +13389,14 @@ test("executor, reviewer, correction, and preflight carry the enforced sandbox b
     "-c",
     "default_permissions='orchestrator-reviewer'",
     "-c",
-    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    `permissions.orchestrator-reviewer={ filesystem = { '${process.platform === "win32" ? ":root" : ":minimal"}' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }`,
   ]);
   assert.deepEqual(codexExecCommandStartArgs(apply, "reviewer"), [
     "exec",
     "-c",
     "default_permissions='orchestrator-reviewer'",
     "-c",
-    "permissions.orchestrator-reviewer={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    `permissions.orchestrator-reviewer={ filesystem = { '${process.platform === "win32" ? ":root" : ":minimal"}' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }`,
   ]);
   const prompt = buildPrompt({
     ...applyTask,
@@ -13428,7 +13428,7 @@ test("executor, reviewer, correction, and preflight carry the enforced sandbox b
     "--permission-profile",
     "orchestrator-preflight",
     "-c",
-    "permissions.orchestrator-preflight={ filesystem = { ':minimal' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }",
+    `permissions.orchestrator-preflight={ filesystem = { '${process.platform === "win32" ? ":root" : ":minimal"}' = 'read', ':workspace_roots' = { '.' = 'read' } }, network = { enabled = false } }`,
     "--cd",
   ]);
   assert.equal(sandboxArgs[6], resolve("C:\\workspace\\project"));
