@@ -95,6 +95,9 @@ export function renderLegacyPromptV1(input) {
   const guards = input.executionGuards.length
     ? `\n- Stop if any execution guard applies:\n${input.executionGuards.map((guard) => `  - ${guard}`).join("\n")}`
     : "";
+  const stages = authorization.enabled
+    ? "\n- Execution stages: Orchestrator runs declared preconditions before the executor, then runs declared verification commands after the executor delivers its work, followed by independent review when configured. Do not run these runner-owned commands yourself. COMPLETED means your authorized executor work is delivered; it does not mean the task has passed verification or final acceptance. Do not report STOPPED merely because subsequent verification or review has not run yet. Report STOPPED for an actual defect, applicable execution guard, missing required evidence, or another concrete blocker. Do not claim checks you did not perform."
+    : "";
   const context = input.context
     ? `\n\nContext Contract v1 (${input.context.provider}${input.context.fallbackReason ? `; controlled fallback: ${input.context.fallbackReason}` : ""}):\n${input.context.sources.map((source) => `- ${source.path} [${source.priority}; ${source.authority}] — ${source.inclusionReason}`).join("\n")}`
     : "";
@@ -104,7 +107,7 @@ export function renderLegacyPromptV1(input) {
   const executorOutcomeContract = input.executorOutcomeContractVersion === 1
     ? `\n- Executor outcome contract v1 (required): End the final response with exactly one standalone line \`${EXECUTOR_OUTCOME_MARKER_V1}: COMPLETED\` only if the requested outcome was delivered. If an execution guard applies or the outcome was not delivered, use \`${EXECUTOR_OUTCOME_MARKER_V1}: STOPPED\` instead.`
     : "";
-  return `Work on this single task in the current repository.\n\nTask: ${input.task}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}${guards}${authorizationBoundary}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.${executorOutcomeContract}`;
+  return `Work on this single task in the current repository.\n\nTask: ${input.task}${paths}${context}\n\nRequirements:\n- Read repository instructions, especially AGENTS.md, before changing code.\n- Keep changes within the task scope.${checks}${guards}${stages}${authorizationBoundary}\n- Do not create git commits.\n- Finish with changed files, checks run, and remaining risks.${executorOutcomeContract}`;
 }
 
 export function renderProductionLegacyPromptV1(args) {

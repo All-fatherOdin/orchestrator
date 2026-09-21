@@ -219,14 +219,12 @@ evidence families, and outcome inference remain unauthorized. Slice 2 adds one
 bounded Russian workflow in the existing intake section with exact compatible
 source selection, sanitized preview, explicit confirmation, immutable receipt,
 receipt reconciliation, exact retry, and responsive desktop/390 px states.
-The formal completion review passed on 2026-08-13 with all 13 acceptance areas
-evidenced and no unresolved or deferred finding. The fresh gates passed Phase
-12 focused tests 8/8, TypeScript, production build, context smoke 3/3, diff
-checks, and the full Windows regression 313/313 in 571.18 seconds. In-app
-Chromium at 1280 px and 390 px confirmed the Russian unavailable state,
-working navigation, a clean console, and no page-level overflow. There is no
-authorized Slice 3 or Phase 13; any next product phase requires a separately
-owner-reviewed and accepted contract.
+Phase 12 completion review (2026-08-13): all 13 acceptance areas passed with no
+open findings; focused tests 8/8, TypeScript, build, context smoke 3/3, diff
+checks and Windows regression 313/313 (571.18 s) passed. Chromium at 1280/390 px
+confirmed navigation, the Russian unavailable state, clean console and no
+overflow. No Slice 3 or Phase 13 is authorized without a separately accepted
+owner-reviewed contract.
 
 On 2026-08-17 the owner reserved the next product-phase position for Work
 Inventory and Roadmap as candidate Phase 13 and deferred implementation. The
@@ -239,20 +237,11 @@ exact progress denominators, partial/unknown behavior, privacy, and mutation
 authority; a stateless read-only reconciliation projection is the preferred
 first boundary if the phase is later admitted.
 
-Slice 1 adds closed schemas/configuration, a secret-safe server adapter, exactly
-three fixed bounded GitHub GETs, deterministic sanitized mapping, preview and
-execute routes, exact refetch/content fencing, Phase 10 delegation, and
-receipt-first ambiguous retry reconciliation. Five focused tests, combined
-Phase 10/12 tests 11/11, TypeScript, production build, context smoke 3/3, diff
-checks, and the 270/270 full Windows regression pass. All connector network
-tests are mocked; no live GitHub token or external request was used.
-
-Slice 2 adds three focused UI tests; the combined Phase 12 run passes 8/8.
-TypeScript, production build, context smoke 3/3, diff checks, and the 273/273
-full Windows regression pass with zero failures/skips in 391.6 seconds.
-Desktop and 390 px rendered interaction pass with a clean console and a
-receipt preserved after projection refresh. Browser QA used a local mocked
-connector only; no live GitHub credential or external request was used.
+Phase 12's earlier slice-level counts are superseded by the completion review
+above. Connector tests and interactive import checks used mocked responses;
+no live GitHub credentials or requests were used. The adapter makes exactly
+three bounded GETs and refetches before Phase 10 publication; receipt-first
+ambiguous retry reconciliation and privacy checks remain part of its contract.
 
 Agentic Patterns Stage 1 S1 Incident-to-Eval is implemented and
 completion-reviewed. One deterministic no-mutation preview and one

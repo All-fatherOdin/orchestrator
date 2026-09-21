@@ -223,14 +223,12 @@ other evidence family is authorized. Slice 2 adds the confirmed Russian
 operator workflow over the existing Slice 1 API: exact compatible-source
 selection, sanitized preview, explicit confirmation, immutable receipt,
 receipt reconciliation, exact retry, and responsive desktop/390 px states.
-The formal completion review passed on 2026-08-13 with all 13 acceptance areas
-evidenced and no unresolved or deferred finding. A fresh review run passed the
-8/8 focused Phase 12 tests, TypeScript, production build, context smoke 3/3,
-diff checks, and the full Windows regression 313/313 in 571.18 seconds.
-In-app Chromium at 1280 px and 390 px confirmed the Russian unavailable state,
-working Control Plane navigation, a clean console, and no page-level overflow.
-There is no authorized Slice 3 or Phase 13; the next product phase requires a
-separately owner-reviewed and accepted contract.
+Phase 12 completion review (2026-08-13): all 13 acceptance areas passed with no
+open findings; focused tests 8/8, TypeScript, build, context smoke 3/3, diff
+checks and Windows regression 313/313 (571.18 s) passed. Chromium at 1280/390 px
+confirmed navigation, the Russian unavailable state, clean console and no
+overflow. No Slice 3 or Phase 13 is authorized without a separately accepted
+owner-reviewed contract.
 
 The owner placed Work Inventory and Roadmap in the next product-phase position
 as candidate Phase 13 on 2026-08-17, but explicitly deferred implementation.
@@ -242,20 +240,6 @@ gap identity and lifecycle ownership, source authority and joins,
 duplicate/supersession and migration rules, exact roadmap denominators,
 partial/unknown semantics, privacy, and mutation authority. The preferred
 first admitted slice is a stateless read-only reconciliation projection.
-
-Slice 1 verification passes five focused connector tests, the combined Phase
-10/12 focused run (11/11), TypeScript, production build, context smoke 3/3,
-diff checks, and the full Windows regression (270/270, zero failures/skips,
-422.88 seconds). No live GitHub credential or external request was used; all
-network behavior was exercised through bounded mocked responses.
-
-Slice 2 verification passes three focused UI tests and the combined Phase 12
-run (8/8), TypeScript, production build, context smoke 3/3, diff checks, and
-the full Windows regression (273/273, zero failures/skips, 391.6 seconds).
-Rendered interaction passed at desktop and 390 px, including a clean console,
-sanitized preview, explicit confirmation, import, projection refresh, and
-preserved immutable receipt. Browser QA used a local mocked connector only;
-no live GitHub credential or external request was used.
 
 ## Source Boundaries
 

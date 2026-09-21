@@ -73,6 +73,19 @@ test("contains every protected invariant exactly once", () => {
   }
 });
 
+test("both prompt formats separate executor completion from downstream acceptance", () => {
+  const legacy = renderLegacyPromptV1(productionEquivalentFixture);
+  const compact = compilePromptV1(productionEquivalentFixture);
+  assert.match(legacy, /preconditions before the executor/);
+  assert.match(legacy, /COMPLETED means your authorized executor work is delivered/);
+  assert.match(legacy, /Do not report STOPPED merely because subsequent verification or review has not run yet/);
+  assert.match(legacy, /Report STOPPED for an actual defect/);
+  assert.match(compact, /preconditions before you, verification after you/);
+  assert.match(compact, /COMPLETED means executor work delivered, not final acceptance/);
+  assert.match(compact, /Pending verification\/review alone is not STOPPED/);
+  assert.match(compact, /actual defects, guards, missing required evidence or blockers/);
+});
+
 test("keeps runtime and volatile values out of the stable prefix and compiled prompt", () => {
   const withRuntime = {
     ...clone(productionEquivalentFixture),
@@ -149,7 +162,7 @@ test("benchmarks the production-owned legacy renderer directly and is at least 2
   const compiledPrompt = compilePromptV1(productionEquivalentFixture);
   const comparison = comparePromptSizes({ legacyPrompt, compiledPrompt });
 
-  assert.equal(comparison.legacyBytes, 2_405, "legacy production fixture must not be inflated");
+  assert.equal(comparison.legacyBytes, 3_044, "production fixture includes the required executor-stage contract");
   assert.match(legacyPrompt, /Finish with changed files, checks run, and remaining risks\./);
   assert.equal(count(compiledPrompt, PROTECTED_INVARIANTS_V1.completionReport), 1);
   assert.equal(comparison.legacyBytes, Buffer.byteLength(legacyPrompt, "utf8"));

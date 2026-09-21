@@ -56,11 +56,11 @@ project:
         production: [src/notifications/**]
       preconditions:
         - >-
-          $status = @(git status --short);
+          & { $status = @(git status --short);
           if ($status.Count -ne 0) {
           Write-Error "Expected a clean baseline: $($status -join ', ')";
           exit 1 };
-          exit 0
+          exit 0 }
       verificationCommands: [npm.cmd run typecheck]
     - approvalId: reconnect-logic-v1
       intent: apply
@@ -205,11 +205,11 @@ tasks:
     # blocks the task without starting the executor.
     preconditions:
       - >-
-        $status = @(git status --short);
+        & { $status = @(git status --short);
         if ($status.Count -ne 0) {
         Write-Error "Expected a clean baseline: $($status -join ', ')";
         exit 1 };
-        exit 0
+        exit 0 }
     verificationCommands:
       - npm.cmd run typecheck
       # On Windows, raw native commands use cmd.exe and therefore require
@@ -389,7 +389,7 @@ tasks:
       # so emitted diagnostics, rather than that native exit code, are the
       # failure signal for each untracked file.
       - >-
-        $tracked = @(git diff --check 2>&1);
+        & { $tracked = @(git diff --check 2>&1);
         if ($LASTEXITCODE -ne 0 -or $tracked.Count -gt 0) {
         $tracked | ForEach-Object { Write-Output $_ }; exit 1 };
         $untracked = @(git ls-files --others --exclude-standard);
@@ -398,7 +398,7 @@ tasks:
         diff --no-index --check -- NUL $path 2>&1);
         if ($result.Count -gt 0) {
         $result | ForEach-Object { Write-Output $_ }; exit 1 } };
-        exit 0
+        exit 0 }
     executionGuards:
       - Read-only review only; do not edit, repair, commit, or push files.
       - Treat missing, failed, or timed-out Orchestrator verification evidence as a finding.

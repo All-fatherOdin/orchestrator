@@ -356,7 +356,7 @@ export function compilePromptV1(input) {
     : ["No verification commands are authorized; do not invent or run substitutes."];
 
   const outcomeContract =
-    `Exactly one standalone final line: ${EXECUTOR_OUTCOME_MARKER_V1}: COMPLETED iff delivered and no guard; otherwise ${EXECUTOR_OUTCOME_MARKER_V1}: STOPPED.`;
+    `Orchestrator runs preconditions before you, verification after you, then review if configured. Do not run runner-owned checks or claim unperformed checks. COMPLETED means executor work delivered, not final acceptance. Pending verification/review alone is not STOPPED; actual defects, guards, missing required evidence or blockers are.\nExactly one standalone final line: ${EXECUTOR_OUTCOME_MARKER_V1}: COMPLETED iff delivered and no guard; otherwise ${EXECUTOR_OUTCOME_MARKER_V1}: STOPPED.`;
   const prompt = [
     STABLE_PREFIX,
     "GOAL",

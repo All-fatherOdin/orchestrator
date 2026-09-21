@@ -6292,8 +6292,13 @@ function assertLedgerWriteLock(
     );
 }
 
+class EmptyLedgerWriteLockError extends Error {}
+
 async function readLedgerWriteLock(lockPath: string) {
   const names = await readdir(lockPath);
+  // Release and dead-owner cleanup unlink the identity file before rmdir.
+  // An empty directory proves neither corruption nor permission to take over.
+  if (names.length === 0) throw new EmptyLedgerWriteLockError();
   if (
     names.length !== 1 ||
     !names[0].startsWith("owner-") ||
@@ -6342,6 +6347,41 @@ async function acquireLedgerWriteLock(file: string) {
   await mkdir(dirname(file), { recursive: true });
 
   while (true) {
+    let observed: ChangeControlLedgerWriteLockV1 | undefined;
+    try {
+      observed = await readLedgerWriteLock(lockPath);
+    } catch (error) {
+      if (error instanceof EmptyLedgerWriteLockError) {
+        if (Date.now() >= deadline)
+          throw new ChangeControlError(
+            "The change-control ledger write lock remained empty; ownership cannot be proven.",
+            "CORRUPT_LEDGER",
+            500,
+          );
+        await retryLedgerWriteLock(deadline);
+        continue;
+      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        if (!transientLedgerLockError(error)) throw error;
+        await retryLedgerWriteLock(deadline);
+        continue;
+      }
+    }
+    if (observed) {
+      if (ledgerLockProcessIsAlive(observed.ownerPid)) {
+        await retryLedgerWriteLock(deadline);
+        continue;
+      }
+      try {
+        // The token-specific unlink cannot remove a newer owner's identity.
+        await unlink(join(lockPath, ledgerWriteLockOwnerName(observed)));
+        await rmdir(lockPath);
+      } catch (error) {
+        if (!transientLedgerLockError(error)) throw error;
+        await retryLedgerWriteLock(deadline);
+      }
+      continue;
+    }
     const owner: ChangeControlLedgerWriteLockV1 = {
       contractType: "ChangeControlLedgerWriteLockV1",
       contractVersion: "1.0",
@@ -6382,30 +6422,7 @@ async function acquireLedgerWriteLock(file: string) {
         await rmdir(lockPath);
       };
 
-    let observed: ChangeControlLedgerWriteLockV1;
-    try {
-      observed = await readLedgerWriteLock(lockPath);
-    } catch (error) {
-      if (transientLedgerLockError(error)) {
-        await retryLedgerWriteLock(deadline);
-        continue;
-      }
-      throw error;
-    }
-    if (ledgerLockProcessIsAlive(observed.ownerPid)) {
-      await retryLedgerWriteLock(deadline);
-      continue;
-    }
-    try {
-      await unlink(join(lockPath, ledgerWriteLockOwnerName(observed)));
-      await rmdir(lockPath);
-    } catch (error) {
-      if (transientLedgerLockError(error)) {
-        await retryLedgerWriteLock(deadline);
-        continue;
-      }
-      throw error;
-    }
+    await retryLedgerWriteLock(deadline);
   }
 }
 

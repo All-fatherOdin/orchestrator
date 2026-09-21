@@ -6,55 +6,46 @@
 
 # Choose the execution format before creating files
 
-Classify the request first. The supported execution formats are a bounded task in the current session, an ordinary managed YAML queue, or a sequential queue plan.
+Choose first: a bounded task in this session, a managed YAML queue, or a sequential queue plan.
 
 ## Execute one task in the current Codex session
 
-Do not create an Orchestrator queue when the work is one bounded implementation slice. Complete it in the current session with its normal verification.
-
-Do not split implementation and its tests, formatting, or verification into artificial separate tasks merely to reach the queue minimum.
+Complete one bounded implementation slice here, with its tests, formatting and
+verification. Do not split these into artificial tasks to reach the queue minimum.
 
 ## Use an Orchestrator task queue
 
-Create one YAML queue from `tasks.example.yaml` only when there are at least two independently useful tasks and all of these are true:
+Use `tasks.example.yaml` only for at least two independently useful tasks with:
 
-- the outcome and task boundaries are already understood;
-- order or dependencies can be declared before execution;
-- an impact map has identified every production, test, generated, manifest,
-  checksum, documentation, and acceptance file that the outcome can require;
-- every writing task has concrete `allowedPaths`, verification commands, and stop guards;
-- no investigation or later authorization is needed to discover additional scope.
+- known outcomes, boundaries, order and dependencies;
+- a complete impact map: production, tests, generated files, manifests,
+  checksums, documentation and acceptance files;
+- concrete `allowedPaths`, verification commands and stop guards for every writer;
+- no scope discovery or later authorization still needed.
 
-Before writing the YAML, inspect the relevant implementation, existing tests,
-and failure evidence. For each task, identify the concrete behavior to change,
-the complete write scope, required checks, and conditions that require stopping.
-Carry those findings into its prompt, impact map, `allowedPaths`, and guards.
-An open-ended instruction such as "inspect and fix if necessary" is not a
-defined writing task. If investigation determines the implementation scope, do
-that investigation in the current session before authoring the queue. A bounded
-read-only diagnosis may be useful on its own, but cannot supply unknown scope
-or authority to a pre-authored writing successor.
+Before authoring, inspect implementation, tests and failure evidence. Put each
+task's concrete behavior, complete write scope, checks and stop conditions in
+its prompt, impact map, `allowedPaths` and guards. Investigate unknown scope here
+first: "inspect and fix if necessary" is not a defined writer. A bounded read-only
+diagnosis may stand alone, but cannot grant unknown scope or authority to a
+pre-authored writing successor.
 
-A separate test-only task is appropriate only for an independently useful,
-previously uncovered contract. Name the specific input and expected behavior,
-the existing coverage gap, exact test paths, and verification commands before
-creating it. Keep tests required to establish an implementation task's own
-correctness with that implementation. Tests may call production code without
-requiring production write scope. If a test-only task discovers a production
-defect requiring edits outside its scope, stop with the failing evidence; do
-not expand scope or weaken the expected behavior to obtain a passing result.
-A dependency on a production-writing predecessor does not grant its scope to
-the test task. A final whole-change review does not replace task-level checks.
+A separate test-only task needs an independently useful, previously uncovered
+contract: specify inputs, expected behavior, coverage gap, exact test paths and
+commands before authoring. Keep implementation correctness tests with their
+implementation. Tests may call production code without production write scope.
+An out-of-scope defect requires stopping with failing evidence, never scope
+expansion or weakened expectations. Dependencies grant no inherited write scope;
+whole-change review does not replace task-level checks.
 
 Ordinary queue tasks share one project worktree and must be treated as
 sequential even when their `allowedPaths` do not overlap. Set
 `limits.maxParallelTasks: 1` unless every concurrently eligible task has an
 isolated managed-workspace binding.
 
-Recovery queues must carry forward every runtime constraint already discovered
-by the failed run, including interpreter variables, shell/quoting rules,
-temporary-directory isolation, timeouts, and whole-change acceptance commands.
-Do not replace an authoritative failing check with a narrower scoped check.
+Recovery must retain all discovered runtime constraints: interpreter variables,
+shell/quoting, temporary-directory isolation, timeouts and whole-change checks.
+Never replace an authoritative failing check with a narrower one.
 
 Declared `verificationCommands` are required machine gates by default and
 therefore require enabled task authorization. Use `verificationMode: advisory`
@@ -77,72 +68,59 @@ absolute directory outside `project.path`, preflights it as a Git worktree,
 and supplies `safe.directory` only through the child-process environment.
 Never work around ownership checks with global or local `git config` changes.
 
-Prompts and checks must name every task-relevant evidence file by its exact
-normalized repository-relative path. A basename such as `state.yaml` is not a
-valid locator when the file is outside the repository root or could be
-ambiguous. Resolve the path while authoring the queue and carry it into recovery
-constraints; do not make the executor rediscover it by guessing or broad search.
+Prompts and checks must name each evidence file by exact normalized
+repository-relative path. An ambiguous or non-root basename such as `state.yaml`
+is invalid. Resolve paths while authoring and retain them in recovery constraints;
+do not make executors guess or search broadly.
 
-Do not make an optional discovery utility an undeclared runtime dependency. If
-`rg` or another non-system tool is mandatory, declare and preflight it. Otherwise
-Windows prompts must permit the built-in PowerShell fallback: `Get-ChildItem`
-for bounded discovery, `Get-Content` for exact files, and `Select-String` for
-targeted content inspection. Absence of an optional utility is not by itself a
-task failure when the declared fallback can establish the same evidence.
+Declare and preflight mandatory non-system utilities such as `rg`. Otherwise
+Windows prompts must permit PowerShell fallbacks: `Get-ChildItem` for bounded
+discovery, `Get-Content` for exact files and `Select-String` for targeted reads.
+Missing optional utilities are not failures when the fallback proves the evidence.
 
 Distinguish task-scoped verification from final whole-change verification. A
 final acceptance task must cover tracked and untracked files and must not claim
 predecessor verification evidence unless an explicit bounded handoff supplies
 those records.
 
-The bullets above are authoring guidance for every queue; they do not by
-themselves grant authority or make prose machine-enforceable. An apply task opts
-into the machine gate only with the exact `QueueAuthoringContractV1` envelope.
-For that task, `impactPaths` is a non-empty ordered map containing every
-normalized `allowedPaths` entry, and `runtimeConstraints` is a non-empty list of
-explicit normalized strings. Its approved apply contract must bind the same
-ordered impact map and, when present, the exact ordered `externalReadRoots`.
-Runtime constraints and an optional recovery binding are
-instead bound by the task authorization evidence and persisted task snapshot.
-`impactPaths` remains descriptive: only `allowedPaths` grants write scope,
-including when the impact map lists additional affected files.
+Authoring prose grants no authority or machine enforcement. An apply task opts
+in only through the exact `QueueAuthoringContractV1` envelope. `impactPaths` must
+be a non-empty ordered map containing every normalized `allowedPaths` entry;
+`runtimeConstraints` must be a non-empty list of explicit normalized strings.
+The apply approval binds that ordered map and any exact ordered `externalReadRoots`.
+Task authorization evidence and the persisted snapshot bind runtime constraints
+and any recovery binding. Only `allowedPaths` grants writes; additional impact
+paths are descriptive.
 
-When a project opts into `DocumentationGovernancePolicyV1`, every task whose
-write scope intersects its `managedPaths` must use `QueueAuthoringContractV1`,
-include one configured navigation or lifecycle file in both `allowedPaths` and
-`impactPaths.documentation`, and run every exact required documentation delta
-command as a machine gate. The queue must end in the unique read-only
-`WholeChangeAcceptanceV1` task, which runs the same gates. The repository-owned
-commands, not Orchestrator prose or filename inference, must exit non-zero for
-new prohibited findings such as `DOC-REACH-001`.
+With `DocumentationGovernancePolicyV1`, writers intersecting `managedPaths` need
+`QueueAuthoringContractV1`, a configured navigation/lifecycle file in both
+`allowedPaths` and `impactPaths.documentation`, and every exact documentation
+delta command as a machine gate. End with unique read-only
+`WholeChangeAcceptanceV1` running the same gates. Repository commands must fail
+on new prohibited findings such as `DOC-REACH-001`; prose/path inference cannot
+enforce this.
 
-An opted-in recovery task may add an exact `RecoveryTaskBindingV1` source run
-ID and source task ID. Before any run or project lock is created, Orchestrator
-loads that persisted task and requires the recovery runtime constraints to be a
-superset of its authorization-bound constraints. Missing, malformed,
-duplicated, stale, or changed evidence fails closed. Never infer paths,
-constraints, source identity, or recovery authority from prompts,
-`executionGuards`, documentation, or other prose. Queues and run records that
-omit the v1 envelope retain their legacy behavior and are not required to
-synthesize these fields.
+An opted-in recovery uses exact source run/task IDs in `RecoveryTaskBindingV1`.
+Before run or lock creation, load the persisted source and require a superset
+of its authorization-bound runtime constraints. Missing, malformed, duplicated,
+stale or changed evidence fails closed. Never infer paths, constraints, source
+identity or recovery authority from prompts, `executionGuards`, docs or prose.
+Records without the v1 envelope retain legacy behavior without synthesized fields.
 
-Every `QueueAuthoringContractV1` task must also carry the exact
-`TaskExecutionKindV1` envelope: `ordinary` has no recovery binding, while
-`recovery` has exactly one `RecoveryTaskBindingV1`. Recovery identity comes
-only from the selected canonical persisted `run.json`; its source run and task
-must be unique, authorization-replayable, terminal, and non-successful. A
-formally authenticated failed recovery task may source a later recovery only
-when every exact execution-kind/binding, authorization, runtime-superset, and
-acyclic persisted-lineage check replays; never infer a chain from prose.
+Every `QueueAuthoringContractV1` task needs exact `TaskExecutionKindV1`:
+`ordinary` forbids a recovery binding; `recovery` requires exactly one.
+Recovery identity comes only from the selected canonical `run.json`: source
+run/task must be unique, authorization-replayable, terminal and non-successful.
+A failed recovery may source another only if execution-kind/binding,
+authorization, runtime-superset and acyclic persisted-lineage checks all replay.
+Never infer recovery chains from prose.
 
-Use `WholeChangeAcceptanceV1` only on an enabled read-only `review` task with
-`allowedPaths: []`. Its ordered `predecessorTaskKeys` must exactly equal its
-direct dependencies, cover every writing task anywhere in the queue, and make
-every covered writer an ancestor in the declared graph. It must be the final
-queue task and unique terminal dependency sink. Orchestrator supplies the independent
-reviewer the closed predecessor handoff (approved statuses, task IDs, exact
-verification receipts, and task-owned tracked plus untracked evidence); never
-claim or reconstruct that evidence in prose.
+`WholeChangeAcceptanceV1` requires enabled read-only `review`, `allowedPaths: []`,
+and ordered `predecessorTaskKeys` equal to direct dependencies, covering every
+writer as a graph ancestor. It must be the final task and unique terminal sink.
+Orchestrator supplies the independent reviewer a closed handoff: approved
+statuses, task IDs, exact verification receipts and task-owned tracked/untracked
+evidence. Never claim or reconstruct that evidence in prose.
 
 Path scopes are either one normalized repository-relative path or a directory
 capability ending exactly in `/**` (for example `server/**`). `*`, `?`, `[`,
@@ -165,16 +143,15 @@ The Orchestrator rejects ordinary queues with fewer than two tasks.
 
 ## Use a sequential queue plan
 
-Use a plan from `queues.plan.example.yaml` only when several already-defined task queue files must run one after another. A plan sequences complete queue files; it does not discover or expand later scope.
-
-If classification is ambiguous, use the current session for one bounded task, an Orchestrator queue for two or more understood tasks, and a sequential queue plan only for multiple already-defined queues.
+Use `queues.plan.example.yaml` only to sequence multiple already-defined queues,
+never to discover or expand scope. If uncertain: one bounded task stays here;
+two or more understood tasks use a queue; multiple defined queues use a plan.
 
 # Define acceptance evidence before execution
 
-For grouping, filtering, or aggregation work, resolve the following cases
-against the product contract before authoring the task. Record concrete fixture
-inputs and expected outputs in its prompt or an exact referenced specification;
-do not leave the executor to choose semantics during implementation.
+Before authoring grouping, filtering or aggregation work, resolve these cases
+against the product contract. Record fixture inputs and expected outputs in the
+prompt or exact referenced spec; executors must not invent semantics.
 
 | Case | Required acceptance assertion |
 |---|---|
@@ -190,17 +167,14 @@ their files and any required fixtures in the impact map and write scope.
 
 Keep acceptance claims tied to the evidence that proves them:
 
-- Automated checks: name the exact command and assertions; use the canonical
-  task verification receipts for executed results. Passing tests do not prove
-  an interactive browser flow was exercised.
-- Git checkpoints: use the task-owned checkpoint receipt and commit identity.
-  A commit proves recorded changes, not functional correctness; require it via
-  `checkpointPolicy` when it is a delivery condition.
-- Browser checks: specify the application/build, initial data, user actions,
-  and expected visible result. Retain the actual observation and exact artifact
-  locator when captured. A screenshot alone does not prove unobserved behavior
-  or all-page aggregation. If the check was not performed, report it as not run;
-  do not substitute an automated check or a commit for required browser evidence.
+- Automated checks: exact commands, assertions and canonical task verification
+  receipts. Passing tests do not prove an interactive browser flow.
+- Git checkpoints: task-owned receipt and commit identity. Commits prove recorded
+  changes, not correctness. Use `checkpointPolicy` when required for delivery.
+- Browser checks: application/build, initial data, actions, expected visible
+  result, actual observation and exact captured-artifact locator. Screenshots
+  cannot prove unobserved behavior or all-page totals. Report unperformed checks
+  as not run; automated checks and commits cannot replace required browser evidence.
 
 These are authoring and reporting rules, not a new machine-enforced evidence
 schema. Use existing verification gates and checkpoint contracts where applicable;
