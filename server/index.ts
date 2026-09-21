@@ -1,4 +1,5 @@
 import express from "express";
+import { commandEventDiagnostic } from "./command-event.ts";
 import { validateReviewArtifacts, captureReviewArtifacts, assertReviewArtifacts, reviewArtifactPrompt, type ReviewArtifact, type ReviewArtifactEvidence } from "./review-artifacts.ts";
 import { coordinationReport } from "./coordination-economics.ts";
 import { installLocalApiSecurity, LOCAL_API_HOST } from "./local-api-security.ts";
@@ -2644,7 +2645,7 @@ export function taskEvent(line: string) {
     if (event.item?.type === "agent_message" && event.item.text)
       return `AGENT: ${event.item.text}`;
     if (event.item?.type === "command_execution")
-      return `COMMAND: ${event.item.command ?? event.item.cmd ?? "Команда выполняется"}${event.item.exit_code === undefined ? "" : ` (exit ${event.item.exit_code})`}`;
+      return commandEventDiagnostic(event);
     if (event.item?.type === "error" && event.item.message)
       return `${isCodexNonFatalDiagnostic(event.item.message) ? "WARNING" : "ERROR"}: Codex: ${event.item.message}`;
     return undefined;
