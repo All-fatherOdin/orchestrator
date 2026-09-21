@@ -1,4 +1,5 @@
 import express from "express";
+import { validateReviewArtifacts, captureReviewArtifacts, assertReviewArtifacts, reviewArtifactPrompt, type ReviewArtifact, type ReviewArtifactEvidence } from "./review-artifacts.ts";
 import { coordinationReport } from "./coordination-economics.ts";
 import { installLocalApiSecurity, LOCAL_API_HOST } from "./local-api-security.ts";
 import Ajv2020 from "ajv8/dist/2020.js";
@@ -385,6 +386,7 @@ export type TaskAuthorizationEvidence = {
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
   runtimeRequirements?: RuntimeRequirementsV1;
+  reviewArtifacts?: ReviewArtifact[];
   checkpointPolicy?: CheckpointPolicyV1;
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
@@ -431,6 +433,7 @@ export type TaskInput = {
   /** Explicit runtime facts; never inferred from prompt or guard prose. */
   runtimeConstraints?: string[];
   runtimeRequirements?: RuntimeRequirementsV1;
+  reviewArtifacts?: ReviewArtifact[];
   checkpointPolicy?: CheckpointPolicyV1;
   /** Exact persisted source task for a recovery task. */
   recovery?: RecoveryTaskBindingV1;
@@ -982,6 +985,7 @@ type WholeChangeAcceptanceEvidenceV1 = {
     status: Status;
     changedFiles: string[];
     verificationEvidence: VerificationEvidence[];
+    reviewArtifactEvidence?: ReviewArtifactEvidence;
   }>;
   aggregateChangedFiles: string[];
   contentEvidence: WholeChangeContentEvidence[];
@@ -1023,6 +1027,8 @@ type Task = ResolvedTask & {
   reviewWriteViolations?: string[];
   /** Exact Orchestrator-run verification evidence supplied to the read-only reviewer. */
   verificationEvidence?: VerificationEvidence[];
+  /** Exact artifact bytes captured after successful machine gates. */
+  reviewArtifactEvidence?: ReviewArtifactEvidence;
   /** Runner-owned results of this attempt's preconditions, available before executor launch. */
   preconditionEvidence?: VerificationEvidence[];
   /** Closed predecessor handoff used only by WholeChangeAcceptanceV1 review. */
@@ -3043,6 +3049,7 @@ function authorizationScope(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "reviewArtifacts"
     | "checkpointPolicy"
     | "recovery"
     | "executionKind"
@@ -3099,6 +3106,7 @@ function authorizationScope(
   return {
     allowedPaths,
     ...(externalReadRoots ? { externalReadRoots } : {}),
+    ...(task.reviewArtifacts !== undefined ? { reviewArtifacts: validateReviewArtifacts(task.reviewArtifacts) } : {}),
     ...(task.runtimeRequirements !== undefined
       ? { runtimeRequirements: validateRuntimeRequirementsV1(task.runtimeRequirements) } : {}),
     ...(task.checkpointPolicy !== undefined
@@ -3522,6 +3530,7 @@ function scopeFingerprint(scope: {
   impactPaths?: ImpactPathsV1;
   runtimeConstraints?: string[];
   runtimeRequirements?: RuntimeRequirementsV1;
+  reviewArtifacts?: ReviewArtifact[];
   checkpointPolicy?: CheckpointPolicyV1;
   recovery?: RecoveryTaskBindingV1;
   executionKind?: TaskExecutionKindV1;
@@ -3568,6 +3577,7 @@ function matchingApplyContract(
     impactPaths?: ImpactPathsV1;
     runtimeConstraints?: string[];
     runtimeRequirements?: RuntimeRequirementsV1;
+    reviewArtifacts?: ReviewArtifact[];
     checkpointPolicy?: CheckpointPolicyV1;
     recovery?: RecoveryTaskBindingV1;
     executionKind?: TaskExecutionKindV1;
@@ -3640,6 +3650,7 @@ export function authorizeTask(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "reviewArtifacts"
     | "checkpointPolicy"
     | "recovery"
     | "executionKind"
@@ -3707,6 +3718,7 @@ export function replayTaskAuthorization(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "reviewArtifacts"
     | "checkpointPolicy"
     | "recovery"
     | "executionKind"
@@ -3735,6 +3747,7 @@ export function verifyStoredTaskAuthorization(
     | "impactPaths"
     | "runtimeConstraints"
     | "runtimeRequirements"
+    | "reviewArtifacts"
     | "checkpointPolicy"
     | "recovery"
     | "executionKind"
@@ -3770,6 +3783,7 @@ type ProviderRuntimeTaskV1 = Pick<
   | "impactPaths"
   | "runtimeConstraints"
   | "runtimeRequirements"
+  | "reviewArtifacts"
   | "checkpointPolicy"
   | "recovery"
   | "executionKind"
@@ -4640,6 +4654,9 @@ export function validateQueue(value: unknown): {
           );
       }
     }
+    if (task.reviewArtifacts !== undefined && (!task.authorization?.enabled || task.verificationMode === "advisory" ||
+      !(task.verificationCommands?.length || project.verificationCommands?.length)))
+      throw new Error(`Task ${index + 1}: reviewArtifacts requires enabled authorization and required verification commands.`);
     if (task.runtimeRequirements !== undefined && !task.authorization?.enabled)
       throw new Error(`Task ${index + 1}: runtimeRequirements requires enabled task authorization.`);
     if (task.checkpointPolicy !== undefined && (
@@ -4662,6 +4679,7 @@ export function validateQueue(value: unknown): {
         : undefined,
       impactPaths,
       runtimeConstraints,
+      reviewArtifacts: task.reviewArtifacts !== undefined ? validateReviewArtifacts(task.reviewArtifacts) : undefined,
       runtimeRequirements: task.runtimeRequirements !== undefined
         ? validateRuntimeRequirementsV1(task.runtimeRequirements) : undefined,
       checkpointPolicy: task.checkpointPolicy !== undefined ? validateCheckpointPolicyV1(task.checkpointPolicy) : undefined,
@@ -5800,6 +5818,7 @@ function queueFromRun(run: Run): ReturnType<typeof validateQueue> {
       authoringContract: task.authoringContract,
       impactPaths: task.impactPaths,
       runtimeConstraints: task.runtimeConstraints,
+      reviewArtifacts: task.reviewArtifacts,
       runtimeRequirements: task.runtimeRequirements,
       checkpointPolicy: task.checkpointPolicy,
       recovery: task.recovery,
@@ -6242,6 +6261,7 @@ function resetTaskForRun(task: Task, sourceRunId: string) {
     retainedDiffAdmitted: undefined,
     verificationCorrectionHistory: undefined,
     preconditionEvidence: undefined,
+    reviewArtifactEvidence: undefined,
     runtimeRequirementEvidence: undefined,
     retryLineageChangedFiles:
       retryLineageChangedFiles.length > 0
@@ -6344,6 +6364,7 @@ export function resumeRun(source: Run, branch?: string): Run | undefined {
       log: [`Возобновлено из run ${source.id}`],
       verificationCorrectionHistory: undefined,
       preconditionEvidence: undefined,
+      reviewArtifactEvidence: undefined,
       runtimeRequirementEvidence: undefined,
       startedAt: undefined,
       finishedAt: undefined,
@@ -8152,6 +8173,8 @@ export function buildPrompt(task: Task, project: ProjectSettings) {
           : { command, status: "missing" };
       }))}\nMissing results are not passing evidence. These records do not establish subsequent verification or final acceptance.`,
     );
+  if (task.reviewArtifacts)
+    additions.push(`Review artifact declarations (artifactDir is workspace-relative, path is relative to it; runner captures SHA-256 after verification): ${JSON.stringify(task.reviewArtifacts)}. These declarations do not grant write scope.`);
   if (task.checkpointPolicy)
     additions.push(`Runner-owned checkpoint policy: ${JSON.stringify(task.checkpointPolicy)}. Do not create a Git commit or make unnecessary edits merely to produce a checkpoint.`);
   if (task.runtimeRequirements)
@@ -8277,6 +8300,7 @@ function wholeChangeAcceptanceIssue(
     status: candidate.status,
     changedFiles: candidate.changedFiles ?? [],
     verificationEvidence: candidate.verificationEvidence ?? [],
+    ...(candidate.reviewArtifactEvidence ? { reviewArtifactEvidence: candidate.reviewArtifactEvidence } : {}),
   }));
   if (JSON.stringify(evidence.predecessorEvidence) !== JSON.stringify(expectedEvidence))
     return "Whole-change acceptance predecessor evidence changed, is incomplete, or was reordered.";
@@ -8331,6 +8355,7 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
   for (const predecessor of expected) {
     if (predecessor.status !== "completed" || predecessor.reviewStatus !== "approved")
       throw new Error("WHOLE_CHANGE_ACCEPTANCE_PREDECESSOR_NOT_TERMINAL_APPROVED");
+    await assertTaskReviewArtifacts(run, predecessor);
     if (requiredVerificationEvidenceIssue(predecessor))
       throw new Error("WHOLE_CHANGE_ACCEPTANCE_PREDECESSOR_VERIFICATION_INVALID");
   }
@@ -8340,6 +8365,7 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
     status: predecessor.status,
     changedFiles: [...(predecessor.changedFiles ?? [])],
     verificationEvidence: structuredClone(predecessor.verificationEvidence ?? []),
+    ...(predecessor.reviewArtifactEvidence ? { reviewArtifactEvidence: structuredClone(predecessor.reviewArtifactEvidence) } : {}),
   }));
   const aggregateChangedFiles = [...new Set(
     predecessorEvidence.flatMap((predecessor) => predecessor.changedFiles),
@@ -8510,6 +8536,8 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
     "Do not request their removal or modification and do not treat them as task scope violations.",
     "",
     verification,
+    ...(task.reviewArtifactEvidence ? [reviewArtifactPrompt(task.reviewArtifactEvidence)] : []),
+    ...(acceptanceEvidence?.predecessorEvidence.flatMap(item => item.reviewArtifactEvidence ? [reviewArtifactPrompt(item.reviewArtifactEvidence)] : []) ?? []),
     "",
     "Check correctness, scope, allowed paths, and the exact verification results.",
     "A replacement-character finding is blocking only if direct UTF-8 inspection of a task-owned source file proves an actual U+FFFD character.",
@@ -8700,6 +8728,13 @@ async function reviewTask(run: Run, task: Task) {
     task.log.push(verificationIssue);
     return;
   }
+  try { await assertTaskReviewArtifacts(run, task); } catch (error) {
+    task.reviewStatus = "changes_requested";
+    task.reviewOutput = `VERDICT: CHANGES_REQUESTED\n\n${String(error)}`;
+    task.log.push(String(error));
+    await persist(run);
+    return;
+  }
   if (!run.review.enabled) {
     if (task.wholeChangeAcceptance) {
       task.reviewStatus = "changes_requested";
@@ -8756,6 +8791,7 @@ async function reviewTask(run: Run, task: Task) {
         throw new Error("Acceptance authorization changed.");
       await prepareWholeChangeAcceptanceEvidence(run, task);
     }
+    await assertTaskReviewArtifacts(run, task);
     child = spawnCodexWithPrompt(
       [
         ...codexExecCommandStartArgs(
@@ -8861,6 +8897,13 @@ async function reviewTask(run: Run, task: Task) {
       const detail = error instanceof Error ? error.message : "WHOLE_CHANGE_ACCEPTANCE_EVIDENCE_INVALID";
       task.reviewOutput = `VERDICT: CHANGES_REQUESTED\n\nWhole-change acceptance approval prevented: ${detail}`;
       task.log.push(`Whole-change acceptance approval prevented: ${detail}`);
+    }
+  }
+  if (task.reviewStatus === "approved") {
+    try { await assertTaskReviewArtifacts(run, task); } catch (error) {
+      task.reviewStatus = "changes_requested";
+      task.reviewOutput = `VERDICT: CHANGES_REQUESTED\n\n${String(error)}`;
+      task.log.push(String(error));
     }
   }
   if (task.reviewStatus !== "approved") task.log.push(assessment.reason);
@@ -9125,16 +9168,39 @@ async function runConfiguredTaskCommands(
   return { code: 0, timedOut: false };
 }
 
+export async function assertTaskReviewArtifacts(run: Run, task: Task) {
+  if (!task.reviewArtifacts && !task.reviewArtifactEvidence && !task.authorizationEvidence?.reviewArtifacts) return;
+  if (!task.authorizationEvidence?.enabled ||
+      JSON.stringify(task.reviewArtifacts) !== JSON.stringify(task.authorizationEvidence.reviewArtifacts))
+    throw new Error("REVIEW_ARTIFACT_AUTHORIZATION_MISMATCH");
+  await assertReviewArtifacts(await taskExecutionPathV1(run, task), task.reviewArtifacts!, task.reviewArtifactEvidence);
+}
+
 export async function runTaskVerification(run: Run, task: Task) {
+  task.reviewArtifactEvidence = undefined;
   const evidence = task.authorizationEvidence;
   if (!evidence) return { code: 0, timedOut: false };
-  return runConfiguredTaskCommands(
+  const result = await runConfiguredTaskCommands(
     run,
     task,
     orchestratorVerificationCommands(evidence),
     "Orchestrator verification",
     "verificationEvidence",
   );
+  if (result.code !== 0 || result.timedOut || !task.reviewArtifacts) return result;
+  try {
+    if (!evidence.enabled || JSON.stringify(task.reviewArtifacts) !== JSON.stringify(evidence.reviewArtifacts) ||
+        !orchestratorVerificationCommands(evidence).length || requiredVerificationEvidenceIssue(task))
+      throw new Error("REVIEW_ARTIFACT_VERIFICATION_REQUIRED");
+    task.reviewArtifactEvidence = await captureReviewArtifacts(await taskExecutionPathV1(run, task), task.reviewArtifacts);
+    await persist(run);
+    publish("run", run);
+    return result;
+  } catch (error) {
+    task.log.push(`Review artifacts rejected: ${String(error)}`);
+    await persist(run);
+    return { code: 1, timedOut: false };
+  }
 }
 
 async function runTaskPreconditions(run: Run, task: Task) {

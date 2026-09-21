@@ -9,12 +9,54 @@
 - [Change-control API](#change-control-api)
 - [Последовательные планы](#sequential-queue-plans)
 - [Формат задач и проверки](#task-format)
+- [Артефакты для reviewer](#review-artifacts)
 - [Зависимости](#dependencies-and-parallel-execution)
 - [Управление запуском](#run-controls)
 - [Токены](#token-usage)
 - [Codex CLI в Windows](#codex-cli-on-windows)
 
 Local task queue for Codex CLI. It runs each task in a fresh `codex exec --ephemeral` session, schedules dependencies safely, and shows live progress in the browser dashboard.
+
+## Review artifacts
+
+Use task-level `reviewArtifacts` when a reviewer must inspect generated or
+pre-existing evidence files. Declare exact paths before launch:
+
+```yaml
+reviewArtifacts:
+  - artifactDir: reports/run-045
+    path: validated/candidate-validation.json
+```
+
+Here the only selected file is
+`reports/run-045/validated/candidate-validation.json` in the task workspace.
+`artifactDir` is workspace-relative (`.` means the workspace root); `path` is
+relative to that directory. Managed tasks resolve against their managed
+workspace. No basename search or command-line `--artifact-dir` inference occurs.
+These declarations grant no write permission: generated files still need their
+own `allowedPaths` and applicable authoring/approval scope.
+
+This option requires enabled task authorization and at least one required
+`verificationCommands` entry (task or project level). After all machine gates
+succeed, Orchestrator reads the declared files and saves ordered
+`reviewArtifactEvidence` in canonical `run.json`: workspace, directory, relative
+path, full repository-relative and absolute paths, byte count, and SHA-256. It supplies these
+locators to the reviewer even for files absent from the task-owned diff, then
+checks the same bytes before reviewer launch and before accepting approval.
+Missing files, changed hashes, stale receipts, directories, links/junctions,
+path traversal, and duplicate paths block acceptance. A disabled reviewer does
+not disable the artifact check. Failed gates produce no artifact receipt.
+
+The declarations are bound to task authorization and survive restart/replay.
+Retry/resume and correction verification capture fresh evidence; old receipt
+hashes are never silently updated during review. Whole-change acceptance carries
+and rechecks declared predecessor artifact receipts as well.
+
+Limits: 1–32 ordinary files, 64 MiB per file and 256 MiB total, exact normalized
+paths with `/`, no absolute paths or external roots. Existing queues without the
+option keep their behavior. SHA-256 proves byte identity, not semantic validity:
+verification commands must still assert the requested result against the exact
+declared artifacts, and the reviewer must inspect their contents.
 
 ## Quick start
 
