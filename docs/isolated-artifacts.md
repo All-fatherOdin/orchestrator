@@ -74,3 +74,13 @@ Validation covers denied/mutated/out-of-scope results, canonical drift, links,
 duplicate publication and real executor/verification/reviewer/publication order.
 The disposable live CLI smoke is an execution-boundary test, not evidence that
 the full GIS audit or the installed desktop build has completed.
+
+On Windows, Node's default child-process pipes can fail with `EPERM` even when
+the same Git command works directly in PowerShell. For affected audit tools,
+explicitly preload `scripts/sandbox-file-stdio.cjs` with `node --require`.
+The adapter captures synchronous child streams in `.orchestrator-scratch` and
+propagates itself to nested Node processes through `NODE_OPTIONS`. It preserves
+exit codes, spawn errors and timeouts; oversized captured output fails closed
+after the child returns. File capture does not impose a live disk-size quota.
+It does not alter sandbox permissions or native audit source. Pin its hash in
+the queue gate and carry this requirement into recovery runtime constraints.
