@@ -11802,9 +11802,13 @@ test("legacy run records load without provider runtime fields while retry and re
   assert.deepEqual(recovered.tasks[0].providerRuntimeState, state);
 });
 
-test("fails closed on unverified Luna routes and preserves explicit GPT-5.6 configuration identity", () => {
+test("Отклоняет неподтверждённую Luna и сохраняет точные модели и усилия маршрутов", () => {
   assert.deepEqual(installedCodexModels({}), ["terra", "sol"]);
   assert.deepEqual(installedCodexModels({ CODEX_LUNA_SUPPORTED: "1" }), ["luna", "terra", "sol"]);
+  for (const [effort, reasoningEffort] of [["light", "low"], ["medium", "medium"], ["high", "high"]] as const) {
+    assert.deepEqual(assertCodexRouteCompatible("sol", effort, "local-codex-tools", {}),
+      { model: "gpt-6-sol", reasoningEffort, toolRoute: "local-codex-tools" });
+  }
   assert.deepEqual(
     assertCodexRouteCompatible("terra", "medium", "local-codex-tools", {}),
     { model: "gpt-5.6-terra", reasoningEffort: "medium", toolRoute: "local-codex-tools" },

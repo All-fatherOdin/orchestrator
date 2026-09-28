@@ -1271,7 +1271,7 @@ export function projectRunMetrics(run: Run) {
 const MODEL_IDS: Record<Model, string> = {
   luna: "gpt-5.6-luna",
   terra: "gpt-5.6-terra",
-  sol: "gpt-5.6-sol",
+  sol: "gpt-6-sol",
 };
 const MODEL_RANK: Record<Model, number> = { luna: 0, terra: 1, sol: 2 };
 
@@ -1294,7 +1294,7 @@ export function assertCodexRouteCompatible(
 ) {
   if (!installedCodexModels(environment).includes(model))
     throw new Error(`Model ${model} is not enabled by the installed Codex runtime for ${toolRoute}.`);
-  // The UI exposes only the GPT-5.6 reasoning efforts that map directly to
+  // The UI exposes only the reasoning efforts that map directly to
   // Codex's low, medium, and high settings. Do not silently coerce a route.
   if (!(["light", "medium", "high"] as string[]).includes(effort))
     throw new Error(`Reasoning effort ${effort} is not supported for ${model}.`);

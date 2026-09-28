@@ -1,4 +1,10 @@
-# GPT-5.6 model routing v1
+# Codex model routing v1
+
+Status: active
+Last aligned: 2026-09-28
+Audience: queue authors and maintainers
+Runtime impact: `sol` routes to GPT-6 Sol; Terra and Luna retain their existing IDs
+Authority: owner-requested Sol migration and current runtime implementation
 
 Source date: 2026-07-23. The volatile model facts in this document come from OpenAI's official [GPT-5.6 guidance](https://developers.openai.com/api/docs/guides/model-guidance?model=gpt-5.6) and [tools guide](https://developers.openai.com/api/docs/guides/tools).
 
@@ -7,10 +13,10 @@ Source date: 2026-07-23. The volatile model facts in this document come from Ope
 | Queue role | Model | Reasoning | Condition |
 | --- | --- | --- | --- |
 | Everyday implementation, verification, and automatic fallback | `gpt-5.6-terra` | Preserve configured effort (`light` -> `low`, `medium`, or `high`) | Default active route. |
-| Quality-first escalation | `gpt-5.6-sol` | Preserve the selected effort first | Must be explicit: `model: sol` or `model: auto` with `minModel: sol`. Measure this baseline against one lower effort before adopting the lower-cost setting. |
+| Quality-first escalation | `gpt-6-sol` | Preserve the selected effort first | Must be explicit: `model: sol` or `model: auto` with `minModel: sol`. Measure this baseline against one lower effort before adopting the lower-cost setting. |
 | Efficient contained work | `gpt-5.6-luna` | Preserve configured effort | Available only after the installed Codex runtime is verified and started with `CODEX_LUNA_SUPPORTED=1`. |
 
-`gpt-5.6` is not used as a route identifier because it aliases Sol. The router uses the explicit IDs above so a balanced request cannot silently become a flagship request.
+The `sol` queue key now resolves to `gpt-6-sol` for execution, correction and review. Existing queues retain their keys and effort settings. GPT-6 Sol supports the existing low, medium and high levels; see the [official model documentation](https://developers.openai.com/api/docs/models/gpt-6-sol), checked 2026-09-28. The router uses explicit provider IDs, not family aliases.
 
 The initial migration baseline is the existing configured effort. The UI's `light` setting maps to Codex `low`; it is the explicit one-level-lower comparison for a `medium` baseline. The router does not silently lower effort and does not enable `max`.
 
