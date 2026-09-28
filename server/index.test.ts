@@ -193,6 +193,8 @@ const {
   replayTaskAuthorization,
   verifyStoredTaskAuthorization,
   taskSandbox,
+  codexApplyPermissionPolicy,
+  prepareCodexApplyWritableRoots,
   authorizationWriteViolations,
   codexExecutionBoundaryArgs,
   codexSandboxAvailable,
@@ -13378,12 +13380,16 @@ test("executor, reviewer, correction, and preflight carry the enforced sandbox b
     }],
   };
   const apply = authorizeTask(applyTask, project, "feature/approval");
+  const applyPolicy = codexApplyPermissionPolicy(apply);
+  assert.match(applyPolicy, /"\." = "read"/);
+  assert.match(applyPolicy, /"server\/index\.ts" = "write"/);
+  assert.match(applyPolicy, /network = \{ enabled = false \}/);
   for (const phase of ["executor", "correction"] as const)
     assert.deepEqual(codexExecutionBoundaryArgs(apply, phase), [
-      "--sandbox",
-      "workspace-write",
       "-c",
-      "sandbox_workspace_write.network_access=false",
+      "default_permissions='orchestrator-apply'",
+      "-c",
+      `permissions.orchestrator-apply=${applyPolicy}`,
     ]);
   assert.deepEqual(codexExecutionBoundaryArgs(apply, "reviewer"), [
     "-c",
@@ -13436,6 +13442,61 @@ test("executor, reviewer, correction, and preflight carry the enforced sandbox b
     ...process.env,
     ORCHESTRATOR_TEST: "1",
   }), true);
+});
+
+test("apply permission profile maps directory capabilities and external reads without broad workspace writes", () => {
+  const policy = codexApplyPermissionPolicy({
+    contractType: "TaskAuthorizationEvidenceV1",
+    enabled: true,
+    decision: "authorized",
+    reason: "APPROVED_REVERSIBLE_LOCAL_APPLY",
+    intent: "apply",
+    technicalPermission: "reversible_local_write",
+    sideEffectRisk: "reversible_local_write",
+    allowedPaths: [
+      "projects/gis2-front/operations/runs/quality-next-q1000-070/**",
+      "projects/gis2-front/operations/state/**",
+    ],
+    externalReadRoots: ["C:\\Alex\\Magnus\\product"],
+    verificationCommands: [],
+    scopeFingerprint: "scope",
+    goalFingerprint: "goal",
+    branch: "main",
+    authorityFingerprint: "authority",
+  });
+  assert.match(policy, /"projects\/gis2-front\/operations\/runs\/quality-next-q1000-070" = "write"/);
+  assert.match(policy, /"projects\/gis2-front\/operations\/state" = "write"/);
+  assert.doesNotMatch(policy, /quality-next-q1000-070\/\*\*/);
+  assert.match(policy, /"C:\\\\Alex\\\\Magnus\\\\product" = "read"/);
+  assert.doesNotMatch(policy, /"\." = "write"/);
+});
+
+test("apply boundary materializes only authorized directory-capability roots before native Windows sandboxing", async () => {
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-apply-roots-"));
+  try {
+    const evidence = {
+      contractType: "TaskAuthorizationEvidenceV1" as const,
+      enabled: true,
+      decision: "authorized" as const,
+      reason: "APPROVED_REVERSIBLE_LOCAL_APPLY",
+      intent: "apply" as const,
+      technicalPermission: "reversible_local_write" as const,
+      sideEffectRisk: "reversible_local_write" as const,
+      allowedPaths: ["runs/new-batch/**", "state/**", "exact-new-file.json"],
+      verificationCommands: [],
+      scopeFingerprint: "scope",
+      goalFingerprint: "goal",
+      branch: "main",
+      authorityFingerprint: "authority",
+    };
+    const roots = await prepareCodexApplyWritableRoots(project, evidence);
+    assert.deepEqual(roots, [resolve(project, "runs/new-batch"), resolve(project, "state")]);
+    assert.deepEqual(await readdir(project), ["runs", "state"]);
+    assert.deepEqual(await readdir(resolve(project, "runs")), ["new-batch"]);
+    await assert.rejects(access(resolve(project, "exact-new-file.json")));
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("exact changed-file and orchestrator verification boundaries fail closed", () => {
