@@ -10,6 +10,9 @@ if (!stage || !path.isAbsolute(stage)) throw new Error('File stdio requires an i
 const scratch = path.join(stage, '.orchestrator-scratch');
 if (fs.realpathSync(scratch).toLowerCase() !== path.resolve(scratch).toLowerCase())
   throw new Error('Scratch must not redirect through a link');
+// Nested audit run directories can exceed Win32 temporary-path limits.
+// Native tools and their children must use the runner's workspace-root scratch.
+process.env.TEMP = process.env.TMP = process.env.TMPDIR = scratch;
 const original = cp.spawnSync;
 cp.spawnSync = function (file, args, options) {
   if (!Array.isArray(args)) { options = args; args = []; }

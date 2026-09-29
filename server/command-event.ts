@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /** Diagnostic projection only: nested command results never become task acceptance evidence. */
 export function commandEventDiagnostic(event: {
   type?: string;
@@ -24,7 +25,9 @@ export function commandEventDiagnostic(event: {
   const terminal = event.type === "item.completed" || item.status === "completed" || item.status === "failed";
   const exit = Number.isInteger(item.exit_code) ? `exit ${item.exit_code}` : "exit code unavailable";
   const state = terminal ? `terminal; ${exit}` : "running; no terminal receipt";
-  const output = bound(item.aggregated_output, 850);
+  const rawOutput = typeof item.aggregated_output === "string" ? item.aggregated_output : undefined;
+  const output = bound(rawOutput, 650);
+  const identity = rawOutput === undefined ? "" : `\nOUTPUT_META: bytes=${Buffer.byteLength(rawOutput, "utf8")} sha256=${createHash("sha256").update(rawOutput).digest("hex")} truncated=${rawOutput.length > 650}`;
   // Keep the complete projection below the executor's existing 1,600-character log cap.
-  return `COMMAND: ${id ? `[${id}] ` : ""}${command} (${state})${output ? `\nOUTPUT: ${output}` : ""}`;
+  return `COMMAND: ${id ? `[${id}] ` : ""}${command} (${state})${output ? `\nOUTPUT: ${output}` : ""}${identity}`;
 }

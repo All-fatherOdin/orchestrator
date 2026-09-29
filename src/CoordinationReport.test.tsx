@@ -16,4 +16,6 @@ test("coordination view filters exact task IDs and retains missing data labels",
   assert.match(markup, /0 · частично/);
   assert.match(markup, /Ревьюер/);
   assert.match(markup, /Исправления/);
+  assert.match(markup, /Вход без кэша/);
+  assert.match(markup, /сами по себе не доказывают/);
 });

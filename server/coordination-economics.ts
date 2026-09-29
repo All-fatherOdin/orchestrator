@@ -9,6 +9,10 @@ type TaskSource = {
 };
 type Source = { id: string; startedAt?: string; finishedAt?: string; tasks: TaskSource[] };
 const count = (value: unknown): Measure => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? recorded(value) : unavailable();
+function uncached(input: unknown, cached: unknown): Measure {
+  const i = count(input).value, c = count(cached).value;
+  return i !== null && c !== null && c <= i ? recorded(i - c) : unavailable();
+}
 function duration(start?: string, end?: string): Measure {
   if (typeof start !== "string" || typeof end !== "string") return unavailable();
   return count(Date.parse(end) - Date.parse(start));
@@ -36,11 +40,12 @@ export function coordinationReport(source: Source): CoordinationReport {
           const observations = admissions.map(admission => {
             if (admission.contractType !== "ExecutionBudgetAdmissionV1") throw new Error("Invalid admission");
             const settlement = evidence.find(entry => entry.contractType === "ExecutionBudgetSettlementV1" && entry.admissionId === admission.admissionId);
-            if (!settlement || settlement.contractType !== "ExecutionBudgetSettlementV1" || settlement.status === "recovery_ambiguous") return emptyPhase();
-            if (settlement.status === "not_started_after_reservation") return { calls: recorded(0), reservedMs: recorded(0), tokens: Object.fromEntries(tokenFields.map(key => [key, recorded(0)])) as PhaseCost["tokens"] };
-            return { calls: recorded(1), reservedMs: duration(admission.recordedAt, settlement.settledAt), tokens: Object.fromEntries(tokenFields.map(key => [key, settlement.usage.state === "measured" ? count(settlement.usage[key]) : unavailable()])) as PhaseCost["tokens"] };
+            if (!settlement || settlement.contractType !== "ExecutionBudgetSettlementV1" || settlement.status === "recovery_ambiguous") return { ...emptyPhase(), uncachedInputTokens: unavailable() };
+            if (settlement.status === "not_started_after_reservation") return { calls: recorded(0), reservedMs: recorded(0), uncachedInputTokens: recorded(0), tokens: Object.fromEntries(tokenFields.map(key => [key, recorded(0)])) as PhaseCost["tokens"] };
+            return { calls: recorded(1), reservedMs: duration(admission.recordedAt, settlement.settledAt), uncachedInputTokens: settlement.usage.state === "measured" ? uncached(settlement.usage.inputTokens, settlement.usage.cachedInputTokens) : unavailable(), tokens: Object.fromEntries(tokenFields.map(key => [key, settlement.usage.state === "measured" ? count(settlement.usage[key]) : unavailable()])) as PhaseCost["tokens"] };
           });
           result.phases[phase] = {
+            uncachedInputTokens: admissions.length ? sumMeasures(observations.map(item => item.uncachedInputTokens)) : recorded(0),
             calls: admissions.length ? sumMeasures(observations.map(item => item.calls)) : recorded(0),
             reservedMs: admissions.length ? sumMeasures(observations.map(item => item.reservedMs)) : recorded(0),
             tokens: Object.fromEntries(tokenFields.map(key => [key, admissions.length ? sumMeasures(observations.map(item => item.tokens[key])) : recorded(0)])) as PhaseCost["tokens"],
@@ -57,6 +62,8 @@ export function coordinationReport(source: Source): CoordinationReport {
     for (const entry of usage) frequencies.set(identity(entry), (frequencies.get(identity(entry)) ?? 0) + 1);
     for (const phase of coordinationPhases) {
       const entries = usage.filter(entry => entry.phase === phase && frequencies.get(identity(entry)) === 1 && count(entry.attempt).value !== null && Number(entry.attempt) > 0 && typeof entry.recordedAt === "string" && Number.isFinite(Date.parse(entry.recordedAt)));
+      const paired = sumMeasures(entries.map(entry => uncached(entry.inputTokens, entry.cachedInputTokens)));
+      result.phases[phase].uncachedInputTokens = paired.value === null ? paired : { ...paired, state: "partial" };
       for (const key of tokenFields) {
         const total = sumMeasures(entries.map(entry => count(entry[key])));
         result.phases[phase].tokens[key] = total.value === null ? total : { ...total, state: "partial" };

@@ -1,5 +1,6 @@
 import { apiFetch as fetch } from "./api-client";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { useUsageData } from "./useUsageData";
 import { CoordinationReport } from "./CoordinationReport";
 import type { CoordinationReport as CoordinationData } from "../shared/coordination-economics";
 
@@ -8,7 +9,7 @@ type Task = { id: string; key?: string; title: string; model: string; usage?: Us
 type OutcomeClass = "success" | "failure" | "interrupted" | "pending";
 type TokenMetrics = { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens?: number; totalTokens: number; calls: number };
 type TaskMetrics = { id: string; key?: string; status: string; outcome: OutcomeClass; durationMs: number | null; executionAttempts: number | null; reviewCorrectionCycles: number | null; tokens: TokenMetrics };
-type RunMetrics = { id: string; status: string; outcome: OutcomeClass; durationMs: number | null; tokens: TokenMetrics; tasks: TaskMetrics[]; coordination?: CoordinationData };
+export type RunMetrics = { id: string; status: string; outcome: OutcomeClass; durationMs: number | null; tokens: TokenMetrics; tasks: TaskMetrics[]; coordination?: CoordinationData };
 export type UsageRun = {
   id: string;
   project: { name: string };
@@ -68,17 +69,14 @@ function TaskBar({ task, maximum }: { task: ViewTask; maximum: number }) {
   </div>;
 }
 
-export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
-  const initialSource = activeRun ? `${activeRun.pipeline ? "pipeline" : "run"}:${activeRun.pipeline?.id ?? activeRun.id}` : "";
+export const UsagePage = memo(function UsagePage({ activeSource }: { activeSource: string }) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [runsTotal, setRunsTotal] = useState(0);
   const [runsOffset, setRunsOffset] = useState(0);
-  const [source, setSource] = useState(initialSource);
-  const [sourceRuns, setSourceRuns] = useState<UsageRun[]>(activeRun ? [activeRun] : []);
+  const [source, setSource] = useState(activeSource);
+  const { sourceRuns, metricsByRun, loading, error } = useUsageData(source);
   const [queueId, setQueueId] = useState("all");
   const [taskId, setTaskId] = useState("all");
-  const [loading, setLoading] = useState(false);
-  const [metricsByRun, setMetricsByRun] = useState<Record<string, RunMetrics>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -89,37 +87,10 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
     return () => { cancelled = true; };
   }, [runsOffset]);
   useEffect(() => {
-    if (activeRun && !source) setSource(`${activeRun.pipeline ? "pipeline" : "run"}:${activeRun.pipeline?.id ?? activeRun.id}`);
-  }, [activeRun, source]);
-  useEffect(() => {
-    if (!source) return;
-    let cancelled = false;
-    const [kind, id] = source.split(":", 2);
-    if (kind === "run" && activeRun?.id === id) { setSourceRuns([activeRun]); setLoading(false); return; }
-    setLoading(true);
-    setSourceRuns([]);
-    const path = kind === "pipeline" ? `/api/pipelines/${encodeURIComponent(id)}/runs` : `/api/runs/${encodeURIComponent(id)}`;
-    void fetch(path).then((response) => response.ok ? response.json() : null).then((value: UsageRun | { runs: UsageRun[] } | null) => {
-      if (!cancelled) setSourceRuns(value && "runs" in value ? value.runs : value ? [value] : []);
-    }).catch(() => { if (!cancelled) setSourceRuns([]); }).finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [activeRun, source]);
+    if (activeSource && !source) setSource(activeSource);
+  }, [activeSource, source]);
   useEffect(() => { setQueueId("all"); setTaskId("all"); }, [source]);
   useEffect(() => setTaskId("all"), [queueId]);
-  useEffect(() => {
-    let cancelled = false;
-    if (!sourceRuns.length) {
-      setMetricsByRun({});
-      return () => { cancelled = true; };
-    }
-    void Promise.all(sourceRuns.map(async (run) => {
-      const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/metrics`);
-      return response.ok ? response.json() as Promise<RunMetrics> : null;
-    })).then((values) => {
-      if (!cancelled) setMetricsByRun(Object.fromEntries(values.filter((value): value is RunMetrics => Boolean(value)).map((value) => [value.id, value])));
-    }).catch(() => { if (!cancelled) setMetricsByRun({}); });
-    return () => { cancelled = true; };
-  }, [sourceRuns]);
 
   const sources = useMemo(() => {
     const seen = new Set<string>();
@@ -176,6 +147,7 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
       </select></label>
     </div>
     <div className="usagePagination"><span>Запуски: {runsTotal ? `${runsOffset + 1}–${Math.min(runsOffset + pageSize, runsTotal)} из ${runsTotal}` : "нет"}</span><button onClick={() => setRunsOffset((value) => Math.max(0, value - pageSize))} disabled={runsOffset === 0}>Назад</button><button onClick={() => setRunsOffset((value) => value + pageSize)} disabled={runsOffset + pageSize >= runsTotal}>Далее</button></div>
+    {error ? <p role="status" className="usageEmpty">{error}</p> : null}
     {loading ? <p className="empty">Загружаем данные запуска…</p> : !sourceRuns.length ? <p className="empty">Выберите запуск, чтобы посмотреть расход.</p> : <>
       {visibleRuns.filter(run => taskId === "all" || visibleTasks.some(task => task.runId === run.id)).map(run => {
         const report = metricsByRun[run.id]?.coordination;
@@ -190,6 +162,6 @@ export function UsagePage({ activeRun }: { activeRun: UsageRun | null }) {
       </>}
     </>}
   </section>;
-}
+});
 function UsageMetric({ label, value, title }: { label: string; value: number; title?: string }) { return <article className="usageMetric" title={title}><span>{label}</span><strong>{format.format(value)}</strong><small>Во всех выбранных вызовах</small></article>; }
 function ProcessMetric({ label, value }: { label: string; value: string }) { return <article className="usageMetric"><span>{label}</span><strong>{value}</strong><small>По выбранным задачам</small></article>; }

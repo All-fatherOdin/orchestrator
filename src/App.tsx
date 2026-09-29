@@ -1,6 +1,7 @@
 import { apiFetch as fetch } from "./api-client";
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parse, stringify } from "yaml";
+import { usageUpdates } from "./usage-updates";
 import { UsagePage } from "./UsagePage";
 import { OperatorDashboard } from "./OperatorDashboard";
 import { TaskFailurePanel, PreflightFailurePanel, taskFailureGuidance, type DiagnosticTask, type PreflightCheck } from "./FailureGuidance";
@@ -303,6 +304,15 @@ function duration(start?: string, end?: string) {
   );
   return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
+function LiveDuration({ start, end }: { start?: string; end?: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!start || end) return;
+    const timer = window.setInterval(() => tick(value => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [start, end]);
+  return <>{duration(start, end)}</>;
+}
 function time(value?: string) {
   return value
     ? new Date(value).toLocaleTimeString([], {
@@ -347,7 +357,6 @@ export function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [isProjectsLoading, setIsProjectsLoading] = useState(true);
   const [isPipelineLoading, setIsPipelineLoading] = useState(false);
-  const [clock, setClock] = useState(Date.now());
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyOffset, setHistoryOffset] = useState(0);
@@ -457,19 +466,19 @@ export function App() {
       .finally(() => setIsProjectsLoading(false));
     void refreshHistory(0);
     const events = new EventSource("/api/events");
+    events.addEventListener("open", () => usageUpdates.connection(true));
+    events.addEventListener("error", () => usageUpdates.connection(false));
     events.addEventListener("run", (event) => {
       const next = JSON.parse((event as MessageEvent).data) as Run;
+      usageUpdates.publish(next);
       setRun(next);
     });
-    return () => events.close();
+    return () => { events.close(); usageUpdates.connection(false); };
   }, []);
+  useEffect(() => { usageUpdates.publish(run); }, [run]);
   useEffect(() => {
     if (run?.pipeline) void refreshPipeline(run.pipeline.id);
   }, [run?.pipeline?.id, run?.pipeline?.index, run?.pipeline?.total]);
-  useEffect(() => {
-    const interval = window.setInterval(() => setClock(Date.now()), 1000);
-    return () => window.clearInterval(interval);
-  }, []);
   useEffect(() => {
     if (
       !run ||
@@ -897,7 +906,6 @@ export function App() {
       return next;
     });
   }
-  void clock;
 
   return (
     <main className={`shell ${showOperator ? "operatorShell" : ""}`}>
@@ -1044,7 +1052,9 @@ export function App() {
             onConfirm={() => void deleteHistoryRun(runToDelete.id)}
           />
         )}
-        {showOperator ? <OperatorDashboard /> : showUsage ? <UsagePage activeRun={run} /> : showProjects ? (
+        {showOperator ? <OperatorDashboard /> : showUsage ? <UsagePage
+          activeSource={run ? `${run.pipeline ? "pipeline" : "run"}:${run.pipeline?.id ?? run.id}` : ""}
+        /> : showProjects ? (
           <section className="projectsPanel">
             <div className="sectionHeading">
               <h2>Сохранённые проекты</h2>
@@ -1164,7 +1174,7 @@ export function App() {
                     <b>{item.project.name}</b>
                     <small>
                       {item.taskCount} задач · {runStatusLabel[item.status]} ·{" "}
-                      {duration(item.startedAt, item.finishedAt)}
+                      <LiveDuration start={item.startedAt} end={item.finishedAt} />
                     </small>
                   </span>
                   <time>
@@ -1495,7 +1505,7 @@ export function App() {
                   />
                   <Metric
                     label="Общее время"
-                    value={duration(run.startedAt, run.finishedAt)}
+                    value={<LiveDuration start={run.startedAt} end={run.finishedAt} />}
                   />
                   <Metric
                     label="Статус"
@@ -1611,7 +1621,7 @@ export function App() {
                         <span className="status">
                           {statusLabel[task.status]}
                         </span>
-                        <b>{duration(task.startedAt, task.finishedAt)}</b>
+                        <b><LiveDuration start={task.startedAt} end={task.finishedAt} /></b>
                         {task.checkpoint ? (
                           <button
                             className="checkpoint"
@@ -1664,7 +1674,7 @@ export function App() {
               <dd>{time(current.startedAt)}</dd>
               <dt>Прошло времени</dt>
               <dd className="timer">
-                {duration(current.startedAt, current.finishedAt)}
+                <LiveDuration start={current.startedAt} end={current.finishedAt} />
               </dd>
               <dt>Таймаут</dt>
               <dd>
@@ -1817,7 +1827,7 @@ function Metric({
   status,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   detail?: string;
   status?: Run["status"];
 }) {

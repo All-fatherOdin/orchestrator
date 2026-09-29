@@ -6,6 +6,7 @@ test('Файловый stdio сохраняет stdin, stdout, stderr, коды 
   fs.mkdirSync(path.join(stage, '.orchestrator-scratch'));
   const script = `
     const assert=require('node:assert/strict'),cp=require('node:child_process');
+    assert.equal(require('node:os').tmpdir(),require('node:path').join(process.env.ORCHESTRATOR_ARTIFACT_WORKSPACE,'.orchestrator-scratch'));
     let r=cp.spawnSync(process.execPath,['-e',"process.stdout.write(require('node:fs').readFileSync(0));process.stderr.write('ошибка');process.exitCode=7"],{input:'вход',encoding:'utf8'});
     assert.equal(r.status,7);assert.equal(r.stdout,'вход');assert.equal(r.stderr,'ошибка');
     r=cp.spawnSync(process.execPath,['-e',"const r=require('node:child_process').spawnSync(process.execPath,['-e',\\"process.stdout.write('nested')\\"],{encoding:'utf8'});process.stdout.write(r.stdout)"],{encoding:'utf8'});
@@ -15,7 +16,7 @@ test('Файловый stdio сохраняет stdin, stdout, stderr, коды 
     r=cp.spawnSync(process.execPath,['-e',"process.stdout.write('bytes')"]);assert.ok(Buffer.isBuffer(r.stdout));
   `;
   try {
-    const r = spawnSync(process.execPath, ['--require', path.join(__dirname,'sandbox-file-stdio.cjs'), '-e', script], {env:{...process.env,ORCHESTRATOR_ARTIFACT_WORKSPACE:stage},encoding:'utf8'});
+    const r = spawnSync(process.execPath, ['--require', path.join(__dirname,'sandbox-file-stdio.cjs'), '-e', script], {env:{...process.env,ORCHESTRATOR_ARTIFACT_WORKSPACE:stage,TEMP:path.join(stage,'nested-invalid-temp'),TMP:path.join(stage,'nested-invalid-temp'),TMPDIR:path.join(stage,'nested-invalid-temp')},encoding:'utf8'});
     assert.equal(r.status,0,r.stderr);
     assert.deepEqual(fs.readdirSync(path.join(stage,'.orchestrator-scratch')),[]);
   } finally {fs.rmSync(stage,{recursive:true,force:true})}

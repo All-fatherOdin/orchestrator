@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, writeFile, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { type GisPackageV1 } from "./gis-quality.ts";
+import { selectProcessPackage, type ProcessPackageV1 } from "./process-handlers.ts";
 
 /** Opt-in artifact staging. Only the runner may publish, after gates and review. */
 export type IsolatedArtifactsV1 = {
@@ -8,18 +10,21 @@ export type IsolatedArtifactsV1 = {
   contractVersion: "1.0";
   inputPaths: string[];
   publishCommands: string[];
+  gisPackage?: GisPackageV1;
+  processPackage?: ProcessPackageV1;
 };
 
 export function validateIsolatedArtifacts(value: unknown): IsolatedArtifactsV1 {
   const c = value as IsolatedArtifactsV1;
   if (!c || typeof c !== "object" || Array.isArray(c) ||
-    Object.keys(c).sort().join() !== "contractType,contractVersion,inputPaths,publishCommands" ||
+    Object.keys(c).sort().join() !== (c.gisPackage ? "contractType,contractVersion,gisPackage,inputPaths,publishCommands" : c.processPackage ? "contractType,contractVersion,inputPaths,processPackage,publishCommands" : "contractType,contractVersion,inputPaths,publishCommands") ||
     c.contractType !== "IsolatedArtifactsV1" || c.contractVersion !== "1.0" ||
     !Array.isArray(c.inputPaths) || !c.inputPaths.length ||
-    !Array.isArray(c.publishCommands) || !c.publishCommands.length ||
+    !Array.isArray(c.publishCommands) || ((c.gisPackage || c.processPackage) ? c.publishCommands.length !== 0 : !c.publishCommands.length) ||
     c.publishCommands.some(s => typeof s !== "string" || !s.trim()) ||
     new Set(c.inputPaths).size !== c.inputPaths.length)
     throw new Error("Invalid IsolatedArtifactsV1 contract.");
+  selectProcessPackage(c);
   for (const p of c.inputPaths) {
     if (typeof p !== "string" || !p || p !== p.normalize("NFC") ||
       /[\\:*?\[\]\x00-\x1f]/.test(p) || p.split("/").some(s => !s || s === "." || s === ".." || [".git", ".orchestrator-scratch"].includes(s.toLowerCase()) || /[. ]$/.test(s)))

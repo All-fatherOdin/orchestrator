@@ -28,14 +28,32 @@ test("coordination sums multiple invocations separately by role without counting
   assert.deepEqual(task.phases.executor.tokens.inputTokens, recorded(20));
   assert.deepEqual(task.phases.executor.tokens.outputTokens, recorded(4));
   assert.deepEqual(task.phases.executor.tokens.cachedInputTokens, recorded(6));
+  assert.deepEqual(task.phases.executor.uncachedInputTokens, recorded(14));
   assert.deepEqual(task.phases.executor.reservedMs, recorded(4000));
   for (const role of ["reviewer", "correction"] as const) {
+    assert.deepEqual(task.phases[role].uncachedInputTokens, recorded(7));
     assert.deepEqual(task.phases[role].calls, recorded(1));
     assert.deepEqual(task.phases[role].tokens.inputTokens, recorded(10));
     assert.deepEqual(task.phases[role].tokens.cacheWriteTokens, recorded(0));
   }
   assert.deepEqual(task.executorAttempts, recorded(2));
   assert.deepEqual(task.correctionAttempts, recorded(1));
+});
+test("uncached input is paired per observation, never subtracted across mismatched partial totals", () => {
+  const entry = { phase: "executor", attempt: 1, recordedAt: at, inputTokens: 10, cachedInputTokens: 3 };
+  const report = coordinationReport({id:"paired",tasks:[{id:"a",status:"completed",usage:[entry,
+    {...entry,attempt:2,inputTokens:100,cachedInputTokens:null},
+    {...entry,attempt:3,inputTokens:null,cachedInputTokens:50},
+    {...entry,attempt:4,inputTokens:0,cachedInputTokens:0},
+    {...entry,attempt:5,inputTokens:1,cachedInputTokens:2},
+    {...entry,phase:"reviewer",inputTokens:20,cachedInputTokens:4},
+    {...entry,phase:" executor ",inputTokens:999,cachedInputTokens:0},
+  ]},{id:"b",status:"completed",usage:[entry,entry]}]});
+  assert.deepEqual(report.tasks[0].phases.executor.uncachedInputTokens,{value:7,state:"partial"});
+  assert.deepEqual(report.tasks[0].phases.reviewer.uncachedInputTokens,{value:16,state:"partial"});
+  assert.deepEqual(report.tasks[1].phases.executor.uncachedInputTokens,unavailable());
+  const pages=[report.tasks.slice(0,1),report.tasks.slice(1)];
+  assert.deepEqual(sumMeasures(pages.flat().map(t=>t.phases.executor.uncachedInputTokens!)),{value:7,state:"partial"});
 });
 test("coordination distinguishes zero, missing tokens, unsettled reservations and ambiguous recovery", () => {
   const source = fixture(); append(source, "executor"); append(source, "executor", "failed", true);

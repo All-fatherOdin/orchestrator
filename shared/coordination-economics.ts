@@ -11,7 +11,7 @@ export function sumMeasures(values: Measure[]): Measure {
   return { value, state: values.every(item => item.state === "recorded") ? "recorded" : "partial" };
 }
 export const tokenFields = ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens"] as const;
-export type PhaseCost = { calls: Measure; reservedMs: Measure; tokens: Record<typeof tokenFields[number], Measure> };
+export type PhaseCost = { calls: Measure; reservedMs: Measure; tokens: Record<typeof tokenFields[number], Measure>; uncachedInputTokens?: Measure };
 export type CoordinationTask = {
   id: string; status: string; reviewStatus: string | null;
   durationMs: Measure; executorAttempts: Measure; correctionAttempts: Measure;

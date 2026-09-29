@@ -4,6 +4,8 @@ Status: roadmap placement accepted; implementation deferred
 
 Prepared: 2026-08-17
 
+Evidence updated: 2026-09-04
+
 Roadmap position: candidate Phase 13, after the completion-reviewed Phase 12
 
 ## Decision
@@ -24,9 +26,20 @@ admission questions below.
 
 The 2026-08-15 Nikolay update adds two operator widgets:
 
-- `GAPS`, intended to keep discovered ideas, bugs, and unfinished work visible;
+- `GAPS`, intended to keep ideas, bugs, and unfinished work encountered by
+  Nikolay or agents visible;
 - `ROADMAP`, intended to show how current work relates to the direction and
   remaining scope of a project.
+
+Nikolay says the current data comes from an internal system and that other
+sources could be added through a connector. This establishes intended source
+extensibility, but not canonical ownership, stable source identity, freshness,
+reconciliation, or connector authority.
+
+The follow-up chat also establishes that visible labels are abbreviated
+project names: `CF` is a larger product/project, `CFA` is its core, and `CFU`
+is one of its UI projects. A future roadmap therefore cannot assume that one
+product, project component, repository, and roadmap row are the same entity.
 
 The screenshot proves the presence of aggregate counters, roadmap rows, and
 wave-like progress cells. It does not prove the exact color semantics,
@@ -87,8 +100,9 @@ inferred from a read-only roadmap projection.
 
 Before a Phase 13 contract is drafted, an owner review must decide:
 
-1. What is a `gap`: an imported source item, a derived missing link, a
-   human-recorded observation, or a closed union of those kinds?
+1. How are the observed human- or agent-discovered ideas, bugs, and unfinished
+   work represented: as imported source items, derived missing links,
+   human/agent observations, or a closed union with explicit provenance?
 2. Which system owns each lifecycle: GoalBuddy, the change ledger, an external
    issue source, or a new explicitly justified authority?
 3. What stable IDs and evidence references join goals, gaps, roadmap outcomes,
@@ -105,8 +119,41 @@ Before a Phase 13 contract is drafted, an owner review must decide:
 10. What evidence would support the claim that known work is not lost, while
     avoiding the stronger unsupported claim that nothing in the project was
     ever forgotten?
+11. What stable product-to-component-project relationship joins names such as
+    `CF`, `CFA`, and `CFU`, and how does it relate to repositories and roadmap
+    rows without conflating them?
 
 ## 5. Preferred contract shape if admitted
+
+The [2026-09-04 supplement](nikolay-evidence-update-2026-09-04.md) refines the
+admission decisions above:
+
+- Resolve knowledge and lifecycle owners per source. Live search supplies
+  candidate evidence, not a new canonical owner or an accepted gap.
+- Use stable identities rather than display codes: the inspected project
+  selector has multiple CFA rows. Product, component, repository, wave and
+  task joins need explicit evidence.
+- Distinguish a feature, its implementation task, its checks and acceptance.
+  Passing task verification is not automatically human acceptance or delivered
+  roadmap value. Preserve per-feature evidence even when testing in batches.
+- Distinguish a rejected/by-design finding from a defect fixed by delivered
+  work. Neither a dismissed gap nor duplicate task records may inflate delivery.
+
+Required fixture cases for the future contract (no schema is accepted here):
+
+| Input | Required assertion |
+|---|---|
+| Two component records display CFA but have distinct stable IDs | Keep their work and totals separate; a name-only join is ambiguous, never automatic. |
+| One CRUD feature, its implementation and test evidence, repeated source records, and two pages of linked tasks | Count the feature once across the complete result; keep implementation/check counts separate and deduplicate by the accepted identity rule. |
+| Automated checks pass but required human acceptance is missing | Show acceptance pending/unknown; do not count accepted delivery. |
+| One by-design dismissal and one fixed defect | Show distinct dispositions; dismissal contributes zero to delivered fixes. |
+| Missing/null progress versus numeric zero | Preserve unknown versus known zero; do not coerce absent evidence to zero or complete. |
+| Exact identifier filter, leading/trailing whitespace and a near-match | Contract must select reject-or-normalize behavior explicitly; never silently fuzzy-match identities. |
+| Two sibling projects with multiple contributing records on different pages | Assert each exact whole-result total independently with no leakage, omission or double counting; page-local totals must be labelled separately. |
+
+Concrete IDs, numeric totals and normalization choices must be fixed in the
+admitted specification before implementation queue authoring. These cases do
+not settle the still-open lifecycle or denominator decisions by themselves.
 
 The smallest safe first contract should prefer a read-only, deterministic,
 watermarked reconciliation projection. It should expose missing links and
@@ -147,6 +194,6 @@ Indicative delivery order, not implementation authorization:
 ## 7. Reconsideration trigger
 
 Start the Phase 13 contract discussion only when the owner chooses this
-candidate as the next product phase and provides or accepts answers to the ten
+candidate as the next product phase and provides or accepts answers to the eleven
 admission decisions. Additional screenshots or larger unvalidated counters are
 research evidence, not implementation authorization.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { commandEventDiagnostic } from "./command-event.ts";
 
 test("command diagnostics distinguish running/null from a terminal receipt", () => {
@@ -26,5 +27,13 @@ test("long command diagnostics retain both ends of output within the persisted l
   assert.ok(line.length <= 1600);
   assert.match(line, /FIRST_DIAGNOSTIC/);
   assert.match(line, /LAST_DIAGNOSTIC/);
+  const full = "FIRST_DIAGNOSTIC" + "x".repeat(10000) + "LAST_DIAGNOSTIC";
+  assert.ok(line.includes(`bytes=${Buffer.byteLength(full)} sha256=${createHash("sha256").update(full).digest("hex")} truncated=true`));
   assert.equal(commandEventDiagnostic({ item: { type: "agent_message" } }), undefined);
+});
+test("diagnostic identity distinguishes omitted, empty and Unicode output",()=>{
+  const make=(output?:string)=>commandEventDiagnostic({type:"item.completed",item:{type:"command_execution",exit_code:0,aggregated_output:output}})!;
+  assert.doesNotMatch(make(),/OUTPUT_META/);
+  assert.match(make(""),/bytes=0.*truncated=false/);
+  assert.match(make("Да"),/bytes=4.*truncated=false/);
 });

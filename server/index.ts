@@ -1,4 +1,7 @@
 import express from "express";
+import { executeProcess, restoreProcessStage, processSha as gisSha, processImplementationIdentity, type ProcessProgress } from "./process-stages.ts";
+import { selectProcessPackage, createRegisteredProcessHandler, registeredProcessImplementation, processRegistryIdentity } from "./process-handlers.ts";
+import { fileURLToPath } from "node:url";
 import { validateIsolatedArtifacts, prepareArtifactStage, artifactStage, inventory as artifactInventory, assertArtifactStage, sealArtifactReview, beginArtifactPublication, type IsolatedArtifactsV1, type ArtifactStage } from "./isolated-artifacts.ts";
 import { commandEventDiagnostic } from "./command-event.ts";
 import { validateReviewArtifacts, captureReviewArtifacts, assertReviewArtifacts, reviewArtifactPrompt, type ReviewArtifact, type ReviewArtifactEvidence } from "./review-artifacts.ts";
@@ -7,7 +10,7 @@ import { installLocalApiSecurity, LOCAL_API_HOST } from "./local-api-security.ts
 import Ajv2020 from "ajv8/dist/2020.js";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync as readFileSyncForGisIdentity } from "node:fs";
 import {
   mkdir,
   lstat,
@@ -978,6 +981,7 @@ type WholeChangeContentEvidence = {
   sha256?: string;
   content?: string;
   diff?: string;
+  gisNativeEvidence?: { contractType: "GISNativeArtifactEvidenceV1"; taskId: string; byteLength: number; nativeChainSha256: string; verificationSha256: string; publicationSha256: string };
 };
 type WholeChangeAcceptanceEvidenceV1 = {
   contractType: "WholeChangeAcceptanceEvidenceV1";
@@ -1006,6 +1010,8 @@ type ReviewSettings = {
   maxCorrections: number;
 };
 type Task = ResolvedTask & {
+  gisProgress?: ProcessProgress;
+  processProgress?: ProcessProgress;
   publicationEvidence?: VerificationEvidence[];
   id: string;
   model: Model;
@@ -4740,6 +4746,9 @@ export function validateQueue(value: unknown): {
         task.verificationMode === "advisory")
         throw new Error(`Task ${index + 1}: isolated artifacts require authorized serial apply, independent review, no retries/corrections/checkpoints/managed workspace.`);
       assertWindowsCommandPolicy(task.isolatedArtifacts.publishCommands, `Task ${index + 1} publication`);
+      if (selectProcessPackage(task.isolatedArtifacts) && (task.executionBudget || project.initialState ||
+        !(task.verificationCommands?.length || project.verificationCommands?.length)))
+        throw new Error(`Task ${index + 1}: GISPackageV1 requires machine gates; executionBudget and initialState are not admitted by this bounded contract.`);
     }
     if (task.checkpointPolicy !== undefined && (
       !task.authorization?.enabled || task.authorization.intent !== "apply" || !allowedPaths?.length ||
@@ -6393,6 +6402,8 @@ function dependentTaskKeys(tasks: Task[], rootKey?: string) {
 
 export function retryRun(source: Run, task: Task, branch?: string): Run {
   assertPersistedRunReplayContractsV1(source, branch);
+  if (selectProcessPackage(task.isolatedArtifacts) && taskProcessProgress(task))
+    throw new Error("GIS stage continuation uses resume on the same canonical run; whole-task retry is forbidden.");
   const retryKeys = dependentTaskKeys(source.tasks, task.key);
   return {
     id: identifier(),
@@ -6427,6 +6438,25 @@ export function retryRun(source: Run, task: Task, branch?: string): Run {
 export function resumeRun(source: Run, branch?: string): Run | undefined {
   assertPersistedRunReplayContractsV1(source, branch);
   if (source.tasks.every((task) => task.status === "completed")) return undefined;
+  if (source.tasks.some(t => taskProcessProgress(t))) {
+    if (source.tasks.some(t => t.status !== "completed" && t.allowedPaths?.length && !selectProcessPackage(t.isolatedArtifacts)))
+      throw new Error("Process same-run continuation cannot restart an unrelated writer.");
+    const continued = structuredClone(source);
+    continued.status = "idle";
+    continued.finishedAt = undefined;
+    for (const task of continued.tasks) {
+      if (task.status === "completed" && !task.wholeChangeAcceptance) continue;
+      if (taskProcessProgress(task) && (!['finalized', 'verified', 'approved', 'publishing', 'published'].includes(taskProcessProgress(task)!.phase) ||
+        (taskProcessProgress(task)!.failure && !['transient', 'ambiguous-effect'].includes(taskProcessProgress(task)!.failure!.kind))))
+        throw new Error("Process result is incomplete, deterministic, or stale; cannot repeat analysis implicitly.");
+      task.status = "pending";
+      task.executionPhase = undefined;
+      task.finishedAt = undefined;
+      task.timedOut = false;
+      task.log.push("Explicit Process same-run stage continuation; executor result retained.");
+    }
+    return continued;
+  }
   const remaining = source.tasks
     .map((task) => task.status === "completed" && !task.wholeChangeAcceptance ? {
       ...task,
@@ -7135,7 +7165,11 @@ async function taskExecutionPathV1(run: Run, task: Task) {
     if (!stage) {
       if (!task.authorizationEvidence || !verifyStoredTaskAuthorization(task.authorizationEvidence, task, run.project, await currentBranchIdentity(run.project.path)))
         throw new Error("Isolated workspace requires current authorization.");
-      stage = await prepareArtifactStage(run.project.path, join(runsDirectory, run.id, `${task.id}-isolated`), task.isolatedArtifacts);
+      const parent = join(runsDirectory, run.id, `${task.id}-isolated`);
+      stage = taskProcessProgress(task)
+        ? await restoreProcessStage(run.project.path, parent, taskProcessProgress(task)!)
+        : await prepareArtifactStage(run.project.path, parent, task.isolatedArtifacts);
+      if (taskProcessProgress(task)) stage.inputPaths = [...task.isolatedArtifacts.inputPaths];
       isolatedTaskStages.set(task, stage);
       task.log.push(`Isolated artifact workspace: ${stage.root}`);
     }
@@ -8491,6 +8525,22 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
     try {
       const content = await readFile(absolute);
       if (content.length > WHOLE_CHANGE_MAX_FILE_BYTES || content.length > remaining) {
+        const digest = gisSha(content);
+        const nativeOwner = [...expected].reverse().find(owner => selectProcessPackage(owner.isolatedArtifacts)?.handler === "gis-audit" && taskProcessProgress(owner)?.phase === "published" && taskProcessProgress(owner)!.publication?.some(e => e.path === path && e.after === digest));
+        if (nativeOwner) {
+          const p = taskProcessProgress(nativeOwner)!;
+          const stage = await taskExecutionPathV1(run, nativeOwner);
+          if (JSON.stringify(Object.fromEntries(await artifactInventory(stage))) !== JSON.stringify(p.artifacts) ||
+            p.native.some(n => n.exitCode !== 0) ||
+            !p.history.some(h => h.stage === "verification" && h.result === "passed" && JSON.stringify(h.receipt) === JSON.stringify(nativeOwner.verificationEvidence)))
+            throw new Error("WHOLE_CHANGE_GIS_NATIVE_EVIDENCE_CHANGED");
+          const gisNativeEvidence: NonNullable<WholeChangeContentEvidence["gisNativeEvidence"]> = { contractType: "GISNativeArtifactEvidenceV1", taskId: nativeOwner.id, byteLength: content.length, nativeChainSha256: gisSha(JSON.stringify(p.native)), verificationSha256: gisSha(JSON.stringify(nativeOwner.verificationEvidence)), publicationSha256: gisSha(JSON.stringify(p.publication)) };
+          const bytes = Buffer.byteLength(JSON.stringify(gisNativeEvidence));
+          if (bytes > remaining) throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED");
+          remaining -= bytes;
+          contentEvidence.push({ path, kind, sha256: digest, gisNativeEvidence });
+          continue;
+        }
         if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED");
         // A checkpoint removes the worktree diff against HEAD. Use its
         // authenticated parent to retain the complete change in bounded evidence.
@@ -8510,7 +8560,7 @@ export async function prepareWholeChangeAcceptanceEvidence(run: Run, task: Task)
         content: content.toString("utf8"),
       });
     } catch (error) {
-      if (error instanceof Error && error.message === "WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED") throw error;
+      if (error instanceof Error && ["WHOLE_CHANGE_ACCEPTANCE_CONTENT_OVERSIZED", "WHOLE_CHANGE_GIS_NATIVE_EVIDENCE_CHANGED"].includes(error.message)) throw error;
       if (kind !== "tracked") throw new Error("WHOLE_CHANGE_ACCEPTANCE_UNTRACKED_CONTENT_MISSING");
       const diff = await readGitDiff(run.project.path, [path], await wholeChangeDiffBase(run, expected, path));
       const diffBytes = Buffer.byteLength(diff, "utf8");
@@ -8557,7 +8607,8 @@ export function buildReviewerPrompt(task: Task, project: ProjectSettings) {
     ? acceptanceEvidence.contentEvidence.map((item) => [
       `PATH: ${item.path} (${item.kind})`,
       item.sha256 ? `SHA256: ${item.sha256}` : "",
-      item.content !== undefined ? item.content : item.diff ?? "(content unavailable)",
+      item.gisNativeEvidence ? `Exact native artifact receipt (full bytes exceed prompt budget; inspect the exact PATH read-only if needed): ${JSON.stringify(item.gisNativeEvidence)}` : "",
+      item.content !== undefined ? item.content : item.diff ?? (item.gisNativeEvidence ? "" : "(content unavailable)"),
     ].filter(Boolean).join("\n")).join("\n\n")
     : task.diff?.trim() ||
     "(No tracked diff is available. Inspect only the exact task-change paths listed above; a listed path may be newly untracked.)";
@@ -9285,7 +9336,7 @@ async function runConfiguredTaskCommands(
     if (output.trim()) task.log.push(output.trim());
     await recordEvidence({
       command,
-      exitCode: result.exitCode || (result.timedOut ? 1 : 0),
+      exitCode: result.exitCode ?? 1,
       timedOut: result.timedOut,
       output: output.trim(),
     });
@@ -9432,6 +9483,254 @@ export async function finalizeSettledTask(run: Run, task: Task) {
   });
 }
 
+async function executeTaskAgent(run: Run, task: Task, executionPath: string, promptOverride?: string) {
+  if (!task.authorizationEvidence) throw new Error("Executor requires authorization evidence.");
+  task.executionPhase = "executor";
+  task.attempts = 1;
+  task.executionAttempts = 0;
+  task.log.push(`Запущено: ${task.model} / ${task.effort}`);
+  await persist(run);
+  publish("run", run);
+  const outputFile = join(runsDirectory, run.id, `${task.id}-final.md`);
+  const prompt = promptOverride ?? buildPrompt(task, run.project);
+  const args = [
+    ...codexExecCommandStartArgs(task.authorizationEvidence, "executor"),
+    "--ephemeral",
+    "--json",
+    ...(task.isolatedArtifacts ? ["--skip-git-repo-check"] : []),
+    "--cd",
+    executionPath,
+    "--model",
+    MODEL_IDS[task.model],
+    "-c",
+    `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
+    "--output-last-message",
+    outputFile,
+  ];
+  const maxRetries = task.maxRetries ?? run.limits.maxTaskRetries;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    task.executionAttempts = attempt;
+    task.log.push(
+      `Запуск исполнителя ${attempt}/${maxRetries + 1} · лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин.`,
+    );
+    const budgetAdmission = await reserveExecutionBudgetInvocationV1(
+      run,
+      task,
+      "executor",
+      task.model,
+    );
+    if (budgetAdmission && budgetAdmission.disposition !== "allow") {
+      task.exitCode = 1;
+      task.log.push(`Executor was not started: ${budgetAdmission.reasonCode}`);
+      break;
+    }
+    if (!budgetAdmission)
+      await prepareExecutorProviderRuntime(run, task, "executor");
+    let child: ReturnType<typeof spawn>;
+    try {
+      if (budgetAdmission)
+        await prepareExecutorProviderRuntime(run, task, "executor");
+      if (task.workspaceAttemptId)
+        await workspaceMutationContextV1(
+          runStatePath(run.id),
+          run.project.path,
+          task.workspaceAttemptId,
+        );
+      await preparePromptModelExecutionV1(
+        run,
+        task,
+        "executor",
+        attempt,
+        prompt,
+        task.model,
+        task.effort,
+      );
+      if (attempt === 1) await assertRetainedDiffWorkspace(task, run.project.path);
+      else await assertRetainedDiffSource(task, run.project.path);
+      await prepareCodexApplyWritableRoots(executionPath, task.authorizationEvidence);
+      child = spawnCodexWithPrompt(
+        args,
+        prompt,
+        executionPath,
+        taskProcessEnvironment(run, task),
+      );
+    } catch (error) {
+      await settleExecutionBudgetInvocationV1(
+        run,
+        task,
+        budgetAdmission,
+        "not_started_after_reservation",
+      );
+      task.exitCode = 1;
+      task.log.push(
+        `Could not start Codex CLI: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      break;
+    }
+    activeProcesses.set(task.id, child);
+    const consumeLine = (line: string) => {
+        recordUsage(
+          task,
+          line.trim(),
+          "executor",
+          budgetAdmission?.phaseOrdinal ?? attempt,
+        );
+        const readable = line.trim() && taskEvent(line.trim());
+        if (readable) task.log.push(readable.slice(0, 1600));
+      publish("log", {
+        runId: run.id,
+        taskId: task.id,
+        lines: task.log.slice(-8),
+      });
+    };
+    const stdoutDecoder = createUtf8LineDecoder(consumeLine);
+    const stderrDecoder = createUtf8LineDecoder(consumeLine);
+    child.stdout?.on("data", stdoutDecoder.write);
+    child.stderr?.on("data", stderrDecoder.write);
+    const result = await waitForProcess(
+      child,
+      task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
+      () =>
+        task.log.push(
+          `Задача превысила лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин. и была остановлена.`,
+        ),
+    );
+    stdoutDecoder.end();
+    stderrDecoder.end();
+    await settleExecutionBudgetInvocationV1(
+      run,
+      task,
+      budgetAdmission,
+      executionBudgetProcessStatusV1(
+        run,
+        result.exitCode,
+        result.timedOut,
+      ),
+    );
+    activeProcesses.delete(task.id);
+    task.exitCode = result.exitCode;
+    task.timedOut ||= result.timedOut;
+    if (task.exitCode === 0 || isCancelled(run) || skippedTaskIds.has(task.id))
+      break;
+    if (attempt <= maxRetries)
+      task.log.push(
+        `Попытка ${attempt} завершилась с ошибкой; повторный запуск.`,
+      );
+  }
+  task.finishedAt = undefined;
+  if (existsSync(outputFile))
+    task.finalOutput = boundedFinalOutput(await readFile(outputFile, "utf8"));
+}
+
+function taskProcessProgress(task: Task): ProcessProgress | undefined {
+  if (task.gisProgress && task.processProgress) throw new Error("Ambiguous process progress");
+  return task.processProgress ?? task.gisProgress;
+}
+function setTaskProcessProgress(task: Task, progress: ProcessProgress) {
+  if (task.isolatedArtifacts?.gisPackage) task.gisProgress = progress;
+  else task.processProgress = progress;
+}
+
+let gisLifecycleTestBoundary: ((name: string, run: Run, taskId: string) => Promise<void>) | undefined;
+const processRunnerImplementation = (() => {
+  const path = typeof import.meta.url === "string" && import.meta.url.startsWith("file:") ? fileURLToPath(import.meta.url) : resolve(process.argv[1]);
+  return { path, sha256: gisSha(readFileSyncForGisIdentity(path)) };
+})();
+export function configureGisLifecycleTestBoundary(hook?: typeof gisLifecycleTestBoundary) {
+  if (process.env.ORCHESTRATOR_TEST !== "1") throw new Error("GIS test seam is unavailable in production.");
+  gisLifecycleTestBoundary = hook;
+}
+async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status> {
+  const executionPath = await taskExecutionPathV1(run, task);
+  const stage = isolatedTaskStages.get(task)!;
+  const contract = selectProcessPackage(task.isolatedArtifacts)!;
+  const implementations = [processRunnerImplementation, processImplementationIdentity, processRegistryIdentity, registeredProcessImplementation(contract)];
+  task.status = "running";
+  task.startedAt ??= timestamp();
+  task.finishedAt = undefined;
+  task.timedOut = false;
+  await persist(run);
+  if (!taskProcessProgress(task)) {
+    const before = await readWorkspaceSnapshot(executionPath);
+    const check = await runTaskPreconditions(run, task);
+    if (check.code !== 0 || check.timedOut || changedWorkspaceFiles(before, await readWorkspaceSnapshot(executionPath)).length)
+      throw new Error("Process precondition failed or changed its read-only inputs.");
+    if (task.runtimeRequirements) {
+      task.runtimeRequirementEvidence = await checkRuntimeRequirementsV1(task.runtimeRequirements, executionPath, taskProcessEnvironment(run, task));
+      if (task.runtimeRequirementEvidence.some(c => !c.ok)) throw new Error("Process runtime unavailable.");
+    }
+  }
+  const authority = async () => {
+    if (isCancelled(run) || skippedTaskIds.has(task.id)) throw new Error("Process task interrupted by user.");
+    await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
+    if ((await taskAuthorizationIdentityViolations(run, task)).length) throw new Error("Process authorization changed.");
+    const phase = taskProcessProgress(task)?.phase;
+    if (phase && ["verified", "approved", "publishing", "published"].includes(phase) && requiredVerificationEvidenceIssue(task))
+      throw new Error("Process persisted verification receipts are invalid.");
+    if (phase && ["approved", "publishing", "published"].includes(phase) && (task.reviewStatus !== "approved" || task.reviewWriteViolations?.length))
+      throw new Error("Process persisted independent review is invalid.");
+    const provider = codexBin();
+    if (!existsSync(provider)) throw new Error("Process requires a resolved absolute provider executable.");
+    for (const implementation of implementations)
+      if (gisSha(await readFile(implementation.path)) !== implementation.sha256) throw new Error("Process loaded implementation changed; continuation is stale.");
+    const server = process.argv[1];
+    const environment = taskProcessEnvironment(run, task);
+    const runtimeEnvironmentSha256 = gisSha(JSON.stringify(Object.fromEntries(Object.entries(environment).filter(([key]) => /^(PATH|PATHEXT|NODE_OPTIONS|COMSPEC|GIT_CONFIG_.*|CODEX_BIN|ORCHESTRATOR_PROVIDER_.*)$/i.test(key)).sort(([a], [b]) => a.localeCompare(b)))));
+    return gisSha(JSON.stringify({ authorization: task.authorizationEvidence, review: run.review, limits: run.limits, model: task.model, effort: task.effort, runtimeEnvironmentSha256,
+      provider, providerSha256: gisSha(await readFile(provider)), implementation: implementations, serverSha256: server && existsSync(server) ? gisSha(await readFile(server)) : undefined,
+      testProviderSha256: process.env.ORCHESTRATOR_TEST === "1" && process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT ? gisSha(await readFile(process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT)) : undefined }));
+  };
+  const options: Omit<Parameters<typeof executeProcess>[0], "handler"> & Pick<Parameters<typeof createRegisteredProcessHandler>[1], "env"> & { hooks: Parameters<typeof createRegisteredProcessHandler>[1]["hooks"] } = { stage, allowedPaths: task.allowedPaths!, runId: run.id, taskId: task.id, env: taskProcessEnvironment(run, task), progress: taskProcessProgress(task),
+    hooks: {
+      persist: async progress => { setTaskProcessProgress(task, progress); await persist(run); publish("run", run); },
+      authority,
+      analyze: async prompt => {
+        await executeTaskAgent(run, task, executionPath, `${buildPrompt(task, run.project)}\n\n${prompt}`);
+        const outcome = assessExecutorOutcome(task.finalOutput, task.executorOutcomeContractVersion);
+        task.executorOutcome = outcome.outcome; task.executorOutcomeReason = outcome.reason;
+        if (task.exitCode !== 0 || task.timedOut || outcome.disposition !== "completed") throw new Error("Process analysis lacks a terminal successful executor result.");
+        return task.finalOutput!;
+      },
+      verify: async () => {
+        task.changedFiles = [...(await artifactInventory(stage.root))].filter(([p, h]) => stage.baseline.get(p) !== h).map(([p]) => p);
+        task.diff = await readGitDiff(executionPath, task.changedFiles);
+        const result = await runTaskVerification(run, task);
+        return { ...result, receipts: structuredClone(task.verificationEvidence) };
+      },
+      review: async () => {
+        await sealArtifactReview(stage, task.allowedPaths!);
+        await reviewTask(run, task);
+        return { status: task.reviewStatus ?? "unavailable", receipts: { status: task.reviewStatus, output: task.reviewOutput, violations: task.reviewWriteViolations } };
+      },
+      process: child => { if (child) activeProcesses.set(task.id, child); else activeProcesses.delete(task.id); },
+      nativeBoundary: process.platform === "win32" && !(process.env.ORCHESTRATOR_TEST === "1" && process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT)
+        ? root => ({ executable: codexBin(), args: ["sandbox", "-C", root, "-P", codexApplyPermissionProfile, "-c", `permissions.${codexApplyPermissionProfile}=${codexApplyPermissionPolicy(task.authorizationEvidence!)}`] }) : undefined,
+      boundary: async name => { task.log.push(`Process stage boundary: ${name}`); publish("log", { runId: run.id, taskId: task.id, lines: task.log.slice(-4) }); if (process.env.ORCHESTRATOR_TEST === "1") await gisLifecycleTestBoundary?.(name, run, task.id); },
+    } };
+  try { await executeProcess({ ...options, handler: await createRegisteredProcessHandler(contract, options) }); } catch (error) {
+    task.exitCode = 1;
+    if (taskProcessProgress(task) && !taskProcessProgress(task)!.failure) {
+      const message = String(error);
+      taskProcessProgress(task)!.failure = { stage: taskProcessProgress(task)!.phase, kind: ["publishing", "published"].includes(taskProcessProgress(task)!.phase) ? "ambiguous-effect"
+        : /changed|invalid|unexpected|budget|revoked/i.test(message) ? "stale"
+        : /EPERM|ENAMETOOLONG|ENOENT|unsupported/i.test(message) ? "environment"
+        : /interrupted|interruption/i.test(message) ? "transient" : "result-defect" };
+      await persist(run);
+    }
+    throw error;
+  }
+  task.publicationEvidence = [{ command: "ProcessPackageV1 conditional file publication", exitCode: 0, timedOut: false, output: JSON.stringify({ phase: taskProcessProgress(task)!.phase, entries: taskProcessProgress(task)!.publication?.length }) }];
+  task.changedFiles = taskProcessProgress(task)!.publication!.map(e => e.path);
+  task.diff = await readGitDiff(run.project.path, task.changedFiles);
+  task.exitCode = 0;
+  task.status = "completed";
+  task.executionPhase = undefined;
+  task.finishedAt = timestamp();
+  await finalizeSettledTask(run, task);
+  publish("run", run);
+  return task.status;
+}
+
 async function executeTask(run: Run, task: Task): Promise<Status> {
     const branch = await currentBranchIdentity(run.project.path);
     // Re-fence durable topology and recovery lineage after the branch read and
@@ -9510,6 +9809,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       publish("run", run);
       return task.status;
     }
+    if (selectProcessPackage(task.isolatedArtifacts)) return executeProcessTaskLifecycle(run, task);
     const executionPath = await taskExecutionPathV1(run, task);
     const preconditionBaseline = await readWorkspaceSnapshot(executionPath);
     task.status = "running";
@@ -9598,141 +9898,7 @@ async function executeTask(run: Run, task: Task): Promise<Status> {
       publish("run", run);
       return task.status;
     }
-    task.executionPhase = "executor";
-    task.attempts = 1;
-    task.executionAttempts = 0;
-    task.log.push(`Запущено: ${task.model} / ${task.effort}`);
-    await persist(run);
-    publish("run", run);
-    const outputFile = join(runsDirectory, run.id, `${task.id}-final.md`);
-    const prompt = buildPrompt(task, run.project);
-    const args = [
-      ...codexExecCommandStartArgs(task.authorizationEvidence, "executor"),
-      "--ephemeral",
-      "--json",
-      ...(task.isolatedArtifacts ? ["--skip-git-repo-check"] : []),
-      "--cd",
-      executionPath,
-      "--model",
-      MODEL_IDS[task.model],
-      "-c",
-      `model_reasoning_effort=\"${codexReasoningEffort(task.effort)}\"`,
-      "--output-last-message",
-      outputFile,
-    ];
-    const maxRetries = task.maxRetries ?? run.limits.maxTaskRetries;
-    for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
-      task.executionAttempts = attempt;
-      task.log.push(
-        `Запуск исполнителя ${attempt}/${maxRetries + 1} · лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин.`,
-      );
-      const budgetAdmission = await reserveExecutionBudgetInvocationV1(
-        run,
-        task,
-        "executor",
-        task.model,
-      );
-      if (budgetAdmission && budgetAdmission.disposition !== "allow") {
-        task.exitCode = 1;
-        task.log.push(`Executor was not started: ${budgetAdmission.reasonCode}`);
-        break;
-      }
-      if (!budgetAdmission)
-        await prepareExecutorProviderRuntime(run, task, "executor");
-      let child: ReturnType<typeof spawn>;
-      try {
-        if (budgetAdmission)
-          await prepareExecutorProviderRuntime(run, task, "executor");
-        if (task.workspaceAttemptId)
-          await workspaceMutationContextV1(
-            runStatePath(run.id),
-            run.project.path,
-            task.workspaceAttemptId,
-          );
-        await preparePromptModelExecutionV1(
-          run,
-          task,
-          "executor",
-          attempt,
-          prompt,
-          task.model,
-          task.effort,
-        );
-        if (attempt === 1) await assertRetainedDiffWorkspace(task, run.project.path);
-        else await assertRetainedDiffSource(task, run.project.path);
-        await prepareCodexApplyWritableRoots(executionPath, task.authorizationEvidence);
-        child = spawnCodexWithPrompt(
-          args,
-          prompt,
-          executionPath,
-          taskProcessEnvironment(run, task),
-        );
-      } catch (error) {
-        await settleExecutionBudgetInvocationV1(
-          run,
-          task,
-          budgetAdmission,
-          "not_started_after_reservation",
-        );
-        task.exitCode = 1;
-        task.log.push(
-          `Could not start Codex CLI: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        break;
-      }
-      activeProcesses.set(task.id, child);
-      const consumeLine = (line: string) => {
-          recordUsage(
-            task,
-            line.trim(),
-            "executor",
-            budgetAdmission?.phaseOrdinal ?? attempt,
-          );
-          const readable = line.trim() && taskEvent(line.trim());
-          if (readable) task.log.push(readable.slice(0, 1600));
-        publish("log", {
-          runId: run.id,
-          taskId: task.id,
-          lines: task.log.slice(-8),
-        });
-      };
-      const stdoutDecoder = createUtf8LineDecoder(consumeLine);
-      const stderrDecoder = createUtf8LineDecoder(consumeLine);
-      child.stdout?.on("data", stdoutDecoder.write);
-      child.stderr?.on("data", stderrDecoder.write);
-      const result = await waitForProcess(
-        child,
-        task.timeoutMinutes ?? run.limits.taskTimeoutMinutes,
-        () =>
-          task.log.push(
-            `Задача превысила лимит ${task.timeoutMinutes ?? run.limits.taskTimeoutMinutes} мин. и была остановлена.`,
-          ),
-      );
-      stdoutDecoder.end();
-      stderrDecoder.end();
-      await settleExecutionBudgetInvocationV1(
-        run,
-        task,
-        budgetAdmission,
-        executionBudgetProcessStatusV1(
-          run,
-          result.exitCode,
-          result.timedOut,
-        ),
-      );
-      activeProcesses.delete(task.id);
-      task.exitCode = result.exitCode;
-      task.timedOut ||= result.timedOut;
-      if (task.exitCode === 0 || isCancelled(run) || skippedTaskIds.has(task.id))
-        break;
-      if (attempt <= maxRetries)
-        task.log.push(
-          `Попытка ${attempt} завершилась с ошибкой; повторный запуск.`,
-        );
-    }
-    task.finishedAt = undefined;
-    if (existsSync(outputFile))
-      task.finalOutput = boundedFinalOutput(await readFile(outputFile, "utf8"));
+    await executeTaskAgent(run, task, executionPath);
     let executorOutcome = assessExecutorOutcome(
       task.finalOutput,
       task.executorOutcomeContractVersion,

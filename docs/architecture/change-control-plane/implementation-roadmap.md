@@ -1,5 +1,59 @@
 # Implementation Roadmap
 
+Planning revision: 2026-09-04. Source:
+[Nikolay evidence update](nikolay-evidence-update-2026-09-04.md).
+This revision updates future planning and admission criteria, not historical
+completion receipts or accepted runtime contracts.
+
+## Planning and acceptance rules for subsequent work
+
+1. Complete code/architecture research and resolve material alternatives before
+   executable task authoring. Bind the accepted spec to exact files, relevant
+   symbols, base revision, impact scope, dependencies and stop conditions.
+   Unknown write scope requires investigation in the current session first.
+2. Keep one bounded feature and its tests/verification in the same task. The
+   CRUD example includes implementation, coverage and execution of checks.
+   Do not split correctness work to reach a queue minimum. Independently useful
+   test-only contracts remain possible under the repository authoring rules.
+3. Define DoD and stage-specific evidence before execution: task verification,
+   independent review, whole-change checks, and human/browser acceptance where
+   required. Automated success cannot stand in for unperformed human testing;
+   batch acceptance must retain each feature's evidence and decision.
+4. Reuse Phase 2 drift checks, Phase 3 isolation/serialized merge and Stage 1
+   budgets/capability gates. Gates and bounded branches/retries remain the
+   execution model; subagent count is not a delivery target.
+
+## Updated order of future planning
+
+| Order | Bounded planning outcome | Exit evidence / boundary |
+|---|---|---|
+| 1 | Resolve Phase 13 source owners, stable product/project joins and feature-to-task acceptance mapping. | Explicit decisions and concrete fixtures required by the placement record below; no inference of IDs from abbreviations. |
+| 2 | When admitted, specify and verify a read-only reconciliation projection before its widgets or new intake. | Exact denominators, missing/conflicting-source behavior and no-mutation evidence; unresolved findings cannot count as accepted delivery. |
+| 3 | Review CLI/UI/agent interface reuse against existing domain APIs and Phase 7 authority, Phase 5 routing, and Stage 1 capability/budget contracts. | A bounded overlap/gap map and proposed adapter scope before any implementation queue. Shared services must preserve identical authorization and receipts; no parallel canonical store or automatic MCP replacement. This review is not a Phase 13 dependency. |
+| 4 | Assess wave-branch/task-branch concurrency only when a concrete workload needs it. | First compare with Phase 3; define dependency/overlap, stale-base, serialized merge, restart and budget fixtures before proposing a contract extension. Same-worktree ordinary queues remain sequential. |
+| Deferred | Evolutionary agents, automatic prompt/tool promotion and incubator workflows. | Reproducible baseline, fixed evaluation cohort, independent assessment, bounded costs, rollback and explicit promotion authority are prerequisites. The chat does not prove this capability works. |
+
+These are planning outcomes, not pre-authored writing tasks. Scope discovery
+for later outcomes must finish before concrete queues are created. Existing
+Phase 1-12 completion status is unchanged; Phase 13 remains the next candidate.
+
+## Proposed Agentic Patterns follow-up: context efficiency
+
+The following sequence is a sidecar planning track. It does not replace,
+renumber, block, or authorize the candidate Phase 13 Work Inventory and
+Roadmap work. It also does not authorize a queue, schema, runtime change, or
+provider feature until each plan has passed its own admission review.
+
+| Order | Planning artifact | Admission / implementation order |
+|---|---|---|
+| CE | [Coordination Economics v1](coordination-economics-plan-v1.md) | First: create a read-only, canonical-run report for context allocation, process fan-out, proven waits, usage availability, and outcomes. Review a predeclared cohort before making any optimization claim. |
+| CA | [Context Allocation v1](context-allocation-plan-v1.md) | Only after CE evidence identifies an addressable problem: add an opt-in deterministic count/byte policy over the existing context router and receipts. It must preserve legacy queues and never become chat memory or adaptive retrieval. |
+
+The dependency is deliberate: measuring the coordination/context cost precedes
+changing context selection. Neither artifact treats long-lived sessions,
+cross-thread messaging, inferred repeated research, provider cache savings, or
+subagent count as proven product value.
+
 ## Phase 1: Change and Wave Foundation
 
 Launch-ready: `queues/change-control-foundation-v1.yaml`

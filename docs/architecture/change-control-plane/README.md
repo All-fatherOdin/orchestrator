@@ -2,7 +2,13 @@
 
 Status: Phase 1-12 and Agentic Stage 1 S1-S6 completion-reviewed; candidate
 Phase 13 placed and implementation deferred
-Last reviewed: 2026-08-17
+Last reviewed: 2026-09-04
+
+The [2026-09-04 evidence update](nikolay-evidence-update-2026-09-04.md) informs
+the revised [implementation roadmap](implementation-roadmap.md): feature-sized
+tasks with their checks, finalized planning before execution, distinct human
+acceptance, source ownership, and bounded interface/concurrency reviews.
+Evolutionary agents remain experimental evidence, not an implemented reference.
 
 This package turns the Telegram evidence about Nikolay's system into an
 Orchestrator design without pretending that unknown implementation details
@@ -12,68 +18,71 @@ were observed.
 
 1. [evidence-ledger.md](evidence-ledger.md) separates observed behavior from
    inference and open questions.
-2. [target-architecture.md](target-architecture.md) defines the proposed
+2. [nikolay-evidence-update-2026-08-18.md](nikolay-evidence-update-2026-08-18.md)
+   records the post-29-July Telegram, screenshot, and video evidence without
+   promoting incomplete counters or metrics to design truth.
+3. [target-architecture.md](target-architecture.md) defines the proposed
    control-plane entities, authority boundaries, and transitions.
-3. [decisions.md](decisions.md) records the choices made for Orchestrator.
-4. [metrics-and-evals.md](metrics-and-evals.md) defines how quality claims will
+4. [decisions.md](decisions.md) records the choices made for Orchestrator.
+5. [metrics-and-evals.md](metrics-and-evals.md) defines how quality claims will
    be measured.
-5. [implementation-roadmap.md](implementation-roadmap.md) sequences the work.
-6. [planning-drift-contract-v1.md](planning-drift-contract-v1.md) defines the
+6. [implementation-roadmap.md](implementation-roadmap.md) sequences the work.
+7. [planning-drift-contract-v1.md](planning-drift-contract-v1.md) defines the
    implemented Phase 2 contract and fail-closed dispatch semantics.
-7. [workspace-merge-contract-v1.md](workspace-merge-contract-v1.md) defines
+8. [workspace-merge-contract-v1.md](workspace-merge-contract-v1.md) defines
    the implemented Phase 3 isolation, merge, and recovery boundary.
-8. [halts-incidents-contract-v1.md](halts-incidents-contract-v1.md) defines
+9. [halts-incidents-contract-v1.md](halts-incidents-contract-v1.md) defines
    the accepted Phase 4 halt, incident, Warden, and Doctor boundary.
-9. [prompt-model-eval-lineage-contract-v1.md](prompt-model-eval-lineage-contract-v1.md)
+10. [prompt-model-eval-lineage-contract-v1.md](prompt-model-eval-lineage-contract-v1.md)
    defines the implemented Phase 5 prompt, model, and eval lineage boundary.
-10. [operator-projections-contract-v1.md](operator-projections-contract-v1.md)
+11. [operator-projections-contract-v1.md](operator-projections-contract-v1.md)
     defines the accepted Phase 6 read-only projection and dashboard boundary.
-11. [operator-actions-contract-v1.md](operator-actions-contract-v1.md) defines
+12. [operator-actions-contract-v1.md](operator-actions-contract-v1.md) defines
     the accepted and implemented Phase 7 boundary.
-12. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
+13. [audit-bundles-contract-v1.md](audit-bundles-contract-v1.md) defines the
     accepted, implemented, and completion-reviewed Phase 8 boundary.
-13. [outcome-scorecards-contract-v1.md](outcome-scorecards-contract-v1.md)
+14. [outcome-scorecards-contract-v1.md](outcome-scorecards-contract-v1.md)
     defines the accepted, implemented, and completion-reviewed Phase 9
     read-only metrics boundary.
-14. [operational-outcome-evidence-contract-v1.md](operational-outcome-evidence-contract-v1.md)
+15. [operational-outcome-evidence-contract-v1.md](operational-outcome-evidence-contract-v1.md)
     defines the accepted Phase 10 boundary; Slices 1-2 are implemented and
     completion-reviewed.
-15. [operational-evidence-intake-contract-v1.md](operational-evidence-intake-contract-v1.md)
+16. [operational-evidence-intake-contract-v1.md](operational-evidence-intake-contract-v1.md)
     defines the accepted Phase 11 manual-intake UI boundary; Slices 1-2 are
     implemented and completion-reviewed.
-16. [github-deployment-connector-contract-v1.md](github-deployment-connector-contract-v1.md)
+17. [github-deployment-connector-contract-v1.md](github-deployment-connector-contract-v1.md)
     defines the accepted and reviewed Phase 12 boundary for one manually
     triggered read-only GitHub deployment adapter; Slices 1-2 are implemented
     and completion-reviewed.
-17. [github-deployment-connector-completion-review-v1.md](github-deployment-connector-completion-review-v1.md)
+18. [github-deployment-connector-completion-review-v1.md](github-deployment-connector-completion-review-v1.md)
     records the final Phase 12 acceptance matrix, verification, rendered QA,
     and residual authority boundary.
-18. [agentic-patterns-integration-plan-v1.md](agentic-patterns-integration-plan-v1.md)
+19. [agentic-patterns-integration-plan-v1.md](agentic-patterns-integration-plan-v1.md)
     sequences the contract-first Stage 1 slices; S1-S6 are completion-reviewed.
-19. [context-budget-baseline-contract-v1.md](context-budget-baseline-contract-v1.md)
+20. [context-budget-baseline-contract-v1.md](context-budget-baseline-contract-v1.md)
     records the accepted, implemented, and completion-reviewed read-only S2
     context measurement boundary and baseline revision 1.
-20. [hard-execution-budgets-contract-v1.md](hard-execution-budgets-contract-v1.md)
+21. [hard-execution-budgets-contract-v1.md](hard-execution-budgets-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S3 revision 1
     execution-budget boundary.
-21. [tool-capability-chain-gate-contract-v1.md](tool-capability-chain-gate-contract-v1.md)
+22. [tool-capability-chain-gate-contract-v1.md](tool-capability-chain-gate-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S4 observable-tool
     manifest and deterministic chain-gate boundary.
-22. [mocked-workflow-evals-contract-v1.md](mocked-workflow-evals-contract-v1.md)
+23. [mocked-workflow-evals-contract-v1.md](mocked-workflow-evals-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S5
     credential-free deterministic mocked-workflow eval boundary.
-23. [progressive-disclosure-contract-v1.md](progressive-disclosure-contract-v1.md)
+24. [progressive-disclosure-contract-v1.md](progressive-disclosure-contract-v1.md)
     records the accepted, implemented, and completion-reviewed S6 stateless
     hash-bound source index and exact excerpt boundary.
-24. [plan-challenge-contract-v1.md](plan-challenge-contract-v1.md) records the
+25. [plan-challenge-contract-v1.md](plan-challenge-contract-v1.md) records the
     accepted, implemented, and completion-reviewed documentation-only Pattern
     14 boundary. [plan-challenge-checklist-v1.md](plan-challenge-checklist-v1.md)
     is the reusable procedural template.
-25. [feature-list-harness-usefulness-review-v1.md](feature-list-harness-usefulness-review-v1.md)
+26. [feature-list-harness-usefulness-review-v1.md](feature-list-harness-usefulness-review-v1.md)
     records the Stage 2 Pattern 16 admission evidence, owner-accepted `defer`
     decision, and reconsideration triggers. It authorizes no contract or
     implementation.
-26. [work-inventory-roadmap-phase-placement-v1.md](work-inventory-roadmap-phase-placement-v1.md)
+27. [work-inventory-roadmap-phase-placement-v1.md](work-inventory-roadmap-phase-placement-v1.md)
     places Work Inventory and Roadmap after Phase 12 as the candidate Phase 13,
     records its admission questions and boundaries, and defers every contract
     and implementation action.
