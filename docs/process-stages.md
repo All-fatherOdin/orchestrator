@@ -99,6 +99,11 @@ performance-regression. Different physical roots/state/runtime/run paths are
 supported. Arbitrary business project identities or candidate-analysis profiles
 are not supported by this runtime and are not advertised as portable.
 
+Performance preparation creates a separate native static baseline for each
+bundle and passes it to that bundle's analysis validator. This inventory does
+not supply runtime measurements. The native baseline builder rejects incomplete
+bundles; such packages must remain blocked rather than bypassing validation.
+
 A new process needs a trusted handler when preparation, structured response,
 validation/finalization, publication plan or actual-result checks differ. It
 implements ProcessHandler and is registered explicitly in process-handlers.ts
@@ -136,7 +141,13 @@ persists reviewed sealed bytes and ordered before/after entries before effects,
 checks the whole prefix after each boundary, and renames only missing entries.
 Handlers with unsupported recovery reject continuation at a publication stage.
 This is not a guarantee for arbitrary external effects or deletion workflows.
-Repeated publication requests remain subject to the declared attempt budget.
+Before reserving a write attempt, reconciliation checks sealed and canonical
+bytes without writing. If every entry is already applied, it returns `writes: 0`
+without consuming publication budget, including after a lost acknowledgement
+on the last allowed attempt. Remaining writes still require an available attempt;
+conflicting bytes fail before reservation or effects. The reviewed delta uses
+the union of baseline and current paths. Deletions are unsupported and rejected
+as a deterministic result defect before sealing or publishing any output.
 
 The unchanged native finalizer has a legacy naming ambiguity:
 `profileResults[].bundleFingerprint` represents the validation-artifact digest
@@ -216,3 +227,122 @@ enabled; the native legacy-field check is additive.
 
 No working GIS data, related repository, Project Map, installed application or
 repository commit was changed. No push or production publication was performed.
+
+## Publication correctness follow-up
+
+Review identified two core defects: completed publication acknowledgement was
+incorrectly gated by remaining write attempts, and baseline-only paths were
+silently omitted from the publication delta. The bounded correction changes
+only `server/process-stages.ts`, `server/process-stages.test.ts` and this file.
+No handler, native runtime, queue contract or saved historical record changes.
+
+Regression cases use the independent counter handler with publication budget 1:
+an identical completed request, interruptions after the last rename, after all
+effects and at the published checkpoint all survive JSON restart with zero
+remaining writes, attempts still 1 and executor/verification/review still 1 each.
+A partial prefix with remaining writes still fails at the exhausted budget;
+foreign target bytes are rejected by reconciliation before that budget gate.
+A handler deleting `state/value.txt` while creating `result/receipt.txt` is
+rejected before sealing or any canonical publication, even when the handler's
+published-result validator is a no-op. Original canonical value remains `0`,
+the result does not exist, publication attempts remain 0 and retry is refused
+as a deterministic result defect.
+
+The new regressions failed before the correction. After the correction,
+`npm run check`, `npm run build` and the complete targeted command
+`node --import tsx --test server/process-stages.test.ts server/gis-quality.test.ts server/gis-quality.integration.test.ts server/isolated-artifacts.test.ts server/isolated-artifacts.integration.test.ts`
+passed: 24 tests, zero failures/skips. Logs are
+`queues/process-stages-20260929/publication-fixes-focused.log` and
+`queues/process-stages-20260929/publication-fixes-build.log`.
+Full `npm test`, new genuine-agent GIS runs and installation were not rerun for
+this correction. Earlier live records and deployment receipts prove their
+recorded implementation versions, not this changed core; their files and hash
+bindings remain unchanged.
+
+## Bounded correction of independently rejected analysis
+
+Process packages may explicitly opt into `stageAttempts.correction: 1` or `2`.
+Omission or `0` preserves the historical no-analysis-correction behavior.
+The effective cap is the smaller of this setting and `review.maxCorrections`;
+independent review must be enabled. To allow two corrections and their complete
+checks, use at least three verification and three review attempts. Those stage
+counters are cumulative and never reset by correction or same-run continuation.
+Ordinary isolated-artifact tasks retain their existing correction prohibition.
+
+Only a completed independent `changes_requested` review with non-empty feedback
+of at most 16 KiB and no reviewer write violations admits correction. Missing
+reviewers, failed native commands, failed verification, missing terminal agent
+results, changed inputs/runtime/authority and publication failures do not admit
+another analysis. An identical whitespace-normalized reviewer report stops the
+task on its second occurrence; distinct reports can never exceed the configured
+cap of two corrections. Every replacement must pass all machine gates and a new
+independent review before any canonical publication.
+
+The core reserves the next analysis count in the canonical progress before
+replacement. It moves the complete rejected workspace to the task-owned sibling
+`rejected-analysis-N`, retaining its exact inventory hashes and reviewer report
+in progress history, and reconstructs the working stage from the unchanged
+original inputs. Fresh preparation, analysis and native finalization run there.
+Canonical state remains untouched until approval. Rejected archive bytes,
+feedback, counter and effective policy are fenced on continuation; interrupted
+replacement analysis fails closed and requires an explicitly authorized recovery.
+Restart/resume does not replenish these budgets, and historical rejected records
+are never edited into successful ones.
+
+The production runner uses its existing `correction` provider phase, timeout,
+authorization and invocation-budget admission rather than resetting the executor
+counter. `ExecutionBudgetPolicyV1` is admitted for these explicitly opted-in
+packages and can stop correction before a provider spawn; legacy process
+packages keep the prior restriction. Queue authorizations bind the same optional
+setting in `processPackage.configuration` (including the matching apply contract).
+Changing loaded source or deployment identity still invalidates old progress;
+existing runs cannot acquire this behavior by editing their saved records.
+
+These source changes require a new build, installation, installed read-only
+smoke and refreshed queue bindings before they govern a live GIS queue. Existing
+smoke/pilot receipts demonstrate their pinned earlier version only.
+
+## Whole-change handoff for large artifact sets
+
+GIS corrections use `ORCHESTRATOR_GIS_ANALYSIS_PATCH_V1` with an exact ordered
+set of response indices derived from each reviewer finding. Each finding must
+name a response file, a primary file, or an unambiguous bundle; an unscoped or
+out-of-package finding fails closed. Explicit response references take priority
+over contextual bundle references. The host rejects duplicate, missing and
+additional patches and preserves every untargeted response byte for byte.
+Fresh prepared bundles must match retained profile/fingerprint identities.
+Native preparation, validation and finalization still run for the whole package,
+followed by full verification and independent review; budgets remain cumulative.
+
+An explicit `RecoveryTaskBindingV1` may retain a terminal failed GIS analysis
+only when it reached `verified` with `changes_requested`. Its exact canonical
+source record, authorized scopes, current input hashes and response hashes are
+checked before executor admission; the canonical record is fenced again at
+asynchronous boundaries. Corrections are never seeded from prose or a searched
+run. A source byte change or a fresh bundle identity mismatch stops recovery.
+The canonical progress history records selected patches and preserved hashes.
+This does not authorize retrying an exhausted run: recovery is a separately
+authorized task, and can be bounded to one verification/review attempt.
+
+Whole-change acceptance supports up to 4096 unique task-owned paths. The limit
+is enforced both when preparing and when replaying persisted evidence; invalid
+paths and missing predecessor approval or verification still fail closed.
+Content/receipt payloads remain bounded to 4 MiB, individual inline files to
+16 KiB, and the complete serialized closed handoff to 16 MiB. Above 64 paths
+or 96 KiB serialized evidence, the runner writes one immutable JSON handoff
+under its canonical run directory. Its exact path, byte length and SHA-256 are
+bound into the evidence fingerprint. The reviewer reads that file rather than
+receiving a truncated list or an oversized prompt. Every predecessor receipt,
+tracked/untracked path and content entry remains in the handoff.
+
+Large GIS artifacts retain the existing native-chain, verification, publication
+and full stage-inventory checks. Ordinary isolated publications may use a
+`SealedArtifactEvidenceV1` reference only when successful publication receipts
+exist and the current stage and runner-created sealed copy both match the exact
+publication-started inventory. Target bytes must match that seal for each path.
+Unsealed untracked large files remain rejected. Seals are checked once per
+owner per preparation; cached results never survive a replay boundary. A changed
+or missing persisted handoff is rejected, never silently regenerated.
+
+This removes the 64-file blocker found by disposable pilot `mumkerka-g1yod`
+(82 unique paths) without dropping writers, paths or verification receipts.

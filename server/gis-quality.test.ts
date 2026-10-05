@@ -3,9 +3,31 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reconcileGisPublication, gisSha, validateGisPackage, type GisPublicationEntry } from "./gis-quality.ts";
+import { reconcileGisPublication, gisSha, validateGisPackage, gisCompletionStatus, gisCorrectionTargets, applyGisResponsePatches, type GisPublicationEntry } from "./gis-quality.ts";
 import { validateIsolatedArtifacts } from "./isolated-artifacts.ts";
 import { selectProcessPackage, validateProcessPackage } from "./process-handlers.ts";
+
+test("GIS response patches preserve siblings and reject unknown, duplicate or incomplete targets", () => {
+  const responses = ["one.ts", "two.ts", "three.ts"].map(primaryFile => ({ reviewedUnits: [{ primaryFile, summaryRu: "original" }], findings: [], limitations: [] }));
+  assert.deepEqual(gisCorrectionTargets("VERDICT: CHANGES_REQUESTED\n- response-1.json: repair the assertion; bundle-0.json is context only.", responses), [1]);
+  assert.deepEqual(gisCorrectionTargets("VERDICT: CHANGES_REQUESTED\n- `three.ts`: repair contract.\n- bundle-0.json: fix omitted context.", responses), [0, 2]);
+  for (const feedback of ["VERDICT: CHANGES_REQUESTED\n- repair everything", "VERDICT: CHANGES_REQUESTED\n- response-9.json: repair", "VERDICT: CHANGES_REQUESTED", "VERDICT: CHANGES_REQUESTED\n- one.ts contradicts two.ts", "VERDICT: CHANGES_REQUESTED\n- bundle-0.json contradicts bundle-1.json", "VERDICT: CHANGES_REQUESTED\n- two.tsx is wrong"]) assert.throws(() => gisCorrectionTargets(feedback, responses));
+  const replacement = { reviewedUnits: [{ primaryFile: "two.ts", summaryRu: "supported corrected contract" }], findings: [], limitations: [] };
+  const merged = applyGisResponsePatches(responses, [1], { patches: [{ index: 1, response: replacement }] });
+  assert.deepEqual(merged[1], replacement); assert.strictEqual(merged[0], responses[0]); assert.strictEqual(merged[2], responses[2]);
+  assert.equal(responses[1].reviewedUnits[0].summaryRu, "original");
+  for (const patches of [[], [{ index: 0, response: replacement }], [{ index: 1, response: replacement }, { index: 1, response: replacement }], [{ index: 1, response: { ...replacement, profile: "invented" } }]]) assert.throws(() => applyGisResponsePatches(responses, [1], { patches }));
+});
+
+test("GIS completion follows each native validated disposition despite supplemental limitations", () => {
+  const validation = { coverageCompletionAllowed: false, limitations: [{ primaryFile: "calendar.ts", code: "missing-runtime-evidence" }], reviewedUnits: [{ primaryFile: "calendar.ts", disposition: "finding" }, { primaryFile: "sibling.ts", disposition: "limitation" }, { primaryFile: "clean.ts", disposition: "no-finding" }] };
+  assert.equal(gisCompletionStatus(validation, "calendar.ts"), "completed");
+  assert.equal(gisCompletionStatus(validation, "sibling.ts"), "omitted");
+  assert.equal(gisCompletionStatus(validation, "clean.ts"), "completed");
+  assert.throws(() => gisCompletionStatus(validation, "absent.ts"));
+  assert.throws(() => gisCompletionStatus({ reviewedUnits: [{ primaryFile: "x", disposition: "unknown" }] }, "x"));
+  assert.throws(() => gisCompletionStatus({ reviewedUnits: [{ primaryFile: "x", disposition: "finding" }, { primaryFile: "x", disposition: "limitation" }] }, "x"));
+});
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "gis-publication-")), project = join(root, "project"), sealed = join(root, "sealed");
@@ -23,6 +45,8 @@ test("GIS opt-in is closed, bounded, authorization-bindable; legacy contract unc
   const f = { path: join(tmpdir(), "pinned.json"), sha256: "a".repeat(64) };
   const c = { contractType: "GISPackageV1" as const, contractVersion: "1.0" as const, manifest: f, node: f, stdio: f, gates: [f], scopes: [f], batchId: "one", stageAttempts: { verification: 2, review: 2, publication: 3 } };
   assert.deepEqual(validateGisPackage(c), c);
+  assert.deepEqual(validateGisPackage({ ...c, stageAttempts: { ...c.stageAttempts, correction: 2 } }).stageAttempts.correction, 2);
+  for (const correction of [-1, 3, 1.5, undefined]) assert.throws(() => validateGisPackage({ ...c, stageAttempts: { ...c.stageAttempts, correction } }));
   assert.throws(() => validateGisPackage({ ...c, stageAttempts: { ...c.stageAttempts, publication: 100 } }));
   assert.throws(() => validateGisPackage({ ...c, command: "arbitrary" } as typeof c));
   assert.throws(() => validateGisPackage({ ...c, scopes: [f, f] }));

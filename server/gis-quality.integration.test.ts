@@ -10,7 +10,8 @@ const data = mkdtempSync(join(tmpdir(), "gis-run-records-"));
 process.env.ORCHESTRATOR_DATA_DIR = data;
 const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence } = await import("./index.ts");
 
-function fixture(mode: string) {
+function fixture(mode: string, budget?: "enabled" | "deny") {
+  const correctionMode = mode.startsWith("correction");
   const root = mkdtempSync(join(tmpdir(), "gis-handler-fixture-")), project = join(root, "project"), contracts = join(project, "contracts"), runtime = join(project, "runtime"), state = "projects/gis2-front/operations/state", runPath = "projects/gis2-front/operations/runs/fixture-one";
   for (const p of [contracts, runtime, join(project, state)]) mkdirSync(p, { recursive: true });
   const put = (p: string, v: unknown) => { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, `${JSON.stringify(v, null, 2)}\n`); };
@@ -22,22 +23,42 @@ function fixture(mode: string) {
   writeFileSync(join(runtime, "quality-catch-up-orchestrator.mjs"), native);
   writeFileSync(join(runtime, "profile-bundle-lib.mjs"), `export const scopeFingerprint=()=> 'c'.repeat(64);`);
   writeFileSync(join(runtime, "security-risk-bundle.mjs"), `import fs from 'node:fs';const a=process.argv.slice(2),v=k=>a[a.indexOf('--'+k)+1],s=JSON.parse(fs.readFileSync(v('scope')));fs.writeFileSync(v('output'),JSON.stringify({profile:'security-risk',bundleFingerprint:'d'.repeat(64),reviewUnits:s.reviewUnits}),{flag:'wx'});`);
-  writeFileSync(join(runtime, "validate-profile-analysis.mjs"), `import fs from 'node:fs';import path from 'node:path';const a=process.argv.slice(2),v=k=>a[a.indexOf('--'+k)+1],r=JSON.parse(fs.readFileSync(v('response')));fs.mkdirSync(path.dirname(v('output')),{recursive:true});fs.writeFileSync(v('output'),JSON.stringify({status:'success',coverageCompletionAllowed:true,limitations:r.limitations}),{flag:'wx'});`);
+  writeFileSync(join(runtime, "validate-profile-analysis.mjs"), `import fs from 'node:fs';import path from 'node:path';const a=process.argv.slice(2),v=k=>a[a.indexOf('--'+k)+1],r=JSON.parse(fs.readFileSync(v('response')));fs.mkdirSync(path.dirname(v('output')),{recursive:true});fs.writeFileSync(v('output'),JSON.stringify({status:'success',coverageCompletionAllowed:true,reviewedUnits:r.reviewedUnits,limitations:r.limitations}),{flag:'wx'});`);
   put(join(contracts, "scope.json"), { schemaVersion: 1, profile: "security-risk", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "one.ts" }, { primaryFile: "two.ts" }] });
   const checker = join(contracts, "check.mjs"), sentinel = join(root, "verify-once");
   writeFileSync(checker, `import fs from 'node:fs';import assert from 'node:assert/strict';${mode === "verify" ? `if(!fs.existsSync(${JSON.stringify(sentinel)})){fs.writeFileSync(${JSON.stringify(sentinel)},'seen');process.exit(75);}` : mode === "deterministic" ? "process.exit(1);" : ""}assert.equal(JSON.parse(fs.readFileSync('projects/gis2-front/operations/state/quality-coverage.json')).completed,2);`);
   const runtimeEvidence = ["config.json", "quality-catch-up-orchestrator.mjs", "profile-bundle-lib.mjs", "security-risk-bundle.mjs", "validate-profile-analysis.mjs"].map(n => ({ path: `runtime/${n}`, sha256: pin(join(runtime, n)).sha256 }));
+  if (mode === "performance") {
+    writeFileSync(join(runtime, "performance-regression-bundle.mjs"), readFileSync(join(runtime, "security-risk-bundle.mjs"), "utf8").replace("profile:'security-risk'", "profile:'performance-regression'").replace("bundleFingerprint:'d'.repeat(64)", "bundleFingerprint:s.reviewUnits[0].primaryFile==='one.ts'?'1'.repeat(64):'2'.repeat(64)"));
+    writeFileSync(join(runtime, "performance-baseline.mjs"), `import fs from 'node:fs';const a=process.argv.slice(2),v=k=>a[a.indexOf('--'+k)+1],b=JSON.parse(fs.readFileSync(v('bundle')));fs.writeFileSync(v('output'),JSON.stringify({sourceBundleFingerprint:b.bundleFingerprint,measurements:[]}),{flag:'wx'});`);
+    writeFileSync(join(runtime, "validate-profile-analysis.mjs"), `import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';const a=process.argv.slice(2),v=k=>a[a.indexOf('--'+k)+1];assert.ok(a.includes('--baseline'),'Performance requires --baseline');const b=JSON.parse(fs.readFileSync(v('bundle'))),baseline=JSON.parse(fs.readFileSync(v('baseline')));assert.equal(baseline.sourceBundleFingerprint,b.bundleFingerprint);assert.deepEqual(baseline.measurements,[]);fs.mkdirSync(path.dirname(v('output')),{recursive:true});fs.writeFileSync(v('output'),JSON.stringify({status:'success',coverageCompletionAllowed:true,reviewedUnits:JSON.parse(fs.readFileSync(v('response'))).reviewedUnits,limitations:[]}),{flag:'wx'});`);
+    for (const name of ["performance-regression-bundle.mjs", "performance-baseline.mjs", "validate-profile-analysis.mjs"]) { const existing = runtimeEvidence.find(e => e.path === `runtime/${name}`); if (existing) existing.sha256 = pin(join(runtime, name)).sha256; else runtimeEvidence.push({ path: `runtime/${name}`, sha256: pin(join(runtime, name)).sha256 }); }
+    put(join(contracts, "scope.json"), { schemaVersion: 1, profile: "performance-regression", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "one.ts" }] });
+    put(join(contracts, "scope-two.json"), { schemaVersion: 1, profile: "performance-regression", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "two.ts" }] });
+  }
+  if (mode === "business") {
+    writeFileSync(join(runtime, "business-logic-bundle.mjs"), readFileSync(join(runtime, "security-risk-bundle.mjs"), "utf8").replace("profile:'security-risk'", "profile:'business-logic-regression'"));
+    runtimeEvidence.push({ path: "runtime/business-logic-bundle.mjs", sha256: pin(join(runtime, "business-logic-bundle.mjs")).sha256 });
+    put(join(contracts, "scope.json"), { schemaVersion: 1, profile: "business-logic-regression", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "one.ts" }, { primaryFile: "two.ts" }] });
+  }
+  if (correctionMode) {
+    put(join(contracts, "scope.json"), { schemaVersion: 1, profile: "security-risk", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "one.ts" }] });
+    put(join(contracts, "scope-two.json"), { schemaVersion: 1, profile: "security-risk", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "two.ts" }] });
+  }
   const manifest = join(contracts, "manifest.json");
-  put(manifest, { projectRoot: project, auditRoot: project, runtime: "runtime", headCommit: "a".repeat(40), preflightSha256: pin(join(contracts, "preflight.json")).sha256, runtimeEvidence, batches: [{ id: "one", run: runPath, profile: "security-risk", blockPath: "block.json", blockSha256: pin(join(contracts, "block.json")).sha256 }] });
+  put(manifest, { projectRoot: project, auditRoot: project, runtime: "runtime", headCommit: "a".repeat(40), preflightSha256: pin(join(contracts, "preflight.json")).sha256, runtimeEvidence, batches: [{ id: "one", run: runPath, profile: mode === "performance" ? "performance-regression" : mode === "business" ? "business-logic-regression" : "security-risk", blockPath: "block.json", blockSha256: pin(join(contracts, "block.json")).sha256 }] });
   const provider = join(root, "provider.cjs"), reviewerSeen = join(root, "review-once");
-  writeFileSync(provider, `const fs=require('node:fs');let p='';process.stdin.on('data',x=>p+=x);process.stdin.on('end',()=>{const a=process.argv.slice(2),out=a[a.indexOf('--output-last-message')+1];if(p.startsWith('Review only')){${mode === "review" ? `if(!fs.existsSync(${JSON.stringify(reviewerSeen)})){fs.writeFileSync(${JSON.stringify(reviewerSeen)},'seen');process.exit(75);}` : ""}fs.writeFileSync(out,'VERDICT: APPROVED');return;}const bundles=p.match(/Read these exact prepared bundle files: (.*?)\. Do not/)[1].split(', ').map(x=>JSON.parse(fs.readFileSync(x)));const responses=bundles.map(b=>({reviewedUnits:b.reviewUnits.map(u=>({primaryFile:u.primaryFile,disposition:'no-finding',summaryRu:'Concrete fixture contract and forbidden counterexample.'})),findings:[],limitations:[]}));fs.writeFileSync(out,'ORCHESTRATOR_GIS_ANALYSIS_V1: '+JSON.stringify({responses})+'\\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');});`);
+  const reviewCorrection = correctionMode ? `if(${mode === "correction-repeat" ? "true" : `!fs.existsSync(${JSON.stringify(reviewerSeen)})`}){fs.writeFileSync(${JSON.stringify(reviewerSeen)},'seen');fs.writeFileSync(out,'VERDICT: CHANGES_REQUESTED\\n- response-0.json: Correct the supported fixture factual error.');return;}` : "";
+  writeFileSync(provider, `const fs=require('node:fs');let p='';process.stdin.on('data',x=>p+=x);process.stdin.on('end',()=>{const a=process.argv.slice(2),out=a[a.indexOf('--output-last-message')+1];if(p.startsWith('Review only')){${mode === "review" ? `if(!fs.existsSync(${JSON.stringify(reviewerSeen)})){fs.writeFileSync(${JSON.stringify(reviewerSeen)},'seen');process.exit(75);}` : ""}${reviewCorrection}fs.writeFileSync(out,'VERDICT: APPROVED');return;}if(p.includes('GIS_CORRECTION_INPUT_V1: ')){const input=JSON.parse(p.split('\\n').find(l=>l.startsWith('GIS_CORRECTION_INPUT_V1: ')).slice('GIS_CORRECTION_INPUT_V1: '.length));const patches=input.responses.map(({index,response})=>({index,response:{...response,reviewedUnits:response.reviewedUnits.map(u=>({...u,summaryRu:'Corrected fixture contract and forbidden counterexample.'}))}}));fs.writeFileSync(out,'ORCHESTRATOR_GIS_ANALYSIS_PATCH_V1: '+JSON.stringify({patches})+'\\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');return;}const bundles=p.match(/Read these exact prepared bundle files: (.*?)\. Do not/)[1].split(', ').map(x=>JSON.parse(fs.readFileSync(x)));const responses=bundles.map(b=>({reviewedUnits:b.reviewUnits.map(u=>({primaryFile:u.primaryFile,disposition:'no-finding',summaryRu:p.includes('Independent reviewer feedback')?'Corrected fixture contract and forbidden counterexample.':'Concrete fixture contract and forbidden counterexample.'})),findings:[],limitations:[]}));fs.writeFileSync(out,'ORCHESTRATOR_GIS_ANALYSIS_V1: '+JSON.stringify({responses})+'\\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');});`);
   const git = (args: string[]) => execFileSync("git", args, { cwd: project, stdio: "pipe" });
   git(["init", "-q", "-b", "main"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
   const contract: GisPackageV1 = { contractType: "GISPackageV1", contractVersion: "1.0", manifest: pin(manifest), scopes: [pin(join(contracts, "scope.json"))], gates: [pin(checker)], node: pin(process.execPath), stdio: pin(resolve("scripts/sandbox-file-stdio.cjs")), batchId: "one", stageAttempts: { verification: 2, review: 2, publication: 3 } };
-  const isolatedArtifacts = { contractType: "IsolatedArtifactsV1", contractVersion: "1.0", inputPaths: [state], publishCommands: [], ...(mode === "registered" ? { processPackage: { contractType: "ProcessPackageV1", contractVersion: "1.0", handler: "gis-audit", handlerVersion: "1", configuration: contract } } : { gisPackage: contract }) };
+  if (correctionMode) contract.stageAttempts = { verification: 3, review: 3, publication: 3, correction: 2 };
+  if (mode === "performance" || correctionMode) contract.scopes.push(pin(join(contracts, "scope-two.json")));
+  const isolatedArtifacts = { contractType: "IsolatedArtifactsV1", contractVersion: "1.0", inputPaths: [state], publishCommands: [], ...(mode === "registered" || mode === "performance" || mode === "business" || correctionMode ? { processPackage: { contractType: "ProcessPackageV1", contractVersion: "1.0", handler: "gis-audit", handlerVersion: "1", configuration: contract } } : { gisPackage: contract }) };
   const allowedPaths = [`${runPath}/**`, `${state}/**`], verificationCommands = [`node "${checker}"`], impactPaths = { artifacts: [allowedPaths[0]], state: [allowedPaths[1]] };
   const approval = { approvalId: "gis-fixture", intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", isolatedArtifacts, allowedPaths, impactPaths, verificationCommands };
-  const queue = validateQueue({ project: { path: project, approvedApplyContracts: [approval] }, limits: { maxParallelTasks: 1, maxTaskRetries: 0 }, review: { enabled: true, maxCorrections: 0 }, git: { checkpointCommits: false }, tasks: [{ key: "one", title: "GIS", prompt: "Analyze exact prepared materials.", authoringContract: { contractType: "QueueAuthoringContractV1", contractVersion: "1.0" }, executionKind: { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "ordinary" }, runtimeConstraints: ["Pinned fixture runtime; native process timeout 300000ms and workspace-root TEMP.", "No executor retries/corrections; same-run bounded continuation."], isolatedArtifacts, allowedPaths, impactPaths, verificationCommands, authorization: { enabled: true, ...Object.fromEntries(["approvalId", "intent", "technicalPermission", "sideEffectRisk"].map(k => [k, approval[k as keyof typeof approval]])) } }, { key: "accept", dependsOn: ["one"], title: "Acceptance", prompt: "Review exact predecessor.", allowedPaths: [], wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["one"] }, authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } }] });
+  const queue = validateQueue({ project: { path: project, approvedApplyContracts: [approval] }, limits: { maxParallelTasks: 1, maxTaskRetries: 0 }, review: { enabled: true, maxCorrections: correctionMode ? 2 : 0 }, git: { checkpointCommits: false }, tasks: [{ key: "one", title: "GIS", prompt: "Analyze exact prepared materials.", authoringContract: { contractType: "QueueAuthoringContractV1", contractVersion: "1.0" }, executionKind: { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "ordinary" }, runtimeConstraints: ["Pinned fixture runtime; native process timeout 300000ms and workspace-root TEMP.", correctionMode ? "At most two analysis corrections; preserve rejected artifacts and rerun verification and independent review." : "No executor retries/corrections; same-run bounded continuation."], isolatedArtifacts, allowedPaths, impactPaths, verificationCommands, ...(budget ? { executionBudget: { contractType: "ExecutionBudgetPolicyV1", contractVersion: "1.0", budgetId: "process-correction-budget", maxProviderInvocations: budget === "deny" ? 2 : 4, phaseCaps: budget === "deny" ? { executor: 1, reviewer: 1, correction: 0 } : { executor: 1, reviewer: 2, correction: 1 } } } : {}), authorization: { enabled: true, ...Object.fromEntries(["approvalId", "intent", "technicalPermission", "sideEffectRisk"].map(k => [k, approval[k as keyof typeof approval]])) } }, { key: "accept", dependsOn: ["one"], title: "Acceptance", prompt: "Review exact predecessor.", allowedPaths: [], wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["one"] }, authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } }] });
   return { root, project, state, runPath, provider, queue, checker, manifest };
 }
 
@@ -109,6 +130,135 @@ test("retained GIS result refuses changed artifacts, runtime, inputs, authority 
       assert.equal(resumed.tasks[0].executionAttempts, 1);
       assert.equal(existsSync(join(f.project, f.runPath)), false);
     }
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("business handler calls the native business-logic bundle entrypoint", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("business"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run);
+    assert.equal(run.status, "completed", run.tasks.map(t => t.log.join("\n")).join("\n"));
+    assert.ok(run.tasks[0].processProgress!.native.some(e => e.args.some(a => a.endsWith("business-logic-bundle.mjs"))));
+    assert.equal(run.tasks[0].processProgress!.attempts.executor, 1);
+    assert.equal(existsSync(join(f.project, f.runPath, "after-coverage.json")), true);
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("performance handler supplies a separate native baseline for every bundle to validation", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("performance"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run);
+    assert.equal(run.status, "completed", run.tasks.map(t => t.log.join("\n")).join("\n"));
+    const progress = run.tasks[0].processProgress!;
+    assert.equal(progress.attempts.executor, 1);
+    const baselines = progress.native.filter(e => e.args.some(a => a.endsWith("performance-baseline.mjs")));
+    const validations = progress.native.filter(e => e.args.some(a => a.endsWith("validate-profile-analysis.mjs")));
+    assert.equal(baselines.length, 2); assert.equal(validations.length, 2);
+    for (const [i, entry] of validations.entries()) { assert.equal(entry.exitCode, 0); assert.ok(entry.args[entry.args.indexOf("--baseline") + 1].endsWith(`performance-baseline-${i}.json`)); }
+    for (const [i, fingerprint] of ["1".repeat(64), "2".repeat(64)].entries()) assert.deepEqual(JSON.parse(readFileSync(join(f.project, f.runPath, `performance-baseline-${i}.json`), "utf8")), { sourceBundleFingerprint: fingerprint, measurements: [] });
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("GIS review correction uses the existing correction budget and retains both analyses", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("correction", "enabled"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    for (const name of ["coverage", "baseline"]) writeFileSync(join(f.project, f.state, `quality-${name}.json`), JSON.stringify({ completed: 0, retainedFixtureData: "x".repeat(40_000) }));
+    const run = createRun(f.queue); await executeQueue(run);
+    assert.equal(run.status, "completed", run.tasks.map(t => t.log.join("\n")).join("\n"));
+    const task = run.tasks[0], p = task.processProgress!;
+    assert.equal(p.attempts.executor, 2); assert.equal(p.attempts.verification, 2); assert.equal(p.attempts.review, 2);
+    assert.equal(task.executionAttempts, 1); assert.equal(task.attempts, 2);
+    const admissions = task.executionBudgetEvidence!.filter(e => e.contractType === "ExecutionBudgetAdmissionV1");
+    assert.deepEqual(admissions.map(e => e.phase), ["executor", "reviewer", "correction", "reviewer"]);
+    assert.ok(admissions.every(e => e.disposition === "allow"));
+    assert.equal(task.reviewStatus, "approved");
+    const rejected = p.history.find(h => h.stage === "analysis-correction")!.receipt as { archived: string };
+    const response = (root: string) => JSON.parse(readFileSync(join(root, f.runPath, "response-0.json"), "utf8")).reviewedUnits[0].summaryRu;
+    assert.match(response(rejected.archived), /^Concrete fixture/);
+    assert.match(response(f.project), /^Corrected fixture/);
+    const sibling = (root: string) => readFileSync(join(root, f.runPath, "response-1.json"));
+    assert.deepEqual(sibling(f.project), sibling(rejected.archived), "Unrejected sibling bytes must survive correction");
+    const patch = p.history.find(h => h.stage === "analysis-patch")!.receipt as { targets: number[]; preserved: Array<{ index: number; sha256: string }> };
+    assert.deepEqual(patch.targets, [0]); assert.deepEqual(patch.preserved, [{ index: 1, sha256: gisSha(sibling(f.project)) }]);
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, 2);
+    assert.ok(task.log.some(l => l.includes("Автоисправление")));
+    assert.equal(run.tasks[1].status, "completed");
+    assert.ok(run.tasks[1].wholeChangeAcceptanceEvidence!.contentEvidence.some(e => e.gisNativeEvidence));
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("GIS explicit bounded recovery patches the canonical failed analysis without regenerating siblings", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("correction-seed"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const writer = f.queue.tasks[0], config = writer.isolatedArtifacts!.processPackage!.configuration;
+    config.stageAttempts.verification = 1; config.stageAttempts.review = 1;
+    f.queue.project.approvedApplyContracts![0].isolatedArtifacts = structuredClone(writer.isolatedArtifacts);
+    const failed = createRun(f.queue); await executeQueue(failed);
+    assert.equal(failed.status, "failed"); assert.equal(failed.tasks[0].processProgress!.phase, "verified"); assert.equal(failed.tasks[0].reviewStatus, "changes_requested");
+    const sourceRoot = join(data, "runs", failed.id, `${failed.tasks[0].id}-isolated`, "workspace");
+    const q = structuredClone(f.queue);
+    q.tasks[0].executionKind = { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "recovery" };
+    q.tasks[0].recovery = { contractType: "RecoveryTaskBindingV1", contractVersion: "1.0", sourceRunId: failed.id, sourceTaskId: failed.tasks[0].id };
+    const sourceFile = join(data, "runs", failed.id, "run.json"), sourceBytes = readFileSync(sourceFile);
+    configureGisLifecycleTestBoundary(async (name, active) => {
+      if (name === "prepared" && active.id !== failed.id) writeFileSync(sourceFile, Buffer.concat([sourceBytes, Buffer.from(" ")]));
+    });
+    const stale = createRun(validateQueue(q)); await executeQueue(stale);
+    assert.equal(stale.status, "failed");
+    assert.ok(stale.tasks[0].log.some(line => line.includes("GIS retained source record changed")));
+    assert.ok(!existsSync(join(f.project, f.runPath, "response-0.json")));
+    configureGisLifecycleTestBoundary(); writeFileSync(sourceFile, sourceBytes);
+    const cancelledSource = JSON.parse(sourceBytes.toString("utf8"));
+    cancelledSource.tasks[0].status = "cancelled";
+    writeFileSync(sourceFile, JSON.stringify(cancelledSource));
+    const invalidSource = createRun(validateQueue(q)); await executeQueue(invalidSource);
+    assert.equal(invalidSource.status, "failed");
+    assert.ok(invalidSource.tasks[0].log.some(line => line.includes("GIS recovery requires failed verified changes_requested source analysis")));
+    assert.equal(invalidSource.tasks[0].processProgress, undefined);
+    assert.equal(existsSync(join(f.project, f.runPath)), false);
+    writeFileSync(sourceFile, sourceBytes);
+    const recovered = createRun(validateQueue(q)); await executeQueue(recovered);
+    assert.equal(recovered.status, "completed", recovered.tasks.map(t => t.log.join("\n")).join("\n"));
+    const p = recovered.tasks[0].processProgress!;
+    assert.equal(p.attempts.executor, 1); assert.equal(p.attempts.review, 1); assert.equal(p.attempts.verification, 1);
+    assert.deepEqual(readFileSync(join(f.project, f.runPath, "response-1.json")), readFileSync(join(sourceRoot, f.runPath, "response-1.json")));
+    assert.match(JSON.parse(readFileSync(join(f.project, f.runPath, "response-0.json"), "utf8")).reviewedUnits[0].summaryRu, /^Corrected fixture/);
+    assert.equal((p.history.find(h => h.stage === "analysis-patch")!.receipt as { source: { runId: string } }).source.runId, failed.id);
+    assert.equal(failed.tasks[0].status, "failed");
+  } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("GIS correction obeys a denied hard invocation budget without another analysis or publication", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("correction", "deny"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run);
+    const task = run.tasks[0]; assert.equal(task.status, "failed");
+    const admissions = task.executionBudgetEvidence!.filter(e => e.contractType === "ExecutionBudgetAdmissionV1");
+    assert.deepEqual(admissions.map(e => e.phase), ["executor", "reviewer", "correction"]);
+    assert.notEqual(admissions.at(-1)!.disposition, "allow");
+    assert.equal(task.processProgress!.attempts.review, 1); assert.equal(task.processProgress!.attempts.publication, 0);
+    assert.equal(existsSync(join(f.project, f.runPath)), false);
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, 0);
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("GIS repeated review rejection stops without publication and cannot reset through resume", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("correction-repeat"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run);
+    const task = run.tasks[0];
+    assert.equal(task.status, "failed"); assert.equal(task.processProgress!.attempts.executor, 2);
+    assert.equal(task.processProgress!.history.at(-1)!.result, "repeated-feedback");
+    assert.equal(task.processProgress!.attempts.publication, 0);
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, 0);
+    assert.equal(existsSync(join(f.project, f.runPath)), false);
+    const record = await loadRun(run.id); assert.ok(record); assert.throws(() => resumeRun(record), /deterministic/);
   } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
 });
 
