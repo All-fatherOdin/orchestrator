@@ -3,9 +3,35 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reconcileGisPublication, gisSha, validateGisPackage, gisCompletionStatus, gisCorrectionTargets, applyGisResponsePatches, type GisPublicationEntry } from "./gis-quality.ts";
+import { reconcileGisPublication, gisSha, validateGisPackage, gisCompletionStatus, gisCorrectionTargets, applyGisResponsePatches, gisFindingRuleConstraints, assertGisFindingRules, type GisPublicationEntry } from "./gis-quality.ts";
 import { validateIsolatedArtifacts } from "./isolated-artifacts.ts";
 import { selectProcessPackage, validateProcessPackage } from "./process-handlers.ts";
+
+test("GIS finding rule eligibility intersects profile and exact unit signals, without sibling leakage", () => {
+  const bundle = { rules: ["BL-PERMISSION-ACTION", "BL-ASYNC-RACE", "BL-SIDE-EFFECT"], reviewUnits: [
+    { primary: { path: "gallery.ts" }, completeForProfile: true, signals: [{ ruleId: "BL-SIDE-EFFECT" }, { ruleId: "BL-ASYNC-RACE" }, { ruleId: "BL-ASYNC-RACE" }, { ruleId: "OTHER-PROFILE" }] },
+    { primary: { path: "sibling.ts" }, completeForProfile: true, signals: [{ ruleId: "BL-PERMISSION-ACTION" }] },
+    { primary: { path: "incomplete.ts" }, completeForProfile: false, signals: [{ ruleId: "BL-SIDE-EFFECT" }] },
+    { primary: { path: "no-signals.ts" }, completeForProfile: true, signals: [] },
+  ] };
+  assert.deepEqual(gisFindingRuleConstraints(bundle), [
+    { primaryFile: "gallery.ts", allowedFindingRuleIds: ["BL-ASYNC-RACE", "BL-SIDE-EFFECT"] },
+    { primaryFile: "sibling.ts", allowedFindingRuleIds: ["BL-PERMISSION-ACTION"] },
+    { primaryFile: "incomplete.ts", allowedFindingRuleIds: [] },
+    { primaryFile: "no-signals.ts", allowedFindingRuleIds: [] },
+  ]);
+  const response = { findings: [{ primaryFile: "gallery.ts", ruleId: "BL-PERMISSION-ACTION" }] }, before = JSON.stringify(response);
+  assert.throws(() => assertGisFindingRules(bundle, response, 1), /response-1\.json findings\[0\].*BL-PERMISSION-ACTION.*gallery\.ts.*BL-ASYNC-RACE.*BL-SIDE-EFFECT/);
+  assert.equal(JSON.stringify(response), before, "Rejected findings must not be relabeled or dropped");
+  for (const [primaryFile, ruleId] of [["gallery.ts", "OTHER-PROFILE"], ["gallery.ts", " BL-SIDE-EFFECT"], ["gallery.ts", "BL-SIDE-EFFECT "], ["gallery.ts", "BL-SIDE-EFFECTS"], ["sibling.ts", "BL-SIDE-EFFECT"], ["incomplete.ts", "BL-SIDE-EFFECT"], ["no-signals.ts", "BL-SIDE-EFFECT"], ["absent.ts", "BL-SIDE-EFFECT"]]) assert.throws(() => assertGisFindingRules(bundle, { findings: [{ primaryFile, ruleId }] }, 0));
+  assert.doesNotThrow(() => assertGisFindingRules(bundle, { findings: [{ primaryFile: "gallery.ts", ruleId: "BL-SIDE-EFFECT" }, { primaryFile: "sibling.ts", ruleId: "BL-PERMISSION-ACTION" }] }, 0));
+  assert.doesNotThrow(() => assertGisFindingRules(bundle, { findings: [] }, 0));
+});
+
+test("GIS finding rule constraints fail closed on missing, malformed or duplicated bundle units", () => {
+  const unit = { primary: { path: "one.ts" }, completeForProfile: true, signals: [] };
+  for (const bundle of [{ rules: [], reviewUnits: [unit, unit] }, { rules: [], reviewUnits: [{ ...unit, signals: undefined }] }, { rules: undefined, reviewUnits: [unit] }, { rules: [], reviewUnits: [{ ...unit, completeForProfile: undefined }] }]) assert.throws(() => gisFindingRuleConstraints(bundle as never));
+});
 
 test("GIS response patches preserve siblings and reject unknown, duplicate or incomplete targets", () => {
   const responses = ["one.ts", "two.ts", "three.ts"].map(primaryFile => ({ reviewedUnits: [{ primaryFile, summaryRu: "original" }], findings: [], limitations: [] }));
