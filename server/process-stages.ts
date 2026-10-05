@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, renameSy
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inventory, assertPlainPath, assertArtifactStage, type ArtifactStage } from "./isolated-artifacts.ts";
+import type { ReportRequest } from "./agent-report.ts";
 export const normalizedProcessPath = (p: unknown): p is string => typeof p === "string" && p === p.normalize("NFC") && !/[\\:*?\[\]\x00-\x1f]/u.test(p) && p.split("/").every(s => s && s !== "." && s !== ".." && !/[. ]$/u.test(s) && ![".git", ".orchestrator-scratch"].includes(s.toLowerCase()));
 export const ownsProcessPath = (paths: string[], p: string) => paths.some(s => s.endsWith("/**") ? p.startsWith(`${s.slice(0, -3)}/`) : s === p);
 export type ProcessPhase = "prepared" | "analyzed" | "finalized" | "verified" | "approved" | "publishing" | "published";
@@ -12,7 +13,7 @@ export type ProcessHandlerIdentity = { name: string; version: string; implementa
 export type ProcessHooks = {
   persist: (progress: ProcessProgress) => Promise<void>;
   authority: () => Promise<string>;
-  analyze: (prompt: string) => Promise<string>;
+  analyze: (prompt: string, report?: ReportRequest) => Promise<string>;
   verify: () => Promise<{ code: number; timedOut: boolean; receipts: unknown }>;
   review: () => Promise<{ status: string; receipts: unknown; feedback?: string; correctionAllowed?: boolean }>;
   boundary?: (name: string) => Promise<void>;

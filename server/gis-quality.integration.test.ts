@@ -5,12 +5,13 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { gisSha, type GisPackageV1 } from "./gis-quality.ts";
+import { reportSchema } from "./agent-report.ts";
 process.env.ORCHESTRATOR_TEST = "1";
 const data = mkdtempSync(join(tmpdir(), "gis-run-records-"));
 process.env.ORCHESTRATOR_DATA_DIR = data;
 const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence } = await import("./index.ts");
 
-function fixture(mode: string, budget?: "enabled" | "deny") {
+function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: string) {
   const correctionMode = mode.startsWith("correction");
   const root = mkdtempSync(join(tmpdir(), "gis-handler-fixture-")), project = join(root, "project"), contracts = join(project, "contracts"), runtime = join(project, "runtime"), state = "projects/gis2-front/operations/state", runPath = "projects/gis2-front/operations/runs/fixture-one";
   for (const p of [contracts, runtime, join(project, state)]) mkdirSync(p, { recursive: true });
@@ -50,9 +51,19 @@ function fixture(mode: string, budget?: "enabled" | "deny") {
   const provider = join(root, "provider.cjs"), reviewerSeen = join(root, "review-once");
   const reviewCorrection = correctionMode ? `if(${mode === "correction-repeat" ? "true" : `!fs.existsSync(${JSON.stringify(reviewerSeen)})`}){fs.writeFileSync(${JSON.stringify(reviewerSeen)},'seen');fs.writeFileSync(out,'VERDICT: CHANGES_REQUESTED\\n- response-0.json: Correct the supported fixture factual error.');return;}` : "";
   writeFileSync(provider, `const fs=require('node:fs');let p='';process.stdin.on('data',x=>p+=x);process.stdin.on('end',()=>{const a=process.argv.slice(2),out=a[a.indexOf('--output-last-message')+1];if(p.startsWith('Review only')){${mode === "review" ? `if(!fs.existsSync(${JSON.stringify(reviewerSeen)})){fs.writeFileSync(${JSON.stringify(reviewerSeen)},'seen');process.exit(75);}` : ""}${reviewCorrection}fs.writeFileSync(out,'VERDICT: APPROVED');return;}if(p.includes('GIS_CORRECTION_INPUT_V1: ')){const input=JSON.parse(p.split('\\n').find(l=>l.startsWith('GIS_CORRECTION_INPUT_V1: ')).slice('GIS_CORRECTION_INPUT_V1: '.length));const patches=input.responses.map(({index,response})=>({index,response:{...response,reviewedUnits:response.reviewedUnits.map(u=>({...u,summaryRu:'Corrected fixture contract and forbidden counterexample.'}))}}));fs.writeFileSync(out,'ORCHESTRATOR_GIS_ANALYSIS_PATCH_V1: '+JSON.stringify({patches})+'\\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');return;}const bundles=p.match(/Read these exact prepared bundle files: (.*?)\. Do not/)[1].split(', ').map(x=>JSON.parse(fs.readFileSync(x)));const responses=bundles.map(b=>({reviewedUnits:b.reviewUnits.map(u=>({primaryFile:u.primaryFile,disposition:'no-finding',summaryRu:p.includes('Independent reviewer feedback')?'Corrected fixture contract and forbidden counterexample.':'Concrete fixture contract and forbidden counterexample.'})),findings:[],limitations:[]}));fs.writeFileSync(out,'ORCHESTRATOR_GIS_ANALYSIS_V1: '+JSON.stringify({responses})+'\\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');});`);
+  if (transportCase) {
+    const originalProvider = readFileSync(provider, "utf8");
+    writeFileSync(provider, `const assert=require('node:assert/strict');const reportFs=require('node:fs');const originalWrite=reportFs.writeFileSync;reportFs.writeFileSync=function(file,value,...rest){const a=process.argv.slice(2),schema=a.indexOf('--output-schema');if(schema<0)return originalWrite.call(this,file,value,...rest);assert.deepEqual(JSON.parse(reportFs.readFileSync(a[schema+1])),${JSON.stringify(reportSchema())});let text=String(value),payload,mode;if(text.startsWith('ORCHESTRATOR_GIS_ANALYSIS_PATCH_V1: ')){mode='patch';payload=JSON.parse(text.split('\\n')[0].slice('ORCHESTRATOR_GIS_ANALYSIS_PATCH_V1: '.length));}else{mode='full';payload=JSON.parse(text.split('\\n')[0].slice('ORCHESTRATOR_GIS_ANALYSIS_V1: '.length));}const scenario=${JSON.stringify(transportCase)};if(scenario==='native-invalid'){payload.responses[0].reviewedUnits[0].disposition='invalid';}if(scenario==='tail'){payload.responses[0].reviewedUnits[0].summaryRu='я'.repeat(25001)+' tail-contract';}if(scenario==='extra')payload.extra=[];if(scenario==='technical')payload.responses[0].schemaVersion=1;if(mode==='patch'&&scenario==='extra-target')payload.patches.push({index:99,response:payload.patches[0].response});if(mode==='patch'&&scenario==='duplicate-target')payload.patches.push(payload.patches[0]);if(mode==='patch'&&scenario==='missing-target')payload.patches=[];let envelope={protocolVersion:'structured-output-v1',outcome:'completed',mode,reason:'',payloadJson:JSON.stringify(payload)};if(scenario==='stopped')Object.assign(envelope,{outcome:'stopped',reason:'Cannot finish',payloadJson:''});if(scenario==='wrong-mode')envelope.mode='patch';if(scenario==='malformed')envelope.payloadJson='{';if(scenario==='duplicate-inner')envelope.payloadJson='{"responses":[],"responses":[]}';let result=JSON.stringify(envelope);if(scenario==='duplicate-outer')result='{"mode":"full",'+result.slice(1);if(scenario==='oversize')result+=' '.repeat(1048577);originalWrite.call(this,file,result,...rest);console.log(JSON.stringify({type:'item.completed',item:{id:'report',type:'agent_message',text:result}}));if(scenario==='failed')console.log(JSON.stringify({type:'turn.failed',error:{message:'failed'}}));else if(scenario==='error')console.log(JSON.stringify({type:'error',message:'failed'}));else if(scenario!=='partial')console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));if(scenario==='nonzero')process.exitCode=1;};\n${originalProvider}`);
+    if (transportCase === "native-invalid") {
+      writeFileSync(join(runtime, "validate-profile-analysis.mjs"), "process.stderr.write('native invalid disposition');process.exit(1);");
+      runtimeEvidence.find(e => e.path === "runtime/validate-profile-analysis.mjs")!.sha256 = pin(join(runtime, "validate-profile-analysis.mjs")).sha256;
+      const manifestValue = JSON.parse(readFileSync(manifest, "utf8")); manifestValue.runtimeEvidence = runtimeEvidence; put(manifest, manifestValue);
+    }
+  }
   const git = (args: string[]) => execFileSync("git", args, { cwd: project, stdio: "pipe" });
   git(["init", "-q", "-b", "main"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
   const contract: GisPackageV1 = { contractType: "GISPackageV1", contractVersion: "1.0", manifest: pin(manifest), scopes: [pin(join(contracts, "scope.json"))], gates: [pin(checker)], node: pin(process.execPath), stdio: pin(resolve("scripts/sandbox-file-stdio.cjs")), batchId: "one", stageAttempts: { verification: 2, review: 2, publication: 3 } };
+  if (transportCase) contract.analysisTransport = "structured-output-v1";
   if (correctionMode) contract.stageAttempts = { verification: 3, review: 3, publication: 3, correction: 2 };
   if (mode === "performance" || correctionMode) contract.scopes.push(pin(join(contracts, "scope-two.json")));
   const isolatedArtifacts = { contractType: "IsolatedArtifactsV1", contractVersion: "1.0", inputPaths: [state], publishCommands: [], ...(mode === "registered" || mode === "performance" || mode === "business" || correctionMode ? { processPackage: { contractType: "ProcessPackageV1", contractVersion: "1.0", handler: "gis-audit", handlerVersion: "1", configuration: contract } } : { gisPackage: contract }) };
@@ -62,6 +73,97 @@ function fixture(mode: string, budget?: "enabled" | "deny") {
   return { root, project, state, runPath, provider, queue, checker, manifest };
 }
 
+test("structured-output-v1 full and targeted patch traverse production mock lifecycle", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const mode of ["registered", "correction", "correction-repeat"]) {
+      const f = fixture(mode, undefined, "valid"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      const run = createRun(f.queue); await executeQueue(run);
+      const task = run.tasks[0], progress = task.processProgress!;
+      assert.equal(task.status, mode === "correction-repeat" ? "failed" : "completed", task.log.join("\n"));
+      assert.equal(task.agentReports?.length, mode === "registered" ? 1 : 2);
+      assert.equal(progress.attempts.executor, mode === "registered" ? 1 : 2);
+      assert.equal(progress.attempts.review, mode === "registered" ? 1 : 2);
+      assert.equal(progress.attempts.publication, mode === "correction-repeat" ? 0 : 1);
+      if (mode === "correction") {
+        const archive = progress.history.find(h => h.stage === "analysis-correction")!.receipt as { archived: string };
+        const before = readFileSync(join(archive.archived, f.runPath, "response-1.json"));
+        const after = readFileSync(join(f.project, f.runPath, "response-1.json"));
+        assert.deepEqual(after, before); assert.equal(gisSha(after), gisSha(before));
+        assert.notEqual(gisSha(readFileSync(join(archive.archived, f.runPath, "response-0.json"))), gisSha(readFileSync(join(f.project, f.runPath, "response-0.json"))));
+        assert.equal(task.agentReports!.at(-1)!.mode, "patch");
+      }
+    }
+  } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+test("structured-output-v1 invalid transport/provider/native reports never publish", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const scenario of ["stopped", "nonzero", "failed", "error", "partial", "wrong-mode", "malformed", "duplicate-outer", "duplicate-inner", "extra", "technical", "oversize", "native-invalid", "extra-target", "missing-target", "duplicate-target"]) {
+      const f = fixture(scenario.endsWith("target") ? "correction" : "registered", undefined, scenario);
+      process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      const run = createRun(f.queue); await executeQueue(run);
+      const task = run.tasks[0]; assert.equal(task.status, "failed", `${scenario}: ${task.log.join("\n")}`);
+      assert.equal(task.processProgress!.attempts.publication, 0);
+      assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, 0);
+      assert.equal(existsSync(join(f.project, f.runPath)), false);
+      if (scenario === "native-invalid") assert.ok(task.processProgress!.native.some(n => n.exitCode === 1 && n.stderr.includes("native invalid")));
+    }
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+test("structured-output-v1 full raw tail survives native lifecycle", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = fixture("registered", undefined, "tail"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run);
+    assert.equal(run.tasks[0].status, "completed", run.tasks[0].log.join("\n"));
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.runPath, "response-0.json"), "utf8")).reviewedUnits[0].summaryRu, "я".repeat(25001) + " tail-contract");
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+test("structured-output-v1 receipt interruption/tampering and denied correction never publish", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const scenario of ["agent-report-before-receipt", "agent-report-after-receipt", "schema", "raw", "receipt", "identity", "denied"]) {
+      const f = fixture(scenario === "denied" ? "correction" : "registered", scenario === "denied" ? "deny" : undefined, "valid");
+      process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      configureGisLifecycleTestBoundary(async (name, run, taskId) => {
+        if (name === scenario) throw new Error("controlled receipt interruption");
+        if (name !== "analyzed" || scenario === "denied" || scenario.startsWith("agent-report")) return;
+        const identity = run.tasks.find(t => t.id === taskId)!.agentReports![0];
+        const root = join(data, "runs", run.id, `${taskId}-agent-reports`, identity.invocationId);
+        if (scenario === "identity") identity.invocationId = "0".repeat(32);
+        else writeFileSync(join(root, scenario === "schema" ? "schema.json" : scenario === "raw" ? "result.json" : "receipt.json"), "{}");
+      });
+      const run = createRun(f.queue); await executeQueue(run);
+      const task = run.tasks[0]; assert.equal(task.status, "failed", `${scenario}: ${task.log.join("\n")}`);
+      assert.equal(task.processProgress!.attempts.publication, 0);
+      assert.equal(existsSync(join(f.project, f.runPath)), false);
+      assert.equal(task.processProgress!.attempts.executor, scenario === "denied" ? 2 : 1);
+      if (scenario.startsWith("agent-report")) assert.equal(task.agentReports?.length ?? 0, 0);
+    }
+  } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+test("structured-output-v1 timeout and cancellation reject completed raw output", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const scenario of ["timeout", "cancel"]) {
+      const f = fixture("registered", undefined, "valid"), ready = join(f.root, "ready");
+      const providerText = readFileSync(f.provider, "utf8");
+      writeFileSync(f.provider, providerText.replace("originalWrite.call(this,file,result,...rest);", `originalWrite.call(this,file,result,...rest);originalWrite.call(this,${JSON.stringify(ready)},'ready');setTimeout(()=>{},${scenario === "timeout" ? 65000 : 1000});`));
+      f.queue.tasks[0].timeoutMinutes = 1;
+      process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      const run = createRun(f.queue);
+      const timer = scenario === "cancel" ? setInterval(() => { if (existsSync(ready)) run.status = "cancelled"; }, 10) : undefined;
+      try { await executeQueue(run); } finally { if (timer) clearInterval(timer); }
+      const task = run.tasks[0]; assert.notEqual(task.status, "completed", task.log.join("\n"));
+      assert.equal(existsSync(ready), true);
+      assert.equal(task.agentReports?.length ?? 0, 0);
+      assert.equal(task.processProgress!.attempts.publication, 0);
+      assert.equal(task.processProgress!.native.length, 3, "Only capability probe, native preparation and bundle creation precede failed analysis");
+      if (scenario === "timeout") assert.equal(task.timedOut, true);
+    }
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
 test("production GIS lifecycle retains analysis through transient verify/review failure and JSON restart", async () => {
   const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
   try {

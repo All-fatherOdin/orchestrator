@@ -19310,6 +19310,24 @@ test("executor outcome v1 fails closed when an execution guard stops the request
   assert.equal(dependent.status, "blocked");
 });
 
+test("structured-output-v1 opt-in remains bound to exact apply authorization", () => {
+  const input = queueAuthoringContractInput(process.cwd());
+  const pin = { path: resolve("package.json"), sha256: "a".repeat(64) };
+  const configuration = { contractType: "GISPackageV1", contractVersion: "1.0", manifest: pin, node: pin, stdio: pin, scopes: [pin], gates: [pin], batchId: "fixture", stageAttempts: { verification: 1, review: 1, publication: 1 }, analysisTransport: "structured-output-v1" };
+  input.tasks[0].isolatedArtifacts = { contractType: "IsolatedArtifactsV1", contractVersion: "1.0", inputPaths: ["state"], publishCommands: [], gisPackage: configuration };
+  input.project.approvedApplyContracts[0].isolatedArtifacts = structuredClone(input.tasks[0].isolatedArtifacts);
+  const task = input.tasks[0];
+  assert.equal(authorizeTask(task, input.project).decision, "authorized");
+  delete input.project.approvedApplyContracts[0].isolatedArtifacts.gisPackage.analysisTransport;
+  assert.notEqual(authorizeTask(task, input.project).decision, "authorized");
+});
+test("structured-output-v1 does not relax legacy GIS or ordinary executor markers", () => {
+  for (const output of ['ORCHESTRATOR_GIS_ANALYSIS_V1: {"responses":[]}', '{"protocolVersion":"structured-output-v1","outcome":"completed"}', "ordinary task finished"]) {
+    const outcome = assessExecutorOutcome(output, 1);
+    assert.equal(outcome.disposition, "invalid");
+    assert.equal(resolveTaskStatus({ cancelled: false, skipped: false, exitCode: 0, timedOut: false, violations: [], executorOutcome: outcome }), "failed");
+  }
+});
 test("executor outcome v1 accepts only one valid required marker and keeps legacy records compatible", () => {
   const completed = assessExecutorOutcome(
     "Delivered the requested change.\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED",

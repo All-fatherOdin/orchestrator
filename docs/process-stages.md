@@ -1,5 +1,50 @@
 # Typed process stages
 
+## Opt-in structured analysis delivery
+
+`GISPackageV1.analysisTransport: structured-output-v1` selects a code-owned,
+closed provider schema for executor and correction. Omission retains the legacy
+GIS analysis markers and required executor COMPLETED marker. Unknown values are
+rejected; the exact configuration remains bound to apply approval, authorization
+and replay. Ordinary tasks keep their existing contract.
+
+The envelope has exactly `protocolVersion`, `outcome`, `mode`, `reason` and
+`payloadJson`. The codec `json-string-v1` carries native substantive JSON as a
+string, avoiding nested native schema in the provider schema. Full payloads have
+exactly `responses` in prepared bundle order; patches have exactly `patches`,
+each containing `index,response` for the agreed targets. Responses contain
+exactly `reviewedUnits,findings,limitations`; host technical fields remain
+host-owned. Missing optional fields remain absent, and actual null/false/zero
+values are preserved for native validation. Duplicate object keys, including
+escaped duplicates, are rejected in both envelope and payload.
+
+`completed` means delivery of this invocation's analysis. It requires an empty
+reason, nonempty JSON payload, process exit 0, no timeout/cancellation and current
+`turn.completed` without failed/error or partial terminal evidence. `stopped`
+requires a nonblank reason and empty payload and stops before native validation.
+No free-text COMPLETED marker is required or synthesized for this transport.
+The envelope schema does not prove native report correctness. Existing bundle,
+source/input/scope checks, native validators, both finalizers, verification,
+independent review and publication remain mandatory. Correction/recovery budgets
+remain cumulative; transport or native failures do not introduce format retries.
+
+Raw UTF-8 output and decoded payload each have a 1 MiB limit, reason a 4 KiB
+limit. Oversize data is rejected, never truncated. Machine parsing reads the
+entire bounded raw file; UI excerpts and `boundedFinalOutput` are not inputs.
+Each invocation gets a fresh random directory under canonical run storage,
+`<task-id>-agent-reports/<invocation-id>/`, containing `schema.json`, `result.json`
+and `receipt.json`, outside the stage inventory and publication scope.
+Receipts bind protocol/codec, run/task/invocation, phase/ordinal, full/patch mode,
+schema, raw and decoded hashes. They are created only after current provider
+success, then replayed at authority fences. Changed/missing files, identities or
+hashes fail closed; interrupted receipt creation does not permit accepting a
+failed provider call. Untargeted response bytes and their hashes are preserved.
+
+Source tests and a synthetic CLI schema probe are separate from deployment.
+A new build, installation, restarted installed read-only smoke with canonical
+run receipt, refreshed bindings and bounded live GIS pilot are still required
+before live use. Stage 2/MCP is outside this change.
+
 ## Decision and execution scope
 
 One integrated implementation slice in the current session. No implementation
