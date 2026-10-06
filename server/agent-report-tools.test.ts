@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, symlink, lstat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, symlink, lstat, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReportToolService, startReportMcp, reportLoopbackEnvironment, REPORT_TOOL_LIMITS, assertReportToolCompletion, assertNoWindowsReparsePoints, type ReportToolError } from "./agent-report-tools.ts";
@@ -18,6 +18,21 @@ async function fixture(options: { text?: string; mode?: "full" | "patch"; errors
   return { root, storage, sourceRoot, source, service, context, id, revoke: () => { authorized = false; }, validations: () => validations };
 }
 const invoke = (service: ReportToolService, name: string, payloadJson = candidate) => service.invoke(name, { payloadJson });
+
+test("report evidence rejects a same-byte path replacement while its original handle is open", async () => {
+  const f = await fixture({ boundary: async name => {
+    if (name !== "evidence-read-before-identity") return;
+    const replacement = f.source + ".replacement";
+    await writeFile(replacement, await readFile(f.source));
+    await rename(replacement, f.source);
+  } });
+  try {
+    // Windows may deny replacing an open file before the identity check;
+    // either OS denial or a detected replacement must prevent any result.
+    await assert.rejects(f.service.invoke("read_evidence", { evidenceId: "bundle-0", startLine: 1, endLine: 1 }), process.platform === "win32" ? /EVIDENCE_CHANGED|EPERM|EBUSY/ : /EVIDENCE_CHANGED/);
+    assert.equal(f.validations(), 0);
+  } finally { await f.service.close(); }
+});
 
 test("report MCP child bypass preserves both inherited proxy exclusion lists and adds only loopback", () => {
   for (const [environment, expected] of [

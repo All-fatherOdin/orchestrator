@@ -1,5 +1,10 @@
 # Invocation-local GIS report tools v1
 
+On Windows, Electron's embedded Node 22 can report different device IDs for
+`lstat` and an open file handle. Evidence identity is therefore compared between
+two open handles using bigint metadata. Content hashes and reparse-point checks
+remain required; a replaced file must not be returned as trusted evidence.
+
 Stage 2 is one bounded source slice. Stages 3 (structured independent review)
 and 4 (recovery and operational acceptance) are separate work.
 

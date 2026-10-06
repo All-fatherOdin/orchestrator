@@ -167,13 +167,21 @@ export class ReportToolService {
       let raw: Buffer;
       try {
         const stat = await handle.stat(); assert.ok(stat.isFile() && stat.nlink === 1 && stat.size <= REPORT_LIMIT, "EVIDENCE_FILE_LIMIT");
+        const identity = await handle.stat({ bigint: true });
         if (this.state.hashBytes + stat.size > REPORT_TOOL_LIMITS.hashBytes) return this.stop("EVIDENCE_HASH_LIMIT");
         this.state.hashBytes += stat.size; await this.save();
         const buffer = Buffer.alloc(REPORT_LIMIT + 1); let length = 0;
         while (length < buffer.length) { const read = await handle.read(buffer, length, buffer.length - length, null); if (!read.bytesRead) break; length += read.bytesRead; }
         assert.ok(length <= REPORT_LIMIT, "EVIDENCE_FILE_LIMIT"); raw = buffer.subarray(0, length);
-        const after = await lstat(evidence.path);
-        assert.ok(after.ino === stat.ino && after.dev === stat.dev && after.size === stat.size && after.mtimeMs === stat.mtimeMs, "EVIDENCE_CHANGED");
+        await this.boundary?.("evidence-read-before-identity");
+        // Electron's Windows Node 22 path lstat reports dev=0, unlike fstat.
+        // Reopen the declared path and compare two handle identities instead;
+        // bigint preserves inode/timestamp precision and catches path swaps.
+        const afterHandle = await open(evidence.path, "r");
+        try {
+          const after = await afterHandle.stat({ bigint: true });
+          assert.ok(after.isFile() && after.nlink === 1n && after.ino === identity.ino && after.dev === identity.dev && after.size === identity.size && after.mtimeNs === identity.mtimeNs, "EVIDENCE_CHANGED");
+        } finally { await afterHandle.close(); }
       } finally { await handle.close(); }
       await assertPlainPath(parse(evidence.path).root, evidence.path); assert.equal(reportSha(raw), evidence.sha256, "EVIDENCE_CHANGED");
       await assertNoWindowsReparsePoints([evidence.path]);
