@@ -1,7 +1,16 @@
 # Current Status
 
-Status: active compact context pack
-Last updated: 2026-08-17
+Status: startup navigation with a dated Control Plane summary
+Control Plane snapshot: 2026-08-17
+Navigation clarified: 2026-10-06
+
+The summary below is historical context, not a live queue/status board. It has
+not been fully revalidated by this navigation edit. Resolve current claims
+through the [source hierarchy](../source_of_truth_hierarchy.md), current code
+and the selected canonical run. Reporting work has its own
+[Stage 2 contract](../agent-report-tools-v1.md) and proposed
+[Stage 3 plan](../agent-review-stage3-plan.md); their stage numbering does not
+refer to the Control Plane phases described below.
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run

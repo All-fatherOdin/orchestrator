@@ -1,7 +1,21 @@
 # Orchestrator Next Steps
 
-Status: active operational handoff
-Last updated: 2026-08-17
+Status: navigation entry with a dated Control Plane handoff
+Control Plane snapshot: 2026-08-17
+Navigation clarified: 2026-10-06
+
+This is not the live status of every Orchestrator workstream or queue. The
+Control Plane sections below retain their original snapshot date and have not
+been reaccepted by this navigation update. Prefer current code, tests, accepted
+contracts and canonical run records under the [source hierarchy](source_of_truth_hierarchy.md).
+
+For invocation-local GIS reporting and independent review, read the
+[Stage 2 contract](agent-report-tools-v1.md), the proposed
+[Stage 3 plan](agent-review-stage3-plan.md) and its
+[executor prompt](agent-review-stage3-executor-prompt.md).
+The numbering of these reporting stages is separate from Control Plane phases
+and its S1–S6 workstream. Check the selected canonical run before implementation;
+this document does not authorize stopping it, deployment or recovery.
 
 ## Current Priority
 

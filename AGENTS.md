@@ -4,6 +4,24 @@
 - `queues/` is intentionally ignored by Git. Do not stage, commit, move, or delete its contents unless the user explicitly asks.
 - Keep reusable, versioned examples outside `queues/` (for example, `tasks.example.yaml` and `queues.plan.example.yaml`).
 
+# Project documentation
+
+- Store durable project documentation, implementation roadmaps, audit reports,
+  and executor prompts for a development stage in `docs/`, with a descriptive
+  name and a link from an appropriate navigation document.
+- A development plan is documentation, even when it contains ordered steps.
+  A sequential queue plan is an execution artifact in the format of
+  `queues.plan.example.yaml`, sequencing already-defined queues. Classify by
+  purpose and contract, not by the word "plan" or the file extension.
+- Before creating a document, choose its role, location, lifecycle status,
+  evidence sources and navigation entry. Label proposals and historical
+  snapshots; do not present them as current runtime state.
+- Keep run-specific queues, manifests and private execution evidence in
+  `queues/`. Reusable complex verification code belongs in versioned scripts;
+  ignored local helpers are not a substitute for delivery of that code.
+- Do not relocate or edit evidence/check scripts bound by an active run.
+  Documentation cleanup does not authorize changing a queue or its receipts.
+
 # Choose the execution format before creating files
 
 Choose first: a bounded task in this session, a managed YAML queue, or a sequential queue plan.
