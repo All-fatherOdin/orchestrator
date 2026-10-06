@@ -15,7 +15,7 @@ export type ProcessHooks = {
   authority: () => Promise<string>;
   analyze: (prompt: string, report?: ReportRequest) => Promise<string>;
   verify: () => Promise<{ code: number; timedOut: boolean; receipts: unknown }>;
-  review: () => Promise<{ status: string; receipts: unknown; feedback?: string; correctionAllowed?: boolean }>;
+  review: () => Promise<{ status: string; receipts: unknown; feedback?: string; correctionAllowed?: boolean; correctionTargets?: number[] }>;
   boundary?: (name: string) => Promise<void>;
 };
 export type ProcessContext = {
@@ -24,6 +24,7 @@ export type ProcessContext = {
   fence: (publication?: boolean) => Promise<void>;
   checkpoint: (phase: "prepared" | "analyzed" | "finalized") => Promise<void>;
   feedback?: string;
+  correctionTargets?: number[];
 };
 /** Code-owned implementation. Queue data cannot supply these operations. */
 export type ProcessHandler = {
@@ -183,7 +184,7 @@ export async function executeProcess(options: {
               await assertPlainPath(parent, stage.root);
               assert.ok(!existsSync(archived), "Process rejected-analysis archive already exists");
               p.attempts.executor++;
-              p.history.push({ stage: "analysis-correction", result: digest, receipt: { feedback, archived, artifacts: structuredClone(p.artifacts) } });
+              p.history.push({ stage: "analysis-correction", result: digest, receipt: { feedback, archived, artifacts: structuredClone(p.artifacts), ...(r.correctionTargets ? { correctionTargets: [...r.correctionTargets] } : {}) } });
               await save();
               renameSync(stage.root, archived);
               mkdirSync(stage.root); mkdirSync(join(stage.root, ".orchestrator-scratch"));
@@ -199,7 +200,7 @@ export async function executeProcess(options: {
               p.phase = "prepared"; p.artifacts = Object.fromEntries(await inventory(stage.root)); p.failure = undefined;
               await save(); await fence();
               await hooks.boundary?.("analysis-correction");
-              await handler.execute({ progress: p, save, fence, checkpoint, feedback });
+              await handler.execute({ progress: p, save, fence, checkpoint, feedback, correctionTargets: r.correctionTargets });
               assert.equal(p.phase, "finalized", "Handler must finalize corrected analysis before verification");
               continue;
             }

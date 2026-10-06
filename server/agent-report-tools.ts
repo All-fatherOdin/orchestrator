@@ -268,7 +268,9 @@ export function reportLoopbackEnvironment(environment: NodeJS.ProcessEnv): { NO_
   return { NO_PROXY: bypass, no_proxy: bypass };
 }
 
-export async function startReportMcp(service: ReportToolService) {
+export async function startReportMcp(service: Pick<ReportToolService, "invoke" | "revoke" | "protectConnection" | "signal" | "close">, protocol?: { name: "orchestrator_review"; definitions: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; annotations: Record<string, boolean> }> }) {
+  const definitions = protocol?.definitions ?? reportToolDefinitions();
+  const serverName = protocol?.name ?? "orchestrator_report";
   const token = randomBytes(32).toString("hex"); let requests = 0;
   const server = createServer(async (request, response) => {
     // No browser origins, arbitrary paths, session/reconnect or unauthenticated calls.
@@ -285,8 +287,8 @@ export async function startReportMcp(service: ReportToolService) {
       assert.equal(rpc.jsonrpc, "2.0"); id = rpc.id ?? null;
       if (rpc.method === "notifications/initialized") { response.writeHead(202).end(); return; }
       let result: unknown;
-      if (rpc.method === "initialize") result = { protocolVersion: rpc.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "orchestrator-report", version: "1" } };
-      else if (rpc.method === "tools/list") result = { tools: reportToolDefinitions() };
+      if (rpc.method === "initialize") result = { protocolVersion: rpc.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: serverName.replaceAll("_", "-"), version: "1" } };
+      else if (rpc.method === "tools/list") result = { tools: definitions };
       else if (rpc.method === "tools/call") {
         try { const value = await service.invoke(rpc.params?.name ?? "", rpc.params?.arguments); result = { content: [{ type: "text", text: JSON.stringify(value) }] }; }
         catch (e) { const code = e instanceof Error && /^[A-Z_]+$/u.test(e.message) ? e.message : "TOOL_REJECTED"; result = { isError: true, content: [{ type: "text", text: JSON.stringify({ error: code }) }] }; }
@@ -298,7 +300,7 @@ export async function startReportMcp(service: ReportToolService) {
   await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(0, "127.0.0.1", done); });
   const address = server.address(); assert.ok(address && typeof address !== "string");
   const url = `http://127.0.0.1:${address.port}/mcp`;
-  const config = `mcp_servers.orchestrator_report={url="${url}",bearer_token_env_var="ORCHESTRATOR_REPORT_MCP_TOKEN",required=true,startup_timeout_sec=10,tool_timeout_sec=65,enabled_tools=[${toolNames.map(n => JSON.stringify(n)).join(",")}],default_tools_approval_mode="auto"}`;
+  const config = `mcp_servers.${serverName}={url="${url}",bearer_token_env_var="ORCHESTRATOR_REPORT_MCP_TOKEN",required=true,startup_timeout_sec=10,tool_timeout_sec=65,enabled_tools=[${definitions.map(n => JSON.stringify(n.name)).join(",")}],default_tools_approval_mode="auto"}`;
   const privateValues = [config, token, url, "ORCHESTRATOR_REPORT_MCP_TOKEN"];
   service.protectConnection(privateValues);
   service.signal.addEventListener("abort", () => { server.close(); }, { once: true });

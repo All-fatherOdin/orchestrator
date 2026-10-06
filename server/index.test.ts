@@ -19328,6 +19328,72 @@ test("structured-output-v1 does not relax legacy GIS or ordinary executor marker
     assert.equal(resolveTaskStatus({ cancelled: false, skipped: false, exitCode: 0, timedOut: false, violations: [], executorOutcome: outcome }), "failed");
   }
 });
+
+test("Stage 3 reviewer opt-in is exact approval-bound and replay-bound", () => {
+  const input = queueAuthoringContractInput(process.cwd());
+  input.review = { enabled: true };
+  input.tasks[0].reviewProtocol = "invocation-mcp-v1";
+  assert.equal(authorizeTask(input.tasks[0], input.project).decision, "denied");
+  input.project.approvedApplyContracts[0].reviewProtocol = "invocation-mcp-v1";
+  const queue = validateTaskQueue(input);
+  assert.equal(queue.tasks[0].reviewProtocol, "invocation-mcp-v1");
+  const evidence = authorizeTask(queue.tasks[0], queue.project);
+  assert.equal(evidence.decision, "authorized"); assert.equal(evidence.reviewProtocol, "invocation-mcp-v1");
+  assert.notEqual(authorizeTask({ ...queue.tasks[0], reviewProtocol: undefined }, queue.project).scopeFingerprint, evidence.scopeFingerprint);
+  for (const edit of [(i: any) => i.tasks[0].reviewProtocol = "unknown", (i: any) => i.review.enabled = false, (i: any) => i.tasks[0].authorization.enabled = false, (i: any) => i.tasks[0].verificationMode = "advisory"]) { const copy = structuredClone(input); edit(copy); assert.throws(() => validateTaskQueue(copy)); }
+});
+
+test("Stage 3 actual reviewer process seals verdict, fences terminal failure and replay", async () => {
+  const { reviewTaskStructured, assertTaskReviewArtifacts } = await import("./index.ts");
+  const root = await mkdtemp(join(tmpdir(), "stage3-reviewer-process-"));
+  const previousBin = process.env.CODEX_BIN, previousScript = process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;
+  try {
+    const provider = join(root, "provider.cjs");
+    await writeFile(provider, `const fs=require('node:fs');if(process.argv.includes('list')){console.log('[]');process.exit(0)}let prompt='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>prompt+=x);process.stdin.on('end',async()=>{try{const args=process.argv.slice(2),out=args[args.indexOf('--output-last-message')+1];const mode=fs.readFileSync('mode.txt','utf8');const identity=JSON.parse(prompt.split('\\n').find(x=>x.startsWith('Identity: ')).slice(10));const snapshot=prompt.split('\\n').find(x=>x.startsWith('Snapshot SHA256: ')).slice(17);const config=args.find(x=>x.startsWith('mcp_servers.orchestrator_review='));const url=/url="([^"]+)"/.exec(config)[1];const headers={'Content-Type':'application/json',Authorization:'Bearer '+process.env.ORCHESTRATOR_REPORT_MCP_TOKEN};const call=async(name,arguments)=>{const response=await fetch(url,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments}})});return response.json()};const read=await call('read_evidence',{evidenceId:'context',startLine:1,endLine:200});if(read.result.isError)throw Error(JSON.stringify(read));const raw=JSON.stringify({protocolVersion:'invocation-mcp-v1',invocationId:identity.invocationId,snapshotSha256:snapshot,status:'approved',reason:'',remarks:[]});if(mode!=='missing'){const submit=await call('submit_verdict',{payloadJson:raw});if(submit.result.isError)throw Error(JSON.stringify(submit));}fs.writeFileSync(out,JSON.stringify({outcome:'completed',reason:''}));if(mode==='item-error')console.log(JSON.stringify({type:'item.completed',item:{type:'error',message:'unsupported transport'}}));if(mode==='failed')console.log(JSON.stringify({type:'turn.failed'}));else if(mode!=='missing-terminal')console.log(JSON.stringify({type:'turn.completed'}));process.exitCode=mode==='nonzero'?1:0;}catch(error){console.error(error);process.exitCode=8}});`);
+    process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    for (const mode of ["success", "nonzero", "failed", "missing", "missing-terminal", "item-error"]) {
+      const project = join(root, mode); await mkdir(project); await writeFile(join(project, "mode.txt"), mode);
+      const scenarioProvider = join(root, `provider-${mode}.cjs`); await writeFile(scenarioProvider, (await readFile(provider, "utf8")).replace("const mode=fs.readFileSync('mode.txt','utf8');", `const mode=${JSON.stringify(mode)};`)); process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = scenarioProvider;
+      git(project, "init"); git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "test@example.invalid"); git(project, "add", "mode.txt"); git(project, "commit", "-m", "baseline");
+      const command = 'node -e "console.log(1)"';
+      const queue = validateTaskQueue({ project: { path: project }, review: { enabled: true, maxCorrections: 0 }, tasks: [
+        { key: "review", title: "Independent evidence review", prompt: "Verify the declared read-only evidence.", allowedPaths: [], reviewProtocol: "invocation-mcp-v1", verificationCommands: [command], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } },
+        { key: "later", title: "Later", prompt: "Read only.", allowedPaths: [] },
+      ] });
+      const run = createRun(queue), target = run.tasks[0]; target.status = "running"; target.authorizationEvidence = authorizeTask(target, run.project, git(project, "branch", "--show-current")); target.verificationEvidence = [{ command, exitCode: 0, timedOut: false, output: "1" }];
+      await reviewTaskStructured(run, target);
+      assert.equal(target.reviewStatus, mode === "success" ? "approved" : "unavailable", target.reviewOutput);
+      assert.equal(target.structuredReviewInvocations?.length, 1); assert.equal(target.structuredReviews?.length ?? 0, mode === "success" ? 1 : 0);
+      if (mode === "success") {
+        const restored = JSON.parse(JSON.stringify(run)); await assertTaskReviewArtifacts(restored, restored.tasks[0]);
+        const stale = JSON.parse(JSON.stringify(run)); stale.tasks[0].structuredReviewInvocations.push({ ...stale.tasks[0].structuredReviewInvocations[0], invocationId: "b".repeat(32), ordinal: 2 }); await assert.rejects(assertTaskReviewArtifacts(stale, stale.tasks[0]), /LATEST_INVOCATION/);
+        const receipt = target.structuredReviews![0]; const statePath = join(testDataDirectory, "runs", run.id, `${target.id}-structured-reviews`, receipt.identity.invocationId, "state.json");
+        assert.equal(JSON.parse(await readFile(statePath, "utf8")).status, "closed");
+        await writeFile(statePath, "{}"); await assert.rejects(assertTaskReviewArtifacts(run, target));
+      }
+    }
+    const project = join(root, "whole-change"); await mkdir(project); await writeFile(join(project, "mode.txt"), "success");
+    process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = join(root, "provider-success.cjs");
+    git(project, "init"); git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "test@example.invalid"); git(project, "add", "mode.txt"); git(project, "commit", "-m", "baseline");
+    await writeFile(join(project, "owned.txt"), "published writer result");
+    const command = 'node -e "console.log(1)"';
+    const run = createRun(validateTaskQueue({ project: { path: project }, review: { enabled: true, maxCorrections: 0 }, tasks: [
+      { key: "writer", title: "Writer", prompt: "Write owned result.", allowedPaths: ["owned.txt"] },
+      { key: "accept", title: "Final review", prompt: "Review the closed predecessor evidence.", dependsOn: ["writer"], allowedPaths: [], reviewProtocol: "invocation-mcp-v1", verificationCommands: [command], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" }, wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"] } },
+    ] }));
+    run.status = "failed"; const writer = run.tasks[0], target = run.tasks[1]; writer.status = "completed"; writer.reviewStatus = "approved"; writer.changedFiles = ["owned.txt"]; writer.verificationEvidence = [{ command: "writer-gate", exitCode: 0, timedOut: false, output: "writer passed" }];
+    target.status = "running"; target.authorizationEvidence = authorizeTask(target, run.project, git(project, "branch", "--show-current")); target.verificationEvidence = [{ command, exitCode: 0, timedOut: false, output: "1" }];
+    await prepareWholeChangeAcceptanceEvidence(run, target); await reviewTaskStructured(run, target);
+    assert.equal(target.reviewStatus, "approved", target.reviewOutput); assert.equal(writer.status, "completed"); assert.equal(writer.reviewStatus, "approved"); assert.equal(run.status, "running");
+    const receipt = target.structuredReviews![0]; const contextPath = join(testDataDirectory, "runs", run.id, `${target.id}-structured-reviews`, receipt.identity.invocationId, "context.json");
+    const context = JSON.parse(await readFile(contextPath, "utf8")); assert.equal(context.currentReviewStatus, "pending"); assert.equal(context.owners[0].status, "completed"); assert.equal(context.owners[0].reviewStatus, "approved");
+    assert.deepEqual(context.acceptance.aggregateChangedFiles, ["owned.txt"]); assert.equal(context.acceptance.contentEvidence[0].kind, "untracked"); assert.equal(context.acceptance.contentEvidence[0].content, "published writer result");
+  } finally {
+    if (previousBin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = previousBin;
+    if (previousScript === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previousScript;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("executor outcome v1 accepts only one valid required marker and keeps legacy records compatible", () => {
   const completed = assessExecutorOutcome(
     "Delivered the requested change.\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED",
