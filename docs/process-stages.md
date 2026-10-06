@@ -1,5 +1,9 @@
 # Typed process stages
 
+Stage 2's explicit `agentTools: invocation-mcp-v1` interface, transport,
+invocation fencing, fixed budgets and synthetic evidence are documented in
+[Invocation-local GIS report tools v1](agent-report-tools-v1.md).
+
 ## Opt-in structured analysis delivery
 
 `GISPackageV1.analysisTransport: structured-output-v1` selects a code-owned,

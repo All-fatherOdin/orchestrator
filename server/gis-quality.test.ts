@@ -72,6 +72,9 @@ test("GIS opt-in is closed, bounded, authorization-bindable; legacy contract unc
   const c = { contractType: "GISPackageV1" as const, contractVersion: "1.0" as const, manifest: f, node: f, stdio: f, gates: [f], scopes: [f], batchId: "one", stageAttempts: { verification: 2, review: 2, publication: 3 } };
   assert.deepEqual(validateGisPackage(c), c);
   assert.equal(validateGisPackage({ ...c, analysisTransport: "structured-output-v1" }).analysisTransport, "structured-output-v1");
+  assert.equal(validateGisPackage({ ...c, analysisTransport: "structured-output-v1", agentTools: "invocation-mcp-v1" }).agentTools, "invocation-mcp-v1");
+  assert.throws(() => validateGisPackage({ ...c, agentTools: "invocation-mcp-v1" }));
+  for (const agentTools of [undefined, null, "unknown"]) assert.throws(() => validateGisPackage({ ...c, analysisTransport: "structured-output-v1", agentTools } as never));
   for (const analysisTransport of ["unknown", null, undefined]) assert.throws(() => validateGisPackage({ ...c, analysisTransport } as unknown as typeof c));
   assert.deepEqual(validateGisPackage({ ...c, stageAttempts: { ...c.stageAttempts, correction: 2 } }).stageAttempts.correction, 2);
   for (const correction of [-1, 3, 1.5, undefined]) assert.throws(() => validateGisPackage({ ...c, stageAttempts: { ...c.stageAttempts, correction } }));

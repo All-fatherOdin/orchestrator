@@ -1,0 +1,121 @@
+{
+  "date": "2026-10-06T07:22:53.092Z",
+  "root": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy",
+  "provider": {
+    "path": "C:\\Users\\a.lozovoy\\AppData\\Local\\OpenAI\\Codex\\bin\\23f7d7f110b19ac3\\codex.exe",
+    "sha256": "7d4588265a55adb1403f85d2e058b11dc971459842de84876c86ff02fb7771f2",
+    "version": "codex-cli 0.160.0"
+  },
+  "transport": "Streamable HTTP; host-owned IPv4 loopback; per-invocation -c; bearer env",
+  "nativeValidation": "Synthetic host callback only; not actual GIS native runtime",
+  "runs": [
+    {
+      "mode": "full",
+      "exitCode": 0,
+      "calls": [
+        {
+          "server": "orchestrator_report",
+          "tool": "read_evidence",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "read_evidence",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "validate_report",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "submit_report",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "submit_report",
+          "status": "completed"
+        }
+      ],
+      "validations": 1,
+      "receipt": {
+        "runId": "synthetic-cli",
+        "taskId": "full",
+        "invocationId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ordinal": 1,
+        "phase": "executor",
+        "mode": "full",
+        "transport": "invocation-mcp-v1",
+        "protocolVersion": "structured-output-v1",
+        "codecVersion": "json-string-v1",
+        "schemaSha256": "c72300c60e223c3b251f2aadef802d00a9397e74088c8fd0ad4c25f5c8badfae",
+        "rawSha256": "6ac7b0a7f5996a2fed06eb42efc467959efd2a95e8a1cf36bdeaa018bea43e2d",
+        "payloadSha256": "42edd0a1c330f95fd2b13ae35f022a91ed28ede074dc9b103f3eff66d7ad1a0d"
+      },
+      "artifacts": {
+        "events": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\full\\events.jsonl",
+        "completion": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\full\\cli-final.json",
+        "state": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\full\\tools-state.json",
+        "submitted": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\full\\submitted"
+      },
+      "replayWithoutAnalysis": true,
+      "closedInvocationRejected": true
+    },
+    {
+      "mode": "patch",
+      "exitCode": 0,
+      "calls": [
+        {
+          "server": "orchestrator_report",
+          "tool": "read_evidence",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "read_evidence",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "validate_report",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "patch_report",
+          "status": "completed"
+        },
+        {
+          "server": "orchestrator_report",
+          "tool": "patch_report",
+          "status": "completed"
+        }
+      ],
+      "validations": 1,
+      "receipt": {
+        "runId": "synthetic-cli",
+        "taskId": "patch",
+        "invocationId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "ordinal": 1,
+        "phase": "executor",
+        "mode": "patch",
+        "transport": "invocation-mcp-v1",
+        "protocolVersion": "structured-output-v1",
+        "codecVersion": "json-string-v1",
+        "schemaSha256": "c72300c60e223c3b251f2aadef802d00a9397e74088c8fd0ad4c25f5c8badfae",
+        "rawSha256": "f19c7908a9a0426f1a40cf47ba81148738428b44621a695c5012188a3536be3b",
+        "payloadSha256": "488a5521f457cdfd64506acf4adb71df554f94b875f942b3d41c24b6abb7f35f"
+      },
+      "artifacts": {
+        "events": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\patch\\events.jsonl",
+        "completion": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\patch\\cli-final.json",
+        "state": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\patch\\tools-state.json",
+        "submitted": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-cli-preflight-jHTjZy\\patch\\submitted"
+      },
+      "replayWithoutAnalysis": true,
+      "closedInvocationRejected": true
+    }
+  ]
+}

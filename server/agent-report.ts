@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { open, readFile, writeFile, mkdtemp, rename } from "node:fs/promises";
 import { TextDecoder } from "node:util";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 
 export const REPORT_LIMIT = 1024 * 1024;
 export const reportSha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
@@ -23,8 +23,8 @@ export const reportSchema = () => ({
   },
 });
 export const reportSchemaBytes = () => `${JSON.stringify(reportSchema(), null, 2)}\n`;
-export type ReportRequest = { protocol: "structured-output-v1"; mode: "full" | "patch" };
-export type ReportIdentity = { runId: string; taskId: string; invocationId: string; phase: "executor" | "correction"; ordinal: number; mode: "full" | "patch" };
+export type ReportRequest = { protocol: "structured-output-v1"; mode: "full" | "patch"; tools?: import("./agent-report-tools.ts").ReportToolContext };
+export type ReportIdentity = { runId: string; taskId: string; invocationId: string; phase: "executor" | "correction"; ordinal: number; mode: "full" | "patch"; transport?: "invocation-mcp-v1" };
 export type ReportReceipt = ReportIdentity & { protocolVersion: "structured-output-v1"; codecVersion: "json-string-v1"; schemaSha256: string; rawSha256: string; payloadSha256: string };
 
 /** Parse JSON without silently accepting repeated object names, including escaped names. */
@@ -114,4 +114,21 @@ export async function persistReportReceipt(rawPath: string, schemaPath: string, 
   const receipt = makeReportReceipt(raw, identity);
   await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: "wx" });
   return replayReport(rawPath, schemaPath, receiptPath, identity);
+}
+
+/** Publish one complete Stage 1 result set. A directory rename is the commit point. */
+export async function submitReportAtomically(root: string, payloadJson: string, identity: ReportIdentity, fence: () => Promise<void>, boundary?: (name: string) => Promise<void>) {
+  const raw = JSON.stringify({ protocolVersion: "structured-output-v1", outcome: "completed", mode: identity.mode, reason: "", payloadJson });
+  const receipt = makeReportReceipt(raw, identity);
+  const scratch = await mkdtemp(join(root, "submission-"));
+  await writeFile(join(scratch, "schema.json"), reportSchemaBytes(), { flag: "wx" });
+  await writeFile(join(scratch, "result.json"), raw, { flag: "wx" });
+  await writeFile(join(scratch, "receipt.json"), `${JSON.stringify(receipt)}\n`, { flag: "wx" });
+  await replayReport(join(scratch, "result.json"), join(scratch, "schema.json"), join(scratch, "receipt.json"), identity);
+  await boundary?.("before-rename");
+  await fence();
+  await rename(scratch, join(root, "submitted"));
+  await boundary?.("after-rename");
+  await fence();
+  return receipt;
 }

@@ -1,5 +1,6 @@
 import express from "express";
-import { reportSchemaBytes, reportEvents, persistReportReceipt, replayReport, reportImplementationIdentity, type ReportRequest, type ReportIdentity } from "./agent-report.ts";
+import { readReport, reportSchemaBytes, reportEvents, persistReportReceipt, replayReport, reportImplementationIdentity, type ReportRequest, type ReportIdentity } from "./agent-report.ts";
+import { ReportToolService, startReportMcp, reportToolsImplementationIdentity, reportToolCompletionSchemaBytes, assertReportToolCompletion } from "./agent-report-tools.ts";
 import assert from "node:assert/strict";
 import { executeProcess, restoreProcessStage, processSha as gisSha, processImplementationIdentity, type ProcessProgress } from "./process-stages.ts";
 import { selectProcessPackage, createRegisteredProcessHandler, registeredProcessImplementation, processRegistryIdentity } from "./process-handlers.ts";
@@ -1071,6 +1072,8 @@ type Task = ResolvedTask & {
   executorOutcome?: ExecutorOutcome;
   executorOutcomeReason?: string;
   agentReports?: ReportIdentity[];
+  agentToolInvocations?: ReportIdentity[];
+  agentToolStateReceipts?: Array<{ invocationId: string; sha256: string }>;
   /** Ephemeral provider metadata; never truth, completion, approval, or durable memory. */
   providerRuntimeState?: ProviderRuntimeStateV1;
   /** Last bounded selection persisted before an executor continuation. */
@@ -9198,25 +9201,54 @@ function reportPaths(run: Run, identity: ReportIdentity) {
   assert.match(identity.invocationId, /^[a-f0-9]{32}$/u);
   assert.ok(run.tasks.some(task => task.id === identity.taskId));
   const root = join(runsDirectory, run.id, `${identity.taskId}-agent-reports`, identity.invocationId);
-  return { root, raw: join(root, "result.json"), schema: join(root, "schema.json"), receipt: join(root, "receipt.json") };
+  const delivered = identity.transport ? join(root, "submitted") : root;
+  return { root, raw: join(delivered, "result.json"), schema: join(delivered, "schema.json"), receipt: join(delivered, "receipt.json") };
 }
 async function prepareAgentReport(run: Run, task: Task, phase: ReportIdentity["phase"], ordinal: number, request?: ReportRequest) {
   if (!request) return undefined;
-  const identity: ReportIdentity = { runId: run.id, taskId: task.id, invocationId: randomBytes(16).toString("hex"), phase, ordinal, mode: request.mode };
+  const identity: ReportIdentity = { runId: run.id, taskId: task.id, invocationId: randomBytes(16).toString("hex"), phase, ordinal, mode: request.mode, ...(request.tools ? { transport: "invocation-mcp-v1" as const } : {}) };
   const paths = reportPaths(run, identity);
   await mkdir(paths.root, { recursive: true });
-  await writeFile(paths.schema, reportSchemaBytes(), { flag: "wx" });
-  return { identity, paths, events: reportEvents() };
+  const providerSchema = request.tools ? join(paths.root, "provider-schema.json") : paths.schema;
+  await writeFile(providerSchema, request.tools ? reportToolCompletionSchemaBytes() : reportSchemaBytes(), { flag: "wx" });
+  let tools: { service: ReportToolService; mcp: Awaited<ReturnType<typeof startReportMcp>> } | undefined;
+  if (request.tools) {
+    assert.ok(task.authorizationEvidence?.enabled && task.authorizationEvidence.decision === "authorized");
+    await request.tools.guard();
+    task.agentToolInvocations ??= []; task.agentToolInvocations.push(identity); await persist(run);
+    const context = request.tools;
+    const service = await ReportToolService.create(paths.root, identity, { ...context, guard: async () => {
+      assert.ok(!isCancelled(run) && !skippedTaskIds.has(task.id), "INVOCATION_CANCELLED");
+      assert.deepEqual(task.agentToolInvocations?.at(-1), identity, "INVOCATION_CHANGED");
+      assert.ok(!(await taskAuthorizationIdentityViolations(run, task)).length, "AUTHORIZATION_CHANGED");
+      await context.guard();
+    } }, (task.timeoutMinutes ?? run.limits.taskTimeoutMinutes) * 60_000);
+    try { tools = { service, mcp: await startReportMcp(service) }; } catch (e) { await service.close(); throw e; }
+  }
+  return { identity, paths, providerSchema, tools, events: reportEvents() };
 }
 async function finishAgentReport(run: Run, task: Task, report: NonNullable<Awaited<ReturnType<typeof prepareAgentReport>>>, code: number | null, timedOut: boolean) {
+  try {
   report.events.assertSuccess(code, timedOut, isCancelled(run) || skippedTaskIds.has(task.id));
+  if (report.tools) assertReportToolCompletion(await readReport(join(report.paths.root, "cli-final.json")));
   if (process.env.ORCHESTRATOR_TEST === "1") await gisLifecycleTestBoundary?.("agent-report-before-receipt", run, task.id);
-  const payload = await persistReportReceipt(report.paths.raw, report.paths.schema, report.paths.receipt, report.identity);
+  const payload = report.tools ? (await report.tools.service.assertSubmitted()).payloadJson : await persistReportReceipt(report.paths.raw, report.paths.schema, report.paths.receipt, report.identity);
   if (process.env.ORCHESTRATOR_TEST === "1") await gisLifecycleTestBoundary?.("agent-report-after-receipt", run, task.id);
+  report.events.assertSuccess(code, timedOut, isCancelled(run) || skippedTaskIds.has(task.id));
+  if (report.tools) {
+    await report.tools.mcp.close();
+    const sha256 = await report.tools.service.closedStateSha256();
+    task.agentToolStateReceipts ??= [];
+    task.agentToolStateReceipts.push({ invocationId: report.identity.invocationId, sha256 });
+  }
   report.events.assertSuccess(code, timedOut, isCancelled(run) || skippedTaskIds.has(task.id));
   task.agentReports ??= []; task.agentReports.push(report.identity);
   task.finalOutput = payload;
   await persist(run);
+  } catch (error) {
+    if (report.tools) throw new Error(report.tools.mcp.redact(error instanceof Error ? error.message : String(error)));
+    throw error;
+  } finally { await report.tools?.mcp.close(); }
 }
 async function correctTask(run: Run, task: Task, failedVerification?: VerificationEvidence[], promptOverride?: string, reportRequest?: ReportRequest) {
   task.executionPhase = "correction";
@@ -9227,7 +9259,7 @@ async function correctTask(run: Run, task: Task, failedVerification?: Verificati
   await persist(run);
   publish("run", run);
   const report = await prepareAgentReport(run, task, "correction", task.attempts, reportRequest);
-  const outputFile = report?.paths.raw ?? join(
+  const outputFile = report?.tools ? join(report.paths.root, "cli-final.json") : report?.paths.raw ?? join(
     runsDirectory,
     run.id,
     `${task.id}-fix-${task.attempts}.md`,
@@ -9244,6 +9276,7 @@ async function correctTask(run: Run, task: Task, failedVerification?: Verificati
     task.model,
   );
   if (budgetAdmission && budgetAdmission.disposition !== "allow") {
+    await report?.tools?.mcp.close();
     task.executionPhase = undefined;
     task.log.push(`Автоисправление не запущено: ${budgetAdmission.reasonCode}`);
     await persist(run);
@@ -9280,7 +9313,7 @@ async function correctTask(run: Run, task: Task, failedVerification?: Verificati
         ),
         "--ephemeral",
         "--json",
-        ...(report ? ["--output-schema", report.paths.schema] : []),
+        ...(report ? ["--output-schema", report.providerSchema, ...(report.tools?.mcp.args ?? [])] : []),
         ...(task.isolatedArtifacts ? ["--skip-git-repo-check"] : []),
         "--cd",
         executionPath,
@@ -9293,9 +9326,10 @@ async function correctTask(run: Run, task: Task, failedVerification?: Verificati
       ],
       prompt,
       executionPath,
-      taskProcessEnvironment(run, task),
+      { ...taskProcessEnvironment(run, task), ...report?.tools?.mcp.environment },
     );
   } catch (error) {
+    await report?.tools?.mcp.close();
     await settleExecutionBudgetInvocationV1(
       run,
       task,
@@ -9603,13 +9637,13 @@ async function executeTaskAgent(run: Run, task: Task, executionPath: string, pro
   await persist(run);
   publish("run", run);
   const report = await prepareAgentReport(run, task, "executor", 1, reportRequest);
-  const outputFile = report?.paths.raw ?? join(runsDirectory, run.id, `${task.id}-final.md`);
+  const outputFile = report?.tools ? join(report.paths.root, "cli-final.json") : report?.paths.raw ?? join(runsDirectory, run.id, `${task.id}-final.md`);
   const prompt = promptOverride ?? buildPrompt(task, run.project);
   const args = [
     ...codexExecCommandStartArgs(task.authorizationEvidence, "executor"),
     "--ephemeral",
     "--json",
-    ...(report ? ["--output-schema", report.paths.schema] : []),
+    ...(report ? ["--output-schema", report.providerSchema, ...(report.tools?.mcp.args ?? [])] : []),
     ...(task.isolatedArtifacts ? ["--skip-git-repo-check"] : []),
     "--cd",
     executionPath,
@@ -9633,6 +9667,7 @@ async function executeTaskAgent(run: Run, task: Task, executionPath: string, pro
       task.model,
     );
     if (budgetAdmission && budgetAdmission.disposition !== "allow") {
+      await report?.tools?.mcp.close();
       task.exitCode = 1;
       task.log.push(`Executor was not started: ${budgetAdmission.reasonCode}`);
       break;
@@ -9665,9 +9700,10 @@ async function executeTaskAgent(run: Run, task: Task, executionPath: string, pro
         args,
         prompt,
         executionPath,
-        taskProcessEnvironment(run, task),
+        { ...taskProcessEnvironment(run, task), ...report?.tools?.mcp.environment },
       );
     } catch (error) {
+      await report?.tools?.mcp.close();
       await settleExecutionBudgetInvocationV1(
         run,
         task,
@@ -9688,7 +9724,8 @@ async function executeTaskAgent(run: Run, task: Task, executionPath: string, pro
           "executor",
           budgetAdmission?.phaseOrdinal ?? attempt,
         );
-        const readable = line.trim() && taskEvent(line.trim());
+        const eventText = line.trim() && taskEvent(line.trim());
+        const readable = eventText && (report?.tools ? report.tools.mcp.redact(eventText) : eventText);
         if (readable) task.log.push(readable.slice(0, 1600));
       publish("log", {
         runId: run.id,
@@ -9761,7 +9798,7 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
   const executionPath = await taskExecutionPathV1(run, task);
   const stage = isolatedTaskStages.get(task)!;
   const contract = selectProcessPackage(task.isolatedArtifacts)!;
-  const implementations = [processRunnerImplementation, processImplementationIdentity, processRegistryIdentity, registeredProcessImplementation(contract), ...(contract.configuration.analysisTransport ? [reportImplementationIdentity] : [])];
+  const implementations = [processRunnerImplementation, processImplementationIdentity, processRegistryIdentity, registeredProcessImplementation(contract), ...(contract.configuration.analysisTransport ? [reportImplementationIdentity] : []), ...(contract.configuration.agentTools ? [reportToolsImplementationIdentity] : [])];
   let retainedAnalysis: import("./gis-quality.ts").GisRetainedAnalysis | undefined;
   let analysisSource: { file: string; sha256: string } | undefined;
   if (task.executionKind?.kind === "recovery" && task.recovery) {
@@ -9825,6 +9862,14 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
       assert.equal(identity.mode, index > 0 || retainedAnalysis ? "patch" : "full");
       const paths = reportPaths(run, identity);
       await replayReport(paths.raw, paths.schema, paths.receipt, identity);
+      if (contract.configuration.agentTools) {
+        assert.equal(identity.transport, contract.configuration.agentTools);
+        assert.deepEqual(task.agentToolInvocations?.[index], identity, "Tool invocation replay mismatch");
+        const receipt = task.agentToolStateReceipts?.[index];
+        assert.equal(receipt?.invocationId, identity.invocationId, "Tool state receipt is missing");
+        await assertPlainPath(paths.root, join(paths.root, "tools-state.json"));
+        assert.equal(gisSha(await readFile(join(paths.root, "tools-state.json"))), receipt!.sha256, "Tool state receipt changed");
+      } else assert.equal(identity.transport, undefined);
     }
     const phase = taskProcessProgress(task)?.phase;
     if (phase && ["verified", "approved", "publishing", "published"].includes(phase) && requiredVerificationEvidenceIssue(task))
@@ -9849,6 +9894,7 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
       authority,
       analyze: async (prompt, reportRequest) => {
         assert.equal(reportRequest?.protocol, contract.configuration.analysisTransport);
+        assert.equal(Boolean(reportRequest?.tools), Boolean(contract.configuration.agentTools));
         const reportCount = task.agentReports?.length ?? 0;
         const fullPrompt = reportRequest ? `${task.prompt}\n\n${prompt}` : `${buildPrompt(task, run.project)}\n\n${prompt}`;
         if ((taskProcessProgress(task)?.attempts.executor ?? 1) > 1) {

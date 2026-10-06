@@ -1,0 +1,61 @@
+{
+  "fail": [
+    0,
+    0,
+    0
+  ],
+  "logSha256": "52b48e5fb6dc166e5a70ba37366559f261d60fdf7246bd51fec0f85176ce9086",
+  "sourceSnapshotUnchanged": true,
+  "totalPassed": 640.0,
+  "cliEvidenceSha256": "9520aad52026a169d07a40578acf7d8865f932d55f34fc0cc4940057ceb639eb",
+  "logPath": "C:\\Users\\a.lozovoy\\AppData\\Local\\Temp\\report-tools-review-32df562d59c944949cfc17f298e09059\\full.log",
+  "exitCode": 0,
+  "command": "npm test",
+  "pass": [
+    638,
+    1,
+    1
+  ],
+  "skipped": [
+    1,
+    0,
+    0
+  ],
+  "sources": [
+    {
+      "path": "server/agent-report.ts",
+      "sha256": "ca1b82236dc8eb4134401e18a2d606fb84ffee5f76cd59f1e5427985de73aa26"
+    },
+    {
+      "path": "server/agent-report-tools.ts",
+      "sha256": "3575c4b5203f1381cde9afbdcbc8b730878c526b92a8e62b9a59e76901d32574"
+    },
+    {
+      "path": "server/agent-report-tools.test.ts",
+      "sha256": "be0224a13670527a114c0d748a65ee114832506e1b2a7527e1a4cfa99a66a048"
+    },
+    {
+      "path": "server/gis-quality.ts",
+      "sha256": "1243991ec5696e280fdd8b1187ded01ac69c9c7cdcc19dca407b1f9aa4e0b33d"
+    },
+    {
+      "path": "server/gis-quality.test.ts",
+      "sha256": "3ef9ce3b39995bd123d45feb313a1dbe6ea7739f6f528fabde5781f1e3fac5d0"
+    },
+    {
+      "path": "server/gis-quality.integration.test.ts",
+      "sha256": "5c953b9433c1c084e05a17edaec09f5ff4924f7bbf3831539ce4523a000f6d6c"
+    },
+    {
+      "path": "server/index.ts",
+      "sha256": "b814bfae1d8316881cfe83cef583bd4dc357639de292096607c8267ff8321bfb"
+    },
+    {
+      "path": "scripts/agent-report-tools-preflight.mjs",
+      "sha256": "f714896e3673a154d1210cf6d8f5fce33578a57028388f9697d47b84c93b1407"
+    }
+  ],
+  "realGisRuntime": "not run",
+  "installedSmoke": "not run",
+  "cliEvidencePath": "C:/Alex/Self/projects/orchestrator/docs/evidence/agent-report-tools-cli-review-20261006.json"
+}

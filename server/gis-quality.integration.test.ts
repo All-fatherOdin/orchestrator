@@ -28,7 +28,9 @@ function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: stri
   put(join(contracts, "scope.json"), { schemaVersion: 1, profile: "security-risk", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile: "one.ts" }, { primaryFile: "two.ts" }] });
   const checker = join(contracts, "check.mjs"), sentinel = join(root, "verify-once");
   writeFileSync(checker, `import fs from 'node:fs';import assert from 'node:assert/strict';${mode === "verify" ? `if(!fs.existsSync(${JSON.stringify(sentinel)})){fs.writeFileSync(${JSON.stringify(sentinel)},'seen');process.exit(75);}` : mode === "deterministic" ? "process.exit(1);" : ""}assert.equal(JSON.parse(fs.readFileSync('projects/gis2-front/operations/state/quality-coverage.json')).completed,2);`);
-  const runtimeEvidence = ["config.json", "quality-catch-up-orchestrator.mjs", "profile-bundle-lib.mjs", "security-risk-bundle.mjs", "validate-profile-analysis.mjs"].map(n => ({ path: `runtime/${n}`, sha256: pin(join(runtime, n)).sha256 }));
+  put(join(runtime, "schemas/profile-analysis-response.schema.json"), { type: "object", required: ["reviewedUnits", "findings", "limitations"] });
+  const runtimeEvidence = ["schemas/profile-analysis-response.schema.json", "config.json", "quality-catch-up-orchestrator.mjs", "profile-bundle-lib.mjs", "security-risk-bundle.mjs", "validate-profile-analysis.mjs"].map(n => ({ path: `runtime/${n}`, sha256: pin(join(runtime, n)).sha256 }));
+  if (transportCase === "tools-schema-missing") runtimeEvidence.splice(0, 1);
   if (mode === "performance") {
     writeFileSync(join(runtime, "performance-regression-bundle.mjs"), readFileSync(join(runtime, "security-risk-bundle.mjs"), "utf8").replace("profile:'security-risk'", "profile:'performance-regression'").replace("bundleFingerprint:'d'.repeat(64)", "bundleFingerprint:s.reviewUnits[0].primaryFile==='one.ts'?'1'.repeat(64):'2'.repeat(64)"));
     writeFileSync(join(runtime, "performance-baseline.mjs"), `import fs from 'node:fs';const a=process.argv.slice(2),v=k=>a[a.indexOf('--'+k)+1],b=JSON.parse(fs.readFileSync(v('bundle')));fs.writeFileSync(v('output'),JSON.stringify({sourceBundleFingerprint:b.bundleFingerprint,measurements:[]}),{flag:'wx'});`);
@@ -71,6 +73,15 @@ function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: stri
   git(["init", "-q", "-b", "main"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
   const contract: GisPackageV1 = { contractType: "GISPackageV1", contractVersion: "1.0", manifest: pin(manifest), scopes: [pin(join(contracts, "scope.json"))], gates: [pin(checker)], node: pin(process.execPath), stdio: pin(resolve("scripts/sandbox-file-stdio.cjs")), batchId: "one", stageAttempts: { verification: 2, review: 2, publication: 3 } };
   if (transportCase) contract.analysisTransport = "structured-output-v1";
+  if (transportCase?.startsWith("tools-")) {
+    contract.agentTools = "invocation-mcp-v1";
+    if (transportCase === "tools-native-error") {
+      writeFileSync(join(runtime, "validate-profile-analysis.mjs"), `import fs from 'node:fs';const a=process.argv.slice(2),out=a[a.indexOf('--output')+1];fs.writeFileSync(out,JSON.stringify({status:'rejected',rejectionsRu:['reviewedUnits[0].summaryRu недостаточно конкретен']}));process.exitCode=4;`);
+      runtimeEvidence.find(e => e.path === "runtime/validate-profile-analysis.mjs")!.sha256 = pin(join(runtime, "validate-profile-analysis.mjs")).sha256;
+      const manifestValue = JSON.parse(readFileSync(manifest, "utf8")); manifestValue.runtimeEvidence = runtimeEvidence; put(manifest, manifestValue); contract.manifest = pin(manifest);
+    }
+    writeFileSync(provider, `const fs=require('node:fs'),assert=require('node:assert/strict');let p='';process.stdin.on('data',x=>p+=x);process.stdin.on('end',async()=>{try{const a=process.argv.slice(2),out=a[a.indexOf('--output-last-message')+1];if(p.startsWith('Review only')){${reviewCorrection}fs.writeFileSync(out,'VERDICT: APPROVED');return;}const c=a.find(x=>x.startsWith('mcp_servers.orchestrator_report='));assert.ok(c);const url=/url="([^"]+)"/.exec(c)[1];const call=async(name,args)=>{const r=await(await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+process.env.ORCHESTRATOR_REPORT_MCP_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})})).json();return r.result.isError?{error:JSON.parse(r.result.content[0].text).error}:JSON.parse(r.result.content[0].text);};const bundles=p.match(/Read these exact prepared bundle files: (.*?)\\. Do not/)[1].split(', ').map(x=>JSON.parse(fs.readFileSync(x)));const evidence=await call('read_evidence',{evidenceId:'bundle-0',startLine:1,endLine:200});assert.equal(evidence.evidenceId,'bundle-0');const schema=await call('read_evidence',{evidenceId:'report-schema',startLine:1,endLine:200});assert.equal(schema.evidenceId,'report-schema');assert.deepEqual(JSON.parse(schema.text).required,['reviewedUnits','findings','limitations']);assert.equal(typeof evidence.sourceSha256,'string');let payload,mode;if(p.includes('GIS_CORRECTION_INPUT_V1: ')){const input=JSON.parse(p.split('\\n').find(l=>l.startsWith('GIS_CORRECTION_INPUT_V1: ')).slice('GIS_CORRECTION_INPUT_V1: '.length));mode='patch';payload={patches:input.responses.map(({index,response})=>({index,response:{...response,reviewedUnits:response.reviewedUnits.map(u=>({...u,summaryRu:'Corrected fixture contract and forbidden counterexample.'}))}}))};}else{mode='full';payload={responses:bundles.map(b=>({reviewedUnits:b.reviewUnits.map(u=>({primaryFile:u.primaryFile,disposition:'no-finding',summaryRu:'Concrete fixture contract and forbidden counterexample.'})),findings:[],limitations:[]}))};}const scenario=${JSON.stringify(transportCase)};if(scenario==='tools-rule'){payload.responses[0].findings=[{primaryFile:'one.ts',ruleId:'SEC-TWO'}];}const payloadJson=JSON.stringify(payload);const validation=await call('validate_report',{payloadJson});if(scenario==='tools-rule'){assert.deepEqual(validation.errors,[{responseIndex:0,primaryFile:'one.ts',field:'findings[0].ruleId',code:'RULE_NOT_ELIGIBLE'}]);}else assert.deepEqual(validation,{valid:true,errors:[]});if(scenario==='tools-rule'||scenario==='tools-repeat'){const repeated=await call('validate_report',{payloadJson:scenario==='tools-rule'?payloadJson:JSON.stringify({responses:[]})});if(scenario==='tools-rule')assert.equal(repeated.error,'REPEATED_VALIDATION_ERROR');fs.writeFileSync(out,JSON.stringify({outcome:'stopped',reason:'draft rejected'}));}else{if(scenario!=='tools-unsubmitted'){const submitted=await call(mode==='patch'?'patch_report':'submit_report',{payloadJson});assert.equal(submitted.submitted,true);assert.equal(submitted.receipt.mode,mode);const again=await call(mode==='patch'?'patch_report':'submit_report',{payloadJson});assert.deepEqual(again,submitted);}fs.writeFileSync(out,JSON.stringify({outcome:scenario==='tools-stopped'?'stopped':'completed',reason:scenario==='tools-stopped'?'agent stopped':''}));}fs.writeFileSync(${JSON.stringify(join(root, "tools-ready"))},'ready');if(scenario==='tools-cancel'||scenario==='tools-timeout')setTimeout(()=>{},scenario==='tools-timeout'?65000:1000);if(scenario!=='tools-partial')console.log(JSON.stringify({type:scenario==='tools-failed'?'turn.failed':'turn.completed',usage:{input_tokens:1,output_tokens:1}}));if(scenario==='tools-nonzero')process.exitCode=1;}catch(e){console.error(e);process.exitCode=1;}});`);
+  }
   if (correctionMode) contract.stageAttempts = { verification: 3, review: 3, publication: 3, correction: 2 };
   if (mode === "performance" || correctionMode) contract.scopes.push(pin(join(contracts, "scope-two.json")));
   const isolatedArtifacts = { contractType: "IsolatedArtifactsV1", contractVersion: "1.0", inputPaths: [state], publishCommands: [], ...(mode === "registered" || mode === "performance" || mode === "business" || correctionMode ? { processPackage: { contractType: "ProcessPackageV1", contractVersion: "1.0", handler: "gis-audit", handlerVersion: "1", configuration: contract } } : { gisPackage: contract }) };
@@ -105,6 +116,63 @@ test("GIS finding rules are supplied to analysis and rejected before native vali
   } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
 });
 
+test("invocation MCP full/patch production lifecycle retains gates, exact siblings and closed restart receipts", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const mode of ["registered", "correction"]) {
+      const f = fixture(mode, undefined, "tools-valid"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      let stopped = false;
+      configureGisLifecycleTestBoundary(async name => { if (mode === "registered" && name === "finalized" && !stopped) { stopped = true; throw Error("controlled interruption for restart"); } });
+      let run = createRun(f.queue); await executeQueue(run);
+      if (mode === "registered") { assert.equal(run.tasks[0].processProgress!.phase, "finalized"); const stored = await loadRun(run.id); assert.ok(stored); const resumed = resumeRun(stored); assert.ok(resumed); run = resumed; await executeQueue(run); }
+      configureGisLifecycleTestBoundary(); const task = run.tasks[0], progress = task.processProgress!;
+      assert.equal(task.status, "completed", task.log.join("\n")); assert.equal(task.agentReports?.length, mode === "correction" ? 2 : 1);
+      assert.equal(progress.attempts.verification, mode === "correction" ? 2 : 1); assert.equal(progress.attempts.review, mode === "correction" ? 2 : 1); assert.equal(progress.attempts.publication, 1);
+      for (const [i, identity] of task.agentReports!.entries()) {
+        assert.equal(identity.transport, "invocation-mcp-v1"); assert.deepEqual(task.agentToolInvocations![i], identity);
+        const file = join(data, "runs", run.id, `${task.id}-agent-reports`, identity.invocationId, "tools-state.json"), state = JSON.parse(readFileSync(file, "utf8"));
+        assert.equal(state.status, "closed"); assert.equal(state.validations, 1); assert.equal(state.calls, 5); assert.equal(task.agentToolStateReceipts![i].sha256, gisSha(readFileSync(file)));
+      }
+      if (mode === "correction") { const archive = progress.history.find(h => h.stage === "analysis-correction")!.receipt as { archived: string }; assert.deepEqual(readFileSync(join(archive.archived, f.runPath, "response-1.json")), readFileSync(join(f.project, f.runPath, "response-1.json"))); }
+      const loaded = await loadRun(run.id); assert.ok(loaded); assert.equal(resumeRun(loaded), undefined, "Completed restart cannot request more analysis");
+    }
+  } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+test("invocation MCP denied budget, native errors and tampered closed state never publish or reanalyze", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const scenario of ["budget", "native", "state"]) {
+      const f = fixture(scenario === "budget" ? "correction" : "registered", scenario === "budget" ? "deny" : undefined, scenario === "native" ? "tools-native-error" : "tools-valid");
+      process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      let interrupted = false; configureGisLifecycleTestBoundary(async name => { if (scenario === "state" && name === "finalized" && !interrupted) { interrupted = true; throw Error("controlled interruption for restart"); } });
+      let run = createRun(f.queue); await executeQueue(run); configureGisLifecycleTestBoundary();
+      if (scenario === "state") {
+        const task = run.tasks[0], identity = task.agentReports![0], file = join(data, "runs", run.id, `${task.id}-agent-reports`, identity.invocationId, "tools-state.json"); writeFileSync(file, "{}");
+        const loaded = await loadRun(run.id); assert.ok(loaded); const resumed = resumeRun(loaded); assert.ok(resumed); run = resumed; await executeQueue(run); assert.equal(run.tasks[0].processProgress!.attempts.executor, 1); assert.ok(run.tasks[0].log.some(x => x.includes("Tool state receipt changed")));
+      }
+      assert.notEqual(run.tasks[0].status, "completed", run.tasks[0].log.join("\n")); assert.equal(run.tasks[0].processProgress!.attempts.publication, 0); assert.equal(existsSync(join(f.project, f.runPath)), false);
+      if (scenario === "native") {
+        const identity = run.tasks[0].agentToolInvocations![0], storage = join(data, "runs", run.id, `${run.tasks[0].id}-agent-reports`, identity.invocationId); assert.equal(existsSync(join(storage, "submitted")), false);
+        const validationDir = (await import("node:fs/promises")).readdir; const validation = (await validationDir(storage)).find(x => x.startsWith("validation-")); assert.ok(validation);
+        const native = JSON.parse(readFileSync(join(storage, validation, "validation-0.json"), "utf8")); assert.deepEqual(native.rejectionsRu, ["reviewedUnits[0].summaryRu недостаточно конкретен"]); assert.equal(run.tasks[0].processProgress!.attempts.verification, 0);
+      }
+      if (scenario === "budget") { assert.equal(run.tasks[0].agentReports?.length, 1); assert.equal(run.tasks[0].processProgress!.attempts.executor, 2); const admissions = run.tasks[0].executionBudgetEvidence!.filter(x => x.contractType === "ExecutionBudgetAdmissionV1" && x.phase === "correction"); assert.equal(admissions.length, 1); assert.ok(admissions[0].contractType === "ExecutionBudgetAdmissionV1"); assert.notEqual(admissions[0].disposition, "allow"); }
+    }
+  } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+test("invocation MCP successful submission cannot compensate for failed/stopped/partial/unsubmitted/cancelled/timed-out CLI", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const scenario of ["tools-nonzero", "tools-failed", "tools-partial", "tools-stopped", "tools-unsubmitted", "tools-rule", "tools-cancel", "tools-timeout"]) {
+      const f = fixture("registered", undefined, scenario); f.queue.tasks[0].timeoutMinutes = 1;
+      process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      const run = createRun(f.queue), timer = scenario === "tools-cancel" ? setInterval(() => { if (existsSync(join(f.root, "tools-ready"))) run.status = "cancelled"; }, 10) : undefined;
+      try { await executeQueue(run); } finally { if (timer) clearInterval(timer); }
+      const task = run.tasks[0]; assert.notEqual(task.status, "completed", scenario + task.log.join("\n")); assert.equal(task.agentReports?.length ?? 0, 0); assert.equal(task.processProgress!.attempts.verification, 0); assert.equal(task.processProgress!.attempts.review, 0); assert.equal(task.processProgress!.attempts.publication, 0); assert.equal(existsSync(join(f.project, f.runPath)), false);
+      if (scenario === "tools-timeout") assert.equal(task.timedOut, true);
+    }
+  } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
 test("structured-output-v1 full and targeted patch traverse production mock lifecycle", async () => {
   const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
   try {
@@ -410,4 +478,21 @@ test("large native GIS artifacts have closed whole-change receipts; altered nati
     run.tasks[0].gisProgress!.native[0].exitCode = null;
     await assert.rejects(prepareWholeChangeAcceptanceEvidence(run, run.tasks[1]), /NATIVE_EVIDENCE_CHANGED/);
   } finally { if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+
+test("invocation MCP requires the exact manifest-pinned report schema before provider authority", async () => {
+  const f = fixture("registered", undefined, "tools-schema-missing");
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run);
+    assert.equal(run.tasks[0].status, "failed");
+    assert.match(run.tasks[0].log.join("\n"), /Native report schema is not pinned/);
+    assert.equal(run.tasks[0].agentToolInvocations?.length ?? 0, 0);
+    assert.equal(run.tasks[0].processProgress!.attempts.publication, 0);
+  } finally {
+    if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin;
+    if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script;
+  }
 });
