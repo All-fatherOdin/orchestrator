@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, symlink, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ReportToolService, startReportMcp, REPORT_TOOL_LIMITS, assertReportToolCompletion, assertNoWindowsReparsePoints, type ReportToolError } from "./agent-report-tools.ts";
+import { ReportToolService, startReportMcp, reportLoopbackEnvironment, REPORT_TOOL_LIMITS, assertReportToolCompletion, assertNoWindowsReparsePoints, type ReportToolError } from "./agent-report-tools.ts";
 import { reportSha, replayReport, type ReportIdentity } from "./agent-report.ts";
 import { prepareGisResponses, GisReportError, gisNativeReportErrors, gisNative } from "./gis-quality.ts";
 const identity: ReportIdentity = { runId: "r", taskId: "t", invocationId: "a".repeat(32), phase: "executor", ordinal: 1, mode: "full", transport: "invocation-mcp-v1" };
@@ -18,6 +18,22 @@ async function fixture(options: { text?: string; mode?: "full" | "patch"; errors
   return { root, storage, sourceRoot, source, service, context, id, revoke: () => { authorized = false; }, validations: () => validations };
 }
 const invoke = (service: ReportToolService, name: string, payloadJson = candidate) => service.invoke(name, { payloadJson });
+
+test("report MCP child bypass preserves both inherited proxy exclusion lists and adds only loopback", () => {
+  for (const [environment, expected] of [
+    [{}, "127.0.0.1,localhost"],
+    [{ NO_PROXY: "", no_proxy: "" }, "127.0.0.1,localhost"],
+    [{ NO_PROXY: "internal.example,.corp" }, "internal.example,.corp,127.0.0.1,localhost"],
+    [{ no_proxy: "lower.example" }, "lower.example,127.0.0.1,localhost"],
+    [{ NO_PROXY: "one.example", no_proxy: "two.example" }, "one.example,two.example,127.0.0.1,localhost"],
+    [{ NO_PROXY: "  LOCALHOST ,127.0.0.1,host:8080" }, "  LOCALHOST ,127.0.0.1,host:8080"],
+    [{ NO_PROXY: "*", no_proxy: "127.0.0.1:9000" }, "*,127.0.0.1:9000,127.0.0.1,localhost"],
+  ] as const) {
+    const before = { ...environment };
+    assert.deepEqual(reportLoopbackEnvironment(environment), { NO_PROXY: expected, no_proxy: expected });
+    assert.deepEqual(environment, before);
+  }
+});
 test("report tools exact UTF-8 lines/hash, complete-line count/byte bounds, changed bytes and closed IDs", async () => {
   const f = await fixture();
   try {
@@ -141,6 +157,8 @@ test("report tools share full/patch construction and exact native field diagnost
 test("report MCP bearer/HTTP/closed arguments fence operations and close revokes listener", async () => {
   const f = await fixture(), mcp = await startReportMcp(f.service); const config = mcp.args[1], url = /url="([^"]+)"/u.exec(config)![1], token = mcp.environment.ORCHESTRATOR_REPORT_MCP_TOKEN;
   try {
+    assert.equal(mcp.environment.NO_PROXY, reportLoopbackEnvironment(process.env).NO_PROXY);
+    assert.equal(mcp.environment.no_proxy, mcp.environment.NO_PROXY);
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "submit_report", arguments: { payloadJson: candidate } } });
     assert.equal((await fetch(url, { method: "POST", body })).status, 401);
     assert.equal((await fetch(url, { method: "POST", body, headers: { Authorization: `Bearer ${token}`, Origin: "http://evil.invalid" } })).status, 401);

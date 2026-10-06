@@ -12,7 +12,12 @@ legacy full/patch and Stage 1 structured delivery unchanged.
 
 The host runs an invocation-local Streamable HTTP MCP server on IPv4 loopback,
 with a random port and bearer credential supplied only through the CLI child
-environment. Per-process `-c mcp_servers.orchestrator_report={...}` supplies
+environment. The child environment also receives both `NO_PROXY` and
+`no_proxy`: the exact existing values from both forms are retained in a combined
+list, then missing `127.0.0.1` and `localhost` entries are appended. Comparisons
+ignore entry whitespace and case; exclusions with ports remain distinct. Both
+forms receive the same value, and the parent process environment is unchanged.
+Per-process `-c mcp_servers.orchestrator_report={...}` supplies
 `url`, `bearer_token_env_var`, `required`, startup/tool timeouts, an exact tool
 allow-list and `default_tools_approval_mode=auto`. No global config is edited.
 The server uses JSON responses, no SSE, sessions, reconnect authority or worker
@@ -251,3 +256,48 @@ CLI full/patch capture, and fails on disagreement. Its retained
 [acceptance summary](evidence/agent-report-tools-review-acceptance-20261006.json)
 binds those exact artifacts and hashes. `git diff --check` also passed.
 This summary is local source-test evidence, not a canonical installed smoke run.
+
+
+## Loopback proxy correction
+
+The child-only bypass regression covers absent/empty lists, each casing alone,
+distinct lists in both casings, existing loopback entries with whitespace and
+case differences, wildcards, and port-qualified entries. Assertions preserve
+original exclusion text, add only the two exact loopback hosts, give both keys
+the same value, and prove the input environment is not mutated.
+
+The preflight records only boolean proxy-presence/parent-loopback facts (never
+proxy URLs or exclusion values), asserts both child keys and preservation, then
+launches the CLI through the production `mcp.environment` path. Historical
+640-test verification above predates this proxy correction and does not bind
+its new source hashes. Installed smoke and real GIS runtime remain unperformed.
+
+
+Proxy correction verification:
+
+- `npm run check`: exit 0.
+- `node --import tsx --test server/agent-report-tools.test.ts server/gis-quality.test.ts`:
+  20 passed, zero failed.
+- `node --import tsx --test --test-name-pattern "invocation MCP" server/gis-quality.integration.test.ts`:
+  four passed, zero failed.
+- Ordinary `node --import tsx scripts/agent-report-tools-preflight.mjs <absolute CLI path>`:
+  full and patch passed without manually setting either bypass variable.
+  [Ordinary capture](evidence/agent-report-tools-cli-loopback-20261006.json)
+  records that this shell had neither loopback exclusion nor configured proxy.
+- The same command with `--http-proxy-fixture`: full and patch passed with
+  a child HTTP proxy returning 503, zero HTTP proxy requests, and two API
+  CONNECT tunnels. The fixture tunnels only `chatgpt.com:443` to keep the remote
+  API working; all HTTP proxy requests are rejected. Each mode completed the
+  five required MCP calls and one synthetic validation.
+  [Proxy capture](evidence/agent-report-tools-cli-proxy-fixture-20261006.json).
+- A negative control without child bypass exited 1 with HTTP 503: three
+  requests reached the proxy and zero reached the loopback MCP target.
+  [Negative capture](evidence/agent-report-tools-proxy-negative-20261006.json).
+  Its exact script is retained at
+  `C:/Users/a.lozovoy/AppData/Local/Temp/report-proxy-negative-a0e2fd1922d343acb12b9e652a2a595e.mjs`.
+- `git diff --check`: exit 0.
+
+The full suite was not rerun after this environment-only production fix.
+The earlier 640-test record remains historical evidence with its original hashes.
+These CLI captures use a synthetic validator; installed smoke and real GIS
+runtime were not run.

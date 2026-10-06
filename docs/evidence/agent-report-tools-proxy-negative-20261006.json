@@ -1,0 +1,8 @@
+{
+  "exitCode": 1,
+  "timedOut": false,
+  "proxyRequests": 3,
+  "targetRequests": 0,
+  "status": 503,
+  "withoutChildLoopbackBypass": true
+}

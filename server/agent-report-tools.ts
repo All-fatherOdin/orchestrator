@@ -251,6 +251,15 @@ export class ReportToolService {
   }
 }
 
+export function reportLoopbackEnvironment(environment: NodeJS.ProcessEnv): { NO_PROXY: string; no_proxy: string } {
+  const entries = [environment.NO_PROXY, environment.no_proxy].filter((value): value is string => value !== undefined && value !== "");
+  const inherited = entries.join(",");
+  const hosts = new Set(inherited.split(",").map(value => value.trim().toLowerCase()));
+  const additions = ["127.0.0.1", "localhost"].filter(host => !hosts.has(host));
+  const bypass = [inherited, ...additions].filter(Boolean).join(",");
+  return { NO_PROXY: bypass, no_proxy: bypass };
+}
+
 export async function startReportMcp(service: ReportToolService) {
   const token = randomBytes(32).toString("hex"); let requests = 0;
   const server = createServer(async (request, response) => {
@@ -288,7 +297,7 @@ export async function startReportMcp(service: ReportToolService) {
   let closePromise: Promise<void> | undefined;
   return {
     args: ["-c", config],
-    environment: { ORCHESTRATOR_REPORT_MCP_TOKEN: token },
+    environment: { ...reportLoopbackEnvironment(process.env), ORCHESTRATOR_REPORT_MCP_TOKEN: token },
     redact(message: string) { for (const value of privateValues) message = message.replaceAll(value, "[private MCP connection]"); return message; },
     close() { closePromise ??= (async () => { service.revoke(); server.closeAllConnections(); if (server.listening) await new Promise<void>(done => server.close(() => done())); await service.close(); })(); return closePromise; },
   };
