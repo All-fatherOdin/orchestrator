@@ -21,12 +21,36 @@ test("structured-output-v1 closed envelope rejects malformed/ambiguous/oversize/
 });
 test("structured-output-v1 terminal process evidence cannot be compensated by valid JSON", () => {
   for (const lines of [[], ['{"type":"turn.failed"}'], ['{"type":"error"}', '{"type":"turn.completed"}'], ['{"type":"turn.completed"}', '{"type":"turn.completed"}'], ['{"type":']]) {
-    const events = reportEvents(); lines.forEach(events.consume); assert.throws(() => events.assertSuccess(0, false, false));
+    const events = reportEvents(); lines.forEach(line => events.consume(line)); assert.throws(() => events.assertSuccess(0, false, false));
   }
   for (const result of [[1, false, false], [0, true, false], [0, false, true]] as const) {
     const events = reportEvents(); events.consume('{"type":"turn.completed"}'); assert.throws(() => events.assertSuccess(result[0], result[1], result[2]));
   }
   const events = reportEvents(); events.consume('{"type":"turn.completed"}'); events.assertSuccess(0, false, false);
+});
+test("terminal diagnostics retain bounded exact events and process failure causes", () => {
+  const events = reportEvents();
+  const error = JSON.stringify({ type: "error", message: "transport failed" });
+  events.consume(error, "stderr"); events.consume('{"type":"turn.completed"}');
+  assert.deepEqual(events.snapshot().counts, { lines: 2, completed: 1, failed: 0, errors: 1, transportRetries: 0, malformed: 0, afterTerminal: 0 });
+  assert.equal(events.snapshot().evidence[0].raw, error);
+  assert.equal(events.snapshot().evidence[0].source, "stderr");
+  assert.throws(() => events.assertSuccess(0, false, false), /"errors":1/);
+  for (let i = 0; i < 20; i++) events.consume(JSON.stringify({ type: "error", message: "x".repeat(5000) }));
+  const snapshot = events.snapshot(); assert.equal(snapshot.evidence.length, 16);
+  assert.equal(snapshot.evidence[2].raw, undefined); assert.equal(snapshot.evidence[2].sha256.length, 64);
+  snapshot.counts.errors = 0; assert.equal(events.snapshot().counts.errors, 21);
+});
+test("only finite increasing observed WebSocket reconnect diagnostics can precede terminal success", () => {
+  const retry = (n: string, changes = {}) => JSON.stringify({ type: "error", message: `Reconnecting... ${n}/5 (unexpected status 403 Forbidden: <html>, url: wss://chatgpt.com/backend-api/codex/responses, cf-ray: a464142dfabde955-DME)`, ...changes });
+  const complete = '{"type":"turn.completed"}';
+  const recovered = reportEvents(); for (const n of ["2", "3", "4", "5"]) recovered.consume(retry(n));
+  recovered.consume(complete); recovered.assertSuccess(0, false, false);
+  assert.equal(recovered.snapshot().counts.transportRetries, 4); assert.equal(recovered.snapshot().counts.errors, 4);
+  for (const lines of [[retry("6"), complete], [retry("1"), retry("1"), complete], [retry("3"), retry("2"), complete], [retry("2"), '{"type":"error"}', complete], [retry("2"), '{"type":"turn.failed"}', complete], [complete, retry("2")], [retry("2")], [retry("2", { message: "Reconnecting... unknown" }), complete]]) {
+    const e = reportEvents(); lines.forEach(line => e.consume(line)); assert.throws(() => e.assertSuccess(0, false, false));
+  }
+  for (const result of [[1, false, false], [0, true, false], [0, false, true]] as const) assert.throws(() => recovered.assertSuccess(result[0], result[1], result[2]));
 });
 test("structured-output-v1 bounded raw reads and receipt replay bind exact invocation and hashes", async () => {
   const root = await mkdtemp(join(tmpdir(), "report-test-")), raw = join(root, "raw"), schema = join(root, "schema"), receipt = join(root, "receipt");

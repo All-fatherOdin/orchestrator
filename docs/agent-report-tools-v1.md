@@ -1,5 +1,16 @@
 # Invocation-local GIS report tools v1
 
+Each provider invocation retains `terminal-evidence.json` before acceptance,
+binding the actual process exit code, timeout/cancellation flags, event counters
+and bounded terminal/error events (larger lines retain byte counts and hashes).
+MCP credentials are redacted. A successful submitted report cannot replace
+successful CLI termination. The observed CLI `Reconnecting... N/5` diagnostics
+for HTTP 403 on the exact Codex WebSocket endpoint may precede success only with
+strictly increasing ordinals 1–5, at most five diagnostics, exit code zero and
+one `turn.completed`. Unknown errors, repeated/regressing ordinals,
+`turn.failed`, malformed or post-terminal events, timeout and cancellation still
+reject the invocation. This does not retry an Orchestrator task or reset budgets.
+
 On Windows, Electron's embedded Node 22 can report different device IDs for
 `lstat` and an open file handle. Evidence identity is therefore compared between
 two open handles using bigint metadata. Content hashes and reparse-point checks

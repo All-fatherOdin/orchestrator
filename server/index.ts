@@ -9229,6 +9229,8 @@ async function prepareAgentReport(run: Run, task: Task, phase: ReportIdentity["p
 }
 async function finishAgentReport(run: Run, task: Task, report: NonNullable<Awaited<ReturnType<typeof prepareAgentReport>>>, code: number | null, timedOut: boolean) {
   try {
+  const terminal = JSON.stringify({ identity: report.identity, code, timedOut, cancelled: isCancelled(run) || skippedTaskIds.has(task.id), ...report.events.snapshot() });
+  await writeFile(join(report.paths.root, "terminal-evidence.json"), (report.tools ? report.tools.mcp.redact(terminal) : terminal) + "\n", { flag: "wx" });
   report.events.assertSuccess(code, timedOut, isCancelled(run) || skippedTaskIds.has(task.id));
   if (report.tools) assertReportToolCompletion(await readReport(join(report.paths.root, "cli-final.json")));
   if (process.env.ORCHESTRATOR_TEST === "1") await gisLifecycleTestBoundary?.("agent-report-before-receipt", run, task.id);
@@ -9355,7 +9357,7 @@ async function correctTask(run: Run, task: Task, failedVerification?: Verificati
     );
   });
   const stderrDecoder = createUtf8LineDecoder((line) => {
-    if (line.trim().startsWith("{")) report?.events.consume(line);
+    if (line.trim().startsWith("{")) report?.events.consume(line, "stderr");
     recordUsage(
       task,
       line.trim(),
@@ -9734,7 +9736,7 @@ async function executeTaskAgent(run: Run, task: Task, executionPath: string, pro
       });
     };
     const stdoutDecoder = createUtf8LineDecoder(line => { report?.events.consume(line); consumeLine(line); });
-    const stderrDecoder = createUtf8LineDecoder(line => { if (line.trim().startsWith("{")) report?.events.consume(line); consumeLine(line); });
+    const stderrDecoder = createUtf8LineDecoder(line => { if (line.trim().startsWith("{")) report?.events.consume(line, "stderr"); consumeLine(line); });
     child.stdout?.on("data", stdoutDecoder.write);
     child.stderr?.on("data", stderrDecoder.write);
     const result = await waitForProcess(

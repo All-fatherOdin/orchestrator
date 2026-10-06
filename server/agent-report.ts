@@ -84,17 +84,39 @@ export async function readReport(path: string) {
 }
 export function reportEvents() {
   let success = false, failure = false;
+  let lastReconnect = 0;
+  const counts = { lines: 0, completed: 0, failed: 0, errors: 0, transportRetries: 0, malformed: 0, afterTerminal: 0 };
+  const evidence: Array<{ source: string; type: string; bytes: number; sha256: string; raw?: string }> = [];
   return {
-    consume(line: string) {
+    consume(line: string, source = "stdout") {
+      counts.lines++;
       try {
-        const event = uniqueJson(line) as { type?: string };
-        if (success) failure = true;
-        if (event.type === "turn.completed") success = true;
-        if (event.type === "turn.failed" || event.type === "error") failure = true;
-      } catch { failure = true; }
+        const event = uniqueJson(line) as { type?: string; message?: unknown };
+        if (success) { failure = true; counts.afterTerminal++; }
+        if (event.type === "turn.completed") { success = true; counts.completed++; }
+        if (event.type === "turn.failed") { failure = true; counts.failed++; }
+        if (event.type === "error") {
+          counts.errors++;
+          // This CLI emits nonterminal reconnect diagnostics as top-level errors.
+          // Accept only the observed finite, increasing 403 WebSocket sequence;
+          // the process must still end successfully with one terminal completion.
+          const reconnect = typeof event.message === "string" && /^Reconnecting\.\.\. ([1-5])\/5 \(unexpected status 403 Forbidden:[\s\S]*, url: wss:\/\/chatgpt\.com\/backend-api\/codex\/responses, cf-ray: [A-Za-z0-9-]+\)$/u.exec(event.message);
+          const ordinal = reconnect ? Number(reconnect[1]) : 0;
+          if (!success && ordinal > lastReconnect && counts.transportRetries < 5) {
+            lastReconnect = ordinal; counts.transportRetries++;
+          } else failure = true;
+        }
+        if (success || event.type === "turn.failed" || event.type === "error") {
+          if (evidence.length < 16) evidence.push({ source, type: typeof event.type === "string" ? event.type.slice(0, 128) : "unknown", bytes: Buffer.byteLength(line), sha256: reportSha(line), ...(Buffer.byteLength(line) <= 4096 ? { raw: line } : {}) });
+        }
+      } catch {
+        failure = true; counts.malformed++;
+        if (evidence.length < 16) evidence.push({ source, type: "malformed", bytes: Buffer.byteLength(line), sha256: reportSha(line) });
+      }
     },
+    snapshot() { return { success, failure, counts: { ...counts }, evidence: evidence.map(e => ({ ...e })) }; },
     assertSuccess(code: number | null, timedOut: boolean, cancelled: boolean) {
-      assert.ok(code === 0 && !timedOut && !cancelled && success && !failure, "Structured report lacks successful current provider terminal evidence");
+      assert.ok(code === 0 && !timedOut && !cancelled && success && !failure, `Structured report lacks successful current provider terminal evidence: ${JSON.stringify({ code, timedOut, cancelled, success, failure, ...counts })}`);
     },
   };
 }
