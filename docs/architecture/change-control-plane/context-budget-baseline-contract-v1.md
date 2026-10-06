@@ -481,3 +481,52 @@ The separate completion review passed with no unresolved or deferred finding:
 S2 completion does not authorize S3-S6, a baseline revision, automatic queue
 gating, hard token enforcement, context truncation, or progressive indexing.
 The next dependent Stage 1 step is an owner-reviewed S3 contract.
+
+## Baseline revision 2 — 2026-10-06
+
+Lifecycle: current candidate prepared under the owner's explicit request to fix
+Context Budget after committing reviewer Stage 3 (`c43fa02`). Revision 1 above
+is historical verification evidence, not a measurement of today's sources.
+
+The accepted-candidate test failed because `AGENTS.md`, `docs/NEXT_STEPS.md`,
+and `docs/context_packs/current_status.md` exceeded revision 1's byte envelopes.
+Revision 2 remeasures the same seven ordered sources from their exact current
+UTF-8 bytes, including Windows line endings, and the production stable-prefix
+compiler. It preserves source classes, profile selection, count limits, hard
+mode, measurement policy, and unsupported host boundaries. Each byte limit is
+`ceil(current byte count * 1.25)`; each advisory estimated-token limit is
+`ceil(current estimated token count * 1.25)`, retaining revision 1's 25% reserve.
+The existing domain constructor recalculates both canonical hashes. No context
+is removed and the read-only reporting CLI does not refresh the baseline.
+
+Verification for this candidate is recorded below. While the
+baseline is uncommitted, the CLI must still reject its overlapping dirty path;
+the focused candidate test evaluates hard envelopes separately from that Git
+publication fence. This revision does not claim a clean published report.
+
+Verification on the current source and revision 2 candidate:
+
+- `npm.cmd run test:context-budget`: 10/10 passed, including the unchanged
+  current-candidate hard-envelope assertion and fail-closed negative cases.
+- `npm.cmd run check` and `npm.cmd run build`: passed; Vite retained its existing
+  advisory about a chunk larger than 500 kB.
+- `scripts/ai_context_helper.py --root . smoke-check --format json`, using
+  `C:/Users/a.lozovoy/AppData/Local/Programs/Python/Python313/python.exe`: 3/3 passed.
+- `npm.cmd run context-budget:report`: expected exit 1 for the uncommitted
+  baseline, with `CONTEXT_BUDGET_SOURCE_CHANGED`; no byte-envelope failure.
+- Full `npm.cmd test`: main suite 658 tests, 656 passed, 1 failed, 1 live opt-in
+  test skipped; both isolated verification suites passed 1/1. Context Budget
+  and the Stage 3 structured-review tests passed in this run. The full gate is
+  still red because `WorkspaceAttemptV1 Windows production cleanup retains
+  dirty/contended artifacts and rejects junction escapes` raised
+  `WorkspaceLifecycleErrorV1` with code `identity`: its workspace was not a Git
+  repository at `server/index.test.ts:16212`. Cleanup implementation is outside
+  this baseline repair; no expectations or verification gates were weakened.
+  Exact local diagnostic: `queues/context-budget-repair-20261006/full-regression.log`.
+- `git diff --check`: passed.
+
+Revision 2 remains a reviewable, uncommitted repository change. Historical
+revision 1 and its verification remain available in Git. This repair changes
+only this contract's evidence and the versioned baseline; authoritative
+instructions, selected context sources, runtime code, tests and Project Map
+are unchanged.
