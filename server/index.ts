@@ -9696,6 +9696,24 @@ export async function assertTaskReviewArtifacts(run: Run, task: Task) {
   await assertReviewArtifacts(await taskExecutionPathV1(run, task), task.reviewArtifacts!, task.reviewArtifactEvidence);
 }
 
+/** Structured recovery never inherits target authority from a legacy source. */
+export async function structuredRecoveryReviewTargets(run: Run, task: Task): Promise<number[]> {
+  assert.equal(task.reviewProtocol, "invocation-mcp-v1", "REVIEW_RECOVERY_SOURCE_PROTOCOL");
+  assert.equal(task.authorizationEvidence?.reviewProtocol, task.reviewProtocol, "REVIEW_RECOVERY_SOURCE_PROTOCOL");
+  assert.ok(task.authorizationEvidence?.enabled && task.authorizationEvidence.decision === "authorized", "REVIEW_RECOVERY_SOURCE_AUTHORIZATION");
+  assert.equal(task.reviewStatus, "changes_requested", "REVIEW_RECOVERY_SOURCE_VERDICT");
+  await assertTaskReviewArtifacts(run, task);
+  const receipt = task.structuredReviews?.at(-1);
+  assert.ok(receipt, "REVIEW_RECOVERY_SOURCE_RECEIPT");
+  assert.deepEqual(receipt.identity, task.structuredReviewInvocations?.at(-1), "REVIEW_RECOVERY_SOURCE_CURRENT_RECEIPT");
+  const verdict = await replayStructuredReview(structuredReviewRoot(run, receipt.identity), receipt);
+  assert.equal(verdict.status, "changes_requested", "REVIEW_RECOVERY_SOURCE_VERDICT");
+  assert.ok(verdict.remarks.length && verdict.remarks.every(remark => remark.responseIndex !== null), "REVIEW_RECOVERY_SOURCE_TARGETS");
+  const targets = verdict.remarks.map(remark => remark.responseIndex!).sort((a, b) => a - b);
+  assert.deepEqual(task.reviewTargets, targets, "REVIEW_RECOVERY_SOURCE_TARGETS");
+  return targets;
+}
+
 export async function runTaskVerification(run: Run, task: Task) {
   task.reviewArtifactEvidence = undefined;
   const evidence = task.authorizationEvidence;
@@ -10022,11 +10040,8 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
       }
       const file = join(runsDirectory, source.id, "run.json");
       analysisSource = { file, sha256: gisSha(await readFile(file)) };
-      if (task.reviewProtocol) {
-        await assertTaskReviewArtifacts(source, sourceTask);
-        assert.ok(sourceTask.reviewTargets?.length, "Structured recovery targets missing");
-      }
-      retainedAnalysis = { feedback: sourceTask.reviewOutput!, responses, source: { runId: source.id, taskId: sourceTask.id, sha256: analysisSource.sha256 }, ...(task.reviewProtocol ? { correctionTargets: sourceTask.reviewTargets } : {}) };
+      const correctionTargets = task.reviewProtocol ? await structuredRecoveryReviewTargets(source, sourceTask) : undefined;
+      retainedAnalysis = { feedback: sourceTask.reviewOutput!, responses, source: { runId: source.id, taskId: sourceTask.id, sha256: analysisSource.sha256 }, ...(correctionTargets ? { correctionTargets } : {}) };
     } else {
       throw new Error("GIS recovery requires failed verified changes_requested source analysis");
     }

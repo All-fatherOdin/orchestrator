@@ -1,6 +1,8 @@
 # Structured independent review v1
 
-Status: implemented in source on 2026-10-06; whole-change acceptance blocked.
+Status: source accepted on 2026-10-06; P1/P2 fixed, independent source review approved; full regression passed.
+Current acceptance: [fixes and verification](agent-review-stage3-fixes-20261006.md).
+Historical rejection: [initial source review](agent-review-stage3-acceptance-20261006.md).
 Navigation: [Stage 3 plan](agent-review-stage3-plan.md).
 Evidence: current server implementation/tests and the exact historical records
 listed in that plan. Both installed API and canonical run muwmmp32-zsowq were
@@ -92,7 +94,7 @@ synthetic CLI gate takes one absolute CLI binary path and writes new private
 evidence under queues/agent-review-stage3-20261006/. Installed smoke,
 live pilot, deployment and commit/push are outside this slice.
 
-## Verification snapshot, 2026-10-06
+## Historical implementation verification snapshot, 2026-10-06
 
 Final source checks: `npm run check`, `npm run build`, and `git diff --check`
 passed. Build retains the existing Vite chunk-size advisory.

@@ -9,7 +9,7 @@ import { reportSchema } from "./agent-report.ts";
 process.env.ORCHESTRATOR_TEST = "1";
 const data = mkdtempSync(join(tmpdir(), "gis-run-records-"));
 process.env.ORCHESTRATOR_DATA_DIR = data;
-const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence } = await import("./index.ts");
+const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence, structuredRecoveryReviewTargets } = await import("./index.ts");
 
 function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: string) {
   const correctionMode = mode.startsWith("correction");
@@ -90,6 +90,116 @@ function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: stri
   const queue = validateQueue({ project: { path: project, approvedApplyContracts: [approval] }, limits: { maxParallelTasks: 1, maxTaskRetries: 0 }, review: { enabled: true, maxCorrections: correctionMode ? 2 : 0 }, git: { checkpointCommits: false }, tasks: [{ key: "one", title: "GIS", prompt: "Analyze exact prepared materials.", authoringContract: { contractType: "QueueAuthoringContractV1", contractVersion: "1.0" }, executionKind: { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "ordinary" }, runtimeConstraints: ["Pinned fixture runtime; native process timeout 300000ms and workspace-root TEMP.", correctionMode ? "At most two analysis corrections; preserve rejected artifacts and rerun verification and independent review." : "No executor retries/corrections; same-run bounded continuation."], isolatedArtifacts, allowedPaths, impactPaths, verificationCommands, ...(budget ? { executionBudget: { contractType: "ExecutionBudgetPolicyV1", contractVersion: "1.0", budgetId: "process-correction-budget", maxProviderInvocations: budget === "deny" ? 2 : 4, phaseCaps: budget === "deny" ? { executor: 1, reviewer: 1, correction: 0 } : { executor: 1, reviewer: 2, correction: 1 } } } : {}), authorization: { enabled: true, ...Object.fromEntries(["approvalId", "intent", "technicalPermission", "sideEffectRisk"].map(k => [k, approval[k as keyof typeof approval]])) } }, { key: "accept", dependsOn: ["one"], title: "Acceptance", prompt: "Review exact predecessor.", allowedPaths: [], wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["one"] }, authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } }] });
   return { root, project, state, runPath, provider, queue, checker, manifest };
 }
+
+// Five separate scopes make exact [3,4] correction and three byte-preserved
+// siblings observable through the production process and persisted restart.
+function structuredCorrectionFixture() {
+  const f = fixture("correction", undefined, "tools-valid");
+  const config = f.queue.tasks[0].isolatedArtifacts!.processPackage!.configuration;
+  const manifest = JSON.parse(readFileSync(f.manifest, "utf8"));
+  const names = ["one.ts", "two.ts", "three.ts", "four.ts", "five.ts"];
+  const native = join(f.project, "runtime/quality-catch-up-orchestrator.mjs");
+  let script = readFileSync(native, "utf8");
+  script = script.replace("files:[{path:'one.ts',blobSha:'1'.repeat(40)},{path:'two.ts',blobSha:'2'.repeat(40)}]", `files:${JSON.stringify(names.map((path, i) => ({ path, blobSha: String(i + 1).repeat(40) })))}`);
+  script = script.replace("before.completed+2", "before.completed+5");
+  script = script.replace("{status:'success',completed:after.completed}", "{status:'success',completed:after.completed,checks:[{status:'passed'}],verification:{status:'passed',verificationLevel:'fixture-native-finalizer'}}");
+  writeFileSync(native, script);
+  manifest.runtimeEvidence.find((entry: { path: string }) => entry.path === "runtime/quality-catch-up-orchestrator.mjs").sha256 = gisSha(readFileSync(native));
+  writeFileSync(f.manifest, JSON.stringify(manifest));
+  config.manifest.sha256 = gisSha(readFileSync(f.manifest));
+  config.scopes = names.map((primaryFile, i) => {
+    const path = join(f.project, `contracts/structured-scope-${i}.json`);
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, profile: "security-risk", headCommit: "a".repeat(40), reviewUnits: [{ primaryFile }] }));
+    return { path, sha256: gisSha(readFileSync(path)) };
+  });
+  writeFileSync(f.checker, readFileSync(f.checker, "utf8").replace(".completed,2)", ".completed,5)"));
+  config.gates[0].sha256 = gisSha(readFileSync(f.checker));
+  const seen = join(f.root, "structured-review-seen");
+  const reviewer = `
+if(p.startsWith('Independently review the host-owned immutable evidence.')){
+  const c=a.find(x=>x.startsWith('mcp_servers.orchestrator_review='));assert.ok(c);
+  const url=/url="([^"]+)"/.exec(c)[1];
+  const call=async(name,args)=>{const r=await(await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+process.env.ORCHESTRATOR_REPORT_MCP_TOKEN,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})})).json();assert.equal(r.result.isError,undefined,JSON.stringify(r));return JSON.parse(r.result.content[0].text)};
+  const identity=JSON.parse(p.split('\\n').find(l=>l.startsWith('Identity: ')).slice(10));
+  const snapshotSha256=p.split('\\n').find(l=>l.startsWith('Snapshot SHA256: ')).slice(17);
+  const evidence=JSON.parse(p.split('\\n').find(l=>l.startsWith('Evidence: ')).slice(10));
+  const first=!fs.existsSync(${JSON.stringify(seen)}),remarks=[];
+  await call('read_evidence',{evidenceId:'context',startLine:1,endLine:200});
+  if(first)for(const index of [3,4]){const e=evidence.find(e=>e.responseIndex===index);assert.ok(e);await call('read_evidence',{evidenceId:e.id,startLine:1,endLine:200});remarks.push({evidenceId:e.id,field:'reviewedUnits[0].summaryRu',category:'correctness',message:'Correct the supported fixture factual error.',responseIndex:index})}
+  const payloadJson=JSON.stringify({protocolVersion:'invocation-mcp-v1',invocationId:identity.invocationId,snapshotSha256,status:first?'changes_requested':'approved',reason:first?'Correct responses 3 and 4.':'',remarks});
+  await call('submit_verdict',{payloadJson});fs.writeFileSync(${JSON.stringify(seen)},'seen');
+  fs.writeFileSync(out,JSON.stringify({outcome:'completed',reason:''}));console.log(JSON.stringify({type:'turn.completed'}));return;
+}
+`;
+  let provider = readFileSync(f.provider, "utf8");
+  provider = provider.replace("let p='';", "if(process.argv.includes('list')){console.log('[]');process.exit(0)}let p='';");
+  provider = provider.replace("if(p.startsWith('Review only'))", reviewer + "if(p.startsWith('Review only'))");
+  // Whole-change's legacy reviewer approves; only the structured writer emits
+  // changes_requested, so prose cannot accidentally supply its targets.
+  provider = provider.replace(/if\(p\.startsWith\('Review only'\)\)\{.*?fs\.writeFileSync\(out,'VERDICT: APPROVED'\);return;\}/u, "if(p.startsWith('Review only')){fs.writeFileSync(out,'VERDICT: APPROVED');return;}");
+  writeFileSync(f.provider, provider);
+  f.queue.tasks[0].reviewProtocol = "invocation-mcp-v1";
+  f.queue.project.approvedApplyContracts![0].reviewProtocol = "invocation-mcp-v1";
+  f.queue.project.approvedApplyContracts![0].isolatedArtifacts = structuredClone(f.queue.tasks[0].isolatedArtifacts);
+  f.queue = validateQueue(f.queue);
+  return f;
+}
+
+test("structured GIS reviewer correction survives JSON restart and rejects forged targets and receipts", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = structuredCorrectionFixture(); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    let stopped = false;
+    configureGisLifecycleTestBoundary(async name => { if (name === "finalized" && !stopped) { stopped = true; throw Error("controlled interruption before structured review"); } });
+    let run = createRun(f.queue); await executeQueue(run); configureGisLifecycleTestBoundary();
+    assert.equal(run.tasks[0].processProgress!.phase, "finalized");
+    const persisted = await loadRun(run.id); assert.ok(persisted); const resumed = resumeRun(JSON.parse(JSON.stringify(persisted))); assert.ok(resumed);
+    run = resumed;
+    // Interrupt after the structured correction has finalized, so restart must
+    // replay the rejected verdict and its correction history before approval.
+    configureGisLifecycleTestBoundary(async (name, active) => { if (name === "finalized" && active.tasks[0].processProgress!.attempts.executor === 2) throw Error("controlled interruption after structured patch"); });
+    await executeQueue(run); configureGisLifecycleTestBoundary();
+    const task = run.tasks[0], progress = task.processProgress!;
+    assert.equal(progress.phase, "finalized", task.log.join("\n")); assert.equal(progress.attempts.executor, 2);
+    assert.deepEqual(task.reviewTargets, [3, 4]);
+    const rejected = progress.history.find(h => h.stage === "review")!.receipt as { status: typeof task.reviewStatus; output: string };
+    assert.equal(rejected.status, "changes_requested");
+    const sourceView = JSON.parse(JSON.stringify(run));
+    sourceView.tasks[0].reviewStatus = rejected.status;
+    sourceView.tasks[0].reviewOutput = rejected.output;
+    assert.deepEqual(await structuredRecoveryReviewTargets(sourceView, sourceView.tasks[0]), [3, 4]);
+    const archived = (progress.history.find(h => h.stage === "analysis-correction")!.receipt as { archived: string; correctionTargets: number[] });
+    assert.deepEqual(archived.correctionTargets, [3, 4]);
+    const staged = join(data, "runs", run.id, `${task.id}-isolated/workspace`, f.runPath);
+    for (const i of [0, 1, 2]) assert.deepEqual(readFileSync(join(staged, `response-${i}.json`)), readFileSync(join(archived.archived, f.runPath, `response-${i}.json`)));
+    for (const i of [3, 4]) assert.match(JSON.parse(readFileSync(join(staged, `response-${i}.json`), "utf8")).reviewedUnits[0].summaryRu, /^Corrected fixture/);
+    const saved = await loadRun(run.id); assert.ok(saved);
+    for (const mutate of [
+      (t: typeof task) => { t.reviewProtocol = undefined; t.authorizationEvidence!.reviewProtocol = undefined; t.structuredReviews = undefined; },
+      (t: typeof task) => { t.structuredReviews = []; },
+      (t: typeof task) => { t.structuredReviews![0].identity.taskId = "foreign"; },
+      (t: typeof task) => { t.structuredReviewInvocations!.push({ ...t.structuredReviewInvocations![0], invocationId: "b".repeat(32), ordinal: 2 }); },
+      (t: typeof task) => { t.reviewTargets = [0]; },
+    ]) {
+      const forged = JSON.parse(JSON.stringify(sourceView)); mutate(forged.tasks[0]);
+      await assert.rejects(structuredRecoveryReviewTargets(forged, forged.tasks[0]));
+    }
+    for (const { mutate, expected } of [
+      { mutate: (r: typeof run) => { (r.tasks[0].processProgress!.history.find(h => h.stage === "analysis-correction")!.receipt as { correctionTargets: number[] }).correctionTargets = [0]; }, expected: /Structured correction targets changed/u },
+      { mutate: (r: typeof run) => { r.tasks[0].structuredReviews![0].verdictSha256 = "f".repeat(64); }, expected: /'f{64}'/u },
+    ]) {
+      const forged = JSON.parse(JSON.stringify(saved)); mutate(forged); const candidate = resumeRun(forged); assert.ok(candidate); await executeQueue(candidate);
+      assert.equal(candidate.tasks[0].status, "failed"); assert.equal(candidate.tasks[0].processProgress!.attempts.executor, 2); assert.equal(candidate.tasks[0].processProgress!.attempts.publication, 0);
+      assert.ok(candidate.tasks[0].log.some(line => expected.test(line)), candidate.tasks[0].log.join("\n"));
+    }
+    const final = resumeRun(JSON.parse(JSON.stringify(saved))); assert.ok(final); await executeQueue(final);
+    assert.equal(final.status, "completed", final.tasks.map(t => t.log.join("\n")).join("\n"));
+    assert.equal(final.tasks[0].processProgress!.attempts.executor, 2); assert.equal(final.tasks[0].processProgress!.attempts.review, 2); assert.equal(final.tasks[0].processProgress!.attempts.publication, 1);
+    for (const i of [0, 1, 2]) assert.deepEqual(readFileSync(join(f.project, f.runPath, `response-${i}.json`)), readFileSync(join(archived.archived, f.runPath, `response-${i}.json`)));
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, 5);
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-baseline.json"), "utf8")).completed, 5);
+  } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
 
 test("GIS finding rules are supplied to analysis and rejected before native validation or response writes", async () => {
   const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
