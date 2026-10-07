@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ import { reportSchema } from "./agent-report.ts";
 process.env.ORCHESTRATOR_TEST = "1";
 const data = mkdtempSync(join(tmpdir(), "gis-run-records-"));
 process.env.ORCHESTRATOR_DATA_DIR = data;
-const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence, structuredRecoveryReviewTargets } = await import("./index.ts");
+const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence, structuredRecoveryReviewTargets, markRunReadyForLaunch, queueRecoveryContractChecks } = await import("./index.ts");
 
 function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: string) {
   const correctionMode = mode.startsWith("correction");
@@ -626,6 +626,43 @@ test("GIS explicit bounded recovery patches the canonical failed analysis withou
     assert.equal((p.history.find(h => h.stage === "analysis-patch")!.receipt as { source: { runId: string } }).source.runId, failed.id);
     assert.equal(failed.tasks[0].status, "failed");
   } finally { configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin; if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script; }
+});
+
+test("GIS prepared correction opt-in recovers once with source counters and immutable siblings", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = structuredCorrectionFixture(), failedOnce = join(f.root, "correction-failed-once");
+    const injection = `if(p.includes('GIS_CORRECTION_INPUT_V1: ')&&!fs.existsSync(${JSON.stringify(failedOnce)})){fs.writeFileSync(${JSON.stringify(failedOnce)},'failed');const message='unexpected status 403 Forbidden: blocked, url: https://chatgpt.com/backend-api/codex/responses, cf-ray: abc-FRA';console.log(JSON.stringify({type:'error',message}));console.log(JSON.stringify({type:'turn.failed',error:{message}}));process.exitCode=1;return;}`;
+    writeFileSync(f.provider, readFileSync(f.provider,"utf8").replace("if(p.startsWith('Independently review", injection + "if(p.startsWith('Independently review"));
+    process.env.CODEX_BIN=process.execPath;process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT=f.provider;
+    const source=createRun(f.queue);await executeQueue(source);const failed=source.tasks[0],p=failed.processProgress!;
+    assert.equal(p.phase,"prepared",failed.log.join("\n"));assert.equal(failed.status,"failed");assert.equal(p.attempts.executor,2);
+    const sourceFile=join(data,"runs",source.id,"run.json"),bytes=readFileSync(sourceFile),invocation=failed.agentToolInvocations!.at(-1)!;
+    const storage=join(data,"runs",source.id,`${failed.id}-agent-reports`,invocation.invocationId),q=structuredClone(f.queue);
+    const writer=q.tasks[0];writer.executionKind={contractType:"TaskExecutionKindV1",contractVersion:"1.0",kind:"recovery"};
+    writer.recovery={contractType:"RecoveryTaskBindingV1",contractVersion:"1.0",sourceRunId:source.id,sourceTaskId:failed.id,preparedCorrection:{contractType:"PreparedCorrectionRecoveryV1",contractVersion:"1.0",diagnosticCoverage:"retained-events-manual-v1",sourceSha256:gisSha(bytes),invocationId:invocation.invocationId,terminalSha256:gisSha(readFileSync(join(storage,"terminal-evidence.json"))),toolsStateSha256:gisSha(readFileSync(join(storage,"tools-state.json")))}};
+    writer.isolatedArtifacts!.processPackage!.configuration.stageAttempts={verification:1,review:1,publication:1,correction:0};
+    q.review.maxCorrections=0;
+    q.project.approvedApplyContracts![0].isolatedArtifacts=structuredClone(writer.isolatedArtifacts);
+    q.project.approvedApplyContracts![0].preparedCorrection=structuredClone(writer.recovery.preparedCorrection);
+    const empty=structuredClone(q);empty.tasks[0].verificationCommands=[];empty.project.verificationCommands=[];empty.project.approvedApplyContracts![0].verificationCommands=[];
+    assert.throws(()=>validateQueue(empty),/reversible local apply scope/);
+    const checks=await queueRecoveryContractChecks(empty);
+    assert.ok(checks.some(c=>!c.ok&&c.detail.includes('nonempty machine verification')));
+    const recovered=createRun(validateQueue(q));await markRunReadyForLaunch(recovered);
+    const claim=join(data,"runs",source.id,`${failed.id}-prepared-correction-recovery.json`),claimBytes=readFileSync(claim),reloaded=JSON.parse(JSON.stringify(recovered));
+    unlinkSync(claim);await assert.rejects(markRunReadyForLaunch(reloaded));assert.equal(existsSync(claim),false,'Replay cannot recreate a missing reservation');
+    writeFileSync(claim,claimBytes,{flag:'wx'});await markRunReadyForLaunch(reloaded);await executeQueue(reloaded);
+    Object.assign(recovered,reloaded);
+    assert.equal(recovered.status,"completed",recovered.tasks[0].log.join("\n"));
+    const rp=recovered.tasks[0].processProgress!;assert.deepEqual(rp.attempts,{executor:1,verification:1,review:1,publication:1});
+    const patch=rp.history.find(h=>h.stage==='analysis-patch')!.receipt as {sourceAttempts:unknown};assert.deepEqual(patch.sourceAttempts,p.attempts);
+    const archived=(p.history.find(h=>h.stage==='analysis-correction')!.receipt as {archived:string}).archived;
+    for(const i of [0,1,2])assert.deepEqual(readFileSync(join(f.project,f.runPath,`response-${i}.json`)),readFileSync(join(archived,f.runPath,`response-${i}.json`)));
+    assert.deepEqual(readFileSync(sourceFile),bytes,'Historical source must remain immutable');
+    await assert.rejects(markRunReadyForLaunch(createRun(validateQueue(q))),/already reserved/);
+    assert.equal(JSON.parse(readFileSync(join(f.project,f.state,"quality-coverage.json"),"utf8")).completed,5);
+  } finally { if(original.bin===undefined)delete process.env.CODEX_BIN;else process.env.CODEX_BIN=original.bin;if(original.script===undefined)delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT=original.script; }
 });
 
 test("GIS correction obeys a denied hard invocation budget without another analysis or publication", async () => {

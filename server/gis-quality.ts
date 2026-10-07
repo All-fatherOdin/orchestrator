@@ -9,7 +9,7 @@ import { readReport } from "./agent-report.ts";
 import type { ReportToolError } from "./agent-report-tools.ts";
 
 export type GisFile = { path: string; sha256: string };
-export type GisRetainedAnalysis = { feedback: string; responses: string[]; source: { runId: string; taskId: string; sha256: string }; correctionTargets?: number[] };
+export type GisRetainedAnalysis = { feedback: string; responses: string[]; source: { runId: string; taskId: string; sha256: string }; correctionTargets?: number[]; sourceAttempts?: ProcessProgress["attempts"] };
 type GisRuleBundle = {
   rules: string[];
   reviewUnits: Array<{ primary: { path: string }; completeForProfile: boolean; signals: Array<{ ruleId: string }> }>;
@@ -276,7 +276,7 @@ export async function createGisHandler(options: { contract: GisPackageV1; stage:
     assert.deepEqual([...primary].sort(), selection.files.map((f: { path: string }) => f.path).sort(), "Scope must cover exactly the selected cells");
     await checkpoint("prepared");
     await save();
-    const retained = context.feedback ? (() => {
+    const retained: GisRetainedAnalysis | undefined = context.feedback ? (() => {
       const correction = p!.history.filter(entry => entry.stage === "analysis-correction").at(-1)!.receipt as { archived: string; artifacts: Record<string, string> };
       const responses = c.scopes.map((_, i) => { const rel = `${b.run}/response-${i}.json`, file = join(correction.archived, rel); const bytes = readFileSync(file); assert.equal(gisSha(bytes), correction.artifacts[rel], "GIS retained response changed"); return bytes.toString("utf8"); });
       return { feedback: context.feedback, responses, source: { runId, taskId, sha256: gisSha(JSON.stringify(correction.artifacts)) }, ...(context.correctionTargets ? { correctionTargets: context.correctionTargets } : {}) };
@@ -354,7 +354,7 @@ export async function createGisHandler(options: { contract: GisPackageV1; stage:
         const rel = `${b.run}/response-${i}.json`; assert.ok(normalized(rel) && owns(allowedPaths, rel)); writeFileSync(join(root, rel), retained.responses[i], { flag: "wx" });
       } else { keys(answer.responses[i], ["reviewedUnits", "findings", "limitations"]); write(`${b.run}/response-${i}.json`, { schemaVersion: 1, profile: bundle.profile, bundleFingerprint: bundle.bundleFingerprint, ...answer.responses[i] }); }
     }
-    if (retained) p!.history.push({ stage: "analysis-patch", result: "applied", receipt: { source: retained.source, targets, preserved: c.scopes.flatMap((_, i) => targets.includes(i) ? [] : [{ index: i, sha256: gisSha(retained.responses[i]) }]) } });
+    if (retained) p!.history.push({ stage: "analysis-patch", result: "applied", receipt: { source: retained.source, ...(retained.sourceAttempts ? { sourceAttempts: retained.sourceAttempts } : {}), targets, preserved: c.scopes.flatMap((_, i) => targets.includes(i) ? [] : [{ index: i, sha256: gisSha(retained.responses[i]) }]) } });
     await checkpoint("analyzed");
     const manifest = json(join(run, "manifest.json")), profiles = [];
     for (let i = 0; i < c.scopes.length; i++) {

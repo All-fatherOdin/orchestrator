@@ -1,4 +1,5 @@
 import express from "express";
+import { validatePreparedCorrectionRecovery, preparedCorrectionSource, assertClosedCorrectionFailure, reservePreparedCorrection, assertPreparedCorrectionReservation, preparedCorrectionImplementation, type PreparedCorrectionRecoveryV1 } from "./gis-correction-recovery.ts";
 import { assertNextCorrectionReport, classifyReviewTerminalFailure, readReviewRecovery, writeReviewRecovery, type ReviewRecovery, type ReviewFailureKind, REVIEW_LIMITS, ReviewToolService, assertReviewTerminal, assertGisReviewInventory, assertReviewFinalizer, captureReviewSource, readReviewSource as readReviewSourceForHost, reviewProviderBoundary, reviewToolDefinitions, replayStructuredReview, structuredReviewImplementationIdentity, type ReviewSource, type ReviewSnapshot, type ReviewReceipt, type ReviewIdentity } from "./structured-review.ts";
 import { uniqueJson, readReport, reportSchemaBytes, reportEvents, persistReportReceipt, replayReport, reportImplementationIdentity, type ReportRequest, type ReportIdentity } from "./agent-report.ts";
 import { assertNoWindowsReparsePoints, ReportToolService, startReportMcp, reportToolsImplementationIdentity, reportToolCompletionSchemaBytes, assertReportToolCompletion } from "./agent-report-tools.ts";
@@ -340,6 +341,7 @@ export type RecoveryTaskBindingV1 = {
   sourceRunId: string;
   sourceTaskId: string;
   retainedDiff?: RecoveryRetainedDiffV1;
+  preparedCorrection?: PreparedCorrectionRecoveryV1;
 };
 export type TaskExecutionKindV1 = {
   contractType: "TaskExecutionKindV1";
@@ -368,6 +370,7 @@ export type TaskAuthorization = {
   approvalId?: string;
 };
 export type TaskApplyApprovalContract = {
+  preparedCorrection?: PreparedCorrectionRecoveryV1;
   isolatedArtifacts?: IsolatedArtifactsV1;
   reviewProtocol?: "invocation-mcp-v1";
   reviewTransportRecovery?: "once-v1";
@@ -1086,6 +1089,7 @@ type Task = ResolvedTask & {
   agentReports?: ReportIdentity[];
   agentToolInvocations?: ReportIdentity[];
   agentToolStateReceipts?: Array<{ invocationId: string; sha256: string }>;
+  preparedCorrectionReservation?: { runId: string; taskId: string; sourceSha256: string; invocationId: string };
   /** Ephemeral provider metadata; never truth, completion, approval, or durable memory. */
   providerRuntimeState?: ProviderRuntimeStateV1;
   /** Last bounded selection persisted before an executor continuation. */
@@ -2876,9 +2880,7 @@ function validateRecoveryTaskBindingV1(
     throw new Error(`${field} must be an exact RecoveryTaskBindingV1.`);
   const candidate = value as Record<string, unknown>;
   if (
-    Object.keys(candidate).sort().join(",") !== (candidate.retainedDiff === undefined
-      ? "contractType,contractVersion,sourceRunId,sourceTaskId"
-      : "contractType,contractVersion,retainedDiff,sourceRunId,sourceTaskId") ||
+    Object.keys(candidate).sort().join(",") !== ["contractType", "contractVersion", "sourceRunId", "sourceTaskId", ...(candidate.retainedDiff === undefined ? [] : ["retainedDiff"]), ...(candidate.preparedCorrection === undefined ? [] : ["preparedCorrection"])].sort().join(",") ||
     candidate.contractType !== RECOVERY_TASK_BINDING_V1.contractType ||
     candidate.contractVersion !== RECOVERY_TASK_BINDING_V1.contractVersion ||
     !isSafeRecoveryIdentifier(candidate.sourceRunId) ||
@@ -2890,6 +2892,7 @@ function validateRecoveryTaskBindingV1(
     contractVersion: RECOVERY_TASK_BINDING_V1.contractVersion,
     sourceRunId: candidate.sourceRunId,
     sourceTaskId: candidate.sourceTaskId,
+    ...(candidate.preparedCorrection !== undefined ? { preparedCorrection: validatePreparedCorrectionRecovery(candidate.preparedCorrection) } : {}),
     ...(candidate.retainedDiff !== undefined
       ? { retainedDiff: validateRecoveryRetainedDiffV1(candidate.retainedDiff) }
       : {}),
@@ -3646,6 +3649,7 @@ function matchingApplyContract(
   if (contractBindsAuthoringV1 !== Boolean(scope.authoringContract))
     return undefined;
   const taskApprovalScope = {
+    ...(scope.recovery?.preparedCorrection ? { preparedCorrection: scope.recovery.preparedCorrection } : {}),
     ...(scope.isolatedArtifacts ? { isolatedArtifacts: scope.isolatedArtifacts } : {}),
     ...(scope.reviewProtocol ? { reviewProtocol: scope.reviewProtocol } : {}),
     ...(scope.reviewTransportRecovery ? { reviewTransportRecovery: scope.reviewTransportRecovery } : {}),
@@ -3665,6 +3669,7 @@ function matchingApplyContract(
     verificationCommands: scope.verificationCommands,
   };
   const contractScope = {
+    ...(contract.preparedCorrection ? { preparedCorrection: contract.preparedCorrection } : {}),
     ...(contract.isolatedArtifacts ? { isolatedArtifacts: contract.isolatedArtifacts } : {}),
     ...(contract.reviewProtocol ? { reviewProtocol: contract.reviewProtocol } : {}),
     ...(contract.reviewTransportRecovery ? { reviewTransportRecovery: contract.reviewTransportRecovery } : {}),
@@ -4339,6 +4344,7 @@ export function validateQueue(value: unknown): {
       }
       approvedApplyContracts.push({
         ...contract,
+        ...(contract.preparedCorrection !== undefined ? { preparedCorrection: validatePreparedCorrectionRecovery(contract.preparedCorrection) } : {}),
         ...(contract.isolatedArtifacts ? { isolatedArtifacts: validateIsolatedArtifacts(contract.isolatedArtifacts) } : {}),
         ...(contract.reviewProtocol !== undefined ? { reviewProtocol: (() => { assert.equal(contract.reviewProtocol, "invocation-mcp-v1"); return contract.reviewProtocol; })() } : {}),
     ...(contract.reviewTransportRecovery !== undefined ? { reviewTransportRecovery: (() => { assert.equal(contract.reviewTransportRecovery, "once-v1"); assert.equal(contract.reviewProtocol, "invocation-mcp-v1"); return contract.reviewTransportRecovery; })() } : {}),
@@ -5827,6 +5833,17 @@ export async function queueRecoveryContractChecks(
             throw new Error("RECOVERY_RUNTIME_REQUIREMENTS_NARROWED");
         }
         await assertRetainedDiffSource(task, queue.project.path);
+        if (task.recovery?.preparedCorrection) {
+          assert.equal(queue.limits.maxTaskRetries, 0); assert.equal(task.maxRetries ?? 0, 0);
+          assert.equal(queue.review.enabled, true);
+          assert.equal(task.verificationMode ?? "required", "required");
+          assert.ok((queue.project.verificationCommands?.length ?? 0) + (task.verificationCommands?.length ?? 0) > 0, "GIS prepared recovery requires nonempty machine verification gates");
+          const configuration = selectProcessPackage(task.isolatedArtifacts)?.configuration;
+          assert.ok(configuration); assert.equal(configuration.agentTools, "invocation-mcp-v1");
+          assert.equal(configuration.analysisTransport, "structured-output-v1");
+          assert.deepEqual(configuration.stageAttempts, { verification: 1, review: 1, publication: 1, correction: 0 });
+          await readPreparedCorrectionRecovery(task, sourceTask);
+        }
         return {
           name: `${label} recovery contract`,
           ok: true,
@@ -5942,6 +5959,8 @@ export async function markRunReadyForLaunch(run: Run): Promise<Run> {
   // Never publish a running record that loadRun cannot authenticate. Existing
   // evidence must replay unchanged; launch preparation is not reauthorization.
   assertPersistedRunReplayContractsV1(run, branch);
+  for (const task of run.tasks) if (task.status !== "completed" && task.recovery?.preparedCorrection)
+    await reserveTaskPreparedCorrection(run, task);
   run.status = "running";
   run.startedAt ??= timestamp();
   run.pausedAt = undefined;
@@ -6111,6 +6130,11 @@ function assertPersistedRunReplayContractsV1(run: Run, branch?: string) {
   assertStoredRunAuthorizations(run, branch);
   const queue = rebuildPersistedQueueForReplayV1(run);
   assertRunExecutionBudgetsV1(run);
+  for (const task of run.tasks) {
+    if (!task.recovery?.preparedCorrection) assert.equal(task.preparedCorrectionReservation, undefined, "Unexpected prepared correction reservation evidence");
+    else if (run.startedAt || task.startedAt || taskProcessProgress(task) || task.preparedCorrectionReservation)
+      assert.deepEqual(task.preparedCorrectionReservation, preparedCorrectionOwner(run, task), "GIS prepared reservation evidence missing or changed");
+  }
   return queue;
 }
 
@@ -10237,6 +10261,76 @@ function taskProcessProgress(task: Task): ProcessProgress | undefined {
   if (task.gisProgress && task.processProgress) throw new Error("Ambiguous process progress");
   return task.processProgress ?? task.gisProgress;
 }
+function preparedCorrectionClaimPath(task: Pick<TaskInput, "recovery">) {
+  return join(runsDirectory, task.recovery!.sourceRunId, `${task.recovery!.sourceTaskId}-prepared-correction-recovery.json`);
+}
+function preparedCorrectionOwner(run: Run, task: Task) {
+  const binding = task.recovery!.preparedCorrection!;
+  return { runId: run.id, taskId: task.id, sourceSha256: binding.sourceSha256, invocationId: binding.invocationId };
+}
+async function reserveTaskPreparedCorrection(run: Run, task: Task) {
+  const file = preparedCorrectionClaimPath(task);
+  await assertPlainPath(runsDirectory, dirname(file));
+  if (existsSync(file)) await assertPlainPath(runsDirectory, file);
+  assert.equal(gisSha(await readFile(join(runsDirectory, task.recovery!.sourceRunId, "run.json"))), task.recovery!.preparedCorrection!.sourceSha256, "GIS prepared source record changed");
+  const owner = preparedCorrectionOwner(run, task);
+  if (task.preparedCorrectionReservation || run.startedAt || task.startedAt || taskProcessProgress(task)) {
+    assert.deepEqual(task.preparedCorrectionReservation, owner, "GIS prepared reservation evidence missing or changed");
+    await assertPreparedCorrectionReservation(file, owner);
+  } else {
+    await reservePreparedCorrection(file, owner);
+    task.preparedCorrectionReservation = owner;
+  }
+  await assertPlainPath(runsDirectory, file);
+}
+async function readPreparedCorrectionRecovery(task: Pick<TaskInput, "recovery" | "allowedPaths" | "isolatedArtifacts">, sourceTask: Task) {
+  const binding = validatePreparedCorrectionRecovery(task.recovery!.preparedCorrection);
+  const sourceFile = join(runsDirectory, task.recovery!.sourceRunId, "run.json");
+  assert.equal(gisSha(await readFile(sourceFile)), binding.sourceSha256, "GIS prepared source record changed");
+  assert.equal(sourceTask.status, "failed"); assert.ok(!sourceTask.reviewWriteViolations?.length);
+  const progress = taskProcessProgress(sourceTask)!;
+  assert.equal(progress.runId, task.recovery!.sourceRunId, "GIS prepared progress run identity changed");
+  assert.equal(progress.taskId, sourceTask.id, "GIS prepared progress task identity changed");
+  const receipt = preparedCorrectionSource(progress);
+  if (sourceTask.reviewProtocol) {
+    const correctionIndex = progress.history.lastIndexOf(progress.history.filter(h => h.stage === "analysis-correction").at(-1)!);
+    const review = progress.history.slice(0, correctionIndex).filter(h => h.stage === "review").at(-1)?.receipt as { structured?: ReviewReceipt };
+    assert.ok(review?.structured, "GIS prepared correction review receipt missing");
+    const source = { id: task.recovery!.sourceRunId, tasks: [sourceTask] } as Run;
+    const verdict = await replayStructuredReview(structuredReviewRoot(source, review.structured.identity), review.structured);
+    assert.equal(verdict.status, "changes_requested"); assert.ok(verdict.remarks.every(r => r.responseIndex !== null));
+    assert.equal(receipt.feedback, JSON.stringify(verdict));
+    assert.deepEqual(receipt.correctionTargets, verdict.remarks.map(r => r.responseIndex!).sort((a,b) => a-b));
+  }
+  assert.deepEqual(sourceTask.allowedPaths, task.allowedPaths, "GIS prepared recovery scope changed");
+  const configuration = selectProcessPackage(sourceTask.isolatedArtifacts)!.configuration;
+  assert.equal(progress.handler.name, "gis-audit"); assert.equal(progress.handler.version, "1");
+  assert.equal(progress.handler.configuration, gisSha(JSON.stringify(configuration)), "GIS prepared source configuration changed");
+  assert.equal(configuration.agentTools, "invocation-mcp-v1");
+  assert.equal(configuration.analysisTransport, "structured-output-v1");
+  const parent = join(runsDirectory, task.recovery!.sourceRunId, `${sourceTask.id}-isolated`);
+  assert.equal(resolve(receipt.archived), resolve(parent, `rejected-analysis-${progress.attempts.executor - 1}`));
+  await assertPlainPath(parent, receipt.archived);
+  const invocations = sourceTask.agentToolInvocations ?? [], reports = sourceTask.agentReports ?? [];
+  assert.equal(invocations.length, progress.attempts.executor); assert.equal(reports.length, invocations.length - 1);
+  const identity = invocations.at(-1)!;
+  assert.equal(identity.invocationId, binding.invocationId); assert.equal(identity.phase, "correction");
+  assert.equal(identity.mode, "patch"); assert.equal(identity.ordinal, progress.attempts.executor);
+  assert.equal(identity.transport, "invocation-mcp-v1");
+  const source = { id: task.recovery!.sourceRunId, tasks: [sourceTask] } as Run;
+  const paths = reportPaths(source, identity);
+  await assertPlainPath(paths.root, join(paths.root, "terminal-evidence.json"));
+  await assertPlainPath(paths.root, join(paths.root, "tools-state.json"));
+  assert.ok(!existsSync(paths.receipt), "Failed correction has a submitted report");
+  const fences = [{ file: join(paths.root, "terminal-evidence.json"), sha256: binding.terminalSha256 }, { file: join(paths.root, "tools-state.json"), sha256: binding.toolsStateSha256 }];
+  for (const e of fences) assert.equal(gisSha(await readFile(e.file)), e.sha256, "GIS prepared terminal evidence changed");
+  assertClosedCorrectionFailure(JSON.parse(await readFile(fences[0].file, "utf8")), JSON.parse(await readFile(fences[1].file, "utf8")), identity);
+  for (const [index, report] of reports.entries()) {
+    assert.deepEqual(report, invocations[index]);
+    const prior = reportPaths(source, report); await replayReport(prior.raw, prior.schema, prior.receipt, report);
+  }
+  return { ...receipt, fences };
+}
 function setTaskProcessProgress(task: Task, progress: ProcessProgress) {
   if (task.isolatedArtifacts?.gisPackage) task.gisProgress = progress;
   else task.processProgress = progress;
@@ -10255,19 +10349,21 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
   const executionPath = await taskExecutionPathV1(run, task);
   const stage = isolatedTaskStages.get(task)!;
   const contract = selectProcessPackage(task.isolatedArtifacts)!;
-  const implementations = [processRunnerImplementation, processImplementationIdentity, processRegistryIdentity, registeredProcessImplementation(contract), ...(contract.configuration.analysisTransport ? [reportImplementationIdentity] : []), ...(contract.configuration.agentTools ? [reportToolsImplementationIdentity] : []), ...(task.reviewProtocol ? [structuredReviewImplementationIdentity] : [])];
+  const implementations = [processRunnerImplementation, processImplementationIdentity, processRegistryIdentity, registeredProcessImplementation(contract), ...(task.recovery?.preparedCorrection ? [preparedCorrectionImplementation] : []), ...(contract.configuration.analysisTransport ? [reportImplementationIdentity] : []), ...(contract.configuration.agentTools ? [reportToolsImplementationIdentity] : []), ...(task.reviewProtocol ? [structuredReviewImplementationIdentity] : [])];
   let retainedAnalysis: import("./gis-quality.ts").GisRetainedAnalysis | undefined;
   let analysisSource: { file: string; sha256: string } | undefined;
+  let recoveryFences: Array<{ file: string; sha256: string }> = [];
   if (task.executionKind?.kind === "recovery" && task.recovery) {
     const source = await loadRun(task.recovery.sourceRunId);
     const sourceTask = source?.tasks.find(candidate => candidate.id === task.recovery!.sourceTaskId);
     const progress = sourceTask && taskProcessProgress(sourceTask);
-    if (source && sourceTask?.status === "failed" && sourceTask.reviewStatus === "changes_requested" && progress?.phase === "verified") {
+    const prepared = task.recovery.preparedCorrection && sourceTask ? await readPreparedCorrectionRecovery(task, sourceTask) : undefined;
+    if (source && sourceTask?.status === "failed" && (prepared || sourceTask.reviewStatus === "changes_requested" && progress?.phase === "verified")) {
       assert.ok(!sourceTask.reviewWriteViolations?.length, "GIS retained reviewer changed files");
       assert.equal(requiredVerificationEvidenceIssue(sourceTask), undefined, "GIS retained verification receipts are invalid");
       const sourceContract = selectProcessPackage(sourceTask.isolatedArtifacts)!;
       assert.deepEqual(sourceTask.allowedPaths, task.allowedPaths, "GIS retained analysis scope changed");
-      assert.deepEqual(progress.inputs, Object.fromEntries(stage.inputs), "GIS retained analysis inputs changed");
+      assert.deepEqual(progress!.inputs, Object.fromEntries(stage.inputs), "GIS retained analysis inputs changed");
       assert.equal(sourceContract.configuration.batchId, contract.configuration.batchId);
       assert.deepEqual(sourceContract.configuration.scopes, contract.configuration.scopes, "GIS retained analysis scopes changed");
       const manifestBytes = await readFile(sourceContract.configuration.manifest.path);
@@ -10275,17 +10371,19 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
       const manifest = JSON.parse(manifestBytes.toString("utf8"));
       const batch = manifest.batches.find((entry: { id: string }) => entry.id === contract.configuration.batchId);
       assert.ok(batch);
-      const parent = join(runsDirectory, source.id, `${sourceTask.id}-isolated`), sourceRoot = join(parent, "workspace");
+      const parent = join(runsDirectory, source.id, `${sourceTask.id}-isolated`), sourceRoot = prepared?.archived ?? join(parent, "workspace");
       const responses: string[] = [];
       for (let i = 0; i < contract.configuration.scopes.length; i++) {
         const relativePath = `${batch.run}/response-${i}.json`, file = resolve(sourceRoot, relativePath);
         await assertPlainPath(sourceRoot, file);
-        const bytes = await readFile(file); assert.equal(gisSha(bytes), progress.artifacts[relativePath], "GIS retained response changed"); responses.push(bytes.toString("utf8"));
+        const bytes = await readFile(file); assert.equal(gisSha(bytes), (prepared?.artifacts ?? progress!.artifacts)[relativePath], "GIS retained response changed"); responses.push(bytes.toString("utf8"));
+        recoveryFences.push({ file, sha256: gisSha(bytes) });
       }
       const file = join(runsDirectory, source.id, "run.json");
       analysisSource = { file, sha256: gisSha(await readFile(file)) };
-      const correctionTargets = task.reviewProtocol ? await structuredRecoveryReviewTargets(source, sourceTask) : undefined;
-      retainedAnalysis = { feedback: sourceTask.reviewOutput!, responses, source: { runId: source.id, taskId: sourceTask.id, sha256: analysisSource.sha256 }, ...(correctionTargets ? { correctionTargets } : {}) };
+      const correctionTargets = prepared?.correctionTargets ?? (task.reviewProtocol ? await structuredRecoveryReviewTargets(source, sourceTask) : undefined);
+      retainedAnalysis = { feedback: prepared?.feedback ?? sourceTask.reviewOutput!, responses, source: { runId: source.id, taskId: sourceTask.id, sha256: analysisSource.sha256 }, ...(prepared ? { sourceAttempts: structuredClone(progress!.attempts) } : {}), ...(correctionTargets ? { correctionTargets } : {}) };
+      if (prepared) recoveryFences.push(...prepared.fences);
     } else {
       throw new Error("GIS recovery requires failed verified changes_requested source analysis");
     }
@@ -10309,8 +10407,21 @@ async function executeProcessTaskLifecycle(run: Run, task: Task): Promise<Status
     if (isCancelled(run) || skippedTaskIds.has(task.id)) throw new Error("Process task interrupted by user.");
     await assertQueueRecoveryContracts(rebuildPersistedQueueForReplayV1(run));
     if (analysisSource && gisSha(await readFile(analysisSource.file)) !== analysisSource.sha256) throw new Error("GIS retained source record changed");
+    for (const e of recoveryFences) if (gisSha(await readFile(e.file)) !== e.sha256) throw new Error("GIS retained correction evidence changed");
+    if (task.recovery?.preparedCorrection) {
+      assert.deepEqual(task.preparedCorrectionReservation, preparedCorrectionOwner(run, task), "GIS prepared reservation evidence missing or changed");
+      await assertPlainPath(runsDirectory, preparedCorrectionClaimPath(task));
+      await assertPreparedCorrectionReservation(preparedCorrectionClaimPath(task), preparedCorrectionOwner(run, task));
+    }
     if ((await taskAuthorizationIdentityViolations(run, task)).length) throw new Error("Process authorization changed.");
     const currentProgress = taskProcessProgress(task);
+    if (task.recovery?.preparedCorrection && currentProgress && currentProgress.phase !== "prepared") {
+      const patches = currentProgress?.history.filter(h => h.stage === "analysis-patch") ?? [];
+      assert.equal(patches.length, 1, "GIS prepared recovery patch history missing");
+      const receipt = patches[0].receipt as { sourceAttempts: unknown; source: unknown };
+      assert.deepEqual(receipt.sourceAttempts, retainedAnalysis!.sourceAttempts, "GIS prepared source counters changed");
+      assert.deepEqual(receipt.source, retainedAnalysis!.source, "GIS prepared patch source changed");
+    }
     if (contract.configuration.analysisTransport && currentProgress && currentProgress.phase !== "prepared")
       assert.equal(task.agentReports?.length, currentProgress.attempts.executor, "Structured report receipts are missing");
     for (const [index, identity] of (task.agentReports ?? []).entries()) {

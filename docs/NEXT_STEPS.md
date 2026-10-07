@@ -24,6 +24,9 @@ the live pilot's active state and canonical receipt; full operational acceptance
 The [canonical history race source fix](agent-review-stage4-canonical-fix-20261007.md)
 has complete source/fixture verification, with the recorded dirty-worktree
 Context Budget qualification; redeployment/canonical live acceptance remain separate.
+The [GIS 2 continuation preparation](gis-continuation-preparation-20261007.md)
+records the exact unfinished source and the production recovery prerequisite;
+it is a blocked proposal, not a launch-ready writer queue.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.
