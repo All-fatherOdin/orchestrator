@@ -7,6 +7,7 @@ Role: implemented task contract. Source acceptance is recorded separately;
 this document is not installed runtime evidence.
 Navigation: [Stage 3 plan](agent-review-stage3-plan.md), [Next steps](NEXT_STEPS.md).
 [Source verification record](agent-review-stage4-acceptance-20261006.md).
+[Subsequent installed smoke and live-pilot record](agent-review-stage4-operational-20261007.md).
 
 ## Contract
 

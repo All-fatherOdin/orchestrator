@@ -18,6 +18,9 @@ is implemented in commit `dfafa19`; its
 [source verification record](agent-review-stage4-acceptance-20261006.md)
 records fixture acceptance, the historical pre-commit Context Budget failure
 and the passing Context Budget check on the clean implementation commit.
+The [Stage 4 operational verification](agent-review-stage4-operational-20261007.md)
+records successful deployment/installed smoke and a blocking disagreement between
+the live pilot's active state and canonical receipt; full operational acceptance is open.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.
