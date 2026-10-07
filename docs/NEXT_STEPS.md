@@ -31,6 +31,12 @@ The [manual GIS recovery operational record](gis-prepared-correction-operational
 records deployment and fresh installed smoke for `d290908`; targeted recovery
 failed its historical mechanical-evidence precondition before executor, and the
 conservative reservation remains consumed. Writer continuation is blocked.
+The [GIS prelaunch successor contract](gis-prelaunch-successor-contract-v1.md)
+implements one explicit successor after a proved precondition-only failure,
+preserving the historical claim and exact native gate compatibility. Its
+[source acceptance](gis-prelaunch-successor-acceptance-20261007.md) records the
+complete regression and qualified Context Budget evidence. New deployment,
+installed smoke and live recovery remain separate operational gates.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.

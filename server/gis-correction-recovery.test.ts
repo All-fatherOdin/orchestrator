@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { preparedCorrectionSource, assertClosedCorrectionFailure, reservePreparedCorrection, assertPreparedCorrectionReservation, validatePreparedCorrectionRecovery } from './gis-correction-recovery.ts';
+import { preparedCorrectionSource, assertClosedCorrectionFailure, reservePreparedCorrection, assertPreparedCorrectionReservation, validatePreparedCorrectionRecovery, assertPrelaunchPredecessor, assertMechanicalManifestCompatibility } from './gis-correction-recovery.ts';
 import type { ProcessProgress } from './process-stages.ts';
 const hash = (s:string) => createHash('sha256').update(s).digest('hex');
 const identity = { runId:'source',taskId:'task',invocationId:'a'.repeat(32),phase:'correction',ordinal:3,mode:'patch',transport:'invocation-mcp-v1' };
@@ -57,4 +57,28 @@ test('prepared correction opt-in is closed and pins exact source and invocation 
   assert.throws(()=>validatePreparedCorrectionRecovery({...v,unknown:true}));
   assert.throws(()=>validatePreparedCorrectionRecovery({...v,invocationId:'other'}));
   assert.throws(()=>validatePreparedCorrectionRecovery({...v,diagnosticCoverage:'complete-stream'}));
+});
+function successorFixture() {
+  const previous={contractType:'PreparedCorrectionRecoveryV1',contractVersion:'1.0',diagnosticCoverage:'retained-events-manual-v1',sourceSha256:'a'.repeat(64),invocationId:'b'.repeat(32),terminalSha256:'c'.repeat(64),toolsStateSha256:'d'.repeat(64)};
+  const successor={contractType:'PrelaunchSuccessorV1',contractVersion:'1.0',runId:'run-1',taskId:'task-1',canonicalSha256:'e'.repeat(64),reservationSha256:'f'.repeat(64)};
+  const binding=validatePreparedCorrectionRecovery({...previous,prelaunchSuccessor:successor,mechanicalCompatibility:{contractType:'GISMechanicalCompatibilityV1',contractVersion:'1.0',manifest:{path:resolveForTest(),sha256:'f'.repeat(64)}}});
+  const owner={runId:'run-1',taskId:'task-1',sourceSha256:previous.sourceSha256,invocationId:previous.invocationId};
+  const recovery={sourceRunId:'source-1',sourceTaskId:'source-task',preparedCorrection:previous};
+  const task:any={id:'task-1',status:'failed',exitCode:1,timedOut:false,startedAt:'2026-10-07T12:00:00Z',finishedAt:'2026-10-07T12:00:01Z',recovery,executionKind:{kind:'recovery'},authorizationEvidence:{decision:'authorized',recovery},preparedCorrectionReservation:owner,preconditions:['deployment','native-before'],preconditionEvidence:[{command:'deployment',exitCode:0,timedOut:false},{command:'native-before',exitCode:1,timedOut:false}]};
+  const run:any={id:'run-1',status:'failed',tasks:[task]};
+  return {binding,owner,task,run};
+}
+function resolveForTest(){ return join(tmpdir(),'successor-manifest.json') }
+test('prelaunch successor binds a proved unlaunched precondition failure without refunding its owner',()=>{
+  const f=successorFixture(),before=JSON.stringify(f);assertPrelaunchPredecessor(f.run,f.task,f.owner,f.binding,'native-before');assert.equal(JSON.stringify(f),before);
+  for(const mutate of [(f:any)=>{f.task.agentToolInvocations=[{}]},(f:any)=>{f.task.processProgress={}},(f:any)=>{f.task.executionAttempts=1},(f:any)=>{f.task.verificationEvidence=[{}]},(f:any)=>{f.task.publicationEvidence=[{}]},(f:any)=>{f.task.executionBudgetEvidence=[{}]},(f:any)=>{f.task.reviewStatus='approved'},(f:any)=>{f.task.changedFiles=['output']},(f:any)=>{f.task.timedOut=true},(f:any)=>{f.task.preconditionEvidence[0].exitCode=1},(f:any)=>{f.task.preconditionEvidence.reverse()},(f:any)=>{f.owner.taskId='other'},(f:any)=>{f.run.tasks.push(f.task)},(f:any)=>{f.task.recovery.preparedCorrection.prelaunchSuccessor={}},(f:any)=>{f.task.finishedAt='invalid'}]) {
+    const f=successorFixture();mutate(f);assert.throws(()=>assertPrelaunchPredecessor(f.run,f.task,f.owner,f.binding,'native-before'));
+  }
+  assert.throws(()=>validatePreparedCorrectionRecovery({...f.binding,prelaunchSuccessor:{...f.binding.prelaunchSuccessor,refund:true}}));
+});
+test('mechanical compatibility allows only current ordered hashes and preserves every native assertion input',()=>{
+  const old={projectRoot:'unchanged',batches:[{id:'one'}],mechanicalEvidence:[{path:'code-a',sha256:'a'.repeat(64)},{path:'code-b',sha256:'b'.repeat(64)}]},current=new Map([['code-a','c'.repeat(64)],['code-b','b'.repeat(64)]]),fresh=structuredClone(old);fresh.mechanicalEvidence[0].sha256='c'.repeat(64);
+  assertMechanicalManifestCompatibility(old,fresh,current);
+  for(const mutate of [(m:any)=>{m.projectRoot='different'},(m:any)=>{m.batches[0].id='other'},(m:any)=>{m.mechanicalEvidence.reverse()},(m:any)=>{m.mechanicalEvidence[0].path='other'},(m:any)=>{m.mechanicalEvidence[0].sha256='d'.repeat(64)},(m:any)=>{m.additional=true}]) {const m=structuredClone(fresh);mutate(m);assert.throws(()=>assertMechanicalManifestCompatibility(old,m,current))}
+  assert.throws(()=>assertMechanicalManifestCompatibility(old,old,new Map(old.mechanicalEvidence.map(e=>[e.path,e.sha256]))));
 });

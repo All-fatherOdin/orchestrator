@@ -1,5 +1,5 @@
 import express from "express";
-import { validatePreparedCorrectionRecovery, preparedCorrectionSource, assertClosedCorrectionFailure, reservePreparedCorrection, assertPreparedCorrectionReservation, preparedCorrectionImplementation, type PreparedCorrectionRecoveryV1 } from "./gis-correction-recovery.ts";
+import { validatePreparedCorrectionRecovery, preparedCorrectionSource, assertClosedCorrectionFailure, reservePreparedCorrection, assertPreparedCorrectionReservation, assertPrelaunchPredecessor, assertMechanicalManifestCompatibility, preparedCorrectionImplementation, type PreparedCorrectionRecoveryV1, type PrelaunchSuccessorV1 } from "./gis-correction-recovery.ts";
 import { assertNextCorrectionReport, classifyReviewTerminalFailure, readReviewRecovery, writeReviewRecovery, type ReviewRecovery, type ReviewFailureKind, REVIEW_LIMITS, ReviewToolService, assertReviewTerminal, assertGisReviewInventory, assertReviewFinalizer, captureReviewSource, readReviewSource as readReviewSourceForHost, reviewProviderBoundary, reviewToolDefinitions, replayStructuredReview, structuredReviewImplementationIdentity, type ReviewSource, type ReviewSnapshot, type ReviewReceipt, type ReviewIdentity } from "./structured-review.ts";
 import { uniqueJson, readReport, reportSchemaBytes, reportEvents, persistReportReceipt, replayReport, reportImplementationIdentity, type ReportRequest, type ReportIdentity } from "./agent-report.ts";
 import { assertNoWindowsReparsePoints, ReportToolService, startReportMcp, reportToolsImplementationIdentity, reportToolCompletionSchemaBytes, assertReportToolCompletion } from "./agent-report-tools.ts";
@@ -27,7 +27,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parse } from "yaml";
 import { checkRuntimeRequirementsV1, validateRuntimeRequirementsV1, type RuntimeRequirementsV1, type RuntimeToolCheckV1 } from "./runtime-requirements.ts";
@@ -1089,7 +1089,7 @@ type Task = ResolvedTask & {
   agentReports?: ReportIdentity[];
   agentToolInvocations?: ReportIdentity[];
   agentToolStateReceipts?: Array<{ invocationId: string; sha256: string }>;
-  preparedCorrectionReservation?: { runId: string; taskId: string; sourceSha256: string; invocationId: string };
+  preparedCorrectionReservation?: { runId: string; taskId: string; sourceSha256: string; invocationId: string; supersedes?: PrelaunchSuccessorV1 };
   /** Ephemeral provider metadata; never truth, completion, approval, or durable memory. */
   providerRuntimeState?: ProviderRuntimeStateV1;
   /** Last bounded selection persisted before an executor continuation. */
@@ -10262,17 +10262,21 @@ function taskProcessProgress(task: Task): ProcessProgress | undefined {
   return task.processProgress ?? task.gisProgress;
 }
 function preparedCorrectionClaimPath(task: Pick<TaskInput, "recovery">) {
-  return join(runsDirectory, task.recovery!.sourceRunId, `${task.recovery!.sourceTaskId}-prepared-correction-recovery.json`);
+  return join(runsDirectory, task.recovery!.sourceRunId, `${task.recovery!.sourceTaskId}-prepared-correction-recovery${task.recovery!.preparedCorrection?.prelaunchSuccessor ? "-prelaunch-v1" : ""}.json`);
 }
 function preparedCorrectionOwner(run: Run, task: Task) {
   const binding = task.recovery!.preparedCorrection!;
-  return { runId: run.id, taskId: task.id, sourceSha256: binding.sourceSha256, invocationId: binding.invocationId };
+  return { runId: run.id, taskId: task.id, sourceSha256: binding.sourceSha256, invocationId: binding.invocationId, ...(binding.prelaunchSuccessor ? { supersedes: structuredClone(binding.prelaunchSuccessor) } : {}) };
 }
 async function reserveTaskPreparedCorrection(run: Run, task: Task) {
   const file = preparedCorrectionClaimPath(task);
   await assertPlainPath(runsDirectory, dirname(file));
   if (existsSync(file)) await assertPlainPath(runsDirectory, file);
-  assert.equal(gisSha(await readFile(join(runsDirectory, task.recovery!.sourceRunId, "run.json"))), task.recovery!.preparedCorrection!.sourceSha256, "GIS prepared source record changed");
+  const sourceBytes=await readFile(join(runsDirectory, task.recovery!.sourceRunId, "run.json"));
+  assert.equal(gisSha(sourceBytes), task.recovery!.preparedCorrection!.sourceSha256, "GIS prepared source record changed");
+  const source=JSON.parse(sourceBytes.toString("utf8")) as Run;
+  const sourceTask=source.tasks.find(t=>t.id===task.recovery!.sourceTaskId); assert.ok(sourceTask);
+  if(task.recovery!.preparedCorrection!.prelaunchSuccessor || task.recovery!.preparedCorrection!.mechanicalCompatibility) await readPreparedCorrectionRecovery(task,sourceTask);
   const owner = preparedCorrectionOwner(run, task);
   if (task.preparedCorrectionReservation || run.startedAt || task.startedAt || taskProcessProgress(task)) {
     assert.deepEqual(task.preparedCorrectionReservation, owner, "GIS prepared reservation evidence missing or changed");
@@ -10282,8 +10286,9 @@ async function reserveTaskPreparedCorrection(run: Run, task: Task) {
     task.preparedCorrectionReservation = owner;
   }
   await assertPlainPath(runsDirectory, file);
+  if(task.recovery!.preparedCorrection!.prelaunchSuccessor || task.recovery!.preparedCorrection!.mechanicalCompatibility) await readPreparedCorrectionRecovery(task,sourceTask);
 }
-async function readPreparedCorrectionRecovery(task: Pick<TaskInput, "recovery" | "allowedPaths" | "isolatedArtifacts">, sourceTask: Task) {
+async function readPreparedCorrectionRecovery(task: Pick<TaskInput, "recovery" | "allowedPaths" | "isolatedArtifacts" | "runtimeConstraints" | "runtimeRequirements">, sourceTask: Task) {
   const binding = validatePreparedCorrectionRecovery(task.recovery!.preparedCorrection);
   const sourceFile = join(runsDirectory, task.recovery!.sourceRunId, "run.json");
   assert.equal(gisSha(await readFile(sourceFile)), binding.sourceSha256, "GIS prepared source record changed");
@@ -10323,12 +10328,72 @@ async function readPreparedCorrectionRecovery(task: Pick<TaskInput, "recovery" |
   await assertPlainPath(paths.root, join(paths.root, "tools-state.json"));
   assert.ok(!existsSync(paths.receipt), "Failed correction has a submitted report");
   const fences = [{ file: join(paths.root, "terminal-evidence.json"), sha256: binding.terminalSha256 }, { file: join(paths.root, "tools-state.json"), sha256: binding.toolsStateSha256 }];
+  if (binding.mechanicalCompatibility) {
+    const replacement = selectProcessPackage(task.isolatedArtifacts)!.configuration;
+    assert.deepEqual(replacement.manifest, binding.mechanicalCompatibility.manifest);
+    assert.deepEqual(replacement,{...configuration,manifest:replacement.manifest,gates:replacement.gates,stageAttempts:replacement.stageAttempts},"Mechanical compatibility changed the native contract");
+    const originalBytes = await readFile(configuration.manifest.path), replacementBytes = await readFile(replacement.manifest.path);
+    assert.equal(gisSha(originalBytes), configuration.manifest.sha256); assert.equal(gisSha(replacementBytes), replacement.manifest.sha256);
+    const originalManifest = JSON.parse(originalBytes.toString("utf8")), replacementManifest = JSON.parse(replacementBytes.toString("utf8"));
+    assert.ok(Array.isArray(originalManifest.mechanicalEvidence));
+    const currentHashes = new Map<string,string>();
+    for (const entry of originalManifest.mechanicalEvidence) {
+      assert.ok(isAbsolute(entry.path)); await assertPlainPath(dirname(entry.path),entry.path);
+      const sha256=gisSha(await readFile(entry.path)); currentHashes.set(entry.path,sha256); fences.push({file:entry.path,sha256});
+    }
+    assertMechanicalManifestCompatibility(originalManifest,replacementManifest,currentHashes);
+    assert.deepEqual(replacement.scopes,configuration.scopes); assert.equal(replacement.batchId,configuration.batchId);
+    assert.equal(replacement.gates.length,configuration.gates.length);
+    for (const [i,gate] of replacement.gates.entries()) {
+      const old=configuration.gates[i];
+      assert.equal(gate.sha256,old.sha256); assert.equal(basename(gate.path),basename(old.path));
+      assert.equal(dirname(gate.path),dirname(replacement.manifest.path));
+      for (const file of [old.path,gate.path]) { await assertPlainPath(dirname(file),file); assert.equal(gisSha(await readFile(file)),old.sha256); fences.push({file,sha256:old.sha256}); }
+    }
+    for(const entry of [{path:"preflight.json",sha256:originalManifest.preflightSha256},...originalManifest.batches.map((batch:any)=>({path:batch.blockPath,sha256:batch.blockSha256}))]) {
+      assert.equal(normalizeAllowedPathScopeV1(entry.path,"Compatibility support path"),entry.path);
+      for(const manifestFile of [configuration.manifest.path,replacement.manifest.path]) {
+        const file=join(dirname(manifestFile),entry.path);await assertPlainPath(dirname(manifestFile),file);
+        assert.equal(gisSha(await readFile(file)),entry.sha256,"Compatibility support changed");fences.push({file,sha256:entry.sha256});
+      }
+    }
+    for(const name of ["initial-coverage.json","initial-baseline.json"]) {
+      const original=join(dirname(configuration.manifest.path),name);
+      if(existsSync(original)) {const sha256=gisSha(await readFile(original));for(const file of [original,join(dirname(replacement.manifest.path),name)]) {await assertPlainPath(dirname(file),file);assert.equal(gisSha(await readFile(file)),sha256);fences.push({file,sha256});}}
+    }
+    for (const entry of [configuration.manifest,replacement.manifest]) { await assertPlainPath(dirname(entry.path),entry.path); fences.push({file:entry.path,sha256:entry.sha256}); }
+  }
+  if (binding.prelaunchSuccessor) {
+    const successor=binding.prelaunchSuccessor;
+    assert.notEqual(successor.runId,task.recovery!.sourceRunId);
+    const predecessorFile=join(runsDirectory,successor.runId,"run.json"); await assertPlainPath(runsDirectory,predecessorFile);
+    const predecessorBytes=await readFile(predecessorFile);
+    assert.equal(gisSha(predecessorBytes),successor.canonicalSha256);
+    const predecessor=JSON.parse(predecessorBytes.toString("utf8")) as Run;
+    assertRunExecutionBudgetsV1(predecessor); await assertRunReviewRecoveryRecords(predecessor);
+    assertPersistedRunReplayContractsV1(predecessor,await currentBranchIdentity(predecessor.project.path));
+    const previous=predecessor.tasks.find(t=>t.id===successor.taskId); assert.ok(previous);
+    assert.ok(!existsSync(join(runsDirectory,successor.runId,`${previous.id}-agent-reports`)),"Predecessor has provider storage");
+    assert.ok(!existsSync(join(runsDirectory,successor.runId,`${previous.id}-structured-reviews`)),"Predecessor has reviewer storage");
+    assert.equal(previous.recovery?.sourceRunId,task.recovery!.sourceRunId); assert.equal(previous.recovery?.sourceTaskId,sourceTask.id);
+    assert.deepEqual(previous.allowedPaths,task.allowedPaths);
+    const originalClaim=join(runsDirectory,task.recovery!.sourceRunId,`${sourceTask.id}-prepared-correction-recovery.json`);
+    await assertPlainPath(runsDirectory,originalClaim); const claimBytes=await readFile(originalClaim);
+    assert.equal(gisSha(claimBytes),successor.reservationSha256);
+    const nativeBefore=sourceTask.preconditions?.at(-1); assert.ok(nativeBefore);
+    assertPrelaunchPredecessor(predecessor,previous,JSON.parse(claimBytes.toString("utf8")),binding,nativeBefore);
+    for(const constraint of previous.runtimeConstraints ?? []) assert.ok(task.runtimeConstraints?.includes(constraint),"Prelaunch predecessor runtime constraints narrowed");
+    for(const tool of previous.runtimeRequirements?.tools ?? []) assert.ok(task.runtimeRequirements?.tools.some(t=>JSON.stringify(t)===JSON.stringify(tool)),"Prelaunch predecessor tools narrowed");
+    assert.equal(gisSha(await readFile(predecessorFile)),successor.canonicalSha256);
+    fences.push({file:predecessorFile,sha256:successor.canonicalSha256},{file:originalClaim,sha256:successor.reservationSha256});
+  }
   for (const e of fences) assert.equal(gisSha(await readFile(e.file)), e.sha256, "GIS prepared terminal evidence changed");
   assertClosedCorrectionFailure(JSON.parse(await readFile(fences[0].file, "utf8")), JSON.parse(await readFile(fences[1].file, "utf8")), identity);
   for (const [index, report] of reports.entries()) {
     assert.deepEqual(report, invocations[index]);
     const prior = reportPaths(source, report); await replayReport(prior.raw, prior.schema, prior.receipt, report);
   }
+  for(const entry of fences) assert.equal(gisSha(await readFile(entry.file)),entry.sha256,"Prepared recovery evidence changed during replay");
   return { ...receipt, fences };
 }
 function setTaskProcessProgress(task: Task, progress: ProcessProgress) {

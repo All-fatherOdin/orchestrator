@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmdirSync, copyFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -663,6 +663,55 @@ test("GIS prepared correction opt-in recovers once with source counters and immu
     await assert.rejects(markRunReadyForLaunch(createRun(validateQueue(q))),/already reserved/);
     assert.equal(JSON.parse(readFileSync(join(f.project,f.state,"quality-coverage.json"),"utf8")).completed,5);
   } finally { if(original.bin===undefined)delete process.env.CODEX_BIN;else process.env.CODEX_BIN=original.bin;if(original.script===undefined)delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT=original.script; }
+});
+
+test("GIS prelaunch successor preserves failed claims, fences compatible gates and publishes once", async () => {
+  const original={bin:process.env.CODEX_BIN,script:process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT};
+  try {
+    const f=structuredCorrectionFixture(), failedOnce=join(f.root,'prelaunch-correction-failed-once'), mechanical=join(f.root,'mechanical-source.txt');
+    const pin=(path:string)=>({path:resolve(path),sha256:gisSha(readFileSync(path))});
+    writeFileSync(mechanical,'old source');
+    const config=f.queue.tasks[0].isolatedArtifacts!.processPackage!.configuration;
+    const manifest=JSON.parse(readFileSync(f.manifest,'utf8'));manifest.mechanicalEvidence=[pin(mechanical)];writeFileSync(f.manifest,JSON.stringify(manifest));config.manifest=pin(f.manifest);
+    const checker=readFileSync(f.checker,'utf8').replace('assert.equal(',`if(process.argv[2]==='before'){const m=JSON.parse(fs.readFileSync(new URL('manifest.json',import.meta.url)));for(const e of m.mechanicalEvidence)assert.equal((await import('node:crypto')).createHash('sha256').update(fs.readFileSync(e.path)).digest('hex'),e.sha256,'Queue implementation changed');}else assert.equal(`);
+    writeFileSync(f.checker,checker);config.gates[0]=pin(f.checker);
+    const before=`node "${f.checker}" before one`;
+    f.queue.tasks[0].preconditions=[before];f.queue.project.approvedApplyContracts![0].preconditions=[before];f.queue.project.approvedApplyContracts![0].isolatedArtifacts=structuredClone(f.queue.tasks[0].isolatedArtifacts);
+    const injection=`if(p.includes('GIS_CORRECTION_INPUT_V1: ')&&!fs.existsSync(${JSON.stringify(failedOnce)})){fs.writeFileSync(${JSON.stringify(failedOnce)},'failed');const message='unexpected status 403 Forbidden: blocked, url: https://chatgpt.com/backend-api/codex/responses, cf-ray: abc-FRA';console.log(JSON.stringify({type:'error',message}));console.log(JSON.stringify({type:'turn.failed',error:{message}}));process.exitCode=1;return;}`;
+    writeFileSync(f.provider,readFileSync(f.provider,'utf8').replace("if(p.startsWith('Independently review",injection+"if(p.startsWith('Independently review"));process.env.CODEX_BIN=process.execPath;process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT=f.provider;
+    const source=createRun(validateQueue(f.queue));await executeQueue(source);const failed=source.tasks[0];assert.equal(failed.processProgress!.phase,'prepared');
+    const sourceFile=join(data,'runs',source.id,'run.json'),sourceBytes=readFileSync(sourceFile),invocation=failed.agentToolInvocations!.at(-1)!,storage=join(data,'runs',source.id,`${failed.id}-agent-reports`,invocation.invocationId);
+    const q=structuredClone(f.queue),writer=q.tasks[0];writer.executionKind={contractType:'TaskExecutionKindV1',contractVersion:'1.0',kind:'recovery'};
+    writer.recovery={contractType:'RecoveryTaskBindingV1',contractVersion:'1.0',sourceRunId:source.id,sourceTaskId:failed.id,preparedCorrection:{contractType:'PreparedCorrectionRecoveryV1',contractVersion:'1.0',diagnosticCoverage:'retained-events-manual-v1',sourceSha256:gisSha(sourceBytes),invocationId:invocation.invocationId,terminalSha256:gisSha(readFileSync(join(storage,'terminal-evidence.json'))),toolsStateSha256:gisSha(readFileSync(join(storage,'tools-state.json')))}};
+    writer.isolatedArtifacts!.processPackage!.configuration.stageAttempts={verification:1,review:1,publication:1,correction:0};q.review.maxCorrections=0;
+    q.project.approvedApplyContracts![0].isolatedArtifacts=structuredClone(writer.isolatedArtifacts);q.project.approvedApplyContracts![0].preparedCorrection=structuredClone(writer.recovery.preparedCorrection);
+    writeFileSync(mechanical,'new source');
+    const predecessor=createRun(validateQueue(q));await markRunReadyForLaunch(predecessor);await executeQueue(predecessor);assert.equal(predecessor.status,'failed');assert.equal(predecessor.tasks[0].processProgress,undefined);assert.equal(predecessor.tasks[0].agentToolInvocations,undefined);
+    const predecessorFile=join(data,'runs',predecessor.id,'run.json'),predecessorBytes=readFileSync(predecessorFile),claim=join(data,'runs',source.id,`${failed.id}-prepared-correction-recovery.json`),claimBytes=readFileSync(claim);
+    const freshDir=join(f.project,'compatible-contracts');mkdirSync(freshDir);const freshManifest=join(freshDir,'manifest.json'),freshGate=join(freshDir,'check.mjs');
+    const replacement=structuredClone(manifest);replacement.mechanicalEvidence=[pin(mechanical)];writeFileSync(freshManifest,JSON.stringify(replacement));writeFileSync(freshGate,checker);
+    for(const name of ['preflight.json','block.json'])copyFileSync(join(f.project,'contracts',name),join(freshDir,name));
+    const c=writer.isolatedArtifacts!.processPackage!.configuration;c.manifest=pin(freshManifest);c.gates=[pin(freshGate)];writer.preconditions=[`node "${freshGate}" before one`];
+    writer.recovery.preparedCorrection!.mechanicalCompatibility={contractType:'GISMechanicalCompatibilityV1',contractVersion:'1.0',manifest:pin(freshManifest)};
+    writer.recovery.preparedCorrection!.prelaunchSuccessor={contractType:'PrelaunchSuccessorV1',contractVersion:'1.0',runId:predecessor.id,taskId:predecessor.tasks[0].id,canonicalSha256:gisSha(predecessorBytes),reservationSha256:gisSha(claimBytes)};
+    writer.verificationCommands=writer.verificationCommands!.map(command=>command.replace(f.checker,freshGate));
+    q.project.approvedApplyContracts![0].verificationCommands=structuredClone(writer.verificationCommands);
+    q.project.approvedApplyContracts![0].preconditions=structuredClone(writer.preconditions);q.project.approvedApplyContracts![0].isolatedArtifacts=structuredClone(writer.isolatedArtifacts);q.project.approvedApplyContracts![0].preparedCorrection=structuredClone(writer.recovery.preparedCorrection);
+    const reviewStorage=join(data,'runs',predecessor.id,`${predecessor.tasks[0].id}-structured-reviews`);mkdirSync(reviewStorage);const denied=await queueRecoveryContractChecks(validateQueue(q));assert.ok(denied.some(check=>!check.ok&&check.detail.includes('reviewer storage')));assert.deepEqual(readFileSync(predecessorFile),predecessorBytes,'Rejected predecessor inspection is read-only');rmdirSync(reviewStorage);
+    const providerStorage=join(data,'runs',predecessor.id,`${predecessor.tasks[0].id}-agent-reports`);mkdirSync(providerStorage);assert.ok((await queueRecoveryContractChecks(validateQueue(q))).some(check=>!check.ok&&check.detail.includes('provider storage')));rmdirSync(providerStorage);
+    const stale=JSON.parse(predecessorBytes.toString('utf8'));stale.status='running';const staleBytes=Buffer.from(JSON.stringify(stale));writeFileSync(predecessorFile,staleBytes);const staleQueue=structuredClone(q);staleQueue.tasks[0].recovery!.preparedCorrection!.prelaunchSuccessor!.canonicalSha256=gisSha(staleBytes);staleQueue.project.approvedApplyContracts![0].preparedCorrection=structuredClone(staleQueue.tasks[0].recovery!.preparedCorrection);
+    assert.ok((await queueRecoveryContractChecks(validateQueue(staleQueue))).some(check=>!check.ok));assert.deepEqual(readFileSync(predecessorFile),staleBytes,'A stale-owner predecessor must be rejected without reconciliation writes');writeFileSync(predecessorFile,predecessorBytes);
+    writeFileSync(freshGate,checker+'\n// altered gate');assert.ok((await queueRecoveryContractChecks(validateQueue(q))).some(check=>!check.ok));writeFileSync(freshGate,checker);
+    const recovered=createRun(validateQueue(q));await markRunReadyForLaunch(recovered);
+    const successorClaim=join(data,'runs',source.id,`${failed.id}-prepared-correction-recovery-prelaunch-v1.json`),successorBytes=readFileSync(successorClaim),reload=JSON.parse(JSON.stringify(recovered));
+    unlinkSync(successorClaim);await assert.rejects(markRunReadyForLaunch(reload));assert.equal(existsSync(successorClaim),false);writeFileSync(successorClaim,successorBytes,{flag:'wx'});await markRunReadyForLaunch(reload);
+    await assert.rejects(markRunReadyForLaunch(createRun(validateQueue(q))),/already reserved/);
+    await executeQueue(reload);assert.equal(reload.status,'completed',reload.tasks[0].log.join('\n'));assert.deepEqual(reload.tasks[0].processProgress!.attempts,{executor:1,verification:1,review:1,publication:1});
+    assert.deepEqual(readFileSync(sourceFile),sourceBytes);assert.deepEqual(readFileSync(predecessorFile),predecessorBytes);assert.deepEqual(readFileSync(claim),claimBytes);assert.deepEqual(readFileSync(successorClaim),successorBytes);
+    const archived=(failed.processProgress!.history.find(h=>h.stage==='analysis-correction')!.receipt as {archived:string}).archived;
+    for(const i of [0,1,2])assert.deepEqual(readFileSync(join(f.project,f.runPath,`response-${i}.json`)),readFileSync(join(archived,f.runPath,`response-${i}.json`)));
+    assert.equal(JSON.parse(readFileSync(join(f.project,f.state,'quality-coverage.json'),'utf8')).completed,5);
+  }finally{if(original.bin===undefined)delete process.env.CODEX_BIN;else process.env.CODEX_BIN=original.bin;if(original.script===undefined)delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT;else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT=original.script;}
 });
 
 test("GIS correction obeys a denied hard invocation budget without another analysis or publication", async () => {
