@@ -21,6 +21,9 @@ and the passing Context Budget check on the clean implementation commit.
 The [Stage 4 operational verification](agent-review-stage4-operational-20261007.md)
 records successful deployment/installed smoke and a blocking disagreement between
 the live pilot's active state and canonical receipt; full operational acceptance is open.
+The [canonical history race source fix](agent-review-stage4-canonical-fix-20261007.md)
+has complete source/fixture verification, with the recorded dirty-worktree
+Context Budget qualification; redeployment/canonical live acceptance remain separate.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.

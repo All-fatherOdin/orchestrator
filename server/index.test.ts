@@ -21042,6 +21042,55 @@ test("loading a terminal run with its matching live lock preserves its terminal 
   }
 });
 
+test("history reads wait for queued terminal persistence before recovering execution", async () => {
+  const { serializeWorkspaceRunStateV1 } = await import("./workspace-merge-v1/index.ts");
+  const project = await mkdtemp(join(tmpdir(), "orchestrator-history-completion-"));
+  const source = run([task("reviewer", "running")], "running");
+  source.id = `history-completion-${Date.now()}`;
+  source.project.path = project;
+  await persistRun(source);
+  const file = join(testDataDirectory, "runs", source.id, "run.json");
+  let release!: () => void;
+  let entered!: () => void;
+  const ready = new Promise<void>((resolve) => { entered = resolve; });
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const held = serializeWorkspaceRunStateV1(file, async () => {
+    entered();
+    await barrier;
+  });
+  await ready;
+  const completed = structuredClone(source);
+  completed.tasks[0].status = "completed";
+  completed.tasks[0].executionPhase = undefined;
+  completed.tasks[0].finishedAt = "2026-10-07T08:00:00.000Z";
+  completed.tasks[0].log.push("successful reviewer receipt retained");
+  completed.status = "completed";
+  completed.finishedAt = completed.tasks[0].finishedAt;
+  // The completion write is already queued before the archive read. A reader
+  // outside this serializer captures the old running snapshot and later queues
+  // recovery behind completion, replacing it with a false process-ended failure.
+  const writing = persistRun(completed);
+  const reading = loadRun(source.id);
+  try {
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    release();
+    await held;
+    await writing;
+    const loaded = await reading;
+    assert.equal(loaded?.status, "completed");
+    assert.equal(loaded?.tasks[0].status, "completed");
+    assert.equal(loaded?.finishedAt, completed.finishedAt);
+    assert.deepEqual(loaded?.tasks[0].log, completed.tasks[0].log);
+    const canonical = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(canonical.status, "completed");
+    assert.deepEqual(canonical.tasks[0].log, completed.tasks[0].log);
+  } finally {
+    release();
+    await Promise.allSettled([held, writing, reading]);
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("failed canonical run persistence does not publish a newer derived summary", async () => {
   const source = run([task("persist-order", "pending")], "running");
   source.id = `persist-order-${Date.now()}`;

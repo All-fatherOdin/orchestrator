@@ -2511,23 +2511,28 @@ async function recoverInterruptedRuns() {
 
 export async function loadRun(id: string) {
   const file = join(runsDirectory, id, "run.json");
-  if (!existsSync(file)) return undefined;
-  const run = await loadCanonicalRunRecordV1(file);
-  assertRunExecutionBudgetsV1(run);
-  await assertRunReviewRecoveryRecords(run);
-  const branch = await currentBranchIdentity(run.project.path);
-  if (runRequiresReplayAuthorization(run))
-    assertPersistedRunReplayContractsV1(run, branch);
-  const before = JSON.stringify(run);
-  const hasLiveOwner = await reconcilePersistedRunOwner(run);
-  reconcileRunState(run, hasLiveOwner);
-  if (!hasLiveOwner && run.status === "running" && run.tasks.some(taskOwnsExecution))
-    recoverRun(run, branch);
-  if (JSON.stringify(run) !== before) {
-    await persist(run);
-    publish("run", run);
-  }
-  return run;
+  // History reads can recover abandoned execution. Serialize the entire read,
+  // ownership check and write with executor persistence, so a snapshot taken
+  // before completion cannot overwrite the final receipt after lease release.
+  return serializeWorkspaceRunStateV1(file, async () => {
+    if (!existsSync(file)) return undefined;
+    const run = await loadCanonicalRunRecordV1(file);
+    assertRunExecutionBudgetsV1(run);
+    await assertRunReviewRecoveryRecords(run);
+    const branch = await currentBranchIdentity(run.project.path);
+    if (runRequiresReplayAuthorization(run))
+      assertPersistedRunReplayContractsV1(run, branch);
+    const before = JSON.stringify(run);
+    const hasLiveOwner = await reconcilePersistedRunOwner(run);
+    reconcileRunState(run, hasLiveOwner);
+    if (!hasLiveOwner && run.status === "running" && run.tasks.some(taskOwnsExecution))
+      recoverRun(run, branch);
+    if (JSON.stringify(run) !== before) {
+      await writeJsonAtomically(file, run);
+      publish("run", run);
+    }
+    return run;
+  });
 }
 
 export async function loadRunSummary(id: string): Promise<RunSummary | undefined> {

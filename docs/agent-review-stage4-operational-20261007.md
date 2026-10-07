@@ -101,6 +101,12 @@ asset and failed-canonical inputs were rejected. Negative check evidence:
 The runtime sources and the original source-test evidence remained unchanged;
 no full source regression or browser acceptance was claimed for these operational helpers.
 
-Next boundary: diagnose and fix the canonical live-owner/read-path discrepancy
-with a reproducing test, then separately redeploy and rerun canonical smoke/pilot.
+At this operational report's initial recording, the next boundary was a source
+fix with a reproducing test, then a separate redeploy and canonical smoke/pilot.
 The existing failed canonical record and immutable review files must remain evidence.
+
+Source follow-up: the [canonical history race fix](agent-review-stage4-canonical-fix-20261007.md)
+reproduces the stale-read overwrite and implements a serialized read/recovery
+transaction. Full source regression and fixture verification passed, with the
+recorded Context Budget qualification. Redeployment/canonical live acceptance
+remain separate; the installed pilot failure above was not repaired.
