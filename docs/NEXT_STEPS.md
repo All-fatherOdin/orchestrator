@@ -27,6 +27,9 @@ Context Budget qualification; redeployment/canonical live acceptance remain sepa
 The [GIS 2 continuation preparation](gis-continuation-preparation-20261007.md)
 records the exact unfinished source and the production recovery prerequisite;
 it is a blocked proposal, not a launch-ready writer queue.
+The [manual GIS recovery operational record](gis-prepared-correction-operational-20261007.md)
+records deployment and fresh installed smoke for `d290908`; the isolated recovery
+pilot and writer continuation remain pending.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.
