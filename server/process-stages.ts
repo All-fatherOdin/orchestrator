@@ -16,6 +16,8 @@ export type ProcessHooks = {
   analyze: (prompt: string, report?: ReportRequest) => Promise<string>;
   verify: () => Promise<{ code: number; timedOut: boolean; receipts: unknown }>;
   review: () => Promise<{ status: string; receipts: unknown; feedback?: string; correctionAllowed?: boolean; correctionTargets?: number[] }>;
+  /** Host proves this is continuation of the already-counted review stage. */
+  continueReview?: () => Promise<boolean>;
   boundary?: (name: string) => Promise<void>;
 };
 export type ProcessContext = {
@@ -165,7 +167,8 @@ export async function executeProcess(options: {
         await checkpoint("verified");
       }
       if (p.phase === "verified") {
-        await attempt("review"); const r = await hooks.review(); await fence();
+        if (!(await hooks.continueReview?.())) await attempt("review");
+        const r = await hooks.review(); await fence();
         p.history.push({ stage: "review", result: r.status, receipt: r.receipts });
         if (r.status !== "approved") {
           if (r.status === "changes_requested" && r.correctionAllowed === true && correctionLimit > 0) {

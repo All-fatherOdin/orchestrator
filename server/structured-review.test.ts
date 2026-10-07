@@ -3,8 +3,8 @@ import test from "node:test";
 import { mkdtemp, writeFile, readFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertReviewTerminal, assertGisReviewInventory, assertReviewFinalizer, reviewProviderBoundary, captureReviewSource, decodeReviewVerdict, ReviewToolService, replayStructuredReview, reviewToolDefinitions, type ReviewSnapshot, type ReviewReceipt } from "./structured-review.ts";
-import { reportEvents, reportSha } from "./agent-report.ts";
+import { assertNextCorrectionReport, classifyReviewTerminalFailure, assertReviewTerminal, assertGisReviewInventory, assertReviewFinalizer, reviewProviderBoundary, captureReviewSource, decodeReviewVerdict, ReviewToolService, replayStructuredReview, reviewToolDefinitions, type ReviewSnapshot, type ReviewReceipt } from "./structured-review.ts";
+import { reportEvents, reportSha, type ReportIdentity } from "./agent-report.ts";
 import { validateGisStructuredTargets, applyGisResponsePatches } from "./gis-quality.ts";
 import { startReportMcp } from "./agent-report-tools.ts";
 
@@ -16,6 +16,43 @@ async function fixture() {
   const verdict = (status = "approved", remarks: unknown[] = []) => JSON.stringify({ protocolVersion: "invocation-mcp-v1", invocationId: snapshot.identity.invocationId, snapshotSha256: reportSha(JSON.stringify(snapshot)), status, reason: status === "approved" ? "" : "Needs exact evidence correction", remarks });
   return { root, file, snapshot, verdict, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
+
+const transport403 = () => [...Array.from({ length: 5 }, (_, i) => JSON.stringify({ type: "error", message: `Reconnecting... ${i + 1}/5 (unexpected status 403 Forbidden: <html>, url: wss://chatgpt.com/backend-api/codex/responses, cf-ray: abc-DME)` })), JSON.stringify({ type: "turn.failed" })];
+test("Stage 4 fresh report admission rejects duplicate correction identities and stale or forged ordinals", () => {
+  const first: ReportIdentity = { runId: "run", taskId: "task", invocationId: "a".repeat(32), phase: "executor", ordinal: 1, mode: "full" };
+  const second: ReportIdentity = { ...first, invocationId: "b".repeat(32), phase: "correction", ordinal: 2, mode: "patch" };
+  const third: ReportIdentity = { ...second, invocationId: "c".repeat(32), ordinal: 3 };
+  assertNextCorrectionReport([first, second], third, "run", "task");
+  for (const invalid of [second, { ...third, invocationId: second.invocationId }, { ...third, ordinal: 4 }, { ...third, runId: "foreign" }, { ...third, taskId: "foreign" }, { ...third, phase: "executor" as const }, { ...third, mode: "full" as const }]) {
+    assert.throws(() => assertNextCorrectionReport([first, second], invalid, "run", "task"), /REVIEW_RECOVERY_RESULT_CHANGED/);
+  }
+});
+test("Stage 4 classifies only complete nonzero transport 403 without mixed failures", () => {
+  const lines = transport403();
+  assert.equal(classifyReviewTerminalFailure(lines, 1, false, false), "transport-403");
+  for (const input of [lines.slice(1), [...lines.slice(0, -1), '{"type":"error","message":"other failure"}', lines.at(-1)!], [...lines, '{"type":"turn.completed"}'], [...lines.slice(0, -1), '{"type":"turn.failed","error":{"message":"billing denied"}}'], [...lines.slice(0, -1), "invalid JSON"], [...lines.slice(0, -1), lines[0], lines.at(-1)!], ['{"type":"turn.failed"}']]) {
+    assert.equal(classifyReviewTerminalFailure(input, 1, false, false), "terminal");
+  }
+  assert.equal(classifyReviewTerminalFailure(lines, 0, false, false), "terminal");
+  assert.equal(classifyReviewTerminalFailure(lines, null, false, false), "terminal");
+  assert.equal(classifyReviewTerminalFailure(lines, 1, true, false), "timeout");
+  assert.equal(classifyReviewTerminalFailure(lines, 1, false, true), "cancelled");
+  assert.equal(classifyReviewTerminalFailure(lines, 1, false, false, true), "terminal");
+  assert.throws(() => assertReviewTerminal(lines, 1, false, false));
+});
+
+test("Stage 4 tool failure and changed state cannot qualify for recovery", async () => {
+  const f = await fixture();
+  try {
+    const service = await ReviewToolService.create(join(f.root, "review"), f.snapshot, 10000, async () => {});
+    await assert.rejects(service.invoke("unknown", {}));
+    await assert.rejects(service.assertRecoverySafe(), /TOOL_FAILURE/);
+    await service.close();
+    const other = await ReviewToolService.create(join(f.root, "other"), f.snapshot, 10000, async () => {});
+    await writeFile(join(f.root, "other", "state.json"), "{}");
+    await assert.rejects(other.assertRecoverySafe(), /STATE_CHANGED/); await other.close();
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
 test("structured review validates closed verdict identity, evidence, duplicates and exact targets", async () => {
   const f = await fixture();
   try {

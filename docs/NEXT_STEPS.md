@@ -13,6 +13,9 @@ For invocation-local GIS reporting and independent review, read the
 [Stage 2 contract](agent-report-tools-v1.md), the proposed
 [Stage 3 plan](agent-review-stage3-plan.md) and its
 [executor prompt](agent-review-stage3-executor-prompt.md).
+The [Stage 4 transport recovery contract](agent-review-stage4-contract-v1.md)
+is implemented; its [source verification record](agent-review-stage4-acceptance-20261006.md)
+records fixture evidence and the workspace Context Budget provenance limitation.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.

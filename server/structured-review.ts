@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { assertPlainPath } from "./isolated-artifacts.ts";
 import { assertNoWindowsReparsePoints, reportToolDefinitions } from "./agent-report-tools.ts";
-import { REPORT_LIMIT, readReport, reportSha, uniqueJson, reportEvents } from "./agent-report.ts";
+import { REPORT_LIMIT, readReport, reportSha, uniqueJson, reportEvents, type ReportIdentity } from "./agent-report.ts";
 
 export const structuredReviewImplementationIdentity = (() => {
   const path = typeof import.meta.url === "string" && import.meta.url.startsWith("file:") ? fileURLToPath(import.meta.url) : resolve(process.argv[1]);
@@ -44,6 +44,114 @@ export type ReviewSource = { id: string; path: string; root: string; sha256: str
 export type ReviewSnapshot = { identity: ReviewIdentity; context: unknown; evidence: ReviewSource[] };
 export type ReviewVerdict = { protocolVersion: "invocation-mcp-v1"; invocationId: string; snapshotSha256: string; status: "approved" | "changes_requested" | "unavailable"; reason: string; remarks: Array<{ evidenceId: string; field: string; category: "correctness" | "scope" | "evidence"; message: string; responseIndex: number | null }> };
 export type ReviewReceipt = { identity: ReviewIdentity; snapshotSha256: string; verdictSha256: string; terminalSha256: string; closedStateSha256: string };
+export function assertNextCorrectionReport(previous: ReportIdentity[], next: ReportIdentity, runId: string, taskId: string) {
+  assert.equal(next.runId, runId, "REVIEW_RECOVERY_RESULT_CHANGED");
+  assert.equal(next.taskId, taskId, "REVIEW_RECOVERY_RESULT_CHANGED");
+  assert.equal(next.phase, "correction", "REVIEW_RECOVERY_RESULT_CHANGED");
+  assert.equal(next.mode, "patch", "REVIEW_RECOVERY_RESULT_CHANGED");
+  assert.equal(next.ordinal, (previous.at(-1)?.ordinal ?? 0) + 1, "REVIEW_RECOVERY_RESULT_CHANGED");
+  assert.ok(!previous.some(r => r.invocationId === next.invocationId), "REVIEW_RECOVERY_RESULT_CHANGED");
+}
+export type ReviewFailureKind = "transport-403" | "timeout" | "cancelled" | "terminal" | "evidence-or-policy" | "semantic-unavailable";
+/** A nonzero process is necessary. Only a complete known diagnostic sequence is
+ * retryable; mixed, malformed, successful or ambiguous streams fail closed. */
+export function classifyReviewTerminalFailure(lines: string[], code: number | null, timedOut: boolean, cancelled: boolean, oversized = false): ReviewFailureKind {
+  if (cancelled) return "cancelled";
+  if (timedOut) return "timeout";
+  if (oversized || code === null || code === 0) return "terminal";
+  let reconnect = 0, fallback = false, failed = false;
+  try {
+    for (const line of lines) {
+      const e = uniqueJson(line) as { type?: string; message?: unknown; error?: { message?: unknown }; item?: { type?: string; message?: unknown } };
+      if (typeof e.type !== "string" || failed || e.type === "turn.completed") return "terminal";
+      if (e.type === "error") {
+        const match = typeof e.message === "string" && /^Reconnecting\.\.\. ([1-5])\/5 \(unexpected status 403 Forbidden:[\s\S]*, url: wss:\/\/chatgpt\.com\/backend-api\/codex\/responses, cf-ray: [A-Za-z0-9-]+\)$/u.exec(e.message);
+        if (!match || fallback || Number(match[1]) !== reconnect + 1) return "terminal";
+        reconnect++;
+      } else if (e.item?.type === "error") {
+        if (e.type !== "item.completed" || fallback || reconnect !== 5 || typeof e.item.message !== "string" || !/^Falling back from WebSockets to HTTPS transport\. unexpected status 403 Forbidden:[\s\S]*, url: wss:\/\/chatgpt\.com\/backend-api\/codex\/responses, cf-ray: [A-Za-z0-9-]+$/u.test(e.item.message)) return "terminal";
+        fallback = true;
+      } else if (e.type === "turn.failed") {
+        // Some CLI versions omit error details after the complete reconnect
+        // sequence. If present they must be the same exact transport diagnostic.
+        if (e.error !== undefined && (typeof e.error?.message !== "string" || !/^unexpected status 403 Forbidden:[\s\S]*, url: wss:\/\/chatgpt\.com\/backend-api\/codex\/responses, cf-ray: [A-Za-z0-9-]+$/u.test(e.error.message))) return "terminal";
+        failed = true;
+      } else if (!["thread.started", "turn.started", "item.started", "item.updated", "item.completed"].includes(e.type)) return "terminal";
+    }
+  } catch { return "terminal"; }
+  return reconnect === 5 && failed ? "transport-403" : "terminal";
+}
+
+export type ReviewRecovery = {
+  version: "once-v1";
+  resultSha256: string;
+  first: ReviewIdentity;
+  snapshotSha256: string;
+  originals: ReviewSource[];
+  state: "prepared" | "source_failed" | "retry_reserved" | "retry_started" | "closed";
+  sourceFailure?: { terminalSha256: string; closedStateSha256: string };
+  retry?: ReviewIdentity;
+  receipt?: ReviewReceipt;
+  failure?: ReviewFailureKind;
+};
+const recoveryStates = ["prepared", "source_failed", "retry_reserved", "retry_started", "closed"] as const;
+export async function writeReviewRecovery(root: string, value: ReviewRecovery) {
+  await assertPlainPath(parse(root).root, root);
+  await writeFile(join(root, `recovery-${value.state}.json`), JSON.stringify(value), { flag: "wx" });
+}
+/** Immutable host transitions, rather than a mutable retry counter, bind the
+ * persisted record. An on-disk transition ahead of run.json is ambiguous. */
+export async function readReviewRecovery(root: string, expected: ReviewRecovery) {
+  keys(expected, ["version", "resultSha256", "first", "snapshotSha256", "originals", "state", ...["sourceFailure", "retry", "receipt", "failure"].filter(k => Object.hasOwn(expected, k))]);
+  assert.equal(expected.version, "once-v1");
+  assert.ok(recoveryStates.includes(expected.state));
+  let latest: ReviewRecovery | undefined;
+  for (const state of recoveryStates) {
+    const path = join(root, `recovery-${state}.json`);
+    let raw: string;
+    try { await assertPlainPath(parse(root).root, path); raw = await readReport(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    const record = uniqueJson(raw) as ReviewRecovery;
+    assert.equal(record.state, state);
+    for (const key of ["version", "resultSha256", "first", "snapshotSha256", "originals"] as const) assert.deepEqual(record[key], expected[key], "REVIEW_RECOVERY_BINDING_CHANGED");
+    if (!latest) assert.equal(state, "prepared", "REVIEW_RECOVERY_PREPARED_MISSING");
+    else {
+      assert.ok(state === "closed" || recoveryStates.indexOf(state) === recoveryStates.indexOf(latest.state) + 1, "REVIEW_RECOVERY_TRANSITION_INVALID");
+      for (const key of ["sourceFailure", "retry"] as const) if (latest[key]) assert.deepEqual(record[key], latest[key], "REVIEW_RECOVERY_BINDING_CHANGED");
+    }
+    latest = record;
+  }
+  assert.deepEqual(latest, expected, "REVIEW_RECOVERY_RECORD_CHANGED");
+  const snapshot = uniqueJson(await readReport(join(root, "snapshot.json"))) as ReviewSnapshot;
+  assert.deepEqual(snapshot.identity, expected.first);
+  assert.equal(reportSha(JSON.stringify(snapshot)), expected.snapshotSha256, "REVIEW_RECOVERY_SNAPSHOT_CHANGED");
+  // Missing transition files are intentional. Check their existing ancestors.
+  await assertNoWindowsReparsePoints([root, join(root, "snapshot.json"), ...snapshot.evidence.map(s => s.path)]);
+  for (const source of snapshot.evidence) await readReviewSource(source, false);
+  await assertNoWindowsReparsePoints([root, join(root, "snapshot.json"), ...snapshot.evidence.map(s => s.path)]);
+  if (expected.sourceFailure) {
+    await assertNoWindowsReparsePoints([join(root, "terminal.json"), join(root, "state.json")]);
+    const terminalRaw = await readReport(join(root, "terminal.json"));
+    assert.equal(reportSha(terminalRaw), expected.sourceFailure.terminalSha256);
+    const t = uniqueJson(terminalRaw) as { lines: string[]; code: number | null; timedOut: boolean; cancelled: boolean };
+    assert.equal(classifyReviewTerminalFailure(t.lines, t.code, t.timedOut, t.cancelled), "transport-403");
+    const stateRaw = await readReport(join(root, "state.json"));
+    assert.equal(reportSha(stateRaw), expected.sourceFailure.closedStateSha256);
+    const state = uniqueJson(stateRaw) as { status: string; identity: ReviewIdentity; snapshotSha256: string };
+    assert.equal(state.status, "closed"); assert.deepEqual(state.identity, expected.first); assert.equal(state.snapshotSha256, expected.snapshotSha256);
+  }
+  if (expected.retry) {
+    assert.equal(expected.retry.runId, expected.first.runId); assert.equal(expected.retry.taskId, expected.first.taskId);
+    assert.equal(expected.retry.phase, "reviewer"); assert.equal(expected.retry.ordinal, expected.first.ordinal + 1);
+    assert.match(expected.retry.invocationId, /^[a-f0-9]{32}$/u); assert.notEqual(expected.retry.invocationId, expected.first.invocationId);
+    assert.ok(expected.sourceFailure, "REVIEW_RECOVERY_SOURCE_MISSING");
+  }
+  if (["source_failed", "retry_reserved", "retry_started"].includes(expected.state)) assert.ok(expected.sourceFailure, "REVIEW_RECOVERY_SOURCE_MISSING");
+  if (["retry_reserved", "retry_started"].includes(expected.state)) assert.ok(expected.retry, "REVIEW_RECOVERY_RETRY_MISSING");
+  if (expected.state === "source_failed") assert.equal(expected.retry, undefined);
+  if (expected.state === "prepared") assert.ok(!expected.sourceFailure && !expected.retry && !expected.receipt && !expected.failure);
+  if (expected.receipt) assert.deepEqual(expected.receipt.identity, expected.retry ?? expected.first, "REVIEW_RECOVERY_RECEIPT_CHANGED");
+  return snapshot;
+}
 export function assertGisReviewInventory(artifacts: Record<string, string>, runPath: string, count: number, performance: boolean) {
   const required = ["selection.json", "manifest.json", "completion.json", "receipt.json", "publication.json", "canonical-finalizer/run-result.json", "isolated-finalizer/run-result.json", ...Array.from({ length: count }, (_, i) => [`bundle-${i}.json`, `response-${i}.json`, `validated-artifacts/validation-${i}.json`, ...(performance ? [`performance-baseline-${i}.json`] : [])]).flat()].map(name => `${runPath}/${name}`);
   for (const path of required) assert.ok(Object.hasOwn(artifacts, path), `REVIEW_MANDATORY_MISSING: ${path}`);
@@ -124,6 +232,7 @@ export class ReviewToolService {
   private privateValues: string[] = [];
   private expectedState = "";
   private timer?: ReturnType<typeof setTimeout>;
+  private operationFailed = false;
   private constructor(readonly root: string, readonly snapshot: ReviewSnapshot, private guard: () => Promise<void>, private state: State, private boundary?: (name: string) => Promise<void>) {}
   get signal() { return this.controller.signal; }
   protectConnection(values: string[]) { this.privateValues = [...values]; }
@@ -164,7 +273,22 @@ export class ReviewToolService {
     await assertNoWindowsReparsePoints(this.snapshot.evidence.map(s => s.path));
     assert.ok(this.alive, "REVIEW_CLOSED");
   }
-  invoke(name: string, args: unknown) { const result = this.chain.catch(() => undefined).then(() => this.operation(name, args)); this.chain = result; return result; }
+  invoke(name: string, args: unknown) { const result = this.chain.catch(() => undefined).then(() => this.operation(name, args)).catch(error => { this.operationFailed = true; throw error; }); this.chain = result; return result; }
+  async assertRecoverySafe() {
+    await this.chain.catch(() => undefined);
+    assert.ok(!this.operationFailed && this.alive && ["active", "sealed"].includes(this.state.status), "REVIEW_RECOVERY_TOOL_FAILURE");
+    assert.equal(await readReport(join(this.root, "state.json")), this.expectedState, "REVIEW_STATE_CHANGED");
+    assert.equal(await readReport(join(this.root, "snapshot.json")), JSON.stringify(this.snapshot), "REVIEW_SNAPSHOT_CHANGED");
+    await this.guard();
+    await assertNoWindowsReparsePoints([join(this.root, "state.json"), join(this.root, "snapshot.json"), ...this.snapshot.evidence.map(s => s.path)]);
+    for (const source of this.snapshot.evidence) await readReviewSource(source, false);
+    return this.state.status === "sealed" ? decodeReviewVerdict(await this.submission(), this.snapshot) : undefined;
+  }
+  async assertRecoveryClosed() {
+    assert.ok(!this.operationFailed && this.state.status === "closed", "REVIEW_RECOVERY_TOOL_FAILURE");
+    assert.equal(await readReport(join(this.root, "state.json")), this.expectedState, "REVIEW_STATE_CHANGED");
+    assert.equal(await readReport(join(this.root, "snapshot.json")), JSON.stringify(this.snapshot), "REVIEW_SNAPSHOT_CHANGED");
+  }
   private async operation(name: string, args: unknown): Promise<unknown> {
     await this.fence(); assert.ok(["read_evidence", "submit_verdict"].includes(name), "REVIEW_UNKNOWN_TOOL");
     const bytes = Buffer.byteLength(JSON.stringify(args));

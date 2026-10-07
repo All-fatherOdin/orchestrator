@@ -145,6 +145,88 @@ if(p.startsWith('Independently review the host-owned immutable evidence.')){
   return f;
 }
 
+function structuredTransportFixture(mode: string) {
+  const f = structuredCorrectionFixture(), config = f.queue.tasks[0].isolatedArtifacts!.processPackage!.configuration;
+  config.scopes = config.scopes.slice(0, 2);
+  const native = join(f.project, "runtime/quality-catch-up-orchestrator.mjs");
+  writeFileSync(native, readFileSync(native, "utf8").replace("before.completed+5", "before.completed+2").replace(/files:\[[^\]]+\]/u, `files:${JSON.stringify(["one.ts", "two.ts"].map((path, i) => ({ path, blobSha: String(i + 1).repeat(40) })))}`));
+  const manifest = JSON.parse(readFileSync(f.manifest, "utf8"));
+  manifest.runtimeEvidence.find((e: { path: string }) => e.path === "runtime/quality-catch-up-orchestrator.mjs").sha256 = gisSha(readFileSync(native));
+  writeFileSync(f.manifest, JSON.stringify(manifest)); config.manifest.sha256 = gisSha(readFileSync(f.manifest));
+  writeFileSync(f.checker, readFileSync(f.checker, "utf8").replace(".completed,5)", ".completed,2)")); config.gates[0].sha256 = gisSha(readFileSync(f.checker));
+  const counter = join(f.root, "transport-review-count");
+  let provider = readFileSync(f.provider, "utf8");
+  provider = provider.replace(/const first=!fs\.existsSync\([^\n]*\),remarks=\[\];/u, "const first=false,remarks=[];");
+  const failure = `for(let i=1;i<=5;i++)console.log(JSON.stringify({type:'error',message:'Reconnecting... '+i+'/5 (unexpected status 403 Forbidden: <html>, url: wss://chatgpt.com/backend-api/codex/responses, cf-ray: abc-DME)'}));console.log(JSON.stringify({type:'turn.failed'}));process.exitCode=1;return;`;
+  provider = provider.replace("  const c=a.find", `  const counter=${JSON.stringify(counter)};const reviewNumber=fs.existsSync(counter)?Number(fs.readFileSync(counter))+1:1;fs.writeFileSync(counter,String(reviewNumber));${["submitted-failed", "correction"].includes(mode) ? "" : `if(reviewNumber===1||${mode === "twice"}){${failure}}`}\n  const c=a.find`);
+  if (mode === "correction") provider = provider.replace("const first=false,remarks=[];", "const first=reviewNumber===1,remarks=[];").replace("for(const index of [3,4])", "for(const index of [0])");
+  if (mode === "submitted-failed") provider = provider.replace("  await call('submit_verdict',{payloadJson});", `  await call('submit_verdict',{payloadJson});if(reviewNumber===1){${failure}}`);
+  writeFileSync(f.provider, provider);
+  f.queue.tasks[0].reviewTransportRecovery = "once-v1";
+  f.queue.project.approvedApplyContracts![0].reviewTransportRecovery = "once-v1";
+  f.queue.project.approvedApplyContracts![0].isolatedArtifacts = structuredClone(f.queue.tasks[0].isolatedArtifacts);
+  f.queue = validateQueue(f.queue);
+  return { ...f, counter };
+}
+
+test("Stage 4 structured GIS recovery retains verification and executor through transport failure and reserved restart", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    for (const mode of ["recover", "twice", "submitted-failed", "restart-reserved", "restart-closed"]) {
+      const f = structuredTransportFixture(mode); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+      let interrupted = false;
+      if (mode.startsWith("restart")) configureGisLifecycleTestBoundary(async name => {
+        const boundary = mode === "restart-reserved" ? "review-recovery-after-reservation" : "review-recovery-closed";
+        if (name === boundary && !interrupted) { interrupted = true; throw new Error("Fixture host interrupted before GIS review checkpoint"); }
+      });
+      let run = createRun(f.queue); await executeQueue(run); configureGisLifecycleTestBoundary();
+      if (mode.startsWith("restart")) {
+        assert.ok(interrupted); assert.equal(run.tasks[0].status, "failed");
+        assert.equal(run.tasks[0].processProgress!.attempts.executor, 1); assert.equal(run.tasks[0].processProgress!.attempts.verification, 1); assert.equal(run.tasks[0].processProgress!.attempts.publication, 0);
+        const saved = await loadRun(run.id); assert.ok(saved); const continued = resumeRun(JSON.parse(JSON.stringify(saved))); assert.ok(continued);
+        run = continued; await executeQueue(run);
+      }
+      const t = run.tasks[0], p = t.processProgress!;
+      assert.equal(t.status, mode === "twice" ? "failed" : "completed", `${mode}: ${t.log.join("\n")}`);
+      assert.equal(p.attempts.executor, 1); assert.equal(p.attempts.verification, 1); assert.equal(p.attempts.review, 1); assert.equal(p.attempts.publication, mode === "twice" ? 0 : 1);
+      assert.equal(Number(readFileSync(f.counter, "utf8")), 2); assert.equal(t.structuredReviewInvocations!.length, 2);
+      assert.equal(t.agentReports!.length, 1); assert.equal(t.reviewTransportRecoveries!.length, 1); assert.equal(t.reviewTransportRecoveries![0].state, "closed");
+      assert.equal(t.structuredReviews?.length ?? 0, mode === "twice" ? 0 : 1);
+      assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, mode === "twice" ? 0 : 2);
+      assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-baseline.json"), "utf8")).completed, mode === "twice" ? 0 : 2);
+      assert.equal(existsSync(join(f.project, f.runPath, "publication.json")), mode !== "twice");
+      if (mode === "twice") {
+        const continued = resumeRun(JSON.parse(JSON.stringify(run))); assert.ok(continued); await executeQueue(continued);
+        assert.equal(continued.tasks[0].status, "failed"); assert.equal(Number(readFileSync(f.counter, "utf8")), 2); assert.equal(continued.tasks[0].processProgress!.attempts.publication, 0);
+      }
+    }
+  } finally {
+    configureGisLifecycleTestBoundary(); if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin;
+    if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script;
+  }
+});
+
+test("Stage 4 structured GIS correction binds a fresh recovery cycle to its newly verified executor result", async () => {
+  const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const f = structuredTransportFixture("correction"); process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = f.provider;
+    const run = createRun(f.queue); await executeQueue(run); const t = run.tasks[0], p = t.processProgress!;
+    assert.equal(run.status, "completed", t.log.join("\n"));
+    assert.equal(p.attempts.executor, 2); assert.equal(p.attempts.verification, 2); assert.equal(p.attempts.review, 2); assert.equal(p.attempts.publication, 1);
+    assert.equal(t.reviewTransportRecoveries!.length, 2); assert.notEqual(t.reviewTransportRecoveries![0].resultSha256, t.reviewTransportRecoveries![1].resultSha256);
+    assert.ok(t.reviewTransportRecoveries!.every(c => c.state === "closed" && c.receipt && !c.retry));
+    assert.equal(t.agentReports!.length, 2); assert.equal(t.structuredReviews!.length, 2); assert.equal(Number(readFileSync(f.counter, "utf8")), 2);
+    assert.match(JSON.parse(readFileSync(join(f.project, f.runPath, "response-0.json"), "utf8")).reviewedUnits[0].summaryRu, /^Corrected fixture/);
+    assert.match(JSON.parse(readFileSync(join(f.project, f.runPath, "response-1.json"), "utf8")).reviewedUnits[0].summaryRu, /^Concrete fixture/);
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-coverage.json"), "utf8")).completed, 2);
+    assert.equal(JSON.parse(readFileSync(join(f.project, f.state, "quality-baseline.json"), "utf8")).completed, 2);
+    const restored = await loadRun(run.id); assert.ok(restored); assert.equal(restored.status, "completed");
+  } finally {
+    if (original.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = original.bin;
+    if (original.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = original.script;
+  }
+});
+
 test("structured GIS reviewer correction survives JSON restart and rejects forged targets and receipts", async () => {
   const original = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
   try {

@@ -19343,6 +19343,243 @@ test("Stage 3 reviewer opt-in is exact approval-bound and replay-bound", () => {
   for (const edit of [(i: any) => i.tasks[0].reviewProtocol = "unknown", (i: any) => i.review.enabled = false, (i: any) => i.tasks[0].authorization.enabled = false, (i: any) => i.tasks[0].verificationMode = "advisory"]) { const copy = structuredClone(input); edit(copy); assert.throws(() => validateTaskQueue(copy)); }
 });
 
+test("Stage 4 recovery policy is exact approval-bound, validated and persisted", () => {
+  const input = queueAuthoringContractInput(process.cwd()); input.review = { enabled: true };
+  input.tasks[0].reviewProtocol = "invocation-mcp-v1";
+  input.project.approvedApplyContracts[0].reviewProtocol = "invocation-mcp-v1";
+  input.tasks[0].reviewTransportRecovery = "once-v1";
+  assert.equal(authorizeTask(input.tasks[0], input.project).decision, "denied");
+  input.project.approvedApplyContracts[0].reviewTransportRecovery = "once-v1";
+  const queue = validateTaskQueue(input), r = createRun(queue), t = r.tasks[0];
+  t.authorizationEvidence = authorizeTask(t, r.project);
+  assert.equal(t.authorizationEvidence.decision, "authorized"); assert.equal(t.reviewTransportRecovery, "once-v1");
+  assert.equal(t.authorizationEvidence.reviewTransportRecovery, "once-v1");
+  assert.notEqual(authorizeTask({ ...t, reviewTransportRecovery: undefined }, r.project).scopeFingerprint, t.authorizationEvidence.scopeFingerprint);
+  for (const edit of [(q: any) => q.tasks[0].reviewTransportRecovery = "unknown", (q: any) => q.tasks[0].reviewProtocol = undefined, (q: any) => q.review.enabled = false, (q: any) => q.tasks[0].authorization.enabled = false, (q: any) => q.tasks[0].verificationMode = "advisory", (q: any) => { q.tasks[0].verificationCommands = []; q.project.verificationCommands = []; }]) {
+    const copy = structuredClone(input); edit(copy); assert.throws(() => validateTaskQueue(copy));
+  }
+  const restored = JSON.parse(JSON.stringify(r)); restored.tasks[0].reviewTransportRecovery = undefined;
+  assert.throws(() => resumeRun(restored));
+});
+
+function stage4TestProvider(mode: string, counter: string, project: string) {
+  return `
+const fs=require('node:fs');if(process.argv.includes('list')){console.log('[]');process.exit(0)}
+let p='';process.stdin.on('data',x=>p+=x);process.stdin.on('end',async()=>{try{
+const a=process.argv.slice(2),out=a[a.indexOf('--output-last-message')+1],mode=${JSON.stringify(mode)},counter=${JSON.stringify(counter)};
+if(mode==='ordinary-correction'&&!p.startsWith('Independently review the host-owned immutable evidence.')){
+if(p.startsWith('Review only')){fs.writeFileSync(out,'VERDICT: APPROVED');return;}
+const executions=counter+'-executor',n=fs.existsSync(executions)?Number(fs.readFileSync(executions))+1:1;fs.writeFileSync(executions,String(n));
+fs.writeFileSync(${JSON.stringify(join(project, "owned.txt"))},n===1?'bad':'correct');fs.writeFileSync(out,'Fixture completed.\\nORCHESTRATOR_EXECUTOR_OUTCOME_V1: COMPLETED');console.log(JSON.stringify({type:'turn.completed'}));return;
+}
+const n=fs.existsSync(counter)?Number(fs.readFileSync(counter))+1:1;fs.writeFileSync(counter,String(n));
+const identity=JSON.parse(p.split('\\n').find(l=>l.startsWith('Identity: ')).slice(10)),snapshotSha256=p.split('\\n').find(l=>l.startsWith('Snapshot SHA256: ')).slice(17);
+const declaredEvidence=JSON.parse(p.split('\\n').find(l=>l.startsWith('Evidence: ')).slice(10));
+const config=a.find(x=>x.startsWith('mcp_servers.orchestrator_review=')),url=/url="([^"]+)"/.exec(config)[1];
+const call=async(name,args)=>{const r=await(await fetch(url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+process.env.ORCHESTRATOR_REPORT_MCP_TOKEN},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args}})})).json();if(r.result.isError&&mode!=='tool-error')throw Error(JSON.stringify(r));return r};
+await call('read_evidence',{evidenceId:'context',startLine:1,endLine:200});
+const transport=n===1&&['recover','twice','submitted-failed','budget','tool-error','write','mixed','malformed','oversized','semantic-transport','final-malformed','final-oversized','stderr'].includes(mode)||mode==='twice'||mode==='ordinary-correction'&&n===2;
+if(!transport||mode==='submitted-failed'||mode==='semantic-transport')if(mode!=='missing')await call('submit_verdict',{payloadJson:JSON.stringify({protocolVersion:'invocation-mcp-v1',invocationId:identity.invocationId,snapshotSha256,status:mode.startsWith('semantic')?'unavailable':mode==='ordinary-correction'&&n===1?'changes_requested':'approved',reason:mode.startsWith('semantic')?'Cannot assess evidence.':mode==='ordinary-correction'&&n===1?'Correct owned result.':'',remarks:mode==='ordinary-correction'&&n===1?[{evidenceId:declaredEvidence.find(e=>e.id!=='context').id,field:'content',category:'correctness',message:'Replace bad with correct.',responseIndex:null}]:[]})});
+if(mode==='tool-error')await call('unknown',{});
+if(mode==='write')fs.writeFileSync(${JSON.stringify(join(project, "owned.txt"))},'unauthorized mutation');
+fs.writeFileSync(out,mode==='final-malformed'?'bad json':mode==='final-oversized'?'x'.repeat(5*1024*1024):JSON.stringify({outcome:'completed',reason:''}));
+if(mode==='stderr')console.error('unclassified provider failure');
+if(transport){for(let i=1;i<=5;i++)console.log(JSON.stringify({type:'error',message:'Reconnecting... '+i+'/5 (unexpected status 403 Forbidden: <html>, url: wss://chatgpt.com/backend-api/codex/responses, cf-ray: abc-DME)'}));
+if(mode==='mixed')console.log(JSON.stringify({type:'error',message:'billing denied'}));
+if(mode==='malformed')console.log('not json');if(mode==='oversized')console.log('x'.repeat(530000));
+console.log(JSON.stringify({type:'turn.failed'}));process.exitCode=1;
+}else{console.log(JSON.stringify({type:'turn.completed'}));process.exitCode=mode==='nonzero'?1:0;}
+}catch(e){console.error(e);process.exitCode=8}});
+`;
+}
+
+test("Stage 4 restart boundaries retain the single recovery right and reject changed live evidence", async () => {
+  const { reviewTaskStructured, configureGisLifecycleTestBoundary } = await import("./index.ts");
+  const root = await mkdtemp(join(tmpdir(), "stage4-restart-"));
+  const previous = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    process.env.CODEX_BIN = process.execPath;
+    for (const mode of ["before-reservation", "after-reservation", "before-first-spawn", "retry-preparation-started", "before-retry-spawn", "after-retry-spawn", "closed", "artifact", "authorization", "verification", "predecessor"]) {
+      const project = join(root, mode); await mkdir(project); await writeFile(join(project, "owned.txt"), "verified result");
+      git(project, "init"); git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "test@example.invalid"); git(project, "add", "."); git(project, "commit", "-m", "baseline");
+      const provider = join(root, `${mode}.cjs`), counter = join(root, `${mode}-count.txt`);
+      await writeFile(provider, stage4TestProvider("recover", counter, project)); process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+      const command = 'node -e "console.log(1)"', isPredecessor = mode === "predecessor";
+      const r = createRun(validateTaskQueue({ project: { path: project }, review: { enabled: true, maxCorrections: 0 }, tasks: [
+        { key: "review", title: "Review", prompt: "Read verified evidence.", allowedPaths: [], reviewProtocol: "invocation-mcp-v1", reviewTransportRecovery: "once-v1", verificationCommands: [command], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } },
+        { key: "later", title: "Later", prompt: "Read only.", allowedPaths: [] },
+      ] }));
+      const t = r.tasks[0]; t.status = "running"; t.changedFiles = ["owned.txt"];
+      t.authorizationEvidence = authorizeTask(t, r.project, git(project, "branch", "--show-current"));
+      t.verificationEvidence = [{ command, exitCode: 0, timedOut: false, output: "1" }];
+      // Use the real closed predecessor handoff rather than an invented source.
+      if (isPredecessor) {
+        r.tasks.reverse(); const owner = r.tasks[0]; owner.key = "writer"; owner.status = "completed"; owner.reviewStatus = "approved"; owner.changedFiles = ["owned.txt"]; owner.verificationEvidence = [{ command, exitCode: 0, timedOut: false, output: "owner" }];
+        t.dependsOn = ["writer"]; t.wholeChangeAcceptance = { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"] }; t.changedFiles = [];
+        t.authorizationEvidence = authorizeTask(t, r.project, git(project, "branch", "--show-current")); await prepareWholeChangeAcceptanceEvidence(r, t);
+      }
+      let captured: typeof r | undefined;
+      const stopAt = ["artifact", "authorization", "verification", "predecessor"].includes(mode) ? "before-reservation" : mode;
+      configureGisLifecycleTestBoundary(async (name, run) => {
+        if (name !== `review-recovery-${stopAt}`) return;
+        captured = JSON.parse(JSON.stringify(run));
+        if (mode === "artifact") await writeFile(join(project, "owned.txt"), "changed evidence");
+        else if (mode === "authorization") t.authorizationEvidence!.scopeFingerprint = "f".repeat(64);
+        else if (mode === "verification") t.verificationEvidence![0].output = "changed verification receipt";
+        else if (mode === "predecessor") r.tasks[0].verificationEvidence![0].output = "changed predecessor receipt";
+        else if (!["after-retry-spawn", "closed"].includes(mode)) throw new Error("Fixture host interruption");
+      });
+      await reviewTaskStructured(r, t); configureGisLifecycleTestBoundary();
+      assert.ok(captured, mode);
+      const count = async () => { try { return Number(await readFile(counter, "utf8")); } catch { return 0; } };
+      const firstCount = await count();
+      if (["before-reservation", "after-reservation"].includes(mode)) {
+        const restored = await loadRun(r.id); assert.ok(restored); const target = restored.tasks.find(q => q.id === t.id)!;
+        await reviewTaskStructured(restored, target); assert.equal(target.reviewStatus, "approved", `${mode}: ${target.reviewOutput}`); assert.equal(await count(), 2);
+        await reviewTaskStructured(restored, target); assert.equal(await count(), 2);
+      } else if (mode === "closed") {
+        const target = captured.tasks.find(q => q.id === t.id)!; await reviewTaskStructured(captured, target); assert.equal(target.reviewStatus, "approved", target.reviewOutput); assert.equal(await count(), 2);
+      } else {
+        if (["artifact", "authorization", "verification", "predecessor"].includes(mode)) { assert.equal(firstCount, 1); assert.equal(t.reviewStatus, "unavailable"); }
+        else { const target = captured.tasks.find(q => q.id === t.id)!; await reviewTaskStructured(captured, target); assert.equal(target.reviewStatus, "unavailable", mode); }
+        assert.equal(await count(), firstCount, "No extra reviewer after stale or ambiguous recovery");
+      }
+    }
+  } finally {
+    configureGisLifecycleTestBoundary();
+    if (previous.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = previous.bin;
+    if (previous.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previous.script;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Stage 4 whole-change resume retains canonical verified handoff without rerunning machine gates", async () => {
+  const { configureGisLifecycleTestBoundary } = await import("./index.ts");
+  const root = await mkdtemp(join(tmpdir(), "stage4-whole-change-"));
+  const previous = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const project = join(root, "project"); await mkdir(project); await writeFile(join(project, "owned.txt"), "published writer result");
+    git(project, "init"); git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "test@example.invalid"); git(project, "add", "."); git(project, "commit", "-m", "baseline");
+    const counter = join(root, "review-count"), gateCounter = join(root, "gate-count"), provider = join(root, "provider.cjs"), gate = join(root, "gate.cjs");
+    await writeFile(provider, stage4TestProvider("recover", counter, project));
+    await writeFile(gate, `const fs=require('node:fs'),p=${JSON.stringify(gateCounter)};const n=fs.existsSync(p)?Number(fs.readFileSync(p))+1:1;fs.writeFileSync(p,String(n));console.log('passed');`);
+    process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    const command = `"${process.execPath}" "${gate}"`;
+    const r = createRun(validateTaskQueue({ project: { path: project }, review: { enabled: true, maxCorrections: 0 }, tasks: [
+      { key: "writer", title: "Writer", prompt: "Published fixture.", allowedPaths: ["owned.txt"] },
+      { key: "accept", title: "Acceptance", prompt: "Review exact predecessor.", dependsOn: ["writer"], allowedPaths: [], reviewProtocol: "invocation-mcp-v1", reviewTransportRecovery: "once-v1", verificationCommands: [command], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" }, wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"] } },
+    ] }));
+    r.tasks[0].status = "completed"; r.tasks[0].reviewStatus = "approved"; r.tasks[0].changedFiles = ["owned.txt"]; r.tasks[0].verificationEvidence = [{ command: "writer-gate", exitCode: 0, timedOut: false, output: "writer passed" }];
+    configureGisLifecycleTestBoundary(async (name, _run, taskId) => { if (name === "review-recovery-after-reservation" && taskId === r.tasks[1].id) throw new Error("Fixture host interruption"); });
+    await executeQueue(r); configureGisLifecycleTestBoundary();
+    assert.equal(r.tasks[1].status, "failed"); assert.equal(Number(await readFile(gateCounter, "utf8")), 1); assert.equal(Number(await readFile(counter, "utf8")), 1);
+    const retained = JSON.parse(JSON.stringify(r.tasks[1].verificationEvidence)), handoff = JSON.parse(JSON.stringify(r.tasks[1].wholeChangeAcceptanceEvidence));
+    const saved = await loadRun(r.id); assert.ok(saved); assert.throws(() => retryRun(saved, saved.tasks[1]));
+    const continued = resumeRun(saved); assert.ok(continued); assert.equal(continued.id, r.id);
+    await executeQueue(continued); assert.equal(continued.status, "completed", continued.tasks[1].log.join("\n"));
+    assert.equal(Number(await readFile(gateCounter, "utf8")), 1); assert.equal(Number(await readFile(counter, "utf8")), 2);
+    assert.deepEqual(continued.tasks[1].verificationEvidence, retained); assert.deepEqual(continued.tasks[1].wholeChangeAcceptanceEvidence, handoff);
+    assert.equal(continued.tasks[1].executionAttempts, 0); assert.equal(continued.tasks[1].structuredReviews!.length, 1);
+  } finally {
+    configureGisLifecycleTestBoundary();
+    if (previous.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = previous.bin;
+    if (previous.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previous.script;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Stage 4 ordinary correction gets a fresh verified cycle and its own single transport retry", async () => {
+  const { reviewTaskStructured } = await import("./index.ts");
+  const root = await mkdtemp(join(tmpdir(), "stage4-ordinary-correction-"));
+  const previous = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    const project = join(root, "project"); await mkdir(project); await writeFile(join(project, "seed.txt"), "fixture\n");
+    git(project, "init"); git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "test@example.invalid"); git(project, "add", "."); git(project, "commit", "-m", "baseline");
+    const counter = join(root, "reviews"), gateCounter = join(root, "gates"), provider = join(root, "provider.cjs"), gate = join(root, "gate.cjs");
+    await writeFile(provider, stage4TestProvider("ordinary-correction", counter, project));
+    await writeFile(gate, `const fs=require('node:fs'),assert=require('node:assert/strict'),p=${JSON.stringify(gateCounter)};assert.ok(['bad','correct'].includes(fs.readFileSync('owned.txt','utf8')));const n=fs.existsSync(p)?Number(fs.readFileSync(p))+1:1;fs.writeFileSync(p,String(n));console.log('syntax passed');`);
+    process.env.CODEX_BIN = process.execPath; process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+    const command = `"${process.execPath}" "${gate}"`, approval = { approvalId: "ordinary-stage4", intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write", allowedPaths: ["owned.txt"], verificationCommands: [command], reviewProtocol: "invocation-mcp-v1", reviewTransportRecovery: "once-v1" };
+    const r = createRun(validateTaskQueue({ project: { path: project, approvedApplyContracts: [approval] }, limits: { maxTaskRetries: 0 }, git: { checkpointCommits: false }, review: { enabled: true, maxCorrections: 1 }, tasks: [
+      { key: "writer", title: "Writer", prompt: "Create the correct owned fixture result.", allowedPaths: ["owned.txt"], reviewProtocol: "invocation-mcp-v1", reviewTransportRecovery: "once-v1", verificationCommands: [command], authorization: { enabled: true, approvalId: "ordinary-stage4", intent: "apply", technicalPermission: "reversible_local_write", sideEffectRisk: "reversible_local_write" } },
+      { key: "accept", title: "Acceptance", prompt: "Review exact predecessor.", dependsOn: ["writer"], allowedPaths: [], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" }, wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["writer"] } },
+    ] }));
+    await executeQueue(r); const t = r.tasks[0];
+    assert.equal(r.status, "completed", t.log.join("\n")); assert.equal(await readFile(join(project, "owned.txt"), "utf8"), "correct");
+    assert.equal(Number(await readFile(`${counter}-executor`, "utf8")), 2); assert.equal(Number(await readFile(gateCounter, "utf8")), 2); assert.equal(Number(await readFile(counter, "utf8")), 3);
+    assert.equal(t.attempts, 2); assert.equal(t.structuredReviewInvocations!.length, 3); assert.equal(t.structuredReviews!.length, 2);
+    assert.equal(t.reviewTransportRecoveries!.length, 2); assert.ok(t.reviewTransportRecoveries!.every(c => c.state === "closed"));
+    assert.notEqual(t.reviewTransportRecoveries![0].resultSha256, t.reviewTransportRecoveries![1].resultSha256);
+    assert.equal(t.reviewTransportRecoveries![0].retry, undefined); assert.ok(t.reviewTransportRecoveries![1].retry);
+    const restored = await loadRun(r.id); assert.ok(restored); assert.equal(restored.status, "completed");
+    const forged = JSON.parse(JSON.stringify(r)); forged.tasks[0].attempts++; await reviewTaskStructured(forged, forged.tasks[0]);
+    assert.equal(forged.tasks[0].reviewStatus, "unavailable"); assert.equal(Number(await readFile(counter, "utf8")), 3, "Counter tampering cannot mint a third result cycle");
+  } finally {
+    if (previous.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = previous.bin;
+    if (previous.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previous.script;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Stage 4 actual reviewer retries once, fences failure categories, budgets and closed replay", async () => {
+  const { reviewTaskStructured, assertTaskReviewArtifacts, configureGisLifecycleTestBoundary } = await import("./index.ts");
+  const root = await mkdtemp(join(tmpdir(), "stage4-reviewer-"));
+  const previous = { bin: process.env.CODEX_BIN, script: process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT };
+  try {
+    process.env.CODEX_BIN = process.execPath;
+    for (const mode of ["recover", "twice", "submitted-failed", "nonzero", "missing", "semantic", "mixed", "malformed", "oversized", "tool-error", "write", "semantic-transport", "final-malformed", "final-oversized", "stderr", "budget"]) {
+      const project = join(root, mode); await mkdir(project); await writeFile(join(project, "owned.txt"), "verified result");
+      git(project, "init"); git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "test@example.invalid"); git(project, "add", "."); git(project, "commit", "-m", "baseline");
+      const counter = join(root, `${mode}-count.txt`), provider = join(root, `${mode}.cjs`);
+      await writeFile(provider, stage4TestProvider(mode, counter, project));
+      process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = provider;
+      const command = 'node -e "console.log(1)"';
+      const r = createRun(validateTaskQueue({ project: { path: project }, review: { enabled: true, maxCorrections: 0 }, tasks: [
+        { key: "review", title: "Review", prompt: "Read verified evidence.", allowedPaths: [], reviewProtocol: "invocation-mcp-v1", reviewTransportRecovery: "once-v1", verificationCommands: [command], authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" }, ...(mode === "budget" ? { executionBudget: { contractType: "ExecutionBudgetPolicyV1", contractVersion: "1.0", budgetId: "stage4", maxProviderInvocations: 2, phaseCaps: { executor: 1, reviewer: 1, correction: 0 } } } : {}) },
+        { key: "later", title: "Later", prompt: "Read only.", allowedPaths: [] },
+      ] }));
+      const t = r.tasks[0]; t.status = "running"; t.changedFiles = ["owned.txt"];
+      t.authorizationEvidence = authorizeTask(t, r.project, git(project, "branch", "--show-current"));
+      t.verificationEvidence = [{ command, exitCode: 0, timedOut: false, output: "1" }];
+      await reviewTaskStructured(r, t);
+      const success = mode === "recover" || mode === "submitted-failed", repeated = success || mode === "twice";
+      assert.equal(t.reviewStatus, success ? "approved" : "unavailable", `${mode}: ${t.reviewOutput}`);
+      assert.equal(Number(await readFile(counter, "utf8")), repeated ? 2 : 1, mode);
+      assert.equal(t.structuredReviews?.length ?? 0, success || mode === "semantic" ? 1 : 0, mode);
+      assert.equal(t.reviewTransportRecoveries?.length, 1, mode);
+      assert.equal(t.reviewTransportRecoveries![0].state, "closed");
+      const restored = JSON.parse(JSON.stringify(r)); await assertTaskReviewArtifacts(restored, restored.tasks[0]);
+      if (success || mode === "twice") {
+        await reviewTaskStructured(restored, restored.tasks[0]); assert.equal(Number(await readFile(counter, "utf8")), 2, "Closed replay must not spawn a third reviewer");
+      }
+      if (success) {
+        const first = t.structuredReviewInvocations![0], second = t.structuredReviewInvocations![1];
+        const folder = (id: string) => join(testDataDirectory, "runs", r.id, `${t.id}-structured-reviews`, id);
+        const before = JSON.parse(await readFile(join(folder(first.invocationId), "snapshot.json"), "utf8")), after = JSON.parse(await readFile(join(folder(second.invocationId), "snapshot.json"), "utf8"));
+        assert.deepEqual(after, { ...before, identity: second });
+        assert.equal(JSON.parse(await readFile(join(folder(first.invocationId), "state.json"), "utf8")).status, "closed");
+        assert.deepEqual(t.structuredReviews![0].identity, second);
+        for (const mutate of [(q: typeof r) => q.tasks[0].reviewTransportRecoveries![0].resultSha256 = "f".repeat(64), (q: typeof r) => q.tasks[0].reviewTransportRecoveries![0].retry!.invocationId = "f".repeat(32), (q: typeof r) => q.tasks[0].reviewTransportRecoveries![0].state = "retry_reserved", (q: typeof r) => q.tasks[0].reviewTransportRecoveries = [],
+          (q: typeof r) => q.tasks[0].structuredReviewInvocations![1].ordinal = 99,
+          (q: typeof r) => q.tasks[0].structuredReviewInvocations!.splice(0, 0, structuredClone(q.tasks[0].structuredReviewInvocations![0])),
+          (q: typeof r) => { q.tasks[0].structuredReviewInvocations!.push({ ...q.tasks[0].structuredReviewInvocations!.at(-1)!, invocationId: "c".repeat(32), ordinal: 3 }); q.tasks[0].reviewStatus = "pending"; },
+        ]) {
+          const copy = JSON.parse(JSON.stringify(r)); mutate(copy); await reviewTaskStructured(copy, copy.tasks[0]); assert.equal(copy.tasks[0].reviewStatus, "unavailable"); assert.equal(Number(await readFile(counter, "utf8")), 2);
+        }
+      }
+      if (mode === "budget") {
+        assert.ok(t.executionBudgetEvidence?.some(e => e.contractType === "ExecutionBudgetAdmissionV1" && e.disposition === "allow"));
+        assert.ok(t.reviewOutput?.includes("BUDGET_DENIED"), t.reviewOutput);
+      }
+    }
+  } finally {
+    configureGisLifecycleTestBoundary();
+    if (previous.bin === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = previous.bin;
+    if (previous.script === undefined) delete process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT; else process.env.ORCHESTRATOR_TEST_CODEX_SCRIPT = previous.script;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Stage 3 actual reviewer process seals verdict, fences terminal failure and replay", async () => {
   const { reviewTaskStructured, assertTaskReviewArtifacts } = await import("./index.ts");
   const root = await mkdtemp(join(tmpdir(), "stage3-reviewer-process-"));

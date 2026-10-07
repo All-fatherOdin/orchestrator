@@ -96,6 +96,12 @@ run.json. Не использовать устаревший статус из �
 
 ## Этап 4 — после отдельной приёмки этапа 3
 
+[Контракт этапа 4](agent-review-stage4-contract-v1.md): владелец запросил
+реализацию одного автоматического повтора 2026-10-06; implementation и machine
+verification завершены. [Приёмка исходников](agent-review-stage4-acceptance-20261006.md)
+фиксирует evidence и оставшийся workspace Context Budget failure.
+Установка и operational acceptance остаются отдельной границей.
+
 Ограниченное восстановление reviewer при transport failure: использовать
 сохранённый verified результат, сохранять идентичность и бюджеты, запрещать
 бесконечные retries и обход независимого review. Отдельно проверить deployment,
