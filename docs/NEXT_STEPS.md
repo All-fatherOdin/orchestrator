@@ -28,8 +28,9 @@ The [GIS 2 continuation preparation](gis-continuation-preparation-20261007.md)
 records the exact unfinished source and the production recovery prerequisite;
 it is a blocked proposal, not a launch-ready writer queue.
 The [manual GIS recovery operational record](gis-prepared-correction-operational-20261007.md)
-records deployment and fresh installed smoke for `d290908`; the isolated recovery
-pilot and writer continuation remain pending.
+records deployment and fresh installed smoke for `d290908`; targeted recovery
+failed its historical mechanical-evidence precondition before executor, and the
+conservative reservation remains consumed. Writer continuation is blocked.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.
