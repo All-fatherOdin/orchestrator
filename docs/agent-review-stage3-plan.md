@@ -97,9 +97,11 @@ run.json. Не использовать устаревший статус из �
 ## Этап 4 — после отдельной приёмки этапа 3
 
 [Контракт этапа 4](agent-review-stage4-contract-v1.md): владелец запросил
-реализацию одного автоматического повтора 2026-10-06; implementation и machine
-verification завершены. [Приёмка исходников](agent-review-stage4-acceptance-20261006.md)
-фиксирует evidence и оставшийся workspace Context Budget failure.
+реализацию одного автоматического повтора 2026-10-06; реализация, machine
+verification и независимая приёмка исходников завершены. Реализация записана
+в commit `dfafa19`. [Приёмка исходников](agent-review-stage4-acceptance-20261006.md)
+сохраняет исторический pre-commit отказ Context Budget и успешную проверку
+на чистом implementation commit от 2026-10-07.
 Установка и operational acceptance остаются отдельной границей.
 
 Ограниченное восстановление reviewer при transport failure: использовать

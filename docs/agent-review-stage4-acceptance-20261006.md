@@ -1,12 +1,14 @@
 # Приёмка исходников этапа 4 — 2026-10-06
 
-Статус: qualified source/fixture acceptance, 2026-10-07. Независимый reviewer
-принял реализацию и точное verification evidence без actionable findings.
-Workspace Context Budget gate остаётся failed по dirty-source provenance;
-это не безусловный all-gates pass.
+Статус: реализация закоммичена в `dfafa19`; source/fixture acceptance от
+2026-10-07 подтверждена независимым reviewer без actionable findings.
+Исходная приёмка имела provenance оговорку: pre-commit Context Budget gate
+failed из-за dirty sources. На чистом implementation commit от 2026-10-07
+новый Context Budget gate прошёл с предупреждениями. Старый отказ не удалён
+и не переобозначен как passed.
 Сессия начата 2026-10-06; полный regression завершён 2026-10-07 (Europe/Moscow).
-Роль: отчёт одной ограниченной реализации в текущей сессии, не статус
-установленного приложения. [Контракт](agent-review-stage4-contract-v1.md) ·
+Роль: исторический отчёт исходной реализации, дополненный проверкой после
+коммита; не статус установленного приложения. [Контракт](agent-review-stage4-contract-v1.md) ·
 [План этапа 3 и переход к этапу 4](agent-review-stage3-plan.md).
 
 ## Реализация и границы
@@ -32,7 +34,7 @@ verification. Старый report, подмена счётчика и лишня
 retry и повреждённый final completion output. Эти замечания исправлены и
 добавлены соответствующие fixtures. Также закрыты stale/duplicate correction
 identity, forged ordinal и replay approval с лишней pending invocation.
-Финальный verdict — ACCEPTED с указанным provenance ограничением. Заключение
+Финальный verdict исходной приёмки — ACCEPTED с pre-commit provenance оговоркой. Заключение
 сохранено в `queues/agent-review-stage4-20261006/independent-source-review.md`.
 Первый финальный reviewer turn прервался transport 403 до verdict; read-only
 review был возобновлён на тех же frozen runtime bytes и exact completed logs.
@@ -46,7 +48,7 @@ Documentation: этот отчёт, контракт этапа 4, план эт
 Dependencies, baseline, Project Map, существующие очереди и runtime receipts
 не изменялись. Логи этой сессии: queues/agent-review-stage4-20261006/.
 
-## Проверки
+## Проверки исходной реализации
 
 Финальные focused Node suites: 23/23, exit 0; Stage 4 production GIS suites:
 2/2, exit 0 (пять transport/restart вариантов и отдельная correction fixture).
@@ -81,11 +83,11 @@ completed logs являются passing evidence; development attempts не за
   `queues/agent-review-stage4-20261006/source-hashes-final-check.json`
   подтверждает неизменность всех восьми файлов после полного regression.
 
-Context Budget CLI в текущей рабочей копии отвергает dirty measured
+Во время исходной pre-commit проверки Context Budget CLI отверг dirty measured
 `docs/NEXT_STEPS.md` с `CONTEXT_BUDGET_SOURCE_CHANGED`; byte envelopes не
 нарушены, прирост navigation остаётся advisory. Этот отказ сохраняется как
 workspace gate failure. Отдельная проверка чистого Git snapshot тех же source
-bytes будет отражена со своей командой, commit identity и executable inventory
+bytes отражена со своей командой, commit identity и executable inventory
 assertion; она не превращает исходный workspace gate в passed.
 Точный workspace log:
 `queues/agent-review-stage4-20261006/context-budget-workspace-verified.log`;
@@ -96,26 +98,61 @@ exit 1 и interpreter:
 
 Final snapshot command: `node scripts/verify-source-snapshot.mjs SOURCE_ROOT
 SNAPSHOT_ROOT`, затем `npm.cmd run context-budget:report -- --root SNAPSHOT_ROOT`.
-Exact resolved roots и commit identity записываются в
+Exact resolved roots и commit identity исходного snapshot записаны в
 `queues/agent-review-stage4-20261006/context-snapshot-location.json`;
 final outcomes — в
 `queues/agent-review-stage4-20261006/snapshot-equality-verified.log`,
 `queues/agent-review-stage4-20261006/context-budget-snapshot-verified.log` и
 `queues/agent-review-stage4-20261006/context-snapshot-verified-exit.json`.
 Snapshot содержит все tracked и untracked source bytes и не включает ignored
-queues. Commit существует только в отдельном временном checkout; основной
-worktree и index не коммитились. Snapshot equality: pass; Context Budget:
+queues. На момент этой проверки commit существовал только в отдельном временном
+checkout; основная реализация ещё не была закоммичена. Snapshot equality: pass; Context Budget:
 exit 0, pass-with-warnings (navigation growth advisory и unsupported host-owned
 sources), не безусловный envelope pass для неподдерживаемых host sources.
 Executable equality assertion связывает все 373 source files, включая новые
 untracked docs/scripts, с clean snapshot commit из указанного locator.
-Последние doc lifecycle edits включены в повторную final snapshot проверку.
+Doc lifecycle edits исходной приёмки включены в ту snapshot проверку.
+Snapshot и эти logs являются историческим evidence исходной приёмки;
+последующие изменения документации не покрываются их equality assertion.
 
 `queues/agent-review-stage4-20261006/diff-check-verified.log` — `git diff --check`;
 `queues/agent-review-stage4-20261006/untracked-whitespace-verified.json` —
 отдельная проверка всех четырёх новых untracked files;
 `queues/agent-review-stage4-20261006/document-links-verified.log` — проверка
 local links четырёх изменённых/новых документов. Outcomes: pass.
+
+## Проверка после implementation commit — 2026-10-07
+
+Реализация, тесты и исходные документы сохранены в commit
+`dfafa1996cef5c202e26d94dfc89d5bbb5584387`.
+До документальных уточнений этой секции рабочая копия была чистой.
+`npm.cmd run context-budget:report` с указанным выше PYTHON_BIN завершился
+с exit 0, pass-with-warnings. Сохраняются advisory о росте navigation и
+неподдерживаемых host-owned sources; dirty-source отказа на этом commit нет.
+
+Новые evidence, не изменяющие журналы исходной приёмки:
+
+- `queues/agent-review-stage4-docs-20261007/context-budget-clean-implementation.log`;
+- `queues/agent-review-stage4-docs-20261007/context-budget-clean-implementation-exit.json`:
+  точная команда, полный commit ID, clean worktree, interpreter и exit 0;
+- `queues/agent-review-stage4-docs-20261007/source-hashes-after-commit.json`:
+  все восемь production/test/utility hashes совпали с исходной приёмкой.
+
+Это дополнительная проверка чистого implementation commit, а не новая полная
+регрессия и не изменение verdict старого failed gate. Текущие документальные
+уточнения выполняются после неё. Их отдельные проверки сохраняются в
+`queues/agent-review-stage4-docs-20261007/document-links.log`,
+`queues/agent-review-stage4-docs-20261007/context-smoke.log`,
+`queues/agent-review-stage4-docs-20261007/context-budget-documentation-worktree.log`
+и `queues/agent-review-stage4-docs-20261007/diff-check.log`.
+Для проверки бюджета тех же документальных изменений в чистом checkout
+используются отдельные
+`queues/agent-review-stage4-docs-20261007/snapshot-location.json`,
+`queues/agent-review-stage4-docs-20261007/snapshot-equality.log` и
+`queues/agent-review-stage4-docs-20261007/context-budget-documentation-snapshot.log`.
+Dirty worktree observation и snapshot outcome не подменяют друг друга.
+Полная регрессия, независимый review и snapshot equality выше относятся
+к исходной реализации; deployment и live provider остаются непроверенными.
 
 ## История verification attempts
 

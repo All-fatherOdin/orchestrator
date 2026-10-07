@@ -2,15 +2,19 @@
 
 Status: startup navigation with a dated Control Plane summary
 Control Plane snapshot: 2026-08-17
-Navigation clarified: 2026-10-06
+Navigation clarified: 2026-10-07
 
 The summary below is historical context, not a live queue/status board. It has
 not been fully revalidated by this navigation edit. Resolve current claims
 through the [source hierarchy](../source_of_truth_hierarchy.md), current code
 and the selected canonical run. Reporting work has its own
-[Stage 2 contract](../agent-report-tools-v1.md) and proposed
-[Stage 3 plan](../agent-review-stage3-plan.md); their stage numbering does not
+[Stage 2 contract](../agent-report-tools-v1.md) and implemented
+[Stage 3 plan and source acceptance](../agent-review-stage3-plan.md); their stage numbering does not
 refer to the Control Plane phases described below.
+The [Stage 4 contract](../agent-review-stage4-contract-v1.md) is implemented in
+commit `dfafa19`. Its [source acceptance record](../agent-review-stage4-acceptance-20261006.md)
+separates source/fixture verification from deployment and live provider checks,
+and records the passing Context Budget check on the clean implementation commit.
 
 Orchestrator is a local Codex queue runner with dependency-aware scheduling,
 bounded write scopes, verification, review/correction, recovery, persisted run

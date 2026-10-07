@@ -2,7 +2,7 @@
 
 Status: navigation entry with a dated Control Plane handoff
 Control Plane snapshot: 2026-08-17
-Navigation clarified: 2026-10-06
+Navigation clarified: 2026-10-07
 
 This is not the live status of every Orchestrator workstream or queue. The
 Control Plane sections below retain their original snapshot date and have not
@@ -10,12 +10,14 @@ been reaccepted by this navigation update. Prefer current code, tests, accepted
 contracts and canonical run records under the [source hierarchy](source_of_truth_hierarchy.md).
 
 For invocation-local GIS reporting and independent review, read the
-[Stage 2 contract](agent-report-tools-v1.md), the proposed
-[Stage 3 plan](agent-review-stage3-plan.md) and its
+[Stage 2 contract](agent-report-tools-v1.md), the implemented
+[Stage 3 plan and source acceptance](agent-review-stage3-plan.md) and its
 [executor prompt](agent-review-stage3-executor-prompt.md).
 The [Stage 4 transport recovery contract](agent-review-stage4-contract-v1.md)
-is implemented; its [source verification record](agent-review-stage4-acceptance-20261006.md)
-records fixture evidence and the workspace Context Budget provenance limitation.
+is implemented in commit `dfafa19`; its
+[source verification record](agent-review-stage4-acceptance-20261006.md)
+records fixture acceptance, the historical pre-commit Context Budget failure
+and the passing Context Budget check on the clean implementation commit.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.

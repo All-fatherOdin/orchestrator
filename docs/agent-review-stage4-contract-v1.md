@@ -1,10 +1,10 @@
 # Stage 4 — bounded reviewer transport recovery v1
 
-Status: accepted proposal implemented; qualified source/fixture acceptance
-2026-10-07, independently reviewed. Workspace Context Budget dirty-source
-failure remains explicit in the separate verification record; not an all-gates pass.
-Role: implementation contract for one bounded session slice. Source acceptance
-will be recorded separately; this document is not installed runtime evidence.
+Status: implemented in commit `dfafa19`; source/fixture acceptance independently
+reviewed on 2026-10-07. The historical pre-commit Context Budget failure and
+passing check on the clean implementation commit are recorded separately.
+Role: implemented task contract. Source acceptance is recorded separately;
+this document is not installed runtime evidence.
 Navigation: [Stage 3 plan](agent-review-stage3-plan.md), [Next steps](NEXT_STEPS.md).
 [Source verification record](agent-review-stage4-acceptance-20261006.md).
 
@@ -57,9 +57,11 @@ change. Private logs: queues/agent-review-stage4-20261006/.
 Verification utility: scripts/verify-source-snapshot.mjs compares the complete
 tracked/untracked source inventory and bytes with a separate clean checkout.
 Its negative fixtures are in scripts/verify-source-snapshot.test.mjs.
-The measured navigation edit deliberately makes the workspace Context Budget
-CLI reject dirty sources. Its workspace failure remains explicit; a pass on an
-identical clean verification snapshot proves only that snapshot's envelopes.
+During the original pre-commit verification, Context Budget rejected dirty
+measured navigation sources. That historical failure remains in the acceptance
+record; the identical clean snapshot pass did not change it. After implementation
+commit `dfafa19`, a fresh check on the clean source worktree passed with warnings.
+Documentation edits after that check do not inherit its clean-worktree evidence.
 
 Fixtures must assert: failure then approval (1 executor, 1 verification,
 2 reviewer processes, 1 publication); two transport failures (2 reviewers,
