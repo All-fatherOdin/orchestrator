@@ -18,6 +18,10 @@ Its [operational snapshot](report-mcp-mode-operational-20261008.md) records the
 successful deployment/installed smoke and owner-authorized fresh full analysis.
 The corrected sequential continuation was launched; current acceptance comes
 from its canonical records, not this dated launch snapshot.
+The [calibration acceptance record](gis-calibration-acceptance-20261008.md)
+distinguishes task execution kind, report mode and native calibration mode. It
+records the preserved failed verdict, new independent read-only acceptance of
+published `q1000-056-b`, and launch of the remaining 34 writers.
 For the stage contracts, read the
 [Stage 2 contract](agent-report-tools-v1.md), the implemented
 [Stage 3 plan and source acceptance](agent-review-stage3-plan.md) and its
