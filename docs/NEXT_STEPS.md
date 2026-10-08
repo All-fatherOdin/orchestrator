@@ -42,6 +42,10 @@ closed failed on a disputed substantive verdict before publication; remaining
 writer launch is blocked.
 The [review premise priority fix](gis-review-premise-priority-fix-v1.md)
 clarifies descriptive claims versus explicitly requested changes in legacy review.
+Its [operational snapshot](gis-review-premise-operational-20261008.md) records
+deployment of `750a17f`, successful fresh installed smoke and accepted bounded
+verified-result recovery. Remaining GIS continuation `muzb2aub-0eu7t` was launched;
+its full acceptance remains pending in the canonical run record.
 Its [source acceptance](gis-review-premise-priority-acceptance-20261008.md) records
 the complete regression and preserved recovery/budget boundaries. Deployment and
 new live recovery remain separate from this source acceptance.
