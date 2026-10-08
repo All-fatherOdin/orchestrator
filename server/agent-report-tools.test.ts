@@ -191,6 +191,45 @@ test("report MCP bearer/HTTP/closed arguments fence operations and close revokes
   await writeFile(join(f.storage, "tools-state.json"), "{}"); await assert.rejects(f.service.closedStateSha256(), /STATE_CHANGED/);
   await assert.rejects(fetch(url)); await assert.rejects(invoke(f.service, "submit_report"));
 });
+
+test("report MCP binds discovery and submission to full/patch identity and preserves exact mode errors", async () => {
+  for (const mode of ["full", "patch"] as const) {
+    const f = await fixture({ mode }), mcp = await startReportMcp(f.service);
+    const config = mcp.args[1], url = /url="([^"]+)"/u.exec(config)![1];
+    const expected = mode === "full" ? "submit_report" : "patch_report", wrong = mode === "full" ? "patch_report" : "submit_report";
+    const payloadJson = mode === "full" ? candidate : JSON.stringify({ patches: [{ index: 2, response: { reviewedUnits: [], findings: [], limitations: [] } }] });
+    const rpc = async (method: string, params?: unknown) => {
+      const response = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${mcp.environment.ORCHESTRATOR_REPORT_MCP_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+      assert.equal(response.status, 200);
+      return (await response.json()).result;
+    };
+    try {
+      const listed = await rpc("tools/list");
+      assert.deepEqual(listed.tools.map((tool: { name: string }) => tool.name), ["read_evidence", "validate_report", expected]);
+      assert.ok(config.includes(JSON.stringify(expected))); assert.ok(!config.includes(JSON.stringify(wrong)));
+      assert.match(listed.tools[2].description, new RegExp(`${mode}-mode`));
+      const validation = await rpc("tools/call", { name: "validate_report", arguments: { payloadJson } });
+      assert.ok(!validation.isError); assert.equal(f.validations(), 1);
+      const rejected = await rpc("tools/call", { name: wrong, arguments: { payloadJson } });
+      assert.equal(rejected.isError, true); assert.deepEqual(JSON.parse(rejected.content[0].text), { error: "WRONG_REPORT_MODE" });
+      assert.equal(f.validations(), 1);
+      await assert.rejects(lstat(join(f.storage, "submitted")), { code: "ENOENT" });
+      const state = JSON.parse(await readFile(join(f.storage, "tools-state.json"), "utf8"));
+      assert.equal(state.status, "active");
+      assert.deepEqual(state.lastProtocolError, { code: "WRONG_REPORT_MODE", requestedTool: wrong, expectedTool: expected });
+      const submitted = await rpc("tools/call", { name: expected, arguments: { payloadJson } });
+      assert.equal(JSON.parse(submitted.content[0].text).submitted, true); assert.equal(f.validations(), 1);
+      assert.equal(await replayReport(join(f.storage, "submitted/result.json"), join(f.storage, "submitted/schema.json"), join(f.storage, "submitted/receipt.json"), f.id), payloadJson);
+      assertReportToolCompletion('{"outcome":"completed","reason":""}');
+    } finally { await mcp.close(); }
+    const closed = JSON.parse(await readFile(join(f.storage, "tools-state.json"), "utf8"));
+    assert.equal(closed.status, "closed"); assert.equal(closed.lastProtocolError.code, "WRONG_REPORT_MODE");
+  }
+});
+
+test("report MCP without explicit review protocol requires a host-bound report mode", async () => {
+  await assert.rejects(startReportMcp({ invoke: async () => undefined, revoke() {}, protectConnection() {}, signal: new AbortController().signal, close: async () => {} }), /INVALID_REPORT_MODE/);
+});
 test("native draft child timeout and cancellation terminate without canonical mutation", async () => {
   const root = await mkdtemp(join(tmpdir(), "tool-native-timeout-")); await mkdir(join(root, ".orchestrator-scratch")); const stdio = join(root, "stdio.cjs"), script = join(root, "wait.cjs"); await writeFile(stdio, ""); await writeFile(script, "setTimeout(()=>{},10000)");
   for (const cancel of [false, true]) {

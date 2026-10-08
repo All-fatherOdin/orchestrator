@@ -10,6 +10,11 @@ been reaccepted by this navigation update. Prefer current code, tests, accepted
 contracts and canonical run records under the [source hierarchy](source_of_truth_hierarchy.md).
 
 For invocation-local GIS reporting and independent review, read the
+[report MCP mode fencing fix](report-mcp-mode-fencing-fix-v1.md), implemented after
+the continuation correction used the wrong submission method. Its
+[source acceptance](report-mcp-mode-fencing-acceptance-20261008.md) is complete;
+deployment and live queue recovery remain separate operational boundaries.
+For the stage contracts, read the
 [Stage 2 contract](agent-report-tools-v1.md), the implemented
 [Stage 3 plan and source acceptance](agent-review-stage3-plan.md) and its
 [executor prompt](agent-review-stage3-executor-prompt.md).

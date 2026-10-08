@@ -28,7 +28,7 @@ export function assertReportToolCompletion(raw: string) {
   closedKeys(result, ["outcome", "reason"]); assert.equal(result.outcome, "completed", "TOOL_PROCESS_STOPPED"); assert.equal(result.reason, "");
 }
 type ToolLimits = { [K in keyof typeof REPORT_TOOL_LIMITS]: number };
-type ToolState = { identity: ReportIdentity; evidenceSha256: string; limits: ToolLimits; calls: number; inputBytes: number; outputBytes: number; readBytes: number; hashBytes: number; validations: number; validationMs: number; status: "active" | "sealed" | "stopped" | "closed"; errorFingerprints: string[] };
+type ToolState = { identity: ReportIdentity; evidenceSha256: string; limits: ToolLimits; calls: number; inputBytes: number; outputBytes: number; readBytes: number; hashBytes: number; validations: number; validationMs: number; status: "active" | "sealed" | "stopped" | "closed"; errorFingerprints: string[]; lastProtocolError?: { code: "WRONG_REPORT_MODE"; requestedTool: string; expectedTool: string } };
 const closedKeys = (v: unknown, keys: string[]) => {
   assert.ok(v && typeof v === "object" && !Array.isArray(v), "INVALID_ARGUMENTS");
   assert.deepEqual(Object.keys(v).sort(), keys.slice().sort(), "INVALID_ARGUMENTS");
@@ -43,11 +43,16 @@ export async function assertNoWindowsReparsePoints(paths: string[]) {
   await new Promise<void>((done, fail) => execFile(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 5000, maxBuffer: 1024, env: { ...process.env, ORCHESTRATOR_PATH_ATTRIBUTE_CHECK: JSON.stringify(paths) } }, error => error ? fail(new Error("REPARSE_OR_ATTRIBUTE_CHECK_FAILED")) : done()));
 }
 const toolNames = ["read_evidence", "validate_report", "submit_report", "patch_report"];
-export const reportToolDefinitions = () => toolNames.map(name => ({
-  name, description: name === "read_evidence" ? "Read an exact host-declared evidence line range. Never accepts paths." : name === "validate_report" ? "Validate complete substantive payloadJson without submitting or publishing." : "Seal the complete substantive payloadJson for this invocation. Does not approve or publish.",
+// Review definitions reuse only the common reader. Report MCP startup always
+// supplies its required host-bound mode explicitly.
+export const reportToolDefinitions = (mode: ReportIdentity["mode"] = "full") => {
+  assert.ok(mode === "full" || mode === "patch", "INVALID_REPORT_MODE");
+  return ["read_evidence", "validate_report", mode === "full" ? "submit_report" : "patch_report"].map(name => ({
+  name, description: name === "read_evidence" ? "Read an exact host-declared evidence line range. Never accepts paths." : name === "validate_report" ? "Validate complete substantive payloadJson without submitting or publishing." : `Seal the complete ${mode === "full" ? "responses" : "patches"} payloadJson for this ${mode}-mode invocation. This is its only submission method. Does not approve or publish.`,
   inputSchema: name === "read_evidence" ? { type: "object", additionalProperties: false, required: ["evidenceId", "startLine", "endLine"], properties: { evidenceId: { type: "string" }, startLine: { type: "integer", minimum: 1 }, endLine: { type: "integer", minimum: 1 } } } : { type: "object", additionalProperties: false, required: ["payloadJson"], properties: { payloadJson: { type: "string" } } },
   annotations: { readOnlyHint: name === "read_evidence" || name === "validate_report", destructiveHint: false, openWorldHint: false },
 }));
+};
 
 /** No agent paths, commands, identities, budgets or credentials enter this service. */
 export class ReportToolService {
@@ -206,7 +211,12 @@ export class ReportToolService {
       let decoded = payloadJson; try { decoded = JSON.stringify(uniqueJson(payloadJson)); } catch { /* bounded JSON error below */ }
       assert.ok(!this.privateValues.some(value => payloadJson.includes(value) || decoded.includes(value)), "PRIVATE_CONNECTION_DATA");
       const submitting = name !== "validate_report";
-      if (submitting) assert.equal(name, this.identity.mode === "full" ? "submit_report" : "patch_report", "WRONG_REPORT_MODE");
+      const expectedTool = this.identity.mode === "full" ? "submit_report" : "patch_report";
+      if (submitting && name !== expectedTool) {
+        this.state.lastProtocolError = { code: "WRONG_REPORT_MODE", requestedTool: name, expectedTool };
+        await this.save();
+        throw new Error("WRONG_REPORT_MODE");
+      }
       if (this.state.status === "sealed") {
         assert.ok(submitting, "REPORT_SEALED");
         const sealed = await this.replay(); assert.equal(payloadJson, sealed.payloadJson, "SUBMISSION_CONFLICT"); result = { submitted: true, receipt: sealed.receipt };
@@ -268,8 +278,10 @@ export function reportLoopbackEnvironment(environment: NodeJS.ProcessEnv): { NO_
   return { NO_PROXY: bypass, no_proxy: bypass };
 }
 
-export async function startReportMcp(service: Pick<ReportToolService, "invoke" | "revoke" | "protectConnection" | "signal" | "close">, protocol?: { name: "orchestrator_review"; definitions: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; annotations: Record<string, boolean> }> }) {
-  const definitions = protocol?.definitions ?? reportToolDefinitions();
+export async function startReportMcp(service: Pick<ReportToolService, "invoke" | "revoke" | "protectConnection" | "signal" | "close"> & { readonly identity?: Pick<ReportIdentity, "mode"> }, protocol?: { name: "orchestrator_review"; definitions: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; annotations: Record<string, boolean> }> }) {
+  const mode = service.identity?.mode;
+  if (!protocol) assert.ok(mode === "full" || mode === "patch", "INVALID_REPORT_MODE");
+  const definitions = protocol?.definitions ?? reportToolDefinitions(mode!);
   const serverName = protocol?.name ?? "orchestrator_report";
   const token = randomBytes(32).toString("hex"); let requests = 0;
   const server = createServer(async (request, response) => {

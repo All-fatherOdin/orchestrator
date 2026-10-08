@@ -77,7 +77,14 @@ that lack a field use `$`; the host never invents field precision.
 No contents, conclusions, IDs, findings or limitations are automatically fixed.
 
 `submit_report({payloadJson})` is full-only; `patch_report({payloadJson})` is
-patch-only. Patches cover exactly trusted targets without duplicates. Untargeted
+patch-only. The [source-accepted mode fencing fix](report-mcp-mode-fencing-acceptance-20261008.md)
+advertises exactly three tools per report invocation: `read_evidence`,
+`validate_report` and its one host-identity-bound submission method. The inactive
+submission method is absent from discovery and the CLI enabled-tools list;
+direct wrong-method calls still fail with `WRONG_REPORT_MODE`. A bounded
+requested/expected-method diagnostic is retained in the closed tool state.
+This source acceptance does not attest installation or replay of historical runs.
+Patches cover exactly trusted targets without duplicates. Untargeted
 response strings are retained byte-for-byte. The host wraps substantive JSON
 in Stage 1's envelope and uses Stage 1's codec and receipt builder. One directory
 rename publishes the complete raw/schema/receipt set. Identical payload bytes
