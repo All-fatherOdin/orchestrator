@@ -9,7 +9,7 @@ import { reportSchema } from "./agent-report.ts";
 process.env.ORCHESTRATOR_TEST = "1";
 const data = mkdtempSync(join(tmpdir(), "gis-run-records-"));
 process.env.ORCHESTRATOR_DATA_DIR = data;
-const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence, structuredRecoveryReviewTargets, markRunReadyForLaunch, queueRecoveryContractChecks } = await import("./index.ts");
+const { validateQueue, createRun, executeQueue, resumeRun, configureGisLifecycleTestBoundary, loadRun, prepareWholeChangeAcceptanceEvidence, structuredRecoveryReviewTargets, markRunReadyForLaunch, queueRecoveryContractChecks, buildReviewerPrompt } = await import("./index.ts");
 
 function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: string) {
   const correctionMode = mode.startsWith("correction");
@@ -90,6 +90,27 @@ function fixture(mode: string, budget?: "enabled" | "deny", transportCase?: stri
   const queue = validateQueue({ project: { path: project, approvedApplyContracts: [approval] }, limits: { maxParallelTasks: 1, maxTaskRetries: 0 }, review: { enabled: true, maxCorrections: correctionMode ? 2 : 0 }, git: { checkpointCommits: false }, tasks: [{ key: "one", title: "GIS", prompt: "Analyze exact prepared materials.", authoringContract: { contractType: "QueueAuthoringContractV1", contractVersion: "1.0" }, executionKind: { contractType: "TaskExecutionKindV1", contractVersion: "1.0", kind: "ordinary" }, runtimeConstraints: ["Pinned fixture runtime; native process timeout 300000ms and workspace-root TEMP.", correctionMode ? "At most two analysis corrections; preserve rejected artifacts and rerun verification and independent review." : "No executor retries/corrections; same-run bounded continuation."], isolatedArtifacts, allowedPaths, impactPaths, verificationCommands, ...(budget ? { executionBudget: { contractType: "ExecutionBudgetPolicyV1", contractVersion: "1.0", budgetId: "process-correction-budget", maxProviderInvocations: budget === "deny" ? 2 : 4, phaseCaps: budget === "deny" ? { executor: 1, reviewer: 1, correction: 0 } : { executor: 1, reviewer: 2, correction: 1 } } } : {}), authorization: { enabled: true, ...Object.fromEntries(["approvalId", "intent", "technicalPermission", "sideEffectRisk"].map(k => [k, approval[k as keyof typeof approval]])) } }, { key: "accept", dependsOn: ["one"], title: "Acceptance", prompt: "Review exact predecessor.", allowedPaths: [], wholeChangeAcceptance: { contractType: "WholeChangeAcceptanceV1", contractVersion: "1.0", predecessorTaskKeys: ["one"] }, authorization: { enabled: true, intent: "review", technicalPermission: "read_only", sideEffectRisk: "none" } }] });
   return { root, project, state, runPath, provider, queue, checker, manifest };
 }
+
+test("GIS legacy reviewer prompt requires current primary evidence over historical correction premises", () => {
+  for (const mode of ["registered", "valid"]) {
+    const f = fixture(mode);
+    const run = createRun(f.queue), t = run.tasks[0];
+    t.prompt = "Historical reviewer requests ASCII '-' instead of U+2014. Missing backend contract.";
+    t.finalOutput = "Prepared primary content returns '\u2014'; backend evidence unavailable.";
+    const prompt = buildReviewerPrompt(t, run.project);
+    assert.ok(prompt.includes(t.prompt));
+    assert.ok(prompt.includes(t.finalOutput));
+    assert.match(prompt, /corresponding current bundle-N.json primary.content.text/);
+    assert.match(prompt, /Missing, truncated or redacted evidence remains a limitation/);
+    assert.match(prompt, /never replace it with an assignment's assertion or an earlier verdict/);
+    assert.match(prompt, /Use only the exact supplied artifact paths/);
+    assert.match(prompt, /Never approve an unsupported claim merely because it matches the assignment/);
+    assert.equal(t.processProgress, undefined);
+    assert.equal(t.gisProgress, undefined);
+    assert.equal(t.agentToolInvocations, undefined);
+    assert.equal(existsSync(join(f.project, f.runPath)), false);
+  }
+});
 
 // Five separate scopes make exact [3,4] correction and three byte-preserved
 // siblings observable through the production process and persisted restart.

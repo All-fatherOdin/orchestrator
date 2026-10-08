@@ -40,6 +40,11 @@ complete regression and qualified Context Budget evidence. The
 deployment of `e42104f` and successful fresh installed smoke. Live successor
 closed failed on a disputed substantive verdict before publication; remaining
 writer launch is blocked.
+The [review premise priority fix](gis-review-premise-priority-fix-v1.md)
+clarifies descriptive claims versus explicitly requested changes in legacy review.
+Its [source acceptance](gis-review-premise-priority-acceptance-20261008.md) records
+the complete regression and preserved recovery/budget boundaries. Deployment and
+new live recovery remain separate from this source acceptance.
 The numbering of these reporting stages is separate from Control Plane phases
 and its S1–S6 workstream. Check the selected canonical run before implementation;
 this document does not authorize stopping it, deployment or recovery.

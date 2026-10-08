@@ -19889,6 +19889,46 @@ test("reviewer prompt consumes exact Orchestrator verification evidence without 
   assert.doesNotMatch(prompt, /ignored fallback/);
 });
 
+test("reviewer distinguishes assignment premises from current Unicode source evidence", () => {
+  for (const [sourceLiteral, proposedLiteral] of [["\u2014", "-"], ["-", "\u2014"]]) {
+    const source = `export const fallback = '${sourceLiteral}';`;
+    const assignment = `Earlier reviewer: replace fallback with '${proposedLiteral}'.`;
+    const prompt = buildReviewerPrompt({
+      ...task("conflicting-literal", "completed"),
+      prompt: assignment,
+      diff: source,
+      changedFiles: ["fallback.ts"],
+      finalOutput: `Current fallback is '${sourceLiteral}'.`,
+    }, {});
+    assert.ok(prompt.includes(assignment), "Retain the exact premise for independent review");
+    assert.ok(prompt.includes(source), "Retain the actual source literal without normalization");
+    assert.match(prompt, /Descriptive claims.*untrusted claims, not source evidence/);
+    assert.match(prompt, /do not require a correct result to be rewritten solely to match that description/);
+    assert.match(prompt, /Never approve an unsupported claim merely because it matches the assignment/);
+    assert.ok(prompt.indexOf("Descriptive claims") < prompt.indexOf(`Scope: ${assignment}`));
+    assert.match(prompt, /VERDICT: APPROVED or VERDICT: CHANGES_REQUESTED/);
+  }
+});
+
+test("reviewer preserves explicit target behavior when the source still implements the old literal", () => {
+  for (const [current, target] of [["\u2014", "-"], ["-", "\u2014"]]) {
+    const assignment = `Change fallback from '${current}' to '${target}'.`;
+    const prompt = buildReviewerPrompt({
+      ...task("unimplemented-target", "completed"),
+      prompt: assignment,
+      diff: `export const fallback = '${current}';`,
+      changedFiles: ["fallback.ts"],
+      finalOutput: "No change needed; existing source wins.",
+    }, {});
+    assert.ok(prompt.includes(`Scope: ${assignment}`));
+    assert.ok(prompt.includes(`export const fallback = '${current}';`));
+    assert.match(prompt, /owner-requested changes remain acceptance requirements/);
+    assert.match(prompt, /report the unimplemented requirement as a defect/);
+    assert.match(prompt, /does not excuse failing to implement an explicitly authorized change/);
+    assert.ok(prompt.indexOf("owner-requested changes") < prompt.indexOf(`Scope: ${assignment}`));
+  }
+});
+
 test("managed Python preflight proves executable availability before task execution", async () => {
   const project = await mkdtemp(join(tmpdir(), "orchestrator-managed-python-"));
   try {
