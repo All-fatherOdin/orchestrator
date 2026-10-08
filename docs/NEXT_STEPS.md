@@ -14,6 +14,10 @@ For invocation-local GIS reporting and independent review, read the
 the continuation correction used the wrong submission method. Its
 [source acceptance](report-mcp-mode-fencing-acceptance-20261008.md) is complete;
 deployment and live queue recovery remain separate operational boundaries.
+Its [operational snapshot](report-mcp-mode-operational-20261008.md) records the
+successful deployment/installed smoke and owner-authorized fresh full analysis.
+The corrected sequential continuation was launched; current acceptance comes
+from its canonical records, not this dated launch snapshot.
 For the stage contracts, read the
 [Stage 2 contract](agent-report-tools-v1.md), the implemented
 [Stage 3 plan and source acceptance](agent-review-stage3-plan.md) and its
